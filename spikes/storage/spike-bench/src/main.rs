@@ -251,6 +251,12 @@ fn fmt_num(v: f64) -> String {
     }
 }
 
+/// redb has no mode that skips fsync but survives a process crash; its
+/// `buffered` numbers are published but flagged (ADR-0012).
+fn not_comparable(engine: &str, durability: &str) -> bool {
+    engine == "redb" && durability.starts_with("buffered")
+}
+
 fn cmd_report(args: &Args) {
     let input = args.get_or("input", "results.jsonl");
     let text = std::fs::read_to_string(&input).unwrap();
@@ -316,7 +322,14 @@ fn cmd_report(args: &Args) {
                     _ => "—".into(),
                 })
                 .collect();
-            out += &format!("| {e} | {reps} | {} |\n", vals.join(" | "));
+            out += &format!(
+                "| {e}{} | {reps} | {} |\n",
+                if not_comparable(e, durability) { " †" } else { "" },
+                vals.join(" | ")
+            );
+        }
+        if engines.keys().any(|e| not_comparable(e, durability)) {
+            out += "\n† redb `Durability::None` does not survive a process crash: not comparable with the other engines' `buffered`.\n";
         }
     }
     if !failures.is_empty() {

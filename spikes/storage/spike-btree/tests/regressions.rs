@@ -8,6 +8,7 @@ use std::ops::Bound;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::Mutex;
 use spike_btree::BTreeEngine;
@@ -384,8 +385,7 @@ mod crafted {
             }
         };
 
-        // After the panic, the handle is not poisoned (parking_lot mutex,
-        // poison flag never set): a further commit is accepted or panics again.
+        // Diagnostics only: what a further commit does after a panic.
         if panicked {
             let mut b2 = WriteBatch::new();
             b2.put("s5", "x");
@@ -576,5 +576,103 @@ mod overflow_cache {
             assert_eq!(s.get(b"big").unwrap().as_deref(), Some(value.as_slice()));
         }
         assert_eq!(stat(&db, "overflow_pages_read"), pages_after_first, "overflow value re-read from disk");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A panic inside commit did not poison the handle: later commits ran on an
+// allocator state ahead of the meta and could leave the file unopenable.
+
+mod commit_panic {
+    use super::*;
+
+    /// Files whose writes panic while `armed` is set.
+    struct PanickyVfs {
+        inner: Arc<dyn Vfs>,
+        armed: Arc<AtomicBool>,
+    }
+
+    struct PanickyFile {
+        inner: Arc<dyn File>,
+        armed: Arc<AtomicBool>,
+    }
+
+    impl File for PanickyFile {
+        fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<()> {
+            self.inner.read_at(buf, offset)
+        }
+        fn write_at(&self, buf: &[u8], offset: u64) -> io::Result<()> {
+            assert!(!self.armed.load(Ordering::SeqCst), "injected panic in write_at");
+            self.inner.write_at(buf, offset)
+        }
+        fn len(&self) -> io::Result<u64> {
+            self.inner.len()
+        }
+        fn set_len(&self, len: u64) -> io::Result<()> {
+            self.inner.set_len(len)
+        }
+        fn sync_data(&self) -> io::Result<()> {
+            self.inner.sync_data()
+        }
+    }
+
+    impl Vfs for PanickyVfs {
+        fn create_dir_all(&self, path: &Path) -> io::Result<()> {
+            self.inner.create_dir_all(path)
+        }
+        fn open(&self, path: &Path, mode: OpenMode) -> io::Result<Arc<dyn File>> {
+            let inner = self.inner.open(path, mode)?;
+            Ok(Arc::new(PanickyFile { inner, armed: self.armed.clone() }))
+        }
+        fn exists(&self, path: &Path) -> io::Result<bool> {
+            self.inner.exists(path)
+        }
+        fn remove_file(&self, path: &Path) -> io::Result<()> {
+            self.inner.remove_file(path)
+        }
+        fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+            self.inner.rename(from, to)
+        }
+        fn list(&self, dir: &Path) -> io::Result<Vec<String>> {
+            self.inner.list(dir)
+        }
+        fn sync_dir(&self, dir: &Path) -> io::Result<()> {
+            self.inner.sync_dir(dir)
+        }
+        fn lock(&self, path: &Path) -> io::Result<Box<dyn Any + Send + Sync>> {
+            self.inner.lock(path)
+        }
+    }
+
+    #[test]
+    fn a_panic_inside_commit_poisons_the_handle() {
+        let disk = SimVfs::new(3);
+        let armed = Arc::new(AtomicBool::new(false));
+        let vfs: Arc<dyn Vfs> = Arc::new(PanickyVfs { inner: disk.as_vfs(), armed: armed.clone() });
+        let opts = Options::small_for_tests();
+        let db: BTreeEngine = open(&vfs, &opts).unwrap();
+        let mut model = Model::default();
+        let mut b = WriteBatch::new();
+        b.put("a", "1");
+        db.commit(&b).unwrap();
+        apply(&mut model, &b);
+
+        armed.store(true, Ordering::SeqCst);
+        let mut b = WriteBatch::new();
+        b.put("b", "2");
+        let r = catch_unwind(AssertUnwindSafe(|| db.commit(&b)));
+        armed.store(false, Ordering::SeqCst);
+        assert!(r.is_err(), "the injected panic must reach the caller");
+
+        let mut b = WriteBatch::new();
+        b.put("c", "3");
+        let r = db.commit(&b);
+        assert!(matches!(r, Err(spike_core::Error::Poisoned(_))), "expected Poisoned, got {r:?}");
+        assert!(matches!(db.close(), Err(spike_core::Error::Poisoned(_))));
+
+        // Reopening recovers the last committed state.
+        let db: BTreeEngine = open(&vfs, &opts).unwrap();
+        assert_eq!(read_all(&db.snapshot().unwrap()).unwrap(), model);
+        db.close().unwrap();
     }
 }

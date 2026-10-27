@@ -32,7 +32,7 @@ Estabilidad del token, rechazo de manipulación, soporte de versionado y clarida
 
 ## Evidencia de M0
 
-- Resolver un token con la opción 1 cuesta una lectura puntual adicional. En M0, una lectura puntual con caché caliente está en el orden de 1–5 µs (p50) en los motores medidos ([informe M0](../testing/m0-report.md), `point_reads`), despreciable frente a un commit durable (cientos de µs).
+- Resolver un token con la opción 1 cuesta una lectura puntual adicional. En M0, una lectura puntual con caché caliente cuesta entre 0,7 y 8,7 µs (p50, según motor y tamaño, de 20 000 a 1 M de registros; [informe M0](../testing/m0-report.md), `point_reads`), despreciable frente a un commit durable (cientos de µs).
 - La entrada de índice extra se escribe en el mismo batch atómico que el registro (I-01), por lo que token y registro no pueden desincronizarse.
 
 ## Propuesta
