@@ -25,7 +25,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub use counting::{CountingVfs, IoCounters};
+pub use counting::{CountingVfs, IoCounters, IoSnapshot};
 pub use sim::{CrashKind, SimVfs};
 pub use std_fs::StdVfs;
 

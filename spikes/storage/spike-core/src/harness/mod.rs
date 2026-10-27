@@ -221,9 +221,17 @@ pub fn for_each_seed(name: &str, seeds: Range<u64>, f: impl Fn(u64)) {
 /// in [`Durability::Buffered`](crate::Durability::Buffered) mode, a power
 /// loss leaves a consistent prefix of commits. If `false`, buffered mode is
 /// only tested against process crashes.
+///
+/// `detects_truncation` (default `true`) declares whether truncated files
+/// after a clean shutdown are always detected. Only the reference
+/// `LogEngine` opts out (a truncated log is indistinguishable from a torn
+/// tail).
 #[macro_export]
 macro_rules! engine_test_suite {
     ($engine:ty, buffered_power_loss_prefix = $bpl:expr) => {
+        $crate::engine_test_suite!($engine, buffered_power_loss_prefix = $bpl, detects_truncation = true);
+    };
+    ($engine:ty, buffered_power_loss_prefix = $bpl:expr, detects_truncation = $trunc:expr) => {
         mod shared_functional {
             use super::*;
             use $crate::harness::functional as f;
@@ -302,6 +310,14 @@ macro_rules! engine_test_suite {
                 c::run::<$engine>(CrashKind::ProcessKill, Durability::Buffered);
             }
             #[test]
+            fn power_loss_at_every_io_point() {
+                c::every_point::<$engine>(CrashKind::PowerLoss);
+            }
+            #[test]
+            fn process_kill_at_every_io_point() {
+                c::every_point::<$engine>(CrashKind::ProcessKill);
+            }
+            #[test]
             fn power_loss_buffered() {
                 if $bpl {
                     c::run::<$engine>(CrashKind::PowerLoss, Durability::Buffered);
@@ -315,6 +331,14 @@ macro_rules! engine_test_suite {
             #[test]
             fn bit_flips_are_detected_or_harmless() {
                 $crate::harness::corruption::bit_flips::<$engine>();
+            }
+            #[test]
+            fn truncations_are_detected_or_harmless() {
+                if $trunc {
+                    $crate::harness::corruption::truncations::<$engine>();
+                } else {
+                    eprintln!("engine does not claim to detect truncated files");
+                }
             }
         }
     };

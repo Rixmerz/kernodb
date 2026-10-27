@@ -1,14 +1,15 @@
-//! Media-corruption suite: after a clean shutdown, flip one bit somewhere in
-//! the database files and check that the engine either still returns exactly
-//! the right data or reports an error. Returning different data, or silently
-//! going back to an older commit, fails the test.
+//! Media-corruption suites: after a clean shutdown, damage the database files
+//! (flip one bit, or truncate a file) and check that the engine either still
+//! returns exactly the right data or reports an error. Returning different
+//! data, or silently going back to an older commit (including "starting
+//! over" with an empty database), fails the test.
 
 use std::path::PathBuf;
 
 use super::{Model, Workload, apply, for_each_seed, open, read_all, seeds};
 use crate::engine::{Engine, Options, Snapshot};
 use crate::rng::Rng;
-use crate::vfs::SimVfs;
+use crate::vfs::{OpenMode, SimVfs};
 
 #[derive(Default, Debug)]
 struct Outcomes {
@@ -17,9 +18,27 @@ struct Outcomes {
     harmless: u64,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum Damage {
+    BitFlip,
+    Truncate,
+}
+
 pub fn bit_flips<E: Engine>() {
+    damage_suite::<E>(Damage::BitFlip);
+}
+
+/// Truncation to a random shorter length (a quarter of the time, to zero):
+/// lost tails, half-copied files, a file system that "forgot" a resize.
+/// Files must be created atomically (e.g. temp file + rename) so that an
+/// empty or short file is never mistaken for "no database yet".
+pub fn truncations<E: Engine>() {
+    damage_suite::<E>(Damage::Truncate);
+}
+
+fn damage_suite<E: Engine>(damage: Damage) {
     let outcomes = std::sync::Mutex::new(Outcomes::default());
-    for_each_seed("bit_flips", seeds(150), |seed| {
+    for_each_seed(&format!("{damage:?}"), seeds(150), |seed| {
         let mut rng = Rng::new(seed);
         let disk = SimVfs::new(seed);
         let vfs = disk.as_vfs();
@@ -50,10 +69,20 @@ pub fn bit_flips<E: Engine>() {
                 }
             })
             .unwrap();
-        let mask = 1u8 << rng.below(8);
-        disk.corrupt_byte(&path, offset, mask);
-        let what = format!("bit {mask:#04x} at {}+{offset}", path.display());
-
+        let what = match damage {
+            Damage::BitFlip => {
+                let mask = 1u8 << rng.below(8);
+                disk.corrupt_byte(&path, offset, mask);
+                format!("bit {mask:#04x} at {}+{offset}", path.display())
+            }
+            Damage::Truncate => {
+                let len = if rng.chance(1, 4) { 0 } else { offset };
+                let f = vfs.open(&path, OpenMode::Existing).unwrap();
+                f.set_len(len).unwrap();
+                f.sync_data().unwrap();
+                format!("{} truncated to {len} bytes", path.display())
+            }
+        };
         let mut out = outcomes.lock().unwrap();
         let db: E = match open(&vfs, &opts) {
             Ok(db) => db,
@@ -89,5 +118,5 @@ pub fn bit_flips<E: Engine>() {
             out.harmless += 1;
         }
     });
-    eprintln!("{} bit flips: {:?}", E::name(), outcomes.lock().unwrap());
+    eprintln!("{} {damage:?}: {:?}", E::name(), outcomes.lock().unwrap());
 }
