@@ -43,7 +43,8 @@ Protocolo de commit `Sync`: escribir páginas nuevas (nunca sobre páginas alcan
 | B6 | Tras el segundo `fsync`, antes de devolver | `N+1` | `N+1` | Commit durable; aún no confirmado al llamador. |
 | B7 | Creación: antes del `rename` de `data.kbt.tmp` | base vacía | base vacía | El temporal se borra al abrir. |
 | B8 | Creación: tras el `rename`, antes del `fsync` del directorio | base vacía | base vacía (con o sin archivo) | Toda apertura sincroniza el directorio antes de aceptar commits. |
-| B9 | Apertura | estado previo | estado previo | La recuperación no escribe (solo `fsync` del directorio). |
+| B9 | Apertura | estado previo | estado previo | La recuperación no escribe datos: `fsync` del directorio padre y del directorio de la base, y `fsync` del archivo **antes** de confiar en el meta elegido. |
+| B9b | Caída entre escribir el meta de `N+1` y sincronizarlo; reinicio; corte de energía durante el siguiente commit | — | `N` o `N+1` | El `fsync` al abrir hace durable el meta visible antes de reutilizar las páginas que liberó. Sin él (defecto de la revisión de M0) el único árbol durable podía sobrescribirse. |
 | B10 | Cierre limpio (copia del meta al segundo slot) | `N` | `N` | Ambos slots válidos, con `N` o `N−1`/`N`; el más nuevo es `N`. |
 
 **Modo `Buffered`** (sin `fsync`): ante muerte del proceso, `N` o `N+1`. Ante corte de energía **no hay garantía de prefijo**: un meta nuevo puede llegar al disco antes que sus páginas y las páginas liberadas se reutilizan antes de ser durables. Los checksums Merkle garantizan que el resultado es el estado exacto de algún commit **o** `Error::Corruption` detectado, nunca datos erróneos; en simulación, ~85 % de los cortes dejaron la base sin poder abrirse hasta repararla. Ver ADR-0002.
@@ -69,8 +70,8 @@ Protocolo de commit `Sync`: registro `[len|crc|seq|batch]` en el WAL activo (un 
 | L9 | Compactación: escritura de SST de salida | `N` | `N` | Salidas huérfanas → se borran al abrir. |
 | L10 | Compactación: cambio de MANIFEST | `N` | `N` | Atómico (temporal + `rename`); entradas y salidas contienen el mismo estado lógico. |
 | L11 | Compactación: borrado de entradas obsoletas | `N` | `N` | Solo se borran cuando un MANIFEST durable ya no las referencia y ningún snapshot las usa. |
-| L12 | Recuperación: reproducción del WAL → SST L0 → MANIFEST con `log_number` nuevo → borrado de WAL viejos → WAL nuevo | estado previo | estado previo | Hasta que el MANIFEST nuevo es durable, el viejo y sus WAL siguen vigentes; después, la SST contiene lo reproducido. La recuperación puede interrumpirse y repetirse. |
-| L13 | Cierre limpio: flush de memtables, MANIFEST, borrado de WAL | `N` | `N` | Combinación de L6–L8. |
+| L12 | Recuperación: `fsync` del directorio padre, reproducción del WAL → SST L0 → MANIFEST con `log_number` nuevo → borrado de WAL viejos → WAL nuevo | estado previo | estado previo | Hasta que el MANIFEST nuevo es durable, el viejo y sus WAL siguen vigentes; después, la SST contiene lo reproducido. La recuperación puede interrumpirse y repetirse. |
+| L13 | Cierre limpio: flush de memtables, MANIFEST, borrado de WAL, compactaciones hasta que ningún nivel exceda su objetivo | `N` | `N` | Combinación de L6–L11. |
 
 **Modo `Buffered`**: ante muerte del proceso, `N` o `N+1`. Ante corte de energía, **un prefijo consistente** de commits no anterior al estado que informó la última apertura: el WAL viejo se sincroniza antes de crear uno nuevo (solo el más reciente puede tener huecos y la reproducción se detiene en el primero), y SST + MANIFEST son durables antes de borrar el WAL que reemplazan.
 
@@ -89,7 +90,7 @@ Protocolo de commit `Sync`: registro `[len|crc|seq|batch]` en el WAL activo (un 
 | Bit flip en página libre o bytes no usados | inocuo | — (no hay bytes no cubiertos) |
 | Truncamiento de cualquier archivo (incluso a 0 B) | `Corruption` al abrir (longitud < `page_count × 4096`; archivo sin meta válido nunca se reinicializa) | `Corruption` al abrir (tamaño contrastado con el MANIFEST; MANIFEST vacío o ausente con datos presentes) |
 
-**Limitación conocida (B+ tree)**: tras un cierre **sucio**, los slots contienen los dos últimos commits; si después un daño del medio afecta al slot más nuevo, la apertura vuelve silenciosamente al commit anterior, cuyas páginas pueden haberse reutilizado (las lecturas lo detectan como corrupción). El LSM no tiene el problema equivalente porque el estado lo define un único MANIFEST sin alternativa.
+**Daño tras un cierre sucio.** B+ tree: cada slot guarda dos copias del meta en sectores distintos; dañar una copia del meta más reciente no cambia nada (antes de la revisión de M0, un solo bit hacía volver al commit anterior en silencio). Solo si se dañan **ambas** copias vuelve al commit anterior. LSM: el daño de un registro del WAL seguido de un registro válido escrito en modo `Sync` se informa como `Corruption` en vez de truncarse (antes de la revisión, se perdían en silencio commits confirmados); el daño del **último** registro sigue siendo indistinguible de una escritura rota del commit en curso.
 
 ## 5. Fuera del modelo (pendiente para Fase 1)
 
