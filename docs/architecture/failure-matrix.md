@@ -47,7 +47,7 @@ Protocolo de commit `Sync`: escribir páginas nuevas (nunca sobre páginas alcan
 | B9b | Caída entre escribir el meta de `N+1` y sincronizarlo; reinicio; corte de energía durante el siguiente commit | — | `N` o `N+1` | El `fsync` al abrir hace durable el meta visible antes de reutilizar las páginas que liberó. Sin él (defecto de la revisión de M0) el único árbol durable podía sobrescribirse. |
 | B10 | Cierre limpio (copia del meta al segundo slot) | `N` | `N` | Ambos slots válidos, con `N` o `N−1`/`N`; el más nuevo es `N`. |
 
-**Modo `Buffered`** (sin `fsync`): ante muerte del proceso, `N` o `N+1`. Ante corte de energía **no hay garantía de prefijo**: un meta nuevo puede llegar al disco antes que sus páginas y las páginas liberadas se reutilizan antes de ser durables. Los checksums Merkle garantizan que el resultado es el estado exacto de algún commit **o** `Error::Corruption` detectado, nunca datos erróneos; en simulación, ~85 % de los cortes dejaron la base sin poder abrirse hasta repararla. Ver ADR-0002.
+**Modo `Buffered`** (sin `fsync`): ante muerte del proceso, `N` o `N+1`. Ante corte de energía **no hay garantía de prefijo**: un meta nuevo puede llegar al disco antes que sus páginas y las páginas liberadas se reutilizan antes de ser durables. Los checksums Merkle garantizan que el resultado es el estado exacto de algún commit **o** `Error::Corruption` detectado, nunca datos erróneos; en simulación, ~87 % de los cortes (130 de 150) dejaron la base sin poder abrirse hasta repararla y otro 12 % se abrió con daño detectado al leer. Ver ADR-0002.
 
 **EIO aislado**: cualquier error tras validar envenena el handle; tras reabrir, `N` o `N+1`.
 

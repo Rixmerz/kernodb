@@ -37,9 +37,9 @@ Las cifras de `buffered` de redb se publican marcadas como no comparables.
 
 ### Repeticiones y calentamiento
 
-- Cada combinación se ejecuta **3 veces** (configurable), intercalando los motores en cada repetición para que las derivas lentas de la máquina no favorezcan a uno.
-- La carga de datos previa (*preload*) no se mide; la medición empieza tras reabrir la base.
-- **Calentamiento** separado de la medición (SAD §17.4): con caché caliente, tras reabrir se recorre la base completa con escaneos paginados antes de medir (su duración se registra como `warmup_ms`, fuera de toda métrica). Con `--cold true` no hay calentamiento, a propósito; el informe solo etiqueta una ejecución como «caché fría» si el vaciado de la caché del SO funcionó.
+- Cada combinación se ejecuta **3 veces** (configurable con `REPS`), intercalando los motores en cada repetición para que las derivas lentas de la máquina no favorezcan a uno. La escala `large` se ejecuta por defecto **una sola vez** (`LARGE_REPS=1`) y solo en `bulk_load`, `point_reads`, `range_scans` y `small_commits`: sus cifras son ejecuciones únicas (indican tendencia, no mediana) y la regla del rango no se les aplica.
+- La carga de datos previa (*preload*) no se mide. En `point_reads`, `range_scans`, `small_commits`, `point_deletes` y `mixed` la medición empieza tras cerrar y reabrir la base; en `livespec`, `cauce` y `agent_memory` empieza justo después de la precarga, sobre la misma instancia abierta (en `cauce`, la reapertura tras un cierre sucio ocurre después de la fase medida y solo da `recovery_ms`); `append_seq` y `history_sim` parten de una base vacía, y en `bulk_load` lo medido es la propia carga.
+- **Calentamiento** separado de la medición (SAD §17.4): en las cargas que reabren la base antes de medir (`point_reads`, `range_scans`, `small_commits`, `point_deletes` y `mixed`), con caché caliente se recorre la base completa con escaneos paginados antes de medir (su duración se registra como `warmup_ms`, fuera de toda métrica). Las demás no necesitan calentamiento explícito: miden la propia carga, parten de una base vacía o miden justo después de escribir sus datos en el mismo proceso; en ellas «caché caliente» significa que no se vació la caché del SO. Con `--cold true` no hay calentamiento, a propósito; el informe solo etiqueta una ejecución como «caché fría» si el vaciado de la caché del SO funcionó.
 - El informe muestra la **mediana**; si el rango entre mínimo y máximo supera el 15 % de la mediana, se muestra el rango junto a ella.
 
 ### Métricas obligatorias
@@ -52,7 +52,7 @@ Con cada conjunto de resultados se guarda `env.json`: CPU, núcleos, memoria, ke
 
 ### Escalas
 
-`small` (20 000 registros, cabe en caché), `medium` (200 000), `large` (1 000 000, si el entorno lo permite). El tamaño es un parámetro registrado, no una condición universal.
+`small` (20 000 registros, cabe en caché), `medium` (200 000), `large` (1 000 000, si el entorno lo permite; por defecto una sola repetición y solo carga masiva, lecturas puntuales, escaneos y commits pequeños). El tamaño es un parámetro registrado, no una condición universal.
 
 ### Reproducción
 

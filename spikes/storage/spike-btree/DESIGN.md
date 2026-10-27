@@ -248,8 +248,8 @@ random updates, that took the hit rate from 100% to 8%.
   exact state of some commit, or a detected `Corruption`, never wrong data
   (`tests::buffered_power_loss_gives_a_prefix_or_a_detected_error`). In that
   test's 150 simulated crashes, though, only 2 recovered a consistent state;
-  128 were detected at open (mostly a newer meta whose free-list page or file
-  extension never landed) and 20 on read. In Buffered mode the only
+  130 were detected at open (mostly a newer meta whose free-list page or file
+  extension never landed) and 18 on read. In Buffered mode the only
   durability point is a clean `close`. The shared suite is registered with
   `buffered_power_loss_prefix = false`. A real guarantee would need periodic
   sync points: defer page reuse until the next sync point, keep the last

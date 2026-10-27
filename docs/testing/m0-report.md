@@ -2,7 +2,7 @@
 
 Estado: resultados del 2026-10-27 · Relacionado con: [ADR-0001](../adr/0001-motor-de-almacenamiento.md), [ADR-0012](../adr/0012-metodologia-de-benchmarks.md), [plan de pruebas](test-plan.md), [matriz de fallos](../architecture/failure-matrix.md)
 
-Este informe recoge la evidencia con la que se decide ADR-0001: primero la **correctitud** (que es requisito, no criterio de desempate) y después el **rendimiento**. Todo es reproducible desde el commit indicado en `env.json`.
+Este informe recoge la evidencia con la que se decide ADR-0001: primero la **correctitud** (que es requisito, no criterio de desempate) y después el **rendimiento**. Los benchmarks son reproducibles desde el commit indicado en `env.json` (`df45ddb`); las pruebas de correctitud, desde `a7d40d7` (la pasada de 1000 semillas se ejecutó sobre `c8b30f4`, con el mismo código).
 
 ## 1. Qué se comparó
 
@@ -35,7 +35,7 @@ Ejecución con `SPIKE_SEEDS=400 cargo test --workspace --all-features --release`
 | Regresiones de la revisión adversarial y de la auditoría previa al merge | ✅ 9 | ✅ 7 |
 | Prueba diferencial (misma historia en btree, lsm, LogEngine, redb, fjall, SQLite) | ✅ | ✅ |
 
-Pasada adicional de estrés con `SPIKE_SEEDS=1000` sobre las suites compartidas de ambos candidatos, en el mismo commit ([`tests-seeds1000.log`](../../spikes/storage/results/2026-10-27/tests-seeds1000.log)): todo en verde. Bit flips: B+ tree 79 detectados al abrir · 451 al leer · 470 inocuos; LSM 122 · 878 · 0. Truncamientos: 1000/1000 detectados al abrir en ambos. Ningún dato erróneo ni retroceso.
+Pasada adicional de estrés con `SPIKE_SEEDS=1000` sobre las suites compartidas de ambos candidatos, en el commit `c8b30f4` (mismo código de los motores que `a7d40d7`; solo cambian el informe y el log) ([`tests-seeds1000.log`](../../spikes/storage/results/2026-10-27/tests-seeds1000.log)): todo en verde. Bit flips: B+ tree 79 detectados al abrir · 451 al leer · 470 inocuos; LSM 122 · 878 · 0. Truncamientos: 1000/1000 detectados al abrir en ambos. Ningún dato erróneo ni retroceso.
 
 Los «inocuos» del B+ tree son bytes que el motor nunca lee (páginas libres, relleno del meta, la segunda copia del meta cuando la primera está intacta). El LSM no tiene bytes sin cubrir: todo daño se detecta.
 
@@ -75,7 +75,7 @@ Hallazgos de rendimiento de severidad baja que no llegaron a verificarse (cuota 
 En modo `Buffered` (sin `fsync` por commit) y ante un corte de energía:
 
 - **LSM**: siempre un prefijo consistente de commits. Sale del propio diseño: el WAL viejo se sincroniza antes de crear uno nuevo y la reproducción se detiene en el primer hueco.
-- **B+ tree CoW**: nunca datos erróneos (los checksums Merkle lo impiden), pero **no** un prefijo: en simulación, ~85 % de los cortes dejaron la base sin poder abrirse, porque un meta nuevo puede llegar al disco antes que sus páginas y las páginas liberadas se reutilizan antes de ser durables. Ofrecer la garantía exige puntos de sincronización periódicos y reutilización diferida (diseño esbozado en el prototipo).
+- **B+ tree CoW**: nunca datos erróneos (los checksums Merkle lo impiden), pero **no** un prefijo: en simulación, ~87 % de los cortes (130 de 150) dejaron la base sin poder abrirse y otro 12 % se abrió con daño detectado al leer, porque un meta nuevo puede llegar al disco antes que sus páginas y las páginas liberadas se reutilizan antes de ser durables. Ofrecer la garantía exige puntos de sincronización periódicos y reutilización diferida (diseño esbozado en el prototipo).
 
 ## 3. Rendimiento
 
@@ -86,7 +86,7 @@ En modo `Buffered` (sin `fsync` por commit) y ante un corte de energía:
 | Máquina | VM, Intel Xeon 2,80 GHz, 4 núcleos, 15,7 GiB, ext4, kernel 6.18 |
 | `fdatasync` de 4 KiB | p50 113 µs · p95 400 µs · p99 568 µs (el suelo de cualquier commit durable aquí) |
 | Compilación | `rustc 1.97.0`, perfil `release`, commit `df45ddb` |
-| Método | [ADR-0012](../adr/0012-metodologia-de-benchmarks.md): un proceso y un directorio nuevos por ejecución, 3 repeticiones intercaladas (1 en `large`), mediana (rango entre paréntesis si supera el 15 %), caché de 64 MiB, sin compresión, durabilidad equivalente; con caché caliente, un recorrido completo de la base antes de medir (calentamiento fuera de la medición) |
+| Método | [ADR-0012](../adr/0012-metodologia-de-benchmarks.md): un proceso y un directorio nuevos por ejecución, 3 repeticiones intercaladas (1 en `large`), mediana (rango entre paréntesis si supera el 15 %), caché de 64 MiB, sin compresión, durabilidad equivalente; en las cargas que reabren la base antes de medir, con caché caliente, un recorrido completo de la base antes de medir (calentamiento fuera de la medición) |
 | Escalas | `small` = 20 000 registros, `medium` = 200 000, `large` = 1 000 000 (carga masiva, lecturas puntuales, escaneos y commits pequeños); las lecturas con caché fría vacían la caché de páginas del SO antes de reabrir (aplicado en todas esas ejecuciones) |
 | Datos | 410 ejecuciones, 0 fallos: [`results.jsonl`](../../spikes/storage/results/2026-10-27/results.jsonl), [tablas completas](../../spikes/storage/results/2026-10-27/report.md), [entorno](../../spikes/storage/results/2026-10-27/env.json) |
 | Reproducción | `spikes/storage/run-benchmarks.sh` |
@@ -100,7 +100,7 @@ En modo `Buffered` (sin `fsync` por commit) y ante un corte de energía:
 | **Cauce** (`Sync`) | pasos/s (commit durable + lecturas) | 1 111 | **3 087** | 2,8× | 1 748 | 2 941 | 2 187 |
 | | p99 commit (µs) | 1 966 | **713** | | 1 213 | 658 | 1 078 |
 | | p99 lectura (µs) | **76** | 98 | | 59 | 118 | 151 |
-| | recuperación tras cierre sucio (ms) | **0,9** | 9,7 | | 1,1 | 364 | 0,7 |
+| | recuperación tras cierre sucio (ms) | **0,9** | 9,7 | | 1,1 | 363 | 0,7 |
 | **Cauce** (`Buffered`, `small`) | pasos/s | 16 250 | **57 110** | 3,5× | 15 680 † | 61 490 | 7 413 |
 | **LiveSpec** | change sets/s | 408 | **667** | 1,6× | 524 | 522 | 468 |
 | | p99 commit (µs) | **3 762** | 4 764 | | 3 148 | 2 425 | 12 530 |
@@ -108,7 +108,7 @@ En modo `Buffered` (sin `fsync` por commit) y ante un corte de energía:
 | **Memoria de agentes** | pasos/s | **1 073** | 1 037 | 0,97× | 1 098 | 1 279 | 704 |
 | | pasos/s (`small`) | 1 377 | **1 642** | 1,19× | 1 595 | 2 166 | 832 |
 | | p99 escritura de recuerdo (µs) | **1 573** | 5 837 | | 2 128 | 1 090 | 1 613 |
-| | p99 recuperación de recuerdo (µs) | **49** | 101 | | 46 | 73 | 121 |
+| | p99 recuperación de recuerdo (µs) | **49** | 100 | | 46 | 73 | 121 |
 | | espacio / datos vivos | 3,93 | **2,64** | | 5,04 | 3,14 | 4,43 |
 | **Historial simulado** | revisiones/s (miles) | 8,3 | **66,6** | 8,0× | 11,4 | 61,6 | 11,4 |
 | | p99 commit de 100 revisiones (µs) | 17 870 | **9 118** | | 13 480 | 3 168 | 26 800 |
@@ -127,41 +127,41 @@ En modo `Buffered` (sin `fsync` por commit) y ante un corte de energía:
 | | commits/s (`large`, 1 M) | 1 554 | **4 069** | 2,6× | 3 138 | 4 326 | 4 460 |
 | Commits de un registro (`Buffered`, `small`) | commits/s | 31 080 | **200 800** | 6,5× | 18 770 † | 311 600 | 27 760 |
 | Borrados puntuales (`Sync`) | commits/s | 1 365 | **4 343** | 3,2× | 2 480 | 3 991 | 3 202 |
-| | p50 lectura de clave borrada · p99 de clave viva (µs) | 3,4 · 21,5 | **0,7 · 15,5** | | 1,9 · 15,0 | 1,8 · 10,6 | 7,6 · 38,9 |
-| Carga masiva aleatoria | kops/s | 20,2 | **162** | 8,0× | 26,2 | 133 | 12,6 |
+| | p50 lectura de clave borrada · p99 de clave viva (µs) | 3,4 · 21,5 | **0,7 · 15,5** | | 1,9 · 15,0 | 1,8 · 10,6 | 7,6 · 38,8 |
+| Carga masiva aleatoria | kops/s | 20,1 | **162** | 8,0× | 26,2 | 133 | 12,6 |
 | | kops/s (`large`) | 10,4 | **110** | 10,6× | 18,5 | 131 | 10,3 |
 | | amplificación de escritura | 10,1× | **3,4×** | | 10,6× | 1,6× | 36,6× |
 | | espacio / datos (cerrada) | 1,65 | **1,03** | | 2,36 | 1,58 | 1,48 |
 | | RAM máxima (MB) | 89 | **25** | | 72 | 136 | 40 |
 | | cierre limpio (ms; `large`) | **12; 22** | 759; 3 587 | | 8,7; 13 | 96; 919 | 13; 14 |
 | | reapertura limpia (ms; `large`) | **1,0; 1,3** | 3,4; 10,1 | | 1,2; 0,9 | 392; 292 | 0,5; 0,6 |
-| Lecturas puntuales, caché caliente | kops/s, 1 hilo / 4 hilos | 188 / 370 | **230 / 620** | 1,2× / 1,7× | 273 / 366 | 235 / 773 | 138 / 441 |
-| | p50 · p99, 1 hilo (µs) | 4,8 · 12,5 | **3,2 · 12,5** | | 3,7 · 9,4 | 3,5 · 9,0 | 6,3 · 21,3 |
+| Lecturas puntuales, caché caliente | kops/s, 1 hilo / 4 hilos | 188 / 370 | **230 / 620** | 1,2× / 1,7× | 273 / 365 | 235 / 773 | 138 / 441 |
+| | p50 · p99, 1 hilo (µs) | 4,8 · 12,5 | **3,2** · 12,5 | | 3,7 · 9,4 | 3,5 · 9,0 | 6,3 · 21,3 |
 | | kops/s, 1 hilo (`large`) | 135 | **163** | 1,2× | 176 | 117 | 101 |
-| Lecturas puntuales, **caché fría** | kops/s, 1 hilo · p99 (µs) | 56,7 · 117 | **117 · 86** | 2,1× | 64,9 · 114 | 143 · 82 | 52,0 · 182 |
+| Lecturas puntuales, **caché fría** | kops/s, 1 hilo · p99 (µs) | 56,7 · 117 | **117 · 86** | 2,1× | 64,9 · 113 | 143 · 82 | 52,0 · 182 |
 | Escaneo de 100, caché caliente | p50 · p99 (µs) | 82 · 171 | **58 · 146** | | 84 · 182 | 73 · 140 | 73 · 167 |
 | | p50 · p99 (µs), `small` | **17 · 58** | 23 · 72 | | 25 · 84 | 65 · 132 | 50 · 128 |
 | | p50 · p99 (µs), `large` | 91 · 189 | **68 · 128** | | 99 · 176 | 105 · 164 | 77 · 140 |
-| Escaneo de 100, **caché fría** | p50 · p99 (µs) | 103 · 1 758 | **84 · 521** | | 91 · 1 652 | 75 · 310 | 74 · 1 745 |
+| Escaneo de 100, **caché fría** | p50 · p99 (µs) | 103 · 1 758 | **84 · 521** | | 90 · 1 652 | 75 · 310 | 74 · 1 745 |
 | Mixto 90/10, 4 hilos | kops/s | 11,6 | **28,0** | 2,4× | 15,3 | 30,3 | 25,3 |
 | | p99 lectura · p99 escritura (µs) | 84 · 7 274 | **62 · 3 817** | | 128 · 6 488 | 45 · 3 504 | 237 · 3 916 |
-| | p99 lectura (µs), `small` | **12** | 31 | | 29 | 24 | 177 |
-| Inserción secuencial + actualizaciones (lotes de 100) | kops/s inserción · actualización | 102 · 93 | **136 · 115** | 1,3× · 1,2× | 77 · 111 | 140 · 86 | 118 · 121 |
+| | p99 lectura (µs), `small` | **12** | 31 | | 28 | 24 | 177 |
+| Inserción secuencial + actualizaciones (lotes de 100) | kops/s inserción · actualización | 102 · 93 | **135 · 115** | 1,3× · 1,2× | 77 · 111 | 140 · 86 | 118 · 121 |
 | | p99 commit de inserción · de actualización (µs) | **1 947 · 2 306** | 4 139 · 6 840 | | 3 103 · 1 732 | 1 504 · 2 634 | 7 999 · 7 999 |
 | | amplificación de escritura · espacio / datos | **2,3× · 1,62** | 3,4× · 2,08 | | 2,9× · 2,11 | 1,7× · 3,24 | 3,2× · 1,34 |
 
 ### 3.4 Lectura de los resultados
 
-1. **Los prototipos representan a su familia.** El B+ tree se comporta como redb y el LSM como fjall en la mayoría de las filas (redb es algo más rápido que el prototipo en lecturas puntuales; fjall, en commits sin `fsync`). Las diferencias entre candidatos son de arquitectura, no de madurez de la implementación.
+1. **El LSM reproduce el perfil de fjall; el B+ tree queda por debajo de redb.** En `medium` y modo `Sync`, el prototipo LSM rinde entre 0,8× y 1,3× fjall en todos los casos de referencia y micro-benchmarks de escritura (sin `fsync`, a escala `small`, fjall es más rápido: 1,6× en commits de un registro). El prototipo B+ tree rinde entre 0,55× y 0,8× redb en Cauce, LiveSpec, commits de un registro, borrados, mixto, historial, carga masiva y lecturas puntuales con un hilo (en parte por sus dos `fsync` por commit frente a uno), y a la par en memoria de agentes y lecturas con 4 hilos. Por eso las razones LSM / B+ incluyen también diferencias de madurez. **Entre los motores maduros (fjall frente a redb) la ventaja de la arquitectura LSM es menor pero se mantiene**: empate en LiveSpec (1,0×), 1,2× en memoria de agentes, 1,6× en commits de un registro y en borrados, 1,7× en Cauce, 2,0× en el mixto y 5,1–5,4× en carga masiva y escritura de historial; redb gana en actualizaciones secuenciales (fjall 0,78×) y en lecturas puntuales con un hilo (0,86×).
 2. **Rendimiento de escritura: el LSM gana en casi todo, con márgenes muy distintos.** En los casos de referencia, de un empate en memoria de agentes (0,97× en `medium`, 1,19× en `small`) a 1,6× en LiveSpec, 2,8× en Cauce y 8,0× escribiendo historial. En micro-benchmarks, de 1,2–1,3× en inserción secuencial a 2,6× en commits durables de un registro, 3,2× en borrados, 6,5× en commits sin `fsync` y 8–10,6× en carga masiva aleatoria. El factor que más pesa: el B+ tree hace dos `fsync` por commit (redb, uno) y reescribe la ruta raíz-hoja de cada hoja tocada; el LSM, un `fsync` y una escritura secuencial.
-3. **Bytes escritos y espacio: casi siempre a favor del LSM, con excepciones.** Escribe ~100× menos por commit pequeño (1,1× frente a 112×) y ocupa menos tras una carga (1,03× frente a 1,65×) y en memoria de agentes (2,64× frente a 3,93×). Pero en inserción secuencial con actualizaciones escribe y ocupa más (3,4× frente a 2,3× de amplificación; 2,08× frente a 1,62× de espacio), y en el historial a escala `small` ocupa más (2,98× frente a 2,32×), por versiones aún sin compactar.
+3. **Bytes escritos y espacio: casi siempre a favor del LSM, con excepciones.** Escribe ~100× menos por commit pequeño (1,1× frente a 112×) y ocupa menos tras una carga (1,03× frente a 1,65×) y en memoria de agentes en `medium` (2,64× frente a 3,93×). Pero en inserción secuencial con actualizaciones ocupa más (2,08× frente a 1,62× de espacio) y, en `medium`, también escribe más (3,4× frente a 2,3× de amplificación); y a escala `small` ocupa más en el historial (2,98× frente a 2,32×) y en memoria de agentes (2,03× frente a 1,64×), por versiones aún sin compactar.
 4. **Latencia de cola: depende del workload; ninguno gana en todo.**
    - Gana el **LSM** en los commits durables pequeños: p99 de Cauce 2,8× menor, de commits de un registro 2,3× menor, de escritura en el mixto 1,9× menor, del historial 2,0× menor y de los borrados 3,2× menor.
-   - Gana el **B+ tree** cuando la compactación del LSM coincide con escritura sostenida o lecturas: p99 de escritura en memoria de agentes 3,7× menor, de actualizaciones secuenciales 3,0× menor, de commit en LiveSpec 1,3× menor; y en lecturas cortas de rangos pequeños (recuperación de recuerdos 2,0×, listado de módulo 1,5×, lectura de Cauce 1,3×).
+   - Gana el **B+ tree** cuando la compactación del LSM coincide con escritura sostenida o lecturas: en `medium`, p99 de escritura en memoria de agentes 3,7× menor, de inserciones secuenciales 2,1× menor, de actualizaciones secuenciales 3,0× menor y de commit en LiveSpec 1,3× menor (en `small`, con poca compactación, esas cuatro colas las gana el LSM: 1,1×, 3,5×, 1,4× y 1,25× menores); y en lecturas cortas de rangos pequeños (recuperación de recuerdos 2,0×, listado de módulo 1,5×, lectura de Cauce 1,3×).
    - Es el punto débil principal del LSM y la primera condición de ADR-0001.
 5. **Lecturas con caché caliente: parecidas.** El LSM es algo más rápido en lecturas puntuales (1,2× con 1 hilo, 1,7× con 4) y en escaneos a partir de `medium`; el B+ tree, en escaneos a escala `small` y en el historial de un registro (1,9×, un rango contiguo dentro de una hoja).
 6. **Lecturas con caché fría: gana el LSM** (2,1× en lecturas puntuales; p99 de escaneos 3,4× menor). La asignación copy-on-write dispersa las páginas por el archivo; las SST del LSM son secuenciales.
-7. **Apertura, recuperación y cierre: gana el B+ tree** (≈1 ms frente a 3–10 ms al abrir; 12 ms frente a 759 ms al cerrar en `medium` y 22 ms frente a 3,6 s en `large`, porque el LSM compacta antes de cerrar). Abrir en milisegundos es irrelevante para una base embebida; el cierre del LSM se acotará.
+7. **Apertura, recuperación y cierre: gana el B+ tree** (1–2 ms frente a 3–18 ms al abrir con caché caliente en `medium` y `large`, y 3–4 ms frente a 8–12 ms con caché fría; 12 ms frente a 759 ms al cerrar en `medium` y 22 ms frente a 3,6 s en `large`, porque el LSM compacta antes de cerrar). Abrir en milisegundos es irrelevante para una base embebida; el cierre del LSM se acotará.
 8. **Memoria:** el LSM usa mucha menos RAM al cargar (25 MB frente a 89 MB) y en inserciones secuenciales, pero algo más en memoria de agentes (94 frente a 77 MB) y LiveSpec (86 frente a 74 MB) por sus memtables. En lecturas puntuales con caché caliente la RAM máxima es parecida en los cuatro motores en Rust (139–163 MB) y menor en SQLite (66 MB).
 
 ### 3.5 Limitaciones de la medición
@@ -174,4 +174,4 @@ En modo `Buffered` (sin `fsync` por commit) y ante un corte de energía:
 
 ## 4. Conclusión
 
-Ambas arquitecturas son implementables con las garantías exigidas; ninguna gana por correctitud. En los casos de referencia de Kerno —intensivos en escritura, con historial y con durabilidad por commit— el **LSM** rinde entre un empate (memoria de agentes) y 8× más (escritura de historial), con 2,8× en Cauce y 1,6× en LiveSpec; escribe ~100× menos bytes por commit pequeño, ocupa menos en la mayoría de los casos, lee mejor con caché fría y ofrece un modo `Buffered` consistente. El **B+ tree** tiene mejores colas cuando la compactación del LSM compite con escrituras sostenidas o lecturas cortas, lecturas de historial más rápidas, apertura y cierre inmediatos y una operación más simple. La recomendación, sus condiciones y las decisiones que dependen de ella están en [ADR-0001](../adr/0001-motor-de-almacenamiento.md).
+Ambas arquitecturas son implementables con las garantías exigidas; ninguna gana por correctitud. En los casos de referencia de Kerno —intensivos en escritura, con historial y con durabilidad por commit— el **LSM** rinde entre un empate (memoria de agentes) y 8× más (escritura de historial), con 2,8× en Cauce y 1,6× en LiveSpec; parte de esa ventaja es de madurez del prototipo B+ tree, pero entre los motores maduros (fjall frente a redb) se mantiene: de un empate en LiveSpec a 1,7× en Cauce y 5,4× en historial; escribe ~100× menos bytes por commit pequeño, ocupa menos en la mayoría de los casos, lee mejor con caché fría y ofrece un modo `Buffered` consistente. El **B+ tree** tiene mejores colas cuando la compactación del LSM compite con escrituras sostenidas o lecturas cortas, lecturas de historial más rápidas, apertura y cierre inmediatos y una operación más simple. La recomendación, sus condiciones y las decisiones que dependen de ella están en [ADR-0001](../adr/0001-motor-de-almacenamiento.md).

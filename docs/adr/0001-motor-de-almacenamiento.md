@@ -34,17 +34,17 @@ Llegar ahí exigió corregir defectos reales en los dos, hallados por el harness
 
 | | B+ tree CoW | LSM |
 |---|---|---|
-| Corte de energía en modo `Buffered` | estado exacto de algún commit **o** corrupción detectada; ~85 % de los cortes simulados dejaron la base **sin poder abrirse** | **prefijo consistente** de commits, siempre |
+| Corte de energía en modo `Buffered` | estado exacto de algún commit **o** corrupción detectada; ~87 % de los cortes simulados dejaron la base **sin poder abrirse** (y otro 12 %, con daño detectado al leer) | **prefijo consistente** de commits, siempre |
 
 Ofrecer en un CoW la misma garantía requiere puntos de sincronización y reutilización diferida de páginas (diseño esbozado, no implementado). En el LSM sale del propio diseño del WAL. Kerno quiere ofrecer un modo de durabilidad relajada sin comprometer la consistencia (ADR-0002), así que esto pesa.
 
-### 3. Rendimiento (escala `medium`, 200 000 registros, `Sync` salvo indicación, mediana de 3 repeticiones)
+### 3. Rendimiento (escala `medium`, 200 000 registros, `Sync` salvo indicación, mediana de 3 repeticiones; las cifras `large` son de una sola ejecución)
 
 | Workload | Métrica | B+ tree | LSM | LSM / B+ | redb | fjall | SQLite |
 |---|---|---:|---:|---:|---:|---:|---:|
 | **Cauce** (commit durable + lecturas) | pasos/s | 1 111 | **3 087** | 2,8× | 1 748 | 2 941 | 2 187 |
 | | p99 commit · p99 lectura (µs) | 1 966 · **76** | **713** · 98 | | 1 213 · 59 | 658 · 118 | 1 078 · 151 |
-| | recuperación tras cierre sucio (ms) | **0,9** | 9,7 | | 1,1 | 364 | 0,7 |
+| | recuperación tras cierre sucio (ms) | **0,9** | 9,7 | | 1,1 | 363 | 0,7 |
 | **Cauce** `Buffered` (`small`) | pasos/s | 16 250 | **57 110** | 3,5× | 15 680 † | 61 490 | 7 413 |
 | **LiveSpec** | change sets/s | 408 | **667** | 1,6× | 524 | 522 | 468 |
 | | p99 commit · p99 listado de módulo (µs) | **3 762 · 440** | 4 764 · 657 | | 3 148 · 377 | 2 425 · 1 296 | 12 530 · 346 |
@@ -59,12 +59,12 @@ Ofrecer en un CoW la misma garantía requiere puntos de sincronización y reutil
 | | amplificación de escritura | 112× | **1,1×** | | 132× | 1,2× | 37× |
 | Commits de un registro `Buffered` (`small`) | commits/s | 31 080 | **200 800** | 6,5× | 18 770 † | 311 600 | 27 760 |
 | Borrados puntuales | commits/s | 1 365 | **4 343** | 3,2× | 2 480 | 3 991 | 3 202 |
-| Carga masiva | kops/s (`medium` · `large`) | 20,2 · 10,4 | **162 · 110** | 8,0× · 10,6× | 26,2 · 18,5 | 133 · 131 | 12,6 · 10,3 |
+| Carga masiva | kops/s (`medium` · `large`) | 20,1 · 10,4 | **162 · 110** | 8,0× · 10,6× | 26,2 · 18,5 | 133 · 131 | 12,6 · 10,3 |
 | | espacio en disco / datos | 1,65 | **1,03** | | 2,36 | 1,58 | 1,48 |
 | | RAM máxima (MB) | 89 | **25** | | 72 | 136 | 40 |
 | Mixto 90/10 (4 hilos) | kops/s | 11,6 | **28,0** | 2,4× | 15,3 | 30,3 | 25,3 |
 | | p99 lectura · p99 escritura (µs) | 84 · 7 274 | **62 · 3 817** | | 128 · 6 488 | 45 · 3 504 | 237 · 3 916 |
-| Lecturas puntuales, caché caliente | kops/s 1 hilo · p99 (µs) | 188 · 12,5 | **230 · 12,5** | 1,2× | 273 · 9,4 | 235 · 9,0 | 138 · 21,3 |
+| Lecturas puntuales, caché caliente | kops/s 1 hilo · p99 (µs) | 188 · 12,5 | **230** · 12,5 | 1,2× | 273 · 9,4 | 235 · 9,0 | 138 · 21,3 |
 | Lecturas puntuales, caché fría | kops/s | 57 | **117** | 2,1× | 65 | 143 | 52 |
 | Escaneo de 100, caché caliente / fría | p99 (µs) | 171 / 1 758 | **146 / 521** | | 182 / 1 652 | 140 / 310 | 167 / 1 745 |
 | Inserción secuencial + actualizaciones | kops/s actualización | 93 | **115** | 1,2× | 111 | 86 | 121 |
@@ -78,12 +78,12 @@ Entorno: VM con 4 núcleos y `fdatasync` p50 de 113 µs (p99 568 µs), 410 ejecu
 
 Lectura de los datos:
 
-- **Cada prototipo reproduce el perfil del motor maduro de su familia** (B+ tree ≈ redb, LSM ≈ fjall). Las diferencias medidas son, por tanto, de **arquitectura**, no de madurez de la implementación (riesgo R-S1 acotado).
+- **El LSM reproduce el perfil de fjall; el B+ tree queda por debajo de redb.** En `medium` y modo `Sync`, el prototipo LSM rinde entre 0,8× y 1,3× fjall; el B+ tree, entre 0,55× y 0,8× redb en Cauce, LiveSpec, commits de un registro, borrados, mixto, historial y carga masiva (en parte por sus dos `fsync` por commit frente a uno), y a la par en memoria de agentes. Por eso las razones LSM / B+ incluyen también diferencias de madurez (riesgo R-S1). **Entre los motores maduros (fjall frente a redb) la ventaja de la arquitectura LSM es menor pero se mantiene**: empate en LiveSpec (1,0×), 1,2× en memoria de agentes, 1,6× en commits de un registro y en borrados, 1,7× en Cauce, 2,0× en el mixto y 5,1–5,4× en carga masiva y escritura de historial; redb gana en actualizaciones secuenciales (fjall 0,78×) y en lecturas puntuales con un hilo (0,86×).
 - **Rendimiento de escritura: el LSM gana en casi todo, con márgenes muy distintos.** En los casos de referencia va de un empate (memoria de agentes: 0,97× en `medium`, 1,19× en `small`, con valores de 1–4 KiB y embeddings de 3 KiB) a 1,6× (LiveSpec), 2,8× (Cauce) y 8,0× (escritura de historial). En micro-benchmarks, de 1,2–1,3× (inserción secuencial) a 2,6× (commits durables de un registro), 6,5× (commits sin `fsync`) y 8–10,6× (carga masiva aleatoria). En un CoW cada commit reescribe la ruta raíz-hoja de cada hoja tocada más metadatos; con dos `fsync` (prototipo) o uno (redb), el techo de commits durables queda por debajo del LSM.
-- **Bytes escritos y espacio: a favor del LSM salvo en escritura secuencial.** Escribe ~100× menos bytes por commit pequeño y ocupa menos tras una carga y en memoria de agentes; con inserciones secuenciales y actualizaciones escribe y ocupa más (3,4× frente a 2,3×; 2,08 frente a 1,62), igual que en el historial a escala `small` (2,98 frente a 2,32 de espacio).
-- **Latencia de cola: depende del workload.** El LSM tiene mejor p99 en los commits durables pequeños (Cauce 2,8×, commits de un registro 2,3×, escritura en el mixto 1,9×, historial 2,0×, borrados 3,2×). El B+ tree lo tiene cuando la compactación del LSM coincide con escritura sostenida (memoria de agentes 3,7×, actualizaciones secuenciales 3,0×, commit de LiveSpec 1,3×) y en lecturas cortas de rangos pequeños (listado de módulo 1,5×, recuperación de recuerdos 2,0×).
+- **Bytes escritos y espacio: a favor del LSM salvo en escritura secuencial y a escala `small`.** Escribe ~100× menos bytes por commit pequeño y ocupa menos tras una carga y en memoria de agentes en `medium` (2,64 frente a 3,93); con inserciones secuenciales y actualizaciones ocupa más (2,08 frente a 1,62) y, en `medium`, también escribe más (3,4× frente a 2,3×); a escala `small` ocupa más en el historial (2,98 frente a 2,32) y en memoria de agentes (2,03 frente a 1,64).
+- **Latencia de cola: depende del workload.** El LSM tiene mejor p99 en los commits durables pequeños (Cauce 2,8×, commits de un registro 2,3×, escritura en el mixto 1,9×, historial 2,0×, borrados 3,2×). El B+ tree lo tiene en `medium` cuando la compactación del LSM coincide con escritura sostenida (memoria de agentes 3,7×, actualizaciones secuenciales 3,0×, inserción secuencial 2,1×, commit de LiveSpec 1,3×; en `small`, con poca compactación, esas cuatro colas las gana el LSM) y en lecturas cortas de rangos pequeños (listado de módulo 1,5×, recuperación de recuerdos 2,0×, lectura de Cauce 1,3×).
 - **Lecturas con caché caliente: parecidas**; el B+ tree gana en el historial de un registro (1,9×, un rango contiguo dentro de una hoja) y en escaneos a escala `small`, y el LSM en lecturas puntuales y en escaneos desde `medium`. **Con caché fría gana el LSM** (2,1× en lecturas puntuales, p99 de escaneo 3,4× menor): la asignación copy-on-write dispersa las páginas y las SST son secuenciales.
-- **Apertura y cierre: gana el B+ tree** (cierre de 12 ms frente a 0,76 s en `medium` y 3,6 s en `large`, porque el LSM compacta antes de cerrar).
+- **Apertura y cierre: gana el B+ tree** (reapertura de 1–2 ms frente a 3–18 ms en `medium` y `large`; cierre de 12 ms frente a 0,76 s en `medium` y de 22 ms frente a 3,6 s en `large`, porque el LSM compacta antes de cerrar).
 - **Memoria:** el LSM usa mucha menos RAM al cargar (25 frente a 89 MB), pero algo más en memoria de agentes y LiveSpec, por sus memtables.
 
 ### 4. Criterios cualitativos
@@ -94,7 +94,7 @@ Lectura de los datos:
 | Recuperación | **Trivial**: elegir meta + `fsync`; sin reproducción | Reproducción del WAL + reescritura a L0 + MANIFEST; reentrante y probada |
 | Compactación | No hay; el archivo no se encoge sin compactación offline | Continua; amplificación de escritura en segundo plano; tombstones |
 | Rangos | Recorrido directo de hojas | Fusión de varias fuentes; necesita bloom + índices |
-| Compatibilidad con Revision Engine | Cada revisión es una escritura aleatoria más (caro: 112× bytes) | Las revisiones son escrituras secuenciales en WAL/memtable (barato); lectura de historial algo más lenta |
+| Compatibilidad con Revision Engine | Cada revisión es una escritura aleatoria más (caro: 8,0× menos revisiones/s que el LSM en el prototipo, 5,4× redb frente a fjall; 112× bytes en commits de un registro) | Las revisiones son escrituras secuenciales en WAL/memtable (barato); lectura de historial algo más lenta |
 | Retención y supresión (ADR-0009) | Páginas liberadas conservan bytes hasta reutilizarse; borrar rangos libera hojas | Versiones antiguas en SST/WAL hasta compactar; necesita *range tombstones* y compactación forzada |
 | Cifrado (ADR-0006) | Nonce nuevo por página reescrita | Archivos inmutables: se cifran una vez |
 | Snapshots largos | Retienen páginas (el archivo crece) | Retienen archivos y versiones (el directorio crece) |
@@ -111,8 +111,8 @@ Lectura de los datos:
 
 ### Por qué no las otras opciones
 
-- **B+ tree CoW**: más simple de operar, con apertura y cierre inmediatos y mejores colas cuando la compactación del LSM compite con escrituras sostenidas, pero los casos de referencia de Kerno son intensivos en escritura (Cauce: commits pequeños durables; memoria de agentes: ingesta continua; Revision Engine: cada cambio escribe además una revisión y un `ChangeSet`). Ahí el CoW rinde entre lo mismo (memoria de agentes) y 8× menos (escritura de historial), con 2,8× menos en Cauce y 1,6× menos en LiveSpec; escribe ~100× más bytes por commit pequeño, tiene peores colas en commits durables pequeños, lee peor con caché fría y no ofrece un modo de durabilidad relajada consistente sin trabajo adicional sustancial.
-- **Tercera vía**: en días de desarrollo, los prototipos alcanzaron el rendimiento de los motores maduros de su familia y superaron una batería de fallos más exigente que la de una prueba funcional, así que la evidencia **no** obliga a renunciar al núcleo propio. Un híbrido con dos motores primarios contradice el principio de núcleo pequeño (SAD §3, principio 2). Adoptar un motor externo sigue siendo un plan de contingencia si la Fase 1 no cumple sus criterios de salida.
+- **B+ tree CoW**: más simple de operar, con apertura y cierre inmediatos y mejores colas cuando la compactación del LSM compite con escrituras sostenidas, pero los casos de referencia de Kerno son intensivos en escritura (Cauce: commits pequeños durables; memoria de agentes: ingesta continua; Revision Engine: cada cambio escribe además una revisión y un `ChangeSet`). Ahí el prototipo CoW rinde entre lo mismo (memoria de agentes) y 8× menos (escritura de historial), con 2,8× menos en Cauce y 1,6× menos en LiveSpec; entre motores maduros (redb frente a fjall) la distancia es menor pero en el mismo sentido (de un empate en LiveSpec a 1,7× en Cauce y 5,4× en historial); escribe ~100× más bytes por commit pequeño, tiene peores colas en commits durables pequeños, lee peor con caché fría y no ofrece un modo de durabilidad relajada consistente sin trabajo adicional sustancial.
+- **Tercera vía**: en días de desarrollo, los prototipos quedaron cerca de los motores maduros de su familia —el LSM, a la par de fjall (0,8–1,3× en `medium`); el B+ tree, dentro del objetivo de 2× de redb de ADR-0012 (0,55–0,8× en la mayoría de workloads, a la par en memoria de agentes)— y superaron una batería de fallos más exigente que la de una prueba funcional, así que la evidencia **no** obliga a renunciar al núcleo propio. Un híbrido con dos motores primarios contradice el principio de núcleo pequeño (SAD §3, principio 2). Adoptar un motor externo sigue siendo un plan de contingencia si la Fase 1 no cumple sus criterios de salida.
 
 ## Consecuencias
 
