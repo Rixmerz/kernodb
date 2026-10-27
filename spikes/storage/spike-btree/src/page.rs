@@ -8,6 +8,10 @@
 //! and page id, so a damaged page that slipped through can never cause a
 //! panic, an out-of-bounds read or an unbounded walk.
 
+use std::fmt;
+use std::ops::Deref;
+use std::sync::Arc;
+
 use spike_core::{Error, MAX_KEY_LEN, MAX_VALUE_LEN, Result};
 
 pub(crate) const PAGE_SIZE: usize = 4096;
@@ -54,6 +58,44 @@ pub(crate) const FREELIST_CAPACITY: usize = (PAGE_SIZE - FREELIST_HEADER) / 8;
 /// (allocated); clear when it joined it (freed).
 pub(crate) const FREELIST_ALLOC_BIT: u64 = 1 << 63;
 
+/// An immutable byte string sharing its buffer. Keys and inline values of a
+/// decoded node point into the node's page image, so copying a node for
+/// copy-on-write clones reference counts instead of allocating per entry.
+#[derive(Clone)]
+pub(crate) struct Bytes {
+    buf: Arc<[u8]>,
+    start: u32,
+    end: u32,
+}
+
+impl Bytes {
+    pub(crate) fn new(data: &[u8]) -> Bytes {
+        Bytes { buf: Arc::from(data), start: 0, end: data.len() as u32 }
+    }
+}
+
+impl Deref for Bytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.buf[self.start as usize..self.end as usize]
+    }
+}
+
+impl PartialEq for Bytes {
+    fn eq(&self, other: &Bytes) -> bool {
+        **self == **other
+    }
+}
+
+impl Eq for Bytes {}
+
+impl fmt::Debug for Bytes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", &**self)
+    }
+}
+
 /// A pointer to a page together with the crc32c of its full 4 KiB image.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct PageRef {
@@ -63,7 +105,7 @@ pub(crate) struct PageRef {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Value {
-    Inline(Vec<u8>),
+    Inline(Bytes),
     /// `crc` covers the full images of all pages of the chain, in order.
     Overflow {
         len: u32,
@@ -74,7 +116,7 @@ pub(crate) enum Value {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LeafEntry {
-    pub key: Vec<u8>,
+    pub key: Bytes,
     pub value: Value,
 }
 
@@ -84,10 +126,11 @@ pub(crate) enum Body {
     Leaf(Vec<LeafEntry>),
     /// `children.len() == keys.len() + 1`. Child `i` holds the keys in
     /// `[keys[i - 1], keys[i])`.
-    Branch { keys: Vec<Vec<u8>>, children: Vec<PageRef> },
+    Branch { keys: Vec<Bytes>, children: Vec<PageRef> },
 }
 
-/// A decoded, immutable node as stored in the page cache.
+/// A decoded, immutable node as stored in the page cache. Decoded nodes
+/// share one buffer, their page image.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Node {
     /// 0 for leaves; a branch at level `n` has children at level `n - 1`.
@@ -110,11 +153,11 @@ pub(crate) fn leaf_entry_size(key_len: usize, value: &Value) -> usize {
         }
 }
 
-pub(crate) fn branch_size(keys: &[Vec<u8>], children: usize) -> usize {
+pub(crate) fn branch_size(keys: &[Bytes], children: usize) -> usize {
     NODE_HEADER + CHILD_REF_SIZE * children + keys.iter().map(|k| BRANCH_KEY_OVERHEAD + k.len()).sum::<usize>()
 }
 
-pub(crate) fn check_page_id(id: PageId, page_count: u64, what: &str) -> Result<()> {
+pub(crate) fn check_page_id(id: PageId, page_count: u64, what: &'static str) -> Result<()> {
     if id < FIRST_DATA_PAGE || id >= page_count {
         return Err(Error::corruption(format!("{what}: page id {id} outside 2..{page_count}")));
     }
@@ -127,19 +170,20 @@ impl Node {
         Node { level: 0, body: Body::Leaf(entries), encoded_size }
     }
 
-    pub(crate) fn new_branch(level: u8, keys: Vec<Vec<u8>>, children: Vec<PageRef>) -> Node {
+    pub(crate) fn new_branch(level: u8, keys: Vec<Bytes>, children: Vec<PageRef>) -> Node {
         debug_assert!(level > 0 && children.len() == keys.len() + 1);
         let encoded_size = branch_size(&keys, children.len());
         Node { level, body: Body::Branch { keys, children }, encoded_size }
     }
 
-    /// Approximate memory footprint, used as the cache weight.
+    /// Approximate memory footprint of a decoded node (its page image plus
+    /// the entry index), used as the cache weight.
     pub(crate) fn weight(&self) -> u64 {
-        let items = match &self.body {
-            Body::Leaf(e) => 2 * e.len(),
-            Body::Branch { keys, .. } => keys.len(),
+        let index = match &self.body {
+            Body::Leaf(e) => e.len() * size_of::<LeafEntry>(),
+            Body::Branch { keys, children } => keys.len() * size_of::<Bytes>() + children.len() * size_of::<PageRef>(),
         };
-        (self.encoded_size + 32 * items + 96) as u64
+        (PAGE_SIZE + index + 128) as u64
     }
 
     /// Full page image of this node stored at page `id`.
@@ -201,7 +245,8 @@ impl Node {
         if buf.len() != PAGE_SIZE {
             return Err(bad("short page"));
         }
-        let mut c = Cursor { buf, pos: 0, id };
+        let page: Arc<[u8]> = Arc::from(buf);
+        let mut c = Cursor { page: &page, buf: &page[..], pos: 0, id };
         let kind = c.u8()?;
         let level = c.u8()?;
         let count = c.u16()? as usize;
@@ -227,21 +272,23 @@ impl Node {
                     }
                     let vkind = c.u8()?;
                     let vlen = c.u32()? as usize;
-                    let key = c.take(klen)?.to_vec();
+                    let key = c.bytes(klen)?;
                     let value = match vkind {
-                        0 => Value::Inline(c.take(vlen)?.to_vec()),
+                        0 => Value::Inline(c.bytes(vlen)?),
                         1 => {
                             let crc = c.u32()?;
                             let first = c.u64()?;
                             if vlen == 0 || vlen > MAX_VALUE_LEN {
                                 return Err(bad("invalid overflow value length"));
                             }
-                            check_page_id(first, page_count, &format!("page {id}: overflow pointer"))?;
+                            if first < FIRST_DATA_PAGE || first >= page_count {
+                                return Err(bad("overflow pointer out of range"));
+                            }
                             Value::Overflow { len: vlen as u32, crc, first }
                         }
                         _ => return Err(bad("unknown value kind")),
                     };
-                    if entries.last().is_some_and(|p| p.key >= key) {
+                    if entries.last().is_some_and(|p| *p.key >= *key) {
                         return Err(bad("leaf keys out of order"));
                     }
                     entries.push(LeafEntry { key, value });
@@ -252,7 +299,7 @@ impl Node {
                 if level == 0 || level >= MAX_HEIGHT {
                     return Err(bad("invalid branch level"));
                 }
-                let mut keys: Vec<Vec<u8>> = Vec::with_capacity(count);
+                let mut keys: Vec<Bytes> = Vec::with_capacity(count);
                 let mut children = Vec::with_capacity(count + 1);
                 children.push(c.child(page_count)?);
                 for _ in 0..count {
@@ -260,8 +307,8 @@ impl Node {
                     if klen > MAX_KEY_LEN {
                         return Err(bad("separator too long"));
                     }
-                    let key = c.take(klen)?.to_vec();
-                    if keys.last().is_some_and(|p| *p >= key) {
+                    let key = c.bytes(klen)?;
+                    if keys.last().is_some_and(|p| **p >= *key) {
                         return Err(bad("separators out of order"));
                     }
                     keys.push(key);
@@ -282,6 +329,7 @@ fn put_child(out: &mut Vec<u8>, c: &PageRef) {
 
 /// Bounds-checked little-endian reader over one page.
 struct Cursor<'a> {
+    page: &'a Arc<[u8]>,
     buf: &'a [u8],
     pos: usize,
     id: PageId,
@@ -297,6 +345,13 @@ impl<'a> Cursor<'a> {
         let s = &self.buf[self.pos..end];
         self.pos = end;
         Ok(s)
+    }
+
+    /// The next `n` bytes as a slice sharing the page buffer.
+    fn bytes(&mut self, n: usize) -> Result<Bytes> {
+        let start = self.pos;
+        self.take(n)?;
+        Ok(Bytes { buf: self.page.clone(), start: start as u32, end: self.pos as u32 })
     }
 
     fn u8(&mut self) -> Result<u8> {
@@ -318,7 +373,9 @@ impl<'a> Cursor<'a> {
     fn child(&mut self, page_count: u64) -> Result<PageRef> {
         let id = self.u64()?;
         let crc = self.u32()?;
-        check_page_id(id, page_count, &format!("page {}: child pointer", self.id))?;
+        if id < FIRST_DATA_PAGE || id >= page_count {
+            return Err(Error::corruption(format!("page {}: child pointer {id} out of range", self.id)));
+        }
         Ok(PageRef { id, crc })
     }
 }
@@ -395,17 +452,21 @@ pub(crate) fn decode_freelist_page(buf: &[u8], id: PageId) -> Result<(Option<Pag
 mod tests {
     use super::*;
 
+    fn b(x: &[u8]) -> Bytes {
+        Bytes::new(x)
+    }
+
     fn leaf(entries: &[(&[u8], Value)]) -> Node {
-        Node::new_leaf(entries.iter().map(|(k, v)| LeafEntry { key: k.to_vec(), value: v.clone() }).collect())
+        Node::new_leaf(entries.iter().map(|(k, v)| LeafEntry { key: b(k), value: v.clone() }).collect())
     }
 
     #[test]
     fn leaf_roundtrip_with_inline_overflow_and_empty_items() {
         let n = leaf(&[
-            (b"", Value::Inline(b"empty key".to_vec())),
-            (b"a", Value::Inline(Vec::new())),
+            (b"", Value::Inline(b(b"empty key"))),
+            (b"a", Value::Inline(b(b""))),
             (b"big", Value::Overflow { len: 123_456, crc: 0xDEAD_BEEF, first: 7 }),
-            (&[0xFF; MAX_KEY_LEN], Value::Inline(vec![1, 2, 3])),
+            (&[0xFF; MAX_KEY_LEN], Value::Inline(b(&[1, 2, 3]))),
         ]);
         let page = n.encode(9);
         assert_eq!(page.len(), PAGE_SIZE);
@@ -417,7 +478,7 @@ mod tests {
     #[test]
     fn branch_roundtrip() {
         let children = (0..4).map(|i| PageRef { id: 10 + i, crc: i as u32 * 7 }).collect();
-        let n = Node::new_branch(3, vec![b"b".to_vec(), b"c".to_vec(), vec![0xFF; MAX_KEY_LEN]], children);
+        let n = Node::new_branch(3, vec![b(b"b"), b(b"c"), b(&[0xFF; MAX_KEY_LEN])], children);
         let d = Node::decode(&n.encode(5), 5, 20).unwrap();
         assert_eq!(d, n);
         // A single-child branch (no separators) is valid too.
@@ -431,7 +492,7 @@ mod tests {
         let v = MAX_INLINE_ENTRY - LEAF_ENTRY_OVERHEAD - 4;
         assert!(inline_fits(4, v) && !inline_fits(4, v + 1));
         let entries: Vec<(Vec<u8>, Value)> =
-            (0..4).map(|i| (format!("k{i:03}").into_bytes(), Value::Inline(vec![i as u8; v]))).collect();
+            (0..4).map(|i| (format!("k{i:03}").into_bytes(), Value::Inline(b(&vec![i as u8; v])))).collect();
         let refs: Vec<(&[u8], Value)> = entries.iter().map(|(k, v)| (k.as_slice(), v.clone())).collect();
         let n = leaf(&refs);
         assert_eq!(n.encoded_size, PAGE_SIZE);
@@ -444,7 +505,7 @@ mod tests {
 
     #[test]
     fn decode_rejects_structural_damage() {
-        let n = leaf(&[(b"a", Value::Inline(b"1".to_vec())), (b"b", Value::Inline(b"2".to_vec()))]);
+        let n = leaf(&[(b"a", Value::Inline(b(b"1"))), (b"b", Value::Inline(b(b"2")))]);
         let good = n.encode(3);
         let mut p = good.clone();
         p[0] = 9;
@@ -461,7 +522,7 @@ mod tests {
         assert!(Node::decode(&p, 3, 10).is_err(), "unsorted keys");
         let ovf = leaf(&[(b"a", Value::Overflow { len: 5000, crc: 1, first: 50 })]);
         assert!(Node::decode(&ovf.encode(3), 3, 10).is_err(), "overflow pointer beyond page count");
-        let br = Node::new_branch(1, vec![b"m".to_vec()], vec![PageRef { id: 2, crc: 0 }, PageRef { id: 1, crc: 0 }]);
+        let br = Node::new_branch(1, vec![b(b"m")], vec![PageRef { id: 2, crc: 0 }, PageRef { id: 1, crc: 0 }]);
         assert!(Node::decode(&br.encode(3), 3, 10).is_err(), "child pointing at a meta page");
     }
 

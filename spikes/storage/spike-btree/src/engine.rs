@@ -17,8 +17,8 @@ use spike_core::{Durability, Engine, Error, Options, Result, Snapshot, WriteBatc
 use crate::freelist::{FreeState, PageWrites};
 use crate::meta::{self, Meta};
 use crate::page::{
-    Body, FIRST_DATA_PAGE, Node, OVERFLOW_CAPACITY, OVERFLOW_HEADER, PAGE_SIZE, PageId, PageRef, Value, check_page_id,
-    overflow_page_next,
+    Body, Bytes, FIRST_DATA_PAGE, Node, OVERFLOW_CAPACITY, OVERFLOW_HEADER, PAGE_SIZE, PageId, PageRef, Value,
+    check_page_id, overflow_page_next,
 };
 use crate::tree::{NewRoot, Txn, Writeout, dedupe};
 
@@ -162,7 +162,7 @@ impl Inner {
 
     fn read_value(&self, v: &Value, page_count: u64) -> Result<Vec<u8>> {
         match v {
-            Value::Inline(bytes) => Ok(bytes.clone()),
+            Value::Inline(bytes) => Ok(bytes.to_vec()),
             &Value::Overflow { len, crc, first } => {
                 let mut out = Vec::with_capacity(len as usize);
                 self.walk_overflow(first, len, crc, page_count, |_, chunk| out.extend_from_slice(chunk))?;
@@ -202,11 +202,11 @@ impl Inner {
             let node = self.read_node(r, level, view.page_count)?;
             match &node.body {
                 Body::Branch { keys, children } => {
-                    r = children[keys.partition_point(|s| s.as_slice() <= key)];
+                    r = children[keys.partition_point(|s| **s <= *key)];
                     level -= 1;
                 }
                 Body::Leaf(entries) => {
-                    return match entries.binary_search_by(|e| e.key.as_slice().cmp(key)) {
+                    return match entries.binary_search_by(|e| (*e.key).cmp(key)) {
                         Ok(i) => Ok(Some(self.read_value(&entries[i].value, view.page_count)?)),
                         Err(_) => Ok(None),
                     };
@@ -235,7 +235,7 @@ impl Inner {
         while let Body::Branch { keys, children } = &node.body {
             let i = match start {
                 Bound::Unbounded => 0,
-                Bound::Included(k) | Bound::Excluded(k) => keys.partition_point(|s| s.as_slice() <= k),
+                Bound::Included(k) | Bound::Excluded(k) => keys.partition_point(|s| **s <= *k),
             };
             let child = self.read_node(children[i], node.level - 1, view.page_count)?;
             stack.push((node, i + 1));
@@ -244,21 +244,21 @@ impl Inner {
         let Body::Leaf(entries) = &node.body else { unreachable!() };
         let mut pos = match start {
             Bound::Unbounded => 0,
-            Bound::Included(k) => entries.partition_point(|e| e.key.as_slice() < k),
-            Bound::Excluded(k) => entries.partition_point(|e| e.key.as_slice() <= k),
+            Bound::Included(k) => entries.partition_point(|e| *e.key < *k),
+            Bound::Excluded(k) => entries.partition_point(|e| *e.key <= *k),
         };
         loop {
             let Body::Leaf(entries) = &node.body else { unreachable!() };
             for e in &entries[pos..] {
                 let in_range = match end {
                     Bound::Unbounded => true,
-                    Bound::Included(k) => e.key.as_slice() <= k,
-                    Bound::Excluded(k) => e.key.as_slice() < k,
+                    Bound::Included(k) => *e.key <= *k,
+                    Bound::Excluded(k) => *e.key < *k,
                 };
                 if !in_range {
                     return Ok(out);
                 }
-                out.push((e.key.clone(), self.read_value(&e.value, view.page_count)?));
+                out.push((e.key.to_vec(), self.read_value(&e.value, view.page_count)?));
                 if out.len() == limit {
                     return Ok(out);
                 }
@@ -342,9 +342,10 @@ impl Snapshot for BTreeSnapshot {
 }
 
 /// Creates the data file atomically: the initial metas are written to a
-/// temporary file, synced, renamed into place and the directory synced. An
-/// existing data file therefore always had valid metas at some point, and a
-/// damaged one is reported instead of being mistaken for "no database".
+/// temporary file, synced and renamed into place (`open` then syncs the
+/// directory). An existing data file therefore always had valid metas at some
+/// point, and a damaged one is reported instead of being mistaken for "no
+/// database".
 fn create_data_file(vfs: &dyn Vfs, dir: &Path) -> Result<Arc<dyn File>> {
     let tmp = dir.join(DATA_TMP);
     if vfs.exists(&tmp)? {
@@ -358,7 +359,6 @@ fn create_data_file(vfs: &dyn Vfs, dir: &Path) -> Result<Arc<dyn File>> {
     file.write_at(&both, 0)?;
     file.sync_data()?;
     vfs.rename(&tmp, &dir.join(DATA_FILE))?;
-    vfs.sync_dir(dir)?;
     Ok(file)
 }
 
@@ -390,6 +390,7 @@ impl BTreeEngine {
         };
         let Writeout { allocated, mut writes, nodes, overflow_pages, .. } = out;
         let tree_pages = writes.len() as u64 - overflow_pages;
+        let replaced = txn.replaced;
         let log = w.free.commit(seq, allocated, txn.freed, &mut writes);
 
         // 3. Pages, barrier, meta into the other slot, barrier.
@@ -420,6 +421,11 @@ impl BTreeEngine {
         w.meta = meta;
         w.meta_slot = slot;
         w.both_slots_current = false;
+        // Superseded versions stay readable from disk for older snapshots,
+        // but keeping them cached would crowd out the live tree.
+        for r in replaced {
+            inner.cache.remove(&(r.id, r.crc));
+        }
         for (r, node) in nodes {
             inner.cache.insert((r.id, r.crc), node);
         }
@@ -517,7 +523,7 @@ impl BTreeEngine {
         let mut report = VerifyReport { page_count: meta.page_count, height: meta.height, ..Default::default() };
         if let Some(root) = meta.root {
             // Iterative walk: (page, level, lower bound, upper bound).
-            type Bounds = (Option<Vec<u8>>, Option<Vec<u8>>);
+            type Bounds = (Option<Bytes>, Option<Bytes>);
             let mut todo: Vec<(PageRef, u8, Bounds)> = vec![(root, meta.height - 1, (None, None))];
             while let Some((r, level, (lo, hi))) = todo.pop() {
                 claim(&mut owner, r.id, TREE)?;
@@ -613,6 +619,11 @@ impl Engine for BTreeEngine {
         let path = dir.join(DATA_FILE);
         let file =
             if vfs.exists(&path)? { vfs.open(&path, OpenMode::Existing)? } else { create_data_file(&*vfs, dir)? };
+        // On every open, not only right after creating the file: an earlier
+        // open may have renamed it into place and then failed before syncing
+        // the directory, and nothing may be acknowledged on top of a file
+        // whose directory entry is not durable.
+        vfs.sync_dir(dir)?;
         let len = file.len()?;
         if len < 2 * PAGE_SIZE as u64 {
             return Err(Error::corruption(format!("data file is {len} bytes, shorter than its two meta pages")));

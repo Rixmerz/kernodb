@@ -23,8 +23,8 @@ use spike_core::{Error, Op, Result, WriteBatch};
 use crate::engine::Inner;
 use crate::freelist::{FreeState, PageWrites};
 use crate::page::{
-    BRANCH_KEY_OVERHEAD, LeafEntry, NODE_CAPACITY, NODE_HEADER, Node, OVERFLOW_CAPACITY, PAGE_SIZE, PageId, PageRef,
-    UNDERFULL, Value, branch_size, encode_overflow_page, inline_fits, leaf_entry_size,
+    BRANCH_KEY_OVERHEAD, Bytes, LeafEntry, NODE_CAPACITY, NODE_HEADER, Node, OVERFLOW_CAPACITY, PAGE_SIZE, PageId,
+    PageRef, UNDERFULL, Value, branch_size, encode_overflow_page, inline_fits, leaf_entry_size,
 };
 
 /// Sorted, deduplicated operations: `Some(value)` puts, `None` deletes.
@@ -50,7 +50,7 @@ pub(crate) enum MemValue {
 }
 
 pub(crate) struct MemEntry {
-    key: Vec<u8>,
+    key: Bytes,
     value: MemValue,
 }
 
@@ -66,7 +66,7 @@ impl MemEntry {
 /// An owned, modifiable node that will be written to a new page.
 pub(crate) enum MemNode {
     Leaf(Vec<MemEntry>),
-    Branch { level: u8, keys: Vec<Vec<u8>>, children: Vec<Child> },
+    Branch { level: u8, keys: Vec<Bytes>, children: Vec<Child> },
 }
 
 pub(crate) enum Child {
@@ -106,7 +106,7 @@ impl MemNode {
 /// one, or several after a split, with the separators between them.
 struct Pieces {
     nodes: Vec<MemNode>,
-    seps: Vec<Vec<u8>>,
+    seps: Vec<Bytes>,
 }
 
 pub(crate) enum NewRoot {
@@ -154,7 +154,7 @@ fn split_leaf(entries: Vec<MemEntry>) -> Pieces {
     pieces
 }
 
-fn split_branch(level: u8, keys: Vec<Vec<u8>>, children: Vec<Child>) -> Pieces {
+fn split_branch(level: u8, keys: Vec<Bytes>, children: Vec<Child>) -> Pieces {
     let mut pieces = Pieces { nodes: Vec::new(), seps: Vec::new() };
     if children.is_empty() {
         return pieces;
@@ -171,7 +171,7 @@ fn split_branch(level: u8, keys: Vec<Vec<u8>>, children: Vec<Child>) -> Pieces {
             pieces.seps.push(keys.next().expect("separator between groups"));
         }
         let ch: Vec<Child> = children.by_ref().take(len).collect();
-        let ks: Vec<Vec<u8>> = keys.by_ref().take(len - 1).collect();
+        let ks: Vec<Bytes> = keys.by_ref().take(len - 1).collect();
         pieces.nodes.push(MemNode::Branch { level, keys: ks, children: ch });
     }
     pieces
@@ -184,13 +184,15 @@ pub(crate) struct Txn<'a> {
     page_count: u64,
     /// Pages of the previous tree that the new tree no longer uses.
     pub freed: Vec<PageId>,
+    /// Tree nodes this commit replaced (evicted from the cache afterwards).
+    pub replaced: Vec<PageRef>,
     /// Change in the number of keys.
     pub entries_delta: i64,
 }
 
 impl<'a> Txn<'a> {
     pub(crate) fn new(inner: &'a Inner, page_count: u64) -> Self {
-        Txn { inner, page_count, freed: Vec::new(), entries_delta: 0 }
+        Txn { inner, page_count, freed: Vec::new(), replaced: Vec::new(), entries_delta: 0 }
     }
 
     fn read(&self, r: PageRef, level: u8) -> Result<Arc<Node>> {
@@ -201,6 +203,7 @@ impl<'a> Txn<'a> {
     fn cow(&mut self, r: PageRef, level: u8) -> Result<MemNode> {
         let node = self.read(r, level)?;
         self.freed.push(r.id);
+        self.replaced.push(r);
         Ok(MemNode::from_node(&node))
     }
 
@@ -268,10 +271,10 @@ impl<'a> Txn<'a> {
         let mut out = Vec::with_capacity(entries.len() + ops.len());
         let mut old = entries.into_iter().peekable();
         for &(key, op) in ops {
-            while let Some(e) = old.next_if(|e| e.key.as_slice() < key) {
+            while let Some(e) = old.next_if(|e| *e.key < *key) {
                 out.push(e);
             }
-            let existing = old.next_if(|e| e.key.as_slice() == key);
+            let existing = old.next_if(|e| *e.key == *key);
             let key = match existing {
                 Some(e) => {
                     self.release_value(e.value)?;
@@ -284,12 +287,12 @@ impl<'a> Txn<'a> {
                     if op.is_some() {
                         self.entries_delta += 1;
                     }
-                    key.to_vec()
+                    Bytes::new(key)
                 }
             };
             if let Some(v) = op {
                 let value = if inline_fits(key.len(), v.len()) {
-                    MemValue::Stored(Value::Inline(v.to_vec()))
+                    MemValue::Stored(Value::Inline(Bytes::new(v)))
                 } else {
                     MemValue::Large(v.to_vec())
                 };
@@ -300,12 +303,12 @@ impl<'a> Txn<'a> {
         Ok(split_leaf(out))
     }
 
-    fn apply_branch(&mut self, level: u8, keys: Vec<Vec<u8>>, children: Vec<Child>, ops: &Ops) -> Result<Pieces> {
-        let mut new_keys: Vec<Vec<u8>> = Vec::with_capacity(keys.len() + 1);
+    fn apply_branch(&mut self, level: u8, keys: Vec<Bytes>, children: Vec<Child>, ops: &Ops) -> Result<Pieces> {
+        let mut new_keys: Vec<Bytes> = Vec::with_capacity(keys.len() + 1);
         let mut new_children: Vec<Child> = Vec::with_capacity(children.len() + 1);
         // Children that were modified (only those are checked for underflow).
         let mut touched: Vec<bool> = Vec::with_capacity(children.len() + 1);
-        let mut push = |sep: Option<Vec<u8>>, child: Child, t: bool| {
+        let mut push = |sep: Option<Bytes>, child: Child, t: bool| {
             // The first child has no lower separator; when earlier children
             // were dropped, the separator of the new first child goes too.
             if !new_children.is_empty() {
@@ -315,12 +318,12 @@ impl<'a> Txn<'a> {
             touched.push(t);
         };
         let mut rest = ops;
-        let mut lower: Option<Vec<u8>> = None;
+        let mut lower: Option<Bytes> = None;
         let mut keys = keys.into_iter();
         for child in children {
             let upper = keys.next();
             let cut = match &upper {
-                Some(u) => rest.partition_point(|(k, _)| *k < u.as_slice()),
+                Some(u) => rest.partition_point(|(k, _)| *k < &**u),
                 None => rest.len(),
             };
             let (mine, tail) = rest.split_at(cut);
@@ -366,7 +369,7 @@ impl<'a> Txn<'a> {
     fn try_merge(
         &mut self,
         level: u8,
-        keys: &mut Vec<Vec<u8>>,
+        keys: &mut Vec<Bytes>,
         children: &mut Vec<Child>,
         touched: &mut Vec<bool>,
         a: usize,
@@ -456,8 +459,12 @@ impl<'f> Writeout<'f> {
         let id = self.alloc();
         let page = node.encode(id);
         let r = PageRef { id, crc: crc32c::crc32c(&page) };
+        // Cache the node decoded from its own page image, so that it does not
+        // keep the (older) pages its entries were copied from alive.
+        let cached = Node::decode(&page, id, u64::MAX).expect("a freshly encoded node decodes");
+        debug_assert!(cached == node);
         self.writes.push((id, page));
-        self.nodes.push((r, Arc::new(node)));
+        self.nodes.push((r, Arc::new(cached)));
         r
     }
 
