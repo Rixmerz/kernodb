@@ -312,11 +312,15 @@ macro_rules! engine_test_suite {
             }
             #[test]
             fn power_loss_at_every_io_point() {
-                c::every_point::<$engine>(CrashKind::PowerLoss);
+                c::every_point::<$engine>(CrashKind::PowerLoss, Durability::Sync);
             }
             #[test]
             fn process_kill_at_every_io_point() {
-                c::every_point::<$engine>(CrashKind::ProcessKill);
+                c::every_point::<$engine>(CrashKind::ProcessKill, Durability::Sync);
+            }
+            #[test]
+            fn process_kill_at_every_io_point_buffered() {
+                c::every_point::<$engine>(CrashKind::ProcessKill, Durability::Buffered);
             }
             #[test]
             fn power_loss_buffered() {

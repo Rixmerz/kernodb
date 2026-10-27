@@ -398,3 +398,79 @@ mod directory {
         assert!(syncs.contains(&PathBuf::from("/data/apps")), "parent directory never synced: {syncs:?}");
     }
 }
+
+// I-15: a checksum-valid MANIFEST of an unknown format version is rejected
+// and nothing in the directory is modified.
+mod format_version {
+    use std::path::Path;
+
+    use spike_core::vfs::{OpenMode, SimVfs};
+    use spike_core::{Engine, Error, Options, WriteBatch};
+    use spike_lsm::LsmEngine;
+
+    #[test]
+    fn unknown_manifest_version_is_rejected_without_touching_files() {
+        let disk = SimVfs::new(5);
+        let vfs = disk.as_vfs();
+        let dir = Path::new("/db");
+        let opts = Options::small_for_tests();
+        let db = LsmEngine::open(vfs.clone(), dir, &opts).unwrap();
+        let mut b = WriteBatch::new();
+        b.put("k", "v");
+        db.commit(&b).unwrap();
+        db.close().unwrap();
+        // MANIFEST = magic(8) | body_len u32 | crc u32 | body, body = format u32 | ...
+        let f = vfs.open(&dir.join("MANIFEST"), OpenMode::Existing).unwrap();
+        let mut buf = vec![0u8; f.len().unwrap() as usize];
+        f.read_at(&mut buf, 0).unwrap();
+        buf[16..20].copy_from_slice(&2u32.to_le_bytes());
+        let crc = crc32c::crc32c(&buf[16..]);
+        buf[12..16].copy_from_slice(&crc.to_le_bytes());
+        f.write_at(&buf, 0).unwrap();
+        f.sync_data().unwrap();
+        let before = disk.files();
+        let r = LsmEngine::open(vfs.clone(), dir, &opts);
+        assert!(matches!(r, Err(Error::Corruption(_))), "expected Corruption");
+        assert_eq!(disk.files(), before, "a rejected open must not create, delete or resize files");
+    }
+}
+
+// Only canonical names are engine files: a stray "1.wal" used to be opened
+// and deleted as "000001.wal".
+mod file_names {
+    use std::path::Path;
+
+    use spike_core::harness::{Model, Workload, apply, read_all};
+    use spike_core::vfs::{OpenMode, SimVfs};
+    use spike_core::{Engine, Options};
+    use spike_lsm::LsmEngine;
+
+    #[test]
+    fn non_canonical_names_are_left_alone() {
+        let disk = SimVfs::new(8);
+        let vfs = disk.as_vfs();
+        let dir = Path::new("/db");
+        let opts = Options::small_for_tests();
+        let mut model = Model::new();
+        let mut w = Workload::new(8);
+        let db = LsmEngine::open(vfs.clone(), dir, &opts).unwrap();
+        for _ in 0..100 {
+            let b = w.batch(&model);
+            db.commit(&b).unwrap();
+            apply(&mut model, &b);
+        }
+        drop(db); // unclean: leaves a live WAL behind
+        for name in ["1.wal", "7.sst", "0000001.wal", "notes.txt"] {
+            let f = vfs.open(&dir.join(name), OpenMode::CreateNew).unwrap();
+            f.write_at(b"not an engine file", 0).unwrap();
+            f.sync_data().unwrap();
+        }
+        vfs.sync_dir(dir).unwrap();
+        let db = LsmEngine::open(vfs.clone(), dir, &opts).unwrap();
+        assert!(read_all(&db.snapshot().unwrap()).unwrap() == model);
+        db.close().unwrap();
+        for name in ["1.wal", "7.sst", "0000001.wal", "notes.txt"] {
+            assert!(vfs.exists(&dir.join(name)).unwrap(), "{name} was removed");
+        }
+    }
+}

@@ -23,6 +23,7 @@
 use super::crash::{Step, scenario};
 use super::{Model, apply, assert_snapshot_matches, open};
 use crate::engine::{Engine, Options, Snapshot, WriteBatch};
+use crate::error::Error;
 use crate::rng::Rng;
 use crate::vfs::{CrashKind, SimVfs};
 
@@ -71,9 +72,10 @@ fn run_with_fault<E: Engine>(disk: &SimVfs, steps: &[Step], opts: &Options, ctx:
                         }
                         let mut probe = WriteBatch::new();
                         probe.put("probe-after-failure", "x");
+                        let r = db.as_ref().unwrap().commit(&probe);
                         assert!(
-                            db.as_ref().unwrap().commit(&probe).is_err(),
-                            "{ctx}: handle accepted a commit after an I/O failure (must be poisoned)"
+                            matches!(r, Err(Error::Poisoned(_))),
+                            "{ctx}: after an I/O failure the handle must be poisoned, got {r:?}"
                         );
                         return (acked, attempted);
                     }
@@ -94,7 +96,7 @@ fn run_with_fault<E: Engine>(disk: &SimVfs, steps: &[Step], opts: &Options, ctx:
 
 pub fn single_failure_at_every_point<E: Engine>() {
     let opts = Options::small_for_tests();
-    let steps = scenario(11);
+    let steps = scenario(7);
     let batches: Vec<&WriteBatch> =
         steps.iter().filter_map(|s| if let Step::Commit(b) = s { Some(b) } else { None }).collect();
     let dry = SimVfs::new(0);

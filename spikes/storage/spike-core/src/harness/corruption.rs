@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use super::{Model, Workload, apply, for_each_seed, open, read_all, seeds};
 use crate::engine::{Engine, Options, Snapshot};
+use crate::error::Error;
 use crate::rng::Rng;
 use crate::vfs::{OpenMode, SimVfs};
 
@@ -16,6 +17,16 @@ struct Outcomes {
     detected_at_open: u64,
     detected_on_read: u64,
     harmless: u64,
+}
+
+/// Damage must be reported as corruption or an I/O error (or, when a
+/// background task found it first, as a poisoned handle) — never as an
+/// unrelated error such as `InvalidArgument` or `Locked`.
+fn assert_damage_error(what: &str, stage: &str, e: &Error) {
+    assert!(
+        matches!(e, Error::Corruption(_) | Error::Io(_) | Error::Poisoned(_)),
+        "{what}: {stage} reported damage with an unexpected error kind: {e}"
+    );
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -103,14 +114,16 @@ fn damage_suite<E: Engine>(damage: Damage) {
         let mut out = outcomes.lock().unwrap();
         let db: E = match open(&vfs, &opts) {
             Ok(db) => db,
-            Err(_) => {
+            Err(e) => {
+                assert_damage_error(&what, "open", &e);
                 out.detected_at_open += 1;
                 return;
             }
         };
         let snap = match db.snapshot() {
             Ok(s) => s,
-            Err(_) => {
+            Err(e) => {
+                assert_damage_error(&what, "snapshot", &e);
                 out.detected_at_open += 1;
                 return;
             }
@@ -119,14 +132,20 @@ fn damage_suite<E: Engine>(damage: Damage) {
         let mut detected = false;
         match read_all(&snap) {
             Ok(all) => assert!(all == model, "{what}: scan returned wrong data: {}", super::diff(&model, &all)),
-            Err(_) => detected = true,
+            Err(e) => {
+                assert_damage_error(&what, "scan", &e);
+                detected = true;
+            }
         }
         for (k, v) in &model {
             match snap.get(k) {
                 Ok(got) => {
                     assert!(got.as_deref() == Some(v.as_slice()), "{what}: get({}) returned wrong data", super::show(k))
                 }
-                Err(_) => detected = true,
+                Err(e) => {
+                    assert_damage_error(&what, "get", &e);
+                    detected = true;
+                }
             }
         }
         if detected {

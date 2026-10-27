@@ -501,3 +501,80 @@ fn open_makes_the_database_directory_durable_in_its_parent() {
     assert!(syncs.contains(&PathBuf::from("/data/apps")), "parent directory never synced: {syncs:?}");
     assert!(syncs.contains(&PathBuf::from("/data/apps/db")), "database directory never synced: {syncs:?}");
 }
+
+// ---------------------------------------------------------------------------
+// I-15: a file with a checksum-valid meta of an unknown format version is
+// rejected (never reinterpreted or re-initialized) and left untouched.
+
+mod format_version {
+    use super::*;
+
+    const META_COPY_AT: usize = 2048;
+
+    #[test]
+    fn unknown_format_version_is_rejected_without_touching_the_file() {
+        let disk = SimVfs::new(5);
+        let vfs = disk.as_vfs();
+        let opts = Options::small_for_tests();
+        let db: BTreeEngine = open(&vfs, &opts).unwrap();
+        let mut b = WriteBatch::new();
+        b.put("k", "v");
+        db.commit(&b).unwrap();
+        db.close().unwrap();
+        let path = Path::new("/db/data.kbt");
+        let f = vfs.open(path, OpenMode::Existing).unwrap();
+        // Rewrite every copy of the meta (2 slots x 2 copies) as version 2
+        // with a valid crc.
+        for slot in 0..2u64 {
+            for copy in [0usize, META_COPY_AT] {
+                let at = slot * 4096 + copy as u64;
+                let mut rec = vec![0u8; 92];
+                f.read_at(&mut rec, at).unwrap();
+                rec[8..12].copy_from_slice(&2u32.to_le_bytes());
+                let crc = crc32c::crc32c(&rec[..88]);
+                rec[88..92].copy_from_slice(&crc.to_le_bytes());
+                f.write_at(&rec, at).unwrap();
+            }
+        }
+        f.sync_data().unwrap();
+        let before = {
+            let mut all = vec![0u8; f.len().unwrap() as usize];
+            f.read_at(&mut all, 0).unwrap();
+            all
+        };
+        let r = open::<BTreeEngine>(&vfs, &opts);
+        assert!(matches!(r, Err(spike_core::Error::Corruption(_))), "expected Corruption");
+        let mut after = vec![0u8; f.len().unwrap() as usize];
+        f.read_at(&mut after, 0).unwrap();
+        assert!(before == after, "a rejected open must not modify the file");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Values over ~1 KiB live in overflow chains and were never cached (one
+// pread per 4 KiB page on every read).
+
+mod overflow_cache {
+    use super::*;
+
+    fn stat(db: &BTreeEngine, name: &str) -> u64 {
+        db.stats().into_iter().find(|(k, _)| k == name).map(|(_, v)| v).unwrap()
+    }
+
+    #[test]
+    fn repeated_reads_of_a_large_value_hit_the_cache() {
+        let vfs = SimVfs::new(6).as_vfs();
+        let db: BTreeEngine = open(&vfs, &Options::default()).unwrap();
+        let value = vec![7u8; 10_000];
+        let mut b = WriteBatch::new();
+        b.put("big", value.clone());
+        db.commit(&b).unwrap();
+        let s = db.snapshot().unwrap();
+        assert_eq!(s.get(b"big").unwrap().as_deref(), Some(value.as_slice()));
+        let pages_after_first = stat(&db, "overflow_pages_read");
+        for _ in 0..10 {
+            assert_eq!(s.get(b"big").unwrap().as_deref(), Some(value.as_slice()));
+        }
+        assert_eq!(stat(&db, "overflow_pages_read"), pages_after_first, "overflow value re-read from disk");
+    }
+}

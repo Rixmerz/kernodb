@@ -233,8 +233,17 @@ fn run_scenario<E: Engine>(disk: &SimVfs, steps: &[Step], opts: &Options) -> (u6
 /// and check the recovered state each time. The expected outcome is the
 /// same at every point: the state after commit `s`, with
 /// `acked <= s <= attempted`, followed by a working database.
-pub fn every_point<E: Engine>(kind: CrashKind) {
-    let opts = Options::small_for_tests();
+///
+/// `durability` must be `Sync` for power loss; `Buffered` is meaningful with
+/// [`CrashKind::ProcessKill`] (whatever was acknowledged was handed to the
+/// OS and survives a process crash).
+pub fn every_point<E: Engine>(kind: CrashKind, durability: Durability) {
+    assert!(
+        durability == Durability::Sync || kind == CrashKind::ProcessKill,
+        "Buffered commits only promise to survive process kills at every point"
+    );
+    let mut opts = Options::small_for_tests();
+    opts.durability = durability;
     let steps = scenario(7);
     let batches: Vec<&WriteBatch> =
         steps.iter().filter_map(|s| if let Step::Commit(b) = s { Some(b) } else { None }).collect();
@@ -248,7 +257,7 @@ pub fn every_point<E: Engine>(kind: CrashKind) {
         if only.is_some_and(|p| p != point) {
             continue;
         }
-        let ctx = format!("{kind:?} crash before mutating op #{point} of {total}");
+        let ctx = format!("{kind:?} ({durability:?}) crash before mutating op #{point} of {total}");
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let disk = SimVfs::new(point);
             if point % 2 == 1 {
@@ -269,14 +278,21 @@ pub fn every_point<E: Engine>(kind: CrashKind) {
             let mut rng = Rng::new(point);
             assert_snapshot_matches(&snap, &model, &mut rng, &ctx);
             drop(snap);
-            // The recovered database must keep working and stay durable.
+            // The recovered database must keep working, and what it commits
+            // and closes afterwards must survive a real power loss.
             let mut b = WriteBatch::new();
             b.put("after-recovery", "x");
             assert_eq!(db.commit(&b).unwrap(), s + 1, "{ctx}: commit after recovery");
             apply(&mut model, &b);
             db.close().unwrap();
-            let db: E = open(&vfs, &opts).unwrap();
-            assert_snapshot_matches(&db.snapshot().unwrap(), &model, &mut rng, &format!("{ctx}, reopened"));
+            let after = image.crash_now(CrashKind::PowerLoss);
+            let db: E = open(&after.as_vfs(), &opts).unwrap_or_else(|e| panic!("{ctx}: reopen after power loss: {e}"));
+            assert_snapshot_matches(
+                &db.snapshot().unwrap(),
+                &model,
+                &mut rng,
+                &format!("{ctx}, then power loss after a clean close"),
+            );
         }));
         if let Err(e) = r {
             eprintln!("\n*** {ctx}; reproduce with SPIKE_POINT={point}\n");
