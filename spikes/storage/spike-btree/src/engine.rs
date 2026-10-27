@@ -33,12 +33,29 @@ pub(crate) fn read_page(file: &dyn File, id: PageId) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
-#[derive(Clone)]
-struct NodeWeighter;
+/// Cache key: (page id, crc, kind). Tree nodes are keyed by their page id
+/// and page crc; overflow values by their first page id and chain crc.
+type CacheKey = (PageId, u32, u8);
+const NODE: u8 = 0;
+const VALUE: u8 = 1;
 
-impl Weighter<(PageId, u32), Arc<Node>> for NodeWeighter {
-    fn weight(&self, _key: &(PageId, u32), node: &Arc<Node>) -> u64 {
-        node.weight()
+/// One cache shared by tree nodes and assembled overflow values, so large
+/// values compete for the same budget instead of always going to disk.
+#[derive(Clone)]
+enum Cached {
+    Node(Arc<Node>),
+    Value(Arc<[u8]>),
+}
+
+#[derive(Clone)]
+struct CacheWeighter;
+
+impl Weighter<CacheKey, Cached> for CacheWeighter {
+    fn weight(&self, _key: &CacheKey, entry: &Cached) -> u64 {
+        match entry {
+            Cached::Node(node) => node.weight(),
+            Cached::Value(bytes) => bytes.len() as u64 + 64,
+        }
     }
 }
 
@@ -81,7 +98,7 @@ struct Published {
 /// State shared by the engine handle and its snapshots.
 pub(crate) struct Inner {
     file: Arc<dyn File>,
-    cache: Cache<(PageId, u32), Arc<Node>, NodeWeighter>,
+    cache: Cache<CacheKey, Cached, CacheWeighter>,
     published: Mutex<Published>,
     counters: Counters,
     /// Held until the engine and every snapshot are gone, so no other handle
@@ -93,15 +110,15 @@ impl Inner {
     /// Reads a tree node through the cache, verifying the page's crc against
     /// the one stored by its parent (or the meta page) on a miss.
     pub(crate) fn read_node(&self, r: PageRef, level: u8, page_count: u64) -> Result<Arc<Node>> {
-        let node = match self.cache.get(&(r.id, r.crc)) {
-            Some(n) => {
+        let node = match self.cache.get(&(r.id, r.crc, NODE)) {
+            Some(Cached::Node(n)) => {
                 self.counters.cache_hits.fetch_add(1, Relaxed);
                 n
             }
-            None => {
+            _ => {
                 self.counters.cache_misses.fetch_add(1, Relaxed);
                 let n = Arc::new(self.load_node(r, page_count)?);
-                self.cache.insert((r.id, r.crc), n.clone());
+                self.cache.insert((r.id, r.crc, NODE), Cached::Node(n.clone()));
                 n
             }
         };
@@ -164,8 +181,14 @@ impl Inner {
         match v {
             Value::Inline(bytes) => Ok(bytes.to_vec()),
             &Value::Overflow { len, crc, first } => {
+                if let Some(Cached::Value(bytes)) = self.cache.get(&(first, crc, VALUE)) {
+                    self.counters.cache_hits.fetch_add(1, Relaxed);
+                    return Ok(bytes.to_vec());
+                }
+                self.counters.cache_misses.fetch_add(1, Relaxed);
                 let mut out = Vec::with_capacity(len as usize);
                 self.walk_overflow(first, len, crc, page_count, |_, chunk| out.extend_from_slice(chunk))?;
+                self.cache.insert((first, crc, VALUE), Cached::Value(Arc::from(out.as_slice())));
                 Ok(out)
             }
         }
@@ -365,7 +388,7 @@ fn create_data_file(vfs: &dyn Vfs, dir: &Path) -> Result<Arc<dyn File>> {
 impl BTreeEngine {
     fn commit_locked(&self, w: &mut Writer, batch: &WriteBatch) -> Result<u64> {
         let inner = &*self.inner;
-        let seq = w.meta.seq + 1;
+        let seq = w.meta.seq.checked_add(1).ok_or_else(|| Error::corruption("commit sequence exhausted"))?;
         // Pages freed by commit n were reachable only from trees before n.
         // Meta n (durable in Sync mode) superseded meta n - 1, so they become
         // reusable once no live snapshot is older than n.
@@ -386,11 +409,12 @@ impl BTreeEngine {
         let mut out = Writeout::new(&mut w.free);
         let (root, height) = match new_root {
             NewRoot::Empty => (None, 0),
-            NewRoot::Tree { root, level } => (Some(out.write_child(root)), level + 1),
+            NewRoot::Tree { root, level } => (Some(out.write_child(root)?), level + 1),
         };
         let Writeout { allocated, mut writes, nodes, overflow_pages, .. } = out;
         let tree_pages = writes.len() as u64 - overflow_pages;
         let replaced = txn.replaced;
+        let released_values = txn.released_values;
         let log = w.free.commit(seq, allocated, txn.freed, &mut writes);
 
         // 3. Pages, barrier, meta into the other slot, barrier.
@@ -424,10 +448,13 @@ impl BTreeEngine {
         // Superseded versions stay readable from disk for older snapshots,
         // but keeping them cached would crowd out the live tree.
         for r in replaced {
-            inner.cache.remove(&(r.id, r.crc));
+            inner.cache.remove(&(r.id, r.crc, NODE));
+        }
+        for (first, crc) in released_values {
+            inner.cache.remove(&(first, crc, VALUE));
         }
         for (r, node) in nodes {
-            inner.cache.insert((r.id, r.crc), node);
+            inner.cache.insert((r.id, r.crc, NODE), Cached::Node(node));
         }
         inner.published.lock().view = View::of(&meta);
         let c = &inner.counters;
@@ -612,6 +639,11 @@ impl Engine for BTreeEngine {
 
     fn open(vfs: Arc<dyn Vfs>, dir: &Path, opts: &Options) -> Result<Self> {
         vfs.create_dir_all(dir)?;
+        // The directory itself must be durable in its parent, or a power
+        // loss can remove a newly created database with everything in it.
+        if let Some(parent) = dir.parent().filter(|p| !p.as_os_str().is_empty()) {
+            vfs.sync_dir(parent)?;
+        }
         let lock = vfs.lock(&dir.join(LOCK_FILE)).map_err(|e| match e.kind() {
             std::io::ErrorKind::WouldBlock => Error::Locked,
             _ => Error::Io(e),
@@ -632,6 +664,11 @@ impl Engine for BTreeEngine {
         file.read_at(&mut metas, 0)?;
         let meta::Selected { meta, slot: meta_slot, both: both_slots_current } =
             meta::select(&metas[..PAGE_SIZE], &metas[PAGE_SIZE..])?;
+        // The selected meta may be visible but not durable (its process died
+        // between writing it and syncing it, or that sync failed). Everything
+        // below treats it as durable: the pages it freed — the previous tree,
+        // the only durable one in that case — become reusable. Make it so.
+        file.sync_data()?;
         if len < meta.page_count.saturating_mul(PAGE_SIZE as u64) {
             return Err(Error::corruption(format!(
                 "data file is {len} bytes but commit {} uses {} pages (truncated?)",
@@ -642,7 +679,7 @@ impl Engine for BTreeEngine {
         let cache_bytes = opts.cache_bytes.max(16 * PAGE_SIZE) as u64;
         let inner = Arc::new(Inner {
             file,
-            cache: Cache::with_weighter((cache_bytes as usize / PAGE_SIZE).max(16), cache_bytes, NodeWeighter),
+            cache: Cache::with_weighter((cache_bytes as usize / PAGE_SIZE).max(16), cache_bytes, CacheWeighter),
             published: Mutex::new(Published { view: View::of(&meta), readers: BTreeMap::new() }),
             counters: Counters::default(),
             _lock: lock,
@@ -675,12 +712,18 @@ impl Engine for BTreeEngine {
         if batch.is_empty() {
             return Ok(w.meta.seq);
         }
+        // Poisoned until proven otherwise: if `commit_locked` panics, the
+        // allocator state may be ahead of the meta and the handle must not
+        // be used again (parking_lot mutexes do not poison themselves).
+        let seq = w.meta.seq;
+        w.poisoned = Some(format!("commit {} panicked", seq.wrapping_add(1)));
         let result = self.commit_locked(&mut w, batch);
-        if let Err(e) = &result {
+        w.poisoned = match &result {
+            Ok(_) => None,
             // The in-memory allocator state and possibly the file are now
             // ahead of the last meta; only reopening (recovery) is safe.
-            w.poisoned = Some(format!("commit {} failed: {e}", w.meta.seq + 1));
-        }
+            Err(e) => Some(format!("commit {} failed: {e}", seq.wrapping_add(1))),
+        };
         result
     }
 
@@ -694,10 +737,9 @@ impl Engine for BTreeEngine {
         if let Some(m) = &w.poisoned {
             return Err(Error::Poisoned(m.clone()));
         }
+        w.poisoned = Some("close panicked".into());
         let result = self.close_locked(&mut w);
-        if let Err(e) = &result {
-            w.poisoned = Some(format!("close failed: {e}"));
-        }
+        w.poisoned = result.as_ref().err().map(|e| format!("close failed: {e}"));
         result
     }
 
@@ -727,7 +769,7 @@ impl Engine for BTreeEngine {
             ("cache_hits", get(&c.cache_hits)),
             ("cache_misses", get(&c.cache_misses)),
             ("cache_bytes", self.inner.cache.weight()),
-            ("cache_nodes", self.inner.cache.len() as u64),
+            ("cache_entries", self.inner.cache.len() as u64),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))

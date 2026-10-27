@@ -186,13 +186,23 @@ pub(crate) struct Txn<'a> {
     pub freed: Vec<PageId>,
     /// Tree nodes this commit replaced (evicted from the cache afterwards).
     pub replaced: Vec<PageRef>,
+    /// Overflow values this commit released, as (first page, chain crc)
+    /// (evicted from the cache afterwards).
+    pub released_values: Vec<(PageId, u32)>,
     /// Change in the number of keys.
     pub entries_delta: i64,
 }
 
 impl<'a> Txn<'a> {
     pub(crate) fn new(inner: &'a Inner, page_count: u64) -> Self {
-        Txn { inner, page_count, freed: Vec::new(), replaced: Vec::new(), entries_delta: 0 }
+        Txn {
+            inner,
+            page_count,
+            freed: Vec::new(),
+            replaced: Vec::new(),
+            released_values: Vec::new(),
+            entries_delta: 0,
+        }
     }
 
     fn read(&self, r: PageRef, level: u8) -> Result<Arc<Node>> {
@@ -226,6 +236,7 @@ impl<'a> Txn<'a> {
         if let MemValue::Stored(Value::Overflow { len, crc, first }) = v {
             let ids = self.inner.overflow_pages(first, len, crc, self.page_count)?;
             self.freed.extend(ids);
+            self.released_values.push((first, crc));
         }
         Ok(())
     }
@@ -430,14 +441,14 @@ impl<'f> Writeout<'f> {
         self.free.alloc(&mut self.allocated)
     }
 
-    pub(crate) fn write_child(&mut self, c: Child) -> PageRef {
+    pub(crate) fn write_child(&mut self, c: Child) -> Result<PageRef> {
         match c {
-            Child::Clean(r) => r,
+            Child::Clean(r) => Ok(r),
             Child::Dirty(n) => self.write_node(*n),
         }
     }
 
-    fn write_node(&mut self, n: MemNode) -> PageRef {
+    fn write_node(&mut self, n: MemNode) -> Result<PageRef> {
         let node = match n {
             MemNode::Leaf(entries) => Node::new_leaf(
                 entries
@@ -452,7 +463,7 @@ impl<'f> Writeout<'f> {
                     .collect(),
             ),
             MemNode::Branch { level, keys, children } => {
-                let children = children.into_iter().map(|c| self.write_child(c)).collect();
+                let children = children.into_iter().map(|c| self.write_child(c)).collect::<Result<Vec<_>>>()?;
                 Node::new_branch(level, keys, children)
             }
         };
@@ -460,12 +471,15 @@ impl<'f> Writeout<'f> {
         let page = node.encode(id);
         let r = PageRef { id, crc: crc32c::crc32c(&page) };
         // Cache the node decoded from its own page image, so that it does not
-        // keep the (older) pages its entries were copied from alive.
-        let cached = Node::decode(&page, id, u64::MAX).expect("a freshly encoded node decodes");
+        // keep the (older) pages its entries were copied from alive. Decoding
+        // only fails if the input tree was malformed (e.g. a crafted file
+        // whose crcs are valid but whose keys violate separator bounds).
+        let cached = Node::decode(&page, id, u64::MAX)
+            .map_err(|e| Error::corruption(format!("commit produced an invalid node from malformed input: {e}")))?;
         debug_assert!(cached == node);
         self.writes.push((id, page));
         self.nodes.push((r, Arc::new(cached)));
-        r
+        Ok(r)
     }
 
     /// Writes `bytes` as a chain of overflow pages. The returned reference's

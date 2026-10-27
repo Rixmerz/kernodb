@@ -19,8 +19,13 @@ All integers are little-endian. "crc" always means crc32c.
 
 ### Meta pages (ids 0 and 1)
 
-There are two double-buffered slots. Only bytes `0..92` are meaningful, and
-they sit within the first 512-byte sector.
+There are two double-buffered slots. Each slot holds **two copies** of the
+92-byte meta record, at offsets `0` and `2048` (different sectors); a slot
+decodes to its newest valid copy. Damage to one copy of the newest meta (bit
+rot after an unclean shutdown, when the other slot holds the previous commit)
+therefore no longer rolls the database back. A torn meta write can leave one
+new and one old copy; using the new one is safe because a meta is only written
+after the pages it references are durable.
 
 | bytes | field |
 |-------|-------|
@@ -124,15 +129,19 @@ above the page count. It also checks the set size against the meta.
    under a short mutex.
 
 **fsyncs:** a Sync commit costs 2 `sync_data` and no `sync_dir`. A Buffered
-commit costs 0. `open` costs 1 `sync_dir`, plus 1 `sync_data` when it creates
-the file. `close` costs 1 in Sync mode and 2 in Buffered mode (first
+commit costs 0. `open` costs 2 `sync_dir` (the parent directory, so a newly
+created database directory is durable, and the database directory) and 1
+`sync_data` (see Recovery), plus 1 more `sync_data` when it creates the file. `close` costs 1 in Sync mode and 2 in Buffered mode (first
 sync the outstanding writes, then write and sync the second meta copy). A
 single-key update in a 3-level tree writes 3 node pages, 1 free-list page and
 the meta: 5 × 4 KiB.
 
 Any error after step 1 poisons the handle. That commit returns the error, and
 every later `commit` or `close` returns `Error::Poisoned` until the database
-is reopened. Dropping an engine does no I/O. Drop behaves like a process exit,
+is reopened. The handle is marked poisoned *before* the commit runs and
+cleared on success, so a panic inside a commit also poisons it (parking_lot
+mutexes do not poison themselves). A commit sequence at `u64::MAX` is an
+error, never a wrap-around. Dropping an engine does no I/O. Drop behaves like a process exit,
 and recovery handles it.
 
 **Creation** is atomic: both metas (sequence 0) are written to
@@ -156,15 +165,21 @@ identical, so damage to either slot cannot roll the database back.
 3. Read both metas and use the valid one with the highest sequence. If neither
    is valid, report corruption. The next commit writes the other slot, which
    also heals a damaged slot.
-4. If the file is shorter than `page_count × 4096`, report corruption (for
+4. `sync_data` the file. The selected meta may be visible but not durable (the
+   previous process died between writing it and syncing it, or that sync
+   failed). Everything after this point treats it as durable — the pages it
+   freed, i.e. the previous tree, become reusable — so it must be. (Found by
+   the M0 adversarial review: without this, a restart followed by a power loss
+   during the next commit could destroy the only durable tree.)
+5. If the file is shorter than `page_count × 4096`, report corruption (for
    example, after truncation).
-5. Replay the free-list log, verifying every page's crc from the meta down,
+6. Replay the free-list log, verifying every page's crc from the meta down,
    and check its consistency. Every free page is reusable, because no
    snapshots exist yet.
-6. Read and verify the root page so that a damaged root fails fast.
+7. Read and verify the root page so that a damaged root fails fast.
 
 No log needs replaying and nothing is written during recovery (only the
-directory sync). Pages written
+directory syncs and the data-file sync). Pages written
 by a commit that never got its meta are simply free (below the high-water
 mark) or beyond it, and get overwritten later.
 
@@ -198,8 +213,7 @@ mark) or beyond it, and get overwritten later.
 | rest of a meta page (92..4096), free pages | never read; damage is harmless |
 
 Crcs are verified on every read from the file, which in practice means every
-cache miss (the cache key is `(page id, crc)`). Overflow pages are not cached,
-so they are verified on every read. Decoding also validates lengths, ordering,
+cache miss (the cache key includes the crc). Decoding also validates lengths, ordering,
 levels and page-id ranges, so a crc collision still cannot cause a panic or an
 out-of-bounds read. The shared bit-flip suite (400 seeds) gave 32 flips
 detected at open, 273 detected on read and 95 harmless, with no wrong data.
@@ -207,9 +221,12 @@ The truncation suite gave 400/400 detected at open.
 
 ## Cache
 
-The cache is `quick_cache::sync::Cache<(page id, crc), Arc<Node>>`, weighted at
-about 4 KiB plus the entry index per node, with capacity
-`Options::cache_bytes`. Decoded nodes share their page image: keys and inline
+The cache is one `quick_cache::sync::Cache` with capacity `Options::cache_bytes`
+holding two kinds of entries: decoded nodes, keyed by `(page id, crc)` and
+weighted at about 4 KiB plus the entry index; and assembled overflow values,
+keyed by `(first page id, chain crc)` and weighted by their length. (Before the
+M0 review, overflow values were never cached and every read of a value over
+~1 KiB issued one `pread` per 4 KiB page.) Decoded nodes share their page image: keys and inline
 values are slices of it, so copying a node for CoW only bumps reference counts.
 Freshly written nodes are inserted at commit, and the versions they replace are
 evicted. Without eviction the stale versions fill the hot section and the new
@@ -249,8 +266,9 @@ random updates, that took the hit rate from 100% to 8%.
   meta. A batch of N random keys touches about N leaves.
 * A commit that changes nothing (for example, deleting absent keys) still
   copies the path and gets a new sequence number.
-* Overflow chains are read page by page (one `read_at` per 4 KiB). Freeing a
-  chain reads all of it. Chains are not allocated contiguously.
+* Overflow chains are read page by page on a cache miss (one `read_at` per
+  4 KiB). Freeing a chain reads all of it. Chains are not allocated
+  contiguously.
 * Separators are full keys (no suffix truncation or prefix compression), and
   nodes are decoded into an index of slices rather than searched in place.
 * Underfull nodes are only merged, never rebalanced. After heavy deletes,
@@ -258,10 +276,13 @@ random updates, that took the hit rate from 100% to 8%.
 * The file never shrinks. Free pages are reused lowest-id first, but trailing
   free pages are not truncated. Long-lived snapshots pin every page freed
   since they were taken.
-* After an *unclean* shutdown the two slots hold the last two commits. If the
-  newest slot is then damaged by media corruption, open silently falls back to
-  the previous commit, whose pages may already have been reused (reads then
-  report corruption). Only a clean close writes both slots.
+* After an *unclean* shutdown the two slots hold the last two commits. If
+  *both* copies in the newest slot are then damaged by media corruption, open
+  falls back to the previous commit, whose pages may already have been reused
+  (reads then report corruption). One damaged copy is harmless.
+* Reads of a deliberately crafted file whose crcs are all valid (keys outside
+  their separator bounds) can miss keys; crc32c is not an authentication code
+  (threat model T-04). Writes on such a file fail with `Corruption`.
 * Cache keys are `(page id, crc32c)`. A reused page id whose new content has
   the same crc as a still-cached old version would alias, a 2^-32 event per
   reuse. Evicting replaced versions at commit makes it rarer still.

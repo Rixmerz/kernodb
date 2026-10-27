@@ -6,6 +6,14 @@
 //! commits alternate from there, which also works when open had to fall back
 //! to the only intact slot). A clean close writes the final meta into both
 //! slots.
+//!
+//! Each slot holds two copies of its meta record, in different sectors
+//! (offsets 0 and [`META_COPY_AT`]). A slot decodes to its newest valid copy,
+//! so media damage to one copy of the newest meta does not roll the database
+//! back to the previous commit, even after an unclean shutdown when the other
+//! slot holds an older commit. A torn meta write can leave one new and one
+//! old copy; using the new one is safe because a meta is only written after
+//! the pages it references are durable.
 
 use spike_core::{Error, Result};
 
@@ -16,6 +24,8 @@ pub(crate) const FORMAT_VERSION: u32 = 1;
 /// The crc32c of bytes `0..META_CRC_AT` is stored at `META_CRC_AT`.
 const META_CRC_AT: usize = 88;
 pub(crate) const META_LEN: usize = META_CRC_AT + 4;
+/// Offset of the second copy of the meta record inside a meta page.
+pub(crate) const META_COPY_AT: usize = PAGE_SIZE / 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Meta {
@@ -75,12 +85,26 @@ impl Meta {
         p[80..88].copy_from_slice(&self.entries.to_le_bytes());
         let crc = crc32c::crc32c(&p[..META_CRC_AT]);
         p[META_CRC_AT..META_LEN].copy_from_slice(&crc.to_le_bytes());
+        p.copy_within(..META_LEN, META_COPY_AT);
         p
     }
 
-    /// Decodes and validates one meta slot; `Err` describes why it is
-    /// unusable (torn, never written, damaged, foreign file).
+    /// Decodes a meta page: the newest valid of its two copies. `Err`
+    /// describes why neither copy is usable.
     pub(crate) fn decode(p: &[u8]) -> std::result::Result<Meta, String> {
+        if p.len() < META_COPY_AT + META_LEN {
+            return Err("short meta page".into());
+        }
+        match (Meta::decode_copy(&p[..META_LEN]), Meta::decode_copy(&p[META_COPY_AT..META_COPY_AT + META_LEN])) {
+            (Ok(a), Ok(b)) => Ok(if b.seq > a.seq { b } else { a }),
+            (Ok(a), Err(_)) | (Err(_), Ok(a)) => Ok(a),
+            (Err(e), Err(_)) => Err(e),
+        }
+    }
+
+    /// Decodes and validates one copy of the meta record; `Err` describes
+    /// why it is unusable (torn, never written, damaged, foreign file).
+    pub(crate) fn decode_copy(p: &[u8]) -> std::result::Result<Meta, String> {
         if p.len() < META_LEN {
             return Err("short meta page".into());
         }
@@ -190,9 +214,32 @@ mod tests {
             for bit in 0..8 {
                 let mut p = good.clone();
                 p[byte] ^= 1 << bit;
-                assert!(Meta::decode(&p).is_err(), "flip of bit {bit} in byte {byte} accepted");
+                assert!(Meta::decode_copy(&p).is_err(), "flip of bit {bit} in byte {byte} accepted");
+                // The other copy still decodes to the same meta.
+                assert_eq!(Meta::decode(&p).unwrap(), sample(7));
+                let mut q = good.clone();
+                q[META_COPY_AT + byte] ^= 1 << bit;
+                assert_eq!(Meta::decode(&q).unwrap(), sample(7));
+                // Both copies damaged: the slot is unusable.
+                q[byte] ^= 1 << bit;
+                assert!(Meta::decode(&q).is_err());
             }
         }
+    }
+
+    #[test]
+    fn a_torn_slot_write_uses_the_newest_valid_copy() {
+        let old = sample(5).encode();
+        let new = sample(7).encode();
+        // First copy landed, second still holds the old record.
+        let mut torn = old.clone();
+        torn[..META_LEN].copy_from_slice(&new[..META_LEN]);
+        assert_eq!(Meta::decode(&torn).unwrap(), sample(7));
+        // Second copy landed, first is half old, half new (invalid).
+        let mut torn = old.clone();
+        torn[META_COPY_AT..META_COPY_AT + META_LEN].copy_from_slice(&new[META_COPY_AT..META_COPY_AT + META_LEN]);
+        torn[..40].copy_from_slice(&new[..40]);
+        assert_eq!(Meta::decode(&torn).unwrap(), sample(7));
     }
 
     #[test]
@@ -205,6 +252,7 @@ mod tests {
         // falls back to the older one.
         let mut torn = sample(9).encode();
         torn[META_CRC_AT] ^= 0xFF;
+        torn[META_COPY_AT + META_CRC_AT] ^= 0xFF;
         assert_eq!(select(&torn, &a).unwrap(), Selected { meta: sample(7), slot: 1, both: false });
         let zero = vec![0u8; PAGE_SIZE];
         assert_eq!(select(&a, &zero).unwrap(), Selected { meta: sample(7), slot: 0, both: false });

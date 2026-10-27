@@ -12,6 +12,7 @@ use spike_core::vfs::{CrashKind, SimVfs, Vfs};
 use spike_core::{Durability, Engine, Error, MAX_KEY_LEN, MAX_VALUE_LEN, Options, Snapshot, WriteBatch};
 
 use crate::BTreeEngine;
+use crate::meta::META_COPY_AT;
 use crate::page::{LEAF_ENTRY_OVERHEAD, MAX_INLINE_ENTRY, NODE_CAPACITY, OVERFLOW_CAPACITY, PAGE_SIZE, UNDERFULL};
 
 const DIR: &str = "/db";
@@ -408,8 +409,14 @@ fn meta_slot_selection_after_damage() {
     }
     drop(db);
     // The initial metas fill both slots, commit 1 goes to slot 1, so commit
-    // 40 lives in slot 0: tear it (damage its crc'd bytes).
+    // 40 lives in slot 0. Damage to one of its two copies is harmless.
     disk.corrupt_byte(Path::new(DATA), 30, 0xFF);
+    let db = open(&vfs);
+    assert_eq!(db.snapshot().unwrap().seq(), 40, "one damaged copy must not roll back");
+    drop(db);
+    // Both copies damaged (a torn write of the newest slot): fall back to
+    // the previous commit, intact.
+    disk.corrupt_byte(Path::new(DATA), (META_COPY_AT + 30) as u64, 0xFF);
     let db = open(&vfs);
     let s = db.snapshot().unwrap();
     assert_eq!(s.seq(), 39);
@@ -419,6 +426,7 @@ fn meta_slot_selection_after_damage() {
     drop(db);
     // Both slots damaged: an error, never a fresh empty database.
     disk.corrupt_byte(Path::new(DATA), PAGE_SIZE as u64 + 30, 0xFF);
+    disk.corrupt_byte(Path::new(DATA), (PAGE_SIZE + META_COPY_AT + 30) as u64, 0xFF);
     assert!(matches!(BTreeEngine::open(vfs.clone(), Path::new(DIR), &opts()), Err(Error::Corruption(_))));
 }
 
