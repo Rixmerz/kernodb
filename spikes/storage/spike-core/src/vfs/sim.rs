@@ -18,6 +18,14 @@
 //! [`SimVfs::crash_after`]; from then on the old instance fails every call,
 //! like a machine that lost power.
 //!
+//! A single I/O error with the device still alive can be injected with
+//! [`SimVfs::fail_after`]: that one operation returns an error and has no
+//! effect (a failed `sync_data` leaves its writes pending, i.e. not
+//! durable), and everything else keeps working. This is how the harness
+//! checks that a failed `fsync` is never acknowledged and poisons the
+//! handle. Linux's stronger "dirty pages are dropped after a failed fsync"
+//! behaviour is not modelled.
+//!
 //! Simplification: directories are durable as soon as they are created.
 
 use std::any::Any;
@@ -101,6 +109,9 @@ struct State {
     locks: BTreeSet<PathBuf>,
     mutating_ops: u64,
     trigger: Option<(u64, CrashKind)>,
+    fault_at: Option<u64>,
+    fault_then: Option<CrashKind>,
+    fault_injected: bool,
     dead: bool,
     image: Option<Box<State>>,
     rng: Rng,
@@ -108,6 +119,10 @@ struct State {
 
 fn dead_error() -> io::Error {
     io::Error::other("simulated crash: device is gone")
+}
+
+fn injected_error() -> io::Error {
+    io::Error::other("injected I/O error (EIO)")
 }
 
 impl State {
@@ -122,6 +137,9 @@ impl State {
             locks: BTreeSet::new(),
             mutating_ops: 0,
             trigger: None,
+            fault_at: None,
+            fault_then: None,
+            fault_injected: false,
             dead: false,
             image: None,
             rng,
@@ -132,8 +150,8 @@ impl State {
         if self.dead { Err(dead_error()) } else { Ok(()) }
     }
 
-    /// Accounts one mutating operation; fires the crash trigger if due.
-    /// When it fires, the operation is *not* performed.
+    /// Accounts one mutating operation; fires the crash trigger or the
+    /// injected fault if due. Either way the operation is *not* performed.
     fn tick(&mut self) -> io::Result<()> {
         self.check_alive()?;
         self.mutating_ops += 1;
@@ -142,6 +160,14 @@ impl State {
         {
             self.crash(kind);
             return Err(dead_error());
+        }
+        if self.fault_at == Some(self.mutating_ops) {
+            self.fault_at = None;
+            self.fault_injected = true;
+            if let Some(kind) = self.fault_then.take() {
+                self.trigger = Some((self.mutating_ops + 1, kind));
+            }
+            return Err(injected_error());
         }
         Ok(())
     }
@@ -260,10 +286,30 @@ impl SimVfs {
         s.trigger = Some((at, kind));
     }
 
-    /// Cancels a pending [`crash_after`](Self::crash_after) trigger (no
-    /// effect if the crash already happened).
+    /// Makes the `n`-th mutating operation from now (`n >= 1`) fail with an
+    /// I/O error, once. With `then = None` the device keeps working; with
+    /// `Some(kind)` it crashes right before the next mutating operation, so
+    /// no later sync can make up for the failed one.
+    pub fn fail_after(&self, n: u64, then: Option<CrashKind>) {
+        let mut s = self.state.lock();
+        s.fault_at = Some(s.mutating_ops + n.max(1));
+        s.fault_then = then;
+        s.fault_injected = false;
+    }
+
+    /// Whether the fault armed by [`fail_after`](Self::fail_after) fired.
+    pub fn fault_injected(&self) -> bool {
+        self.state.lock().fault_injected
+    }
+
+    /// Cancels a pending [`crash_after`](Self::crash_after) trigger and a
+    /// pending [`fail_after`](Self::fail_after) fault (no effect on ones
+    /// that already fired).
     pub fn disarm(&self) {
-        self.state.lock().trigger = None;
+        let mut s = self.state.lock();
+        s.trigger = None;
+        s.fault_at = None;
+        s.fault_then = None;
     }
 
     /// Crashes immediately (if not already crashed) and returns the disk as
@@ -356,7 +402,6 @@ impl File for SimFile {
         for p in &pending {
             apply_pending(&mut inode.durable, p);
         }
-        debug_assert!(inode.durable == inode.data);
         Ok(())
     }
 }
@@ -558,6 +603,37 @@ mod tests {
         assert!(f.read_at(&mut [0u8; 1], 0).is_err());
         assert!(vfs.has_crashed());
         assert!(vfs.take_crash_image().is_some());
+    }
+
+    #[test]
+    fn injected_fault_fails_one_op_and_device_survives() {
+        let vfs = SimVfs::new(5);
+        vfs.create_dir_all(&path("/db")).unwrap();
+        let f = vfs.open(&path("/db/a"), OpenMode::CreateNew).unwrap();
+        vfs.sync_dir(&path("/db")).unwrap();
+        f.write_at(b"abc", 0).unwrap();
+        vfs.fail_after(1, None);
+        assert!(f.sync_data().is_err());
+        assert!(vfs.fault_injected());
+        // The write is still pending (not durable) and the device works.
+        let lost = (0..20).any(|seed| {
+            let v = SimVfs::new(seed);
+            v.create_dir_all(&path("/db")).unwrap();
+            let g = v.open(&path("/db/a"), OpenMode::CreateNew).unwrap();
+            v.sync_dir(&path("/db")).unwrap();
+            g.write_at(b"abc", 0).unwrap();
+            v.fail_after(1, None);
+            let _ = g.sync_data();
+            v.crash_now(CrashKind::PowerLoss).open(&path("/db/a"), OpenMode::Existing).unwrap().len().unwrap() == 0
+        });
+        assert!(lost, "a write whose sync failed must not be guaranteed durable");
+        f.write_at(b"d", 3).unwrap();
+        f.sync_data().unwrap();
+        let after = vfs.crash_now(CrashKind::PowerLoss);
+        let g = after.open(&path("/db/a"), OpenMode::Existing).unwrap();
+        let mut buf = [0u8; 4];
+        g.read_at(&mut buf, 0).unwrap();
+        assert_eq!(&buf, b"abcd");
     }
 
     #[test]

@@ -1,7 +1,6 @@
 //! LSM-specific behaviour not covered by the shared suite: file lifecycle,
 //! compaction effects, stats, poisoning and recovery edge cases.
 
-use std::collections::BTreeMap;
 use std::io;
 use std::ops::{Bound, RangeBounds};
 use std::path::Path;
@@ -98,16 +97,16 @@ fn compaction_reclaims_space_and_keeps_data() {
     assert!(size < 4 * live as u64 + (512 << 10), "{size} bytes on disk for {live} live bytes");
     assert!(read_all(&db.snapshot().unwrap()).unwrap() == model);
 
-    // Deleting everything eventually reclaims (almost) all space.
+    // Delete everything; tombstones hide all data, also after reopen.
     let mut b = WriteBatch::new();
     for k in model.keys() {
         b.delete(k.clone());
     }
     db.commit(&b).unwrap();
-    model.clear();
-    fill(&db, &mut BTreeMap::new(), 99, 0);
     assert!(read_all(&db.snapshot().unwrap()).unwrap().is_empty());
     db.close().unwrap();
+    let db = open(&vfs, &opts).unwrap();
+    assert!(read_all(&db.snapshot().unwrap()).unwrap().is_empty());
 }
 
 #[test]

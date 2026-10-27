@@ -148,7 +148,7 @@ fn one_seed<E: Engine>(seed: u64, kind: CrashKind, durability: Durability) {
 }
 
 /// One step of the deterministic scenario used by [`every_point`].
-enum Step {
+pub(super) enum Step {
     Open,
     Commit(WriteBatch),
     Close,
@@ -159,7 +159,7 @@ enum Step {
 /// Fixed scenario touching every phase of an engine's life: creation,
 /// commits (small, large values, deletes), clean close, reopen, unclean
 /// drop, recovery and more commits. Deterministic for a given seed.
-fn scenario(seed: u64) -> Vec<Step> {
+pub(super) fn scenario(seed: u64) -> Vec<Step> {
     let mut w = Workload::new(seed);
     w.key_space = 120;
     w.large_per_mille = 100;

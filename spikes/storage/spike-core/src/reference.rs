@@ -159,11 +159,10 @@ impl Engine for LogEngine {
             _ => Error::Io(e),
         })?;
         let path = dir.join(LOG);
-        let fresh = !vfs.exists(&path)?;
         let file = vfs.open(&path, OpenMode::CreateOrOpen)?;
-        if fresh {
-            vfs.sync_dir(dir)?;
-        }
+        // Always, not only when the file was just created: a previous open
+        // may have created it and then failed before syncing the directory.
+        vfs.sync_dir(dir)?;
         let len = file.len()?;
         let mut buf = vec![0u8; len as usize];
         file.read_at(&mut buf, 0)?;

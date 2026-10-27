@@ -460,26 +460,21 @@ impl Inner {
         else {
             return Ok(false);
         };
-        let installed = (|| {
-            if !outputs.is_empty() {
-                self.vfs.sync_dir(&self.dir)?;
-            }
-            let mut ms = self.manifest.lock();
-            let levels = compaction::apply(&ms.levels, plan, &outputs)?;
-            self.write_manifest(&levels, ms.last_seq, ms.log_number)?;
-            ms.levels = levels.clone();
-            for t in plan.all_inputs() {
-                t.mark_obsolete();
-            }
-            self.install(levels, None);
-            Ok::<_, Error>(())
-        })();
-        if let Err(e) = installed {
-            for t in &outputs {
-                t.mark_obsolete();
-            }
-            return Err(e);
+        // On failure the outputs are left on disk: once the MANIFEST write
+        // has started, a new MANIFEST that references them may survive (a
+        // rename whose `sync_dir` failed). Recovery deletes them if not.
+        if !outputs.is_empty() {
+            self.vfs.sync_dir(&self.dir)?;
         }
+        let mut ms = self.manifest.lock();
+        let levels = compaction::apply(&ms.levels, plan, &outputs)?;
+        self.write_manifest(&levels, ms.last_seq, ms.log_number)?;
+        ms.levels = levels.clone();
+        for t in plan.all_inputs() {
+            t.mark_obsolete();
+        }
+        self.install(levels, None);
+        drop(ms);
         let read: u64 = plan.all_inputs().map(|t| t.size).sum();
         bump(&self.stats.compactions, 1);
         bump(&self.stats.compaction_bytes_read, read);

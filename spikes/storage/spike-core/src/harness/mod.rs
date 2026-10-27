@@ -7,6 +7,7 @@
 
 pub mod corruption;
 pub mod crash;
+pub mod faults;
 pub mod functional;
 
 use std::collections::BTreeMap;
@@ -324,6 +325,13 @@ macro_rules! engine_test_suite {
                 } else {
                     eprintln!("engine does not claim prefix consistency for buffered commits on power loss");
                 }
+            }
+        }
+        mod shared_faults {
+            use super::*;
+            #[test]
+            fn single_io_failure_at_every_point() {
+                $crate::harness::faults::single_failure_at_every_point::<$engine>();
             }
         }
         mod shared_corruption {
