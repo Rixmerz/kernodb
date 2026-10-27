@@ -194,6 +194,14 @@ fn headline(workload: &str) -> &'static [&'static str] {
             "write_amp",
             "commit_fsyncs_per_commit",
         ],
+        "point_deletes" => &[
+            "delete_commits_per_s",
+            "delete_commit_p50_us",
+            "delete_commit_p99_us",
+            "get_deleted_p50_us",
+            "get_deleted_p99_us",
+            "get_live_p99_us",
+        ],
         "append_seq" => {
             &["append_kops", "update_kops", "update_commit100_p99_us", "write_amp", "space_amp", "peak_rss_mb"]
         }
@@ -258,7 +266,12 @@ fn cmd_report(args: &Args) {
         let n = v["n"].as_f64().unwrap() as u64;
         let mut durability = v["durability"].as_str().unwrap_or("sync").to_string();
         if v["cache"].as_str() == Some("cold") {
-            durability += ", cold cache";
+            // Only call it cold if dropping the OS cache actually worked.
+            durability += if v["cold_cache"].as_f64() == Some(1.0) {
+                ", cold cache"
+            } else {
+                ", cold cache requested but NOT applied (needs root)"
+            };
         }
         if let Some(e) = v.get("error") {
             failures.push(format!(

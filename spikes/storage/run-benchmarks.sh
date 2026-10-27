@@ -7,6 +7,8 @@
 #   REPS    [3]              repetitions per combination
 #   ENGINES [btree,lsm,redb,fjall,sqlite]
 #   COLD    [1]              also run read workloads with the OS cache dropped (needs root)
+#   LARGE   [1]              also run LARGE_WORKLOADS at the `large` scale (1M records), LARGE_REPS times
+#   LARGE_WORKLOADS [bulk_load,point_reads,range_scans,small_commits]   LARGE_REPS [1]
 #   OUT     [spikes/storage/results/<date>]
 #   DATA    [bench-data]     scratch directory (must be on the disk you want to measure)
 set -euo pipefail
@@ -16,6 +18,9 @@ SCALES="${SCALES:-small,medium}"
 REPS="${REPS:-3}"
 ENGINES="${ENGINES:-btree,lsm,redb,fjall,sqlite}"
 COLD="${COLD:-1}"
+LARGE="${LARGE:-1}"
+LARGE_WORKLOADS="${LARGE_WORKLOADS:-bulk_load,point_reads,range_scans,small_commits}"
+LARGE_REPS="${LARGE_REPS:-1}"
 OUT="${OUT:-spikes/storage/results/$(date +%Y-%m-%d)}"
 DATA="${DATA:-bench-data}"
 
@@ -39,6 +44,12 @@ if [ "$COLD" = 1 ]; then
   LAST_SCALE="${SCALES##*,}"
   "$BIN" suite --engines "$ENGINES" --workloads point_reads,range_scans --scales "$LAST_SCALE" \
     --reps "$REPS" --durability sync --cold true --dir "$DATA" --out "$OUT/results.jsonl"
+fi
+
+# 4. A larger data set (SAD §17.3: larger datasets if the environment allows).
+if [ "$LARGE" = 1 ]; then
+  "$BIN" suite --engines "$ENGINES" --workloads "$LARGE_WORKLOADS" --scales large --reps "$LARGE_REPS" \
+    --durability sync --dir "$DATA" --out "$OUT/results.jsonl"
 fi
 
 "$BIN" report --input "$OUT/results.jsonl" > "$OUT/report.md"

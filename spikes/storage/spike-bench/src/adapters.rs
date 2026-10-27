@@ -251,8 +251,11 @@ impl Engine for SqliteEngine {
             Durability::Sync => "FULL",
             Durability::Buffered => "NORMAL",
         };
+        // Each SQLite connection has a private page cache. Keep the total
+        // within the shared budget: half for the writer, an eighth for each
+        // of up to four reader connections.
         let cache_kib = (opts.cache_bytes / 1024) as i64;
-        let writer = sqlite_conn(&path, sync, cache_kib)?;
+        let writer = sqlite_conn(&path, sync, (cache_kib / 2).max(1024))?;
         writer
             .execute_batch("CREATE TABLE IF NOT EXISTS kv (k BLOB PRIMARY KEY, v BLOB NOT NULL) WITHOUT ROWID;")
             .map_err(err)?;
@@ -260,9 +263,7 @@ impl Engine for SqliteEngine {
             path,
             writer: Mutex::new(writer),
             readers: Arc::new(Mutex::new(Vec::new())),
-            // Each SQLite connection has a private page cache; split the
-            // budget so the total stays comparable to the other engines.
-            reader_cache_kib: (cache_kib / 4).max(1024),
+            reader_cache_kib: (cache_kib / 8).max(1024),
             seq: AtomicU64::new(0),
         })
     }

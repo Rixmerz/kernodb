@@ -20,6 +20,7 @@ pub const WORKLOADS: &[&str] = &[
     "point_reads",
     "range_scans",
     "small_commits",
+    "point_deletes",
     "append_seq",
     "mixed",
     "history_sim",
@@ -105,6 +106,7 @@ pub fn run<E: Engine>(workload: &str, ctx: &Ctx, rep: &mut Report) -> Result<()>
         "point_reads" => point_reads::<E>(ctx, rep),
         "range_scans" => range_scans::<E>(ctx, rep),
         "small_commits" => small_commits::<E>(ctx, rep),
+        "point_deletes" => point_deletes::<E>(ctx, rep),
         "append_seq" => append_seq::<E>(ctx, rep),
         "mixed" => mixed::<E>(ctx, rep),
         "history_sim" => history_sim::<E>(ctx, rep),
@@ -177,6 +179,27 @@ fn preload_and_reopen<E: Engine>(ctx: &Ctx, rng: &mut Rng, rep: &mut Report) -> 
     let t = Instant::now();
     db.reopen(ctx)?;
     rep.num("reopen_ms", t.elapsed().as_secs_f64() * 1000.0);
+    if !ctx.cold {
+        // Warm-up, kept out of every measurement (SAD §17.4): one full pass
+        // over the data loads the engine's own cache as far as its budget
+        // allows. Cold-cache runs skip it on purpose.
+        let t = Instant::now();
+        let s = db.get().snapshot()?;
+        let mut last: Option<Vec<u8>> = None;
+        loop {
+            let start = match &last {
+                None => Bound::Unbounded,
+                Some(k) => Bound::Excluded(k.as_slice()),
+            };
+            let page = s.scan(start, Bound::Unbounded, 1000)?;
+            if page.len() < 1000 {
+                break;
+            }
+            last = page.last().map(|(k, _)| k.clone());
+        }
+        drop(s);
+        rep.num("warmup_ms", t.elapsed().as_secs_f64() * 1000.0);
+    }
     Ok(db)
 }
 
@@ -270,6 +293,43 @@ fn small_commits<E: Engine>(ctx: &Ctx, rep: &mut Report) -> Result<()> {
     lat.report(rep, "commit");
     rep.num("write_amp", (w1 - w0) as f64 / logical as f64);
     io_report(rep, "commit", &db.io.snapshot().since(&io0), commits);
+    Ok(())
+}
+
+/// Durable deletes of random existing keys, one per commit (the "delete"
+/// part of SAD §17.3 workload 1), then reads of deleted keys (a tombstone or
+/// a removed entry must answer "absent") and of keys still present.
+fn point_deletes<E: Engine>(ctx: &Ctx, rep: &mut Report) -> Result<()> {
+    let mut rng = Rng::new(ctx.seed);
+    let db = preload_and_reopen::<E>(ctx, &mut rng, rep)?;
+    let deletes = 5_000.min(ctx.n / 2);
+    let mut victims = std::collections::BTreeSet::new();
+    while (victims.len() as u64) < deletes {
+        victims.insert(rng.below(ctx.n));
+    }
+    let io0 = db.io.snapshot();
+    let mut lat = Lat::new();
+    let t = Instant::now();
+    for &i in &victims {
+        let mut b = WriteBatch::new();
+        b.delete(user_key(i));
+        lat.time(|| db.get().commit(&b))?;
+    }
+    rep.num("delete_commits_per_s", deletes as f64 / t.elapsed().as_secs_f64());
+    lat.report(rep, "delete_commit");
+    io_report(rep, "delete", &db.io.snapshot().since(&io0), deletes);
+    let s = db.get().snapshot()?;
+    let victims: Vec<u64> = victims.into_iter().collect();
+    let (mut gone, mut live) = (Lat::new(), Lat::new());
+    for _ in 0..20_000 {
+        let i = victims[rng.below(victims.len() as u64) as usize];
+        assert!(gone.time(|| s.get(&user_key(i)))?.is_none(), "deleted key still visible");
+        let j = rng.below(ctx.n);
+        let got = live.time(|| s.get(&user_key(j)))?;
+        assert_eq!(got.is_some(), victims.binary_search(&j).is_err());
+    }
+    gone.report(rep, "get_deleted");
+    live.report(rep, "get_live");
     Ok(())
 }
 
