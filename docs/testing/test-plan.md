@@ -21,7 +21,7 @@ Todo vive en [`spikes/storage/spike-core`](../../spikes/storage/spike-core):
 
 ### 2.1 Validación del harness (mutation testing manual)
 
-Antes de confiar en el harness se le inyectaron fallos conocidos a `LogEngine`:
+Antes de confiar en el harness se le inyectaron fallos conocidos (en `LogEngine` y, para las dos últimas filas, en una copia del prototipo B+ tree). Las filas marcadas en negrita obligaron a reforzar el harness:
 
 | Mutación | Detectada por |
 |---|---|
@@ -30,6 +30,8 @@ Antes de confiar en el harness se le inyectaron fallos conocidos a `LogEngine`:
 | Sincronizar el directorio solo si el archivo «acaba de crearse» | `single_io_failure_at_every_point` — **error real** de `LogEngine`, corregido |
 | `rename` del archivo reescrito sin `fsync` previo | `power_loss_sync`, `power_loss_buffered` (tras reducir el espacio de claves del workload para forzar reescrituras del log; la primera versión del harness no lo detectaba) |
 | Tratar corrupción a mitad del log como cola rota | `bit_flips_are_detected_or_harmless` |
+| B+ tree: `close()` no escribe el segundo slot del meta | `bit_flips_are_detected_or_harmless` (semilla 7) — **solo tras dirigir la mitad de los daños a cabeceras/metas**; con daño uniforme sobrevivía > 40 semillas |
+| B+ tree: el commit sobrescribe el slot del meta **vigente** | `power_loss_sync`, `power_loss_at_every_io_point` — **solo tras añadir desgarro a nivel de byte**; con desgarro a 512 B el meta (92 B) se escribía de forma atómica y el fallo era invisible |
 | (Log truncado tras cierre limpio) | `truncations_are_detected_or_harmless` — por eso `LogEngine` declara `detects_truncation = false` |
 
 ## 3. Pruebas compartidas (SAD §17.6)
