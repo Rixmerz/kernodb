@@ -13,7 +13,7 @@ Tipos de fallo (modelados por [`SimVfs`](../../spikes/storage/spike-core/src/vfs
 | Fallo | Qué sobrevive |
 |---|---|
 | **Muerte del proceso** | Todo lo que el proceso escribió (la caché del SO sobrevive). |
-| **Corte de energía** | Solo lo sincronizado; cada escritura pendiente se pierde, se aplica o se rompe a 512 B, en cualquier orden; las operaciones de directorio no sincronizadas sobreviven como prefijo. |
+| **Corte de energía** | Solo lo sincronizado; cada escritura pendiente se pierde, se aplica o se rompe (a 512 B o, en la mitad de las semillas y puntos, en cualquier byte), en cualquier orden; las operaciones de directorio no sincronizadas sobreviven como prefijo. |
 | **EIO aislado** | Una operación falla (sin efecto; un `fsync` fallido deja sus escrituras sin garantía) y el dispositivo sigue funcionando. |
 
 ## 1. Cómo se verifica
@@ -22,12 +22,12 @@ La matriz no es solo documentación: cada fila se ejercita automáticamente.
 
 | Prueba | Qué recorre | Resultado esperado comprobado |
 |---|---|---|
-| `crash::every_point` | Caída antes de **cada** operación de E/S mutante de un escenario fijo (creación, 25 commits, cierre limpio, reapertura, 20 commits, cierre sucio, recuperación, 10 commits, cierre), para muerte de proceso y corte de energía | estado = commit `s` con `confirmados ≤ s ≤ intentados`; la base sigue aceptando commits y es durable |
+| `crash::every_point` | Caída antes de **cada** operación de E/S mutante de un escenario fijo (creación, 25 commits, cierre limpio, reapertura, 20 commits, cierre sucio, recuperación, 10 commits, cierre): muerte de proceso y corte de energía en `Sync`, y muerte de proceso en `Buffered` | estado = commit `s` con `confirmados ≤ s ≤ intentados`; la base recuperada acepta un commit más, cierra, y ese estado sobrevive a un corte de energía posterior |
 | `faults::single_failure_at_every_point` | Un EIO en **cada** operación de E/S del mismo escenario, seguido de reinicio o de corte de energía inmediato | error devuelto, handle envenenado, ningún commit confirmado con `fsync` fallido, recuperación correcta |
-| `crash::run` | Caídas en puntos aleatorios de historias largas (5 rondas por semilla, incluidas caídas **durante** la recuperación y durante trabajo en segundo plano) | igual que arriba, encadenando recuperaciones |
+| `crash::run` | Caídas en puntos aleatorios de historias largas (5 rondas por semilla, incluidas caídas **durante** la recuperación y durante trabajo en segundo plano), en `Sync` y `Buffered`; el corte de energía en `Buffered` solo para motores que declaran prefijo consistente | igual que arriba, encadenando recuperaciones; en `Buffered` + corte de energía, cualquier prefijo desde el inicio de la ronda |
 | `corruption::*` | Bit flips y truncamientos tras cierre limpio | dato correcto o error; nunca otro dato ni retroceso |
 
-Los puntos concretos del escenario varían con el motor (cada uno hace un número distinto de operaciones); las filas siguientes agrupan esos puntos por fase del protocolo.
+Los puntos concretos del escenario varían con el motor (cada uno hace un número distinto de operaciones); las filas siguientes agrupan esos puntos por fase del protocolo. Las pruebas comprueban la regla común a todas las filas (`N ≤ s ≤ N+1` respecto del commit en curso), no el valor concreto que predice cada fila: las filas explican por qué la regla se cumple en cada punto. Las filas de modo `Buffered` se ejercitan con caídas aleatorias (`crash::run`) y con el barrido de muerte de proceso en `Buffered`; no hay barrido de corte de energía en `Buffered`, porque ahí la única garantía es el prefijo (LSM) o ninguna (B+ tree).
 
 ## 2. Candidato A: copy-on-write B+ tree ([diseño](../../spikes/storage/spike-btree/DESIGN.md))
 

@@ -22,7 +22,7 @@ Toda medición que respalde una decisión de arquitectura sigue estas reglas, im
 | Compilación | Mismo `rustc`, perfil `release`, mismas dependencias (`Cargo.lock` versionado). |
 | Datos | Mismos generadores deterministas y semillas para todos los motores. |
 | Durabilidad | Equivalente y explícita (tabla siguiente). Nunca se compara durabilidad fuerte con relajada como si fueran iguales. |
-| Caché | Presupuesto de 64 MiB por motor (en SQLite repartido entre conexiones). La caché de páginas del SO es compartida y se declara (`warm`), o se vacía antes de las fases de lectura (`--cold true`). |
+| Caché | Presupuesto de 64 MiB por motor (en SQLite, cada conexión tiene su propia caché: la mitad para la escritora y un octavo para cada una de hasta cuatro lectoras). La caché de páginas del SO es compartida y se declara (`warm`), o se vacía antes de reabrir la base para las fases de lectura (`--cold true`, requiere root). |
 | Compresión | Desactivada en todos (fjall la activa por defecto; se desactiva). |
 | Aislamiento | Cada combinación (motor, workload, escala, repetición) corre en un **proceso nuevo** y un **directorio nuevo**, para que RAM máxima y contadores de E/S no se contaminen. |
 
@@ -39,6 +39,7 @@ Las cifras de `buffered` de redb se publican marcadas como no comparables.
 
 - Cada combinación se ejecuta **3 veces** (configurable), intercalando los motores en cada repetición para que las derivas lentas de la máquina no favorezcan a uno.
 - La carga de datos previa (*preload*) no se mide; la medición empieza tras reabrir la base.
+- **Calentamiento** separado de la medición (SAD §17.4): con caché caliente, tras reabrir se recorre la base completa con escaneos paginados antes de medir (su duración se registra como `warmup_ms`, fuera de toda métrica). Con `--cold true` no hay calentamiento, a propósito; el informe solo etiqueta una ejecución como «caché fría» si el vaciado de la caché del SO funcionó.
 - El informe muestra la **mediana**; si el rango entre mínimo y máximo supera el 15 % de la mediana, se muestra el rango junto a ella.
 
 ### Métricas obligatorias

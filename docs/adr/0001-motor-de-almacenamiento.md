@@ -14,7 +14,7 @@ Kerno necesita un núcleo key-value transaccional, embebido y local-first sobre 
 
 1. **A — B+ tree copy-on-write** (shadow paging, estilo LMDB/redb): un archivo de páginas, meta doble, MVCC por retención de páginas, sin hilos de fondo.
 2. **B — LSM nivelado** (estilo LevelDB/RocksDB): WAL + memtable + SST inmutables + compactación en segundo plano, MVCC por versiones de archivos.
-3. **C — Tercera vía** (adoptar un motor existente como capa de almacenamiento, o un híbrido con dos motores primarios): solo si la evidencia lo justificara. El plan descarta dos motores primarios en la primera versión y prefiere un núcleo propio (SAD §13, decisión 1 del plan).
+3. **C — Tercera vía** (adoptar un motor existente como capa de almacenamiento, o un híbrido con dos motores primarios): solo si la evidencia lo justificara. SAD §15 plantea ADR-0001 como implementación propia de uno de los dos enfoques y admite una tercera opción «solo si la evidencia la justifica»; los principios de núcleo pequeño y de medir antes de especializar (SAD §3, principios 2 y 8) y el plan maestro de Kerno descartan dos motores primarios en la primera versión.
 
 ## Criterios de decisión (fijados antes de medir)
 
@@ -26,7 +26,7 @@ Todo el detalle está en el [informe de M0](../testing/m0-report.md); aquí, lo 
 
 ### 1. Correctitud: requisito cumplido por ambos
 
-Ambos prototipos pasan, con 400 semillas, las mismas suites: modelo aleatorio, aislamiento, concurrencia, caídas en puntos aleatorios y en **cada** operación de E/S (muerte de proceso y corte de energía, con desgarro a 512 B y a nivel de byte), un EIO aislado en cada operación, bit flips dirigidos y truncamientos, y una prueba diferencial contra redb, fjall y SQLite. Ninguno devolvió nunca datos erróneos ni retrocedió en silencio.
+Ambos prototipos pasan, con 400 semillas, la misma batería compartida (el B+ tree, sin la variante `Buffered` + corte de energía, cuya garantía no ofrece; §2): modelo aleatorio, aislamiento, concurrencia, caídas en puntos aleatorios y en **cada** operación de E/S (muerte de proceso y corte de energía, con desgarro a 512 B y a nivel de byte), un EIO aislado en cada operación, bit flips dirigidos y truncamientos, y una prueba diferencial contra redb, fjall y SQLite. Ninguno devolvió nunca datos erróneos ni retrocedió en silencio.
 
 Llegar ahí exigió corregir defectos reales en los dos, hallados por el harness y por una revisión adversarial con reproducción independiente: en el B+ tree, uno de severidad **alta** (la apertura confiaba en un meta no durable y podía destruir el único árbol durable) y tres medios; en el LSM, uno **medio-alto** (daño a mitad del WAL tomado por cola rota, con pérdida silenciosa de commits confirmados) y uno medio. **La correctitud no desempata**: ambas arquitecturas tienen protocolos con sutilezas, aunque en sitios distintos (invariantes de meta y páginas libres en el B+ tree; ciclo de vida de archivos y concurrencia con hilos de fondo en el LSM).
 
@@ -101,7 +101,7 @@ Lectura de los datos:
 ### Por qué no las otras opciones
 
 - **B+ tree CoW**: más simple de operar y con mejores colas de latencia, pero los casos de referencia de Kerno son intensivos en escritura (Cauce: commits pequeños durables; memoria de agentes: ingesta continua; Revision Engine: cada cambio escribe además una revisión y un `ChangeSet`). Ahí el CoW es entre 1,6× y 8× más lento (2,8× en Cauce, 6,9× escribiendo historial), escribe ~100× más bytes por commit pequeño, lee peor con caché fría y no ofrece un modo de durabilidad relajada consistente sin trabajo adicional sustancial.
-- **Tercera vía**: en días de desarrollo, los prototipos alcanzaron el rendimiento de los motores maduros de su familia y superaron una batería de fallos más exigente que la de una prueba funcional, así que la evidencia **no** obliga a renunciar al núcleo propio. Un híbrido con dos motores primarios contradice el alcance del SAD. Adoptar un motor externo sigue siendo un plan de contingencia si la Fase 1 no cumple sus criterios de salida.
+- **Tercera vía**: en días de desarrollo, los prototipos alcanzaron el rendimiento de los motores maduros de su familia y superaron una batería de fallos más exigente que la de una prueba funcional, así que la evidencia **no** obliga a renunciar al núcleo propio. Un híbrido con dos motores primarios contradice el principio de núcleo pequeño (SAD §3, principio 2). Adoptar un motor externo sigue siendo un plan de contingencia si la Fase 1 no cumple sus criterios de salida.
 
 ## Consecuencias
 

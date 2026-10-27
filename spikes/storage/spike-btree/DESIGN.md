@@ -205,18 +205,19 @@ mark) or beyond it, and get overwritten later.
 
 | bytes | covered by |
 |-------|------------|
-| meta fields | meta crc (bytes 0..88) |
+| meta fields (each copy) | meta crc (bytes 0..88 of the copy) |
 | root page (all 4096 bytes) | crc in the meta |
 | every other tree page | crc in its parent's child entry |
 | overflow chains (all bytes of all pages) | chain crc + length in the leaf entry |
 | free-list log pages | crc in the meta, then in the previous log page |
-| rest of a meta page (92..4096), free pages | never read; damage is harmless |
+| rest of a meta page (outside the two 92-byte copies), the second copy while the first is valid, free pages | never read; damage is harmless |
 
 Crcs are verified on every read from the file, which in practice means every
 cache miss (the cache key includes the crc). Decoding also validates lengths, ordering,
 levels and page-id ranges, so a crc collision still cannot cause a panic or an
-out-of-bounds read. The shared bit-flip suite (400 seeds) gave 32 flips
-detected at open, 273 detected on read and 95 harmless, with no wrong data.
+out-of-bounds read. The shared bit-flip suite (400 seeds, half of the flips aimed at
+headers and metas) gave 28 flips detected at open, 191 detected on read and
+181 harmless, with no wrong data and no rollback (1000 seeds: 79 / 451 / 470).
 The truncation suite gave 400/400 detected at open.
 
 ## Cache

@@ -4,7 +4,7 @@ El plan completo, con objetivos y salidas por fase, está en [SAD §16](../archi
 
 | Fase | Contenido | Estado |
 |---|---|---|
-| 0 / M0 | Spike de almacenamiento, harness, ADR iniciales, invariantes, matriz de fallos | **Completada; pendiente de aprobación** de ADR-0001/0002/0003 — ver checklist |
+| 0 / M0 | Spike de almacenamiento, harness, ADR iniciales, invariantes, matriz de fallos | **Entregables completos; el cierre de M0 queda pendiente de aprobar** ADR-0001/0002/0003 — ver checklist |
 | 1 | Núcleo persistente | Bloqueada hasta aceptar ADR-0001, ADR-0002 y ADR-0003 |
 | 2 | Transacciones y documentos | — |
 | 3 | Versionado (Revision Engine) | — |
@@ -19,7 +19,7 @@ El plan completo, con objetivos y salidas por fase, está en [SAD §16](../archi
 | 1 | ADR-0001 selecciona un enfoque o documenta por qué ninguno debe implementarse todavía | Hecho: recomienda **LSM nivelado**; pendiente de aprobación | [ADR-0001](../adr/0001-motor-de-almacenamiento.md) |
 | 2 | Informe reproducible con código, comandos, configuración y resultados | Hecho | [informe M0](../testing/m0-report.md), [`run-benchmarks.sh`](../../spikes/storage/run-benchmarks.sh) |
 | 3 | Matriz de puntos de fallo y estado esperado tras recuperación | Hecho | [matriz de fallos](../architecture/failure-matrix.md) |
-| 4 | Significado exacto de commit y durabilidad propuestos | Propuesto | [ADR-0002](../adr/0002-transacciones-y-durabilidad.md) |
+| 4 | Significado exacto de commit y durabilidad propuestos | Hecho: propuesto; pendiente de aprobación | [ADR-0002](../adr/0002-transacciones-y-durabilidad.md) |
 | 5 | Comparación por complejidad, recuperación, compactación, rangos y compatibilidad con Revision Engine | Hecho | ADR-0001 §Evidencia (3 y 4), [diseño de revisiones](../architecture/revision-model-design.md) |
 | 6 | Decisiones que dependen del almacenamiento frente a las desacopladas | Hecho | ADR-0001 §Consecuencias |
 | 7 | Sin dependencia funcional obligatoria de IA, red o proveedor externo | Hecho | los prototipos solo dependen de `crc32c`, `parking_lot`, `quick_cache` y `crossbeam-skiplist`; los motores de referencia solo se usan en el benchmark |

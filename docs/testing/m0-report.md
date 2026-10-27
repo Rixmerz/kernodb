@@ -14,7 +14,7 @@ Este informe recoge la evidencia con la que se decide ADR-0001: primero la **cor
 | `fjall` 3.1 | LSM maduro | referencia de la familia B |
 | SQLite 3 (rusqlite 0.41, WAL) | B-tree + WAL | referencia general |
 
-Los dos candidatos implementan el mismo contrato (`spike_core::Engine`) y pasan exactamente las mismas pruebas; los motores de referencia solo participan en los benchmarks y en la prueba diferencial.
+Los dos candidatos implementan el mismo contrato (`spike_core::Engine`) y pasan la misma batería compartida, con una excepción declarada: el B+ tree no promete un prefijo consistente en `Buffered` ante corte de energía y no ejecuta esa variante (§2.3). Las pruebas unitarias y de regresión son propias de cada motor. Los motores de referencia solo participan en los benchmarks y en la prueba diferencial.
 
 ## 2. Correctitud
 
@@ -25,8 +25,8 @@ Ejecución con `SPIKE_SEEDS=400 cargo test --release` sobre el commit final (ver
 | Suite (compartida salvo indicación) | B+ tree | LSM |
 |---|---|---|
 | Funcionales (14 pruebas: modelo aleatorio, reaperturas limpias y sucias, aislamiento bajo churn, 4 lectores concurrentes, límites, espacio, FS real) | ✅ | ✅ |
-| Caídas en puntos aleatorios (4 variantes × 400 semillas × 5 rondas, incluidas caídas durante la recuperación y desgarro a nivel de byte en la mitad de las semillas) | ✅ | ✅ |
-| Caída antes de **cada** operación de E/S del escenario fijo (corte de energía y muerte de proceso) | ✅ | ✅ |
+| Caídas en puntos aleatorios (400 semillas × 5 rondas, incluidas caídas durante la recuperación y desgarro a nivel de byte en la mitad de las semillas) | ✅ 3 variantes (sin `Buffered` + corte de energía) | ✅ 4 variantes |
+| Caída antes de **cada** operación de E/S del escenario fijo (corte de energía y muerte de proceso en `Sync`, muerte de proceso en `Buffered`; tras recuperar, un commit más, cierre y corte de energía) | ✅ | ✅ |
 | Un EIO aislado en **cada** operación de E/S (reinicio y corte inmediato) | ✅ | ✅ |
 | `Buffered` + corte de energía = prefijo consistente | ⚠️ no lo garantiza (ver §2.3) | ✅ |
 | Bit flips tras cierre limpio (400; la mitad dirigidos a cabeceras/metas/pies) | ✅ 28 detectados al abrir · 191 al leer · 181 inocuos · **0 datos erróneos · 0 retrocesos** | ✅ 34 al abrir · 366 al leer · 0 inocuos · **0 datos erróneos · 0 retrocesos** |

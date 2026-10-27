@@ -14,14 +14,14 @@ Todo vive en [`spikes/storage/spike-core`](../../spikes/storage/spike-core):
 |---|---|
 | `Engine` / `Snapshot` | Contrato común a ambos candidatos (batches atómicos, secuencia de commit, snapshots, apertura exclusiva, errores tipados). |
 | `Vfs` | Todo acceso a archivos pasa por esta abstracción; los motores nunca usan `std::fs` directamente. |
-| `SimVfs` | Sistema de archivos en memoria que simula **corte de energía** (escrituras no sincronizadas descartadas, reordenadas o rotas a 512 B; metadatos de directorio como prefijo journaled) y **muerte del proceso** (sobrevive todo lo escrito). Puede provocar la caída justo antes de la *n*-ésima operación de E/S mutante, o **un único error de E/S** (EIO) en esa operación con el dispositivo vivo. |
+| `SimVfs` | Sistema de archivos en memoria que simula **corte de energía** (escrituras no sincronizadas descartadas, reordenadas o rotas a 512 B o a nivel de byte; metadatos de directorio como prefijo journaled) y **muerte del proceso** (sobrevive todo lo escrito). Puede provocar la caída justo antes de la *n*-ésima operación de E/S mutante, o **un único error de E/S** (EIO) en esa operación con el dispositivo vivo. |
 | `CountingVfs` | Cuenta bytes, operaciones y `fsync` para medir amplificación. |
 | `engine_test_suite!` | Genera la misma batería de pruebas para cada motor. |
 | `LogEngine` | Motor trivialmente correcto que valida el propio harness (si falla una prueba compartida, la prueba está mal). |
 
 ### 2.1 Validación del harness (mutation testing manual)
 
-Antes de confiar en el harness se le inyectaron fallos conocidos (en `LogEngine` y, para las dos últimas filas, en una copia del prototipo B+ tree). Las filas marcadas en negrita obligaron a reforzar el harness:
+Antes de confiar en el harness se le inyectaron fallos conocidos (en `LogEngine` y, para las filas 6 y 7, en una copia del prototipo B+ tree). Las filas marcadas en negrita obligaron a reforzar el harness:
 
 | Mutación | Detectada por |
 |---|---|
@@ -47,7 +47,7 @@ Antes de confiar en el harness se le inyectaron fallos conocidos (en `LogEngine`
 
 ### 3.0 Revisión adversarial y regresiones
 
-Además de las suites compartidas, cada candidato pasó por una revisión adversarial (cinco revisores por clase de fallo —protocolo de caídas, concurrencia, integridad frente a archivos dañados, semántica del contrato, rendimiento— y dos verificadores independientes por hallazgo, que debían refutarlo o reproducirlo con una prueba). Cada defecto confirmado quedó como prueba en `tests/regressions.rs` del motor correspondiente. La lista completa está en el [informe de M0 §2.2](m0-report.md#22-defectos-encontrados-y-cómo-se-encontraron).
+Además de las suites compartidas, cada candidato pasó por una revisión adversarial (cinco revisores por clase de fallo —protocolo de caídas, concurrencia, integridad frente a archivos dañados, semántica del contrato, rendimiento— y dos verificadores independientes por hallazgo, que debían refutarlo o reproducirlo con una prueba). Los defectos confirmados quedaron como pruebas en `tests/regressions.rs` del motor correspondiente, salvo tres del LSM de severidad baja que solo se verificaron con la reproducción del revisor: lotes de más de 4 GiB (la prueba exigiría asignar más de 4 GiB), aritmética sin comprobar con SST fabricadas y la doble lectura de bloque en `seek` (rendimiento). La lista completa está en el [informe de M0 §2.2](m0-report.md#22-defectos-encontrados-y-cómo-se-encontraron).
 
 ### 3.1 Cómo ejecutarlas
 
@@ -58,7 +58,7 @@ cargo test -p spike-lsm                     # candidato LSM
 cargo test -p spike-bench --features candidates --release   # prueba diferencial
 cargo test --workspace --all-features --release              # todo (lo que ejecuta la CI)
 
-# Más semillas (las suites aleatorias usan 60–150 por defecto):
+# Más semillas (las suites aleatorias usan entre 4 y 150 por defecto):
 SPIKE_SEEDS=1000 cargo test -p spike-btree --release
 
 # Reproducir un fallo concreto:
