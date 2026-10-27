@@ -9,6 +9,12 @@ pub struct Lat {
     h: Histogram<u64>,
 }
 
+impl Default for Lat {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Lat {
     pub fn new() -> Self {
         Lat { h: Histogram::new_with_bounds(1, 60_000_000_000, 3).unwrap() }

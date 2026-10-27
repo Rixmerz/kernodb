@@ -306,10 +306,10 @@ impl Engine for SqliteEngine {
 
 impl Drop for SqliteSnapshot {
     fn drop(&mut self) {
-        if let Some(c) = self.conn.take() {
-            if c.execute_batch("COMMIT;").is_ok() {
-                self.pool.lock().push(c);
-            }
+        if let Some(c) = self.conn.take()
+            && c.execute_batch("COMMIT;").is_ok()
+        {
+            self.pool.lock().push(c);
         }
     }
 }
