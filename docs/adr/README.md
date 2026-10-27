@@ -11,9 +11,9 @@ Reglas:
 
 | ADR | Título | Estado |
 |---|---|---|
-| [0001](0001-motor-de-almacenamiento.md) | Motor de almacenamiento físico | Propuesto (recomendación con evidencia de M0) |
+| [0001](0001-motor-de-almacenamiento.md) | Motor de almacenamiento físico | Propuesto: **LSM nivelado** (recomendación con evidencia de M0) |
 | [0002](0002-transacciones-y-durabilidad.md) | Modelo de transacciones y durabilidad | Propuesto (borrador con matriz de fallos) |
-| [0003](0003-formato-fisico-y-versionado.md) | Formato físico y versionado | Propuesto (principios; formato no congelado) |
+| [0003](0003-formato-fisico-y-versionado.md) | Formato físico y versionado | Propuesto (reglas de versionado e integridad; formato no congelado) |
 | [0004](0004-historial-de-revisiones.md) | Historial de revisiones | Pendiente (diseño preliminar disponible) |
 | [0005](0005-identificadores-publicos.md) | Identificadores públicos | Propuesto (borrador) |
 | [0006](0006-cifrado-y-gestion-de-claves.md) | Cifrado y gestión de claves | Pendiente |

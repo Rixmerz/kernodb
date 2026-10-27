@@ -45,6 +45,10 @@ Antes de confiar en el harness se le inyectaron fallos conocidos (en `LogEngine`
 | Benchmarks repetibles con un único comando | [`spikes/storage/run-benchmarks.sh`](../../spikes/storage/run-benchmarks.sh) |
 | Al menos una medición de rango, recuperación y memoria/disco | `range_scans`, `bulk_load`/`cauce` (`recovery_ms`), `peak_rss_mb`, `space_amp*` |
 
+### 3.0 Revisión adversarial y regresiones
+
+Además de las suites compartidas, cada candidato pasó por una revisión adversarial (cinco revisores por clase de fallo —protocolo de caídas, concurrencia, integridad frente a archivos dañados, semántica del contrato, rendimiento— y dos verificadores independientes por hallazgo, que debían refutarlo o reproducirlo con una prueba). Cada defecto confirmado quedó como prueba en `tests/regressions.rs` del motor correspondiente. La lista completa está en el [informe de M0 §2.2](m0-report.md#22-defectos-encontrados-y-cómo-se-encontraron).
+
 ### 3.1 Cómo ejecutarlas
 
 ```bash
@@ -52,6 +56,7 @@ cargo test -p spike-core                    # harness + LogEngine
 cargo test -p spike-btree                   # candidato CoW B+ tree
 cargo test -p spike-lsm                     # candidato LSM
 cargo test -p spike-bench --features candidates --release   # prueba diferencial
+cargo test --workspace --all-features --release              # todo (lo que ejecuta la CI)
 
 # Más semillas (las suites aleatorias usan 60–150 por defecto):
 SPIKE_SEEDS=1000 cargo test -p spike-btree --release
@@ -74,6 +79,10 @@ SPIKE_POINT=57 cargo test -p spike-lsm shared_crash::power_loss_at_every_io_poin
 | Compatibilidad | — | vectores de prueba por versión de formato, migraciones con interrupción simulada |
 | Rendimiento | `spike-bench` (ADR-0012) | CI de rendimiento con umbrales de regresión de ADR-0012 |
 
-## 5. Gate de M0
+## 5. Integración continua
+
+[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) ejecuta en cada PR y en `main`: `cargo fmt --check`, `clippy -D warnings`, todas las suites en `release` (con un resumen de los resultados de corrupción en la página del job) y una pasada de benchmarks a escala `tiny` como prueba de humo. Una ejecución semanal programada sube las suites aleatorias a 1000 semillas.
+
+## 6. Gate de M0
 
 M0 solo se cierra si todas las pruebas compartidas pasan para el candidato elegido con `SPIKE_SEEDS ≥ 400` en `release`, el barrido de todos los puntos de E/S pasa para ambos tipos de fallo y los resultados de benchmark están publicados con su entorno. Los resultados de cada ejecución se registran en el [informe de M0](m0-report.md).
