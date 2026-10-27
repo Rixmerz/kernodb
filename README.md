@@ -6,7 +6,9 @@
 
 ## Estado
 
-**Fase 0 / M0 — decisión de almacenamiento basada en evidencia.** Todavía no existe el motor de Kerno ni una API utilizable: este repositorio contiene la arquitectura de referencia, los ADR y un *spike* que compara dos arquitecturas de almacenamiento (copy-on-write B+ tree y LSM tree) con las mismas pruebas de fallos y los mismos benchmarks.
+**Fase 0 / M0 completada, pendiente de aprobación.** Todavía no existe el motor de Kerno ni una API utilizable: este repositorio contiene la arquitectura de referencia, los ADR y un *spike* que compara dos arquitecturas de almacenamiento (copy-on-write B+ tree y LSM tree) con las mismas pruebas de fallos y los mismos benchmarks.
+
+**Recomendación de M0 ([ADR-0001](docs/adr/0001-motor-de-almacenamiento.md)): LSM nivelado.** Ambos candidatos superan las mismas pruebas de caídas, fallos de E/S y corrupción; en los casos de referencia de Kerno el LSM rinde entre 1,6× y 8× más en escritura (2,8× en commits durables tipo Cauce, 6,9× escribiendo historial), escribe ~100× menos bytes por commit pequeño y mantiene un prefijo consistente sin `fsync` por commit. El B+ tree conserva mejores colas de latencia y lecturas de historial más rápidas. Detalle en el [informe de M0](docs/testing/m0-report.md).
 
 No crees bases de datos reales con el código de `spikes/`: los formatos de los prototipos no están congelados y se descartarán o reescribirán en la Fase 1.
 
