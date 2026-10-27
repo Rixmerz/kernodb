@@ -35,7 +35,7 @@ Ejecución con `SPIKE_SEEDS=400 cargo test --workspace --all-features --release`
 | Regresiones de la revisión adversarial y de la auditoría previa al merge | ✅ 9 | ✅ 7 |
 | Prueba diferencial (misma historia en btree, lsm, LogEngine, redb, fjall, SQLite) | ✅ | ✅ |
 
-Pasada adicional de estrés con `SPIKE_SEEDS=1000` sobre las suites compartidas de ambos candidatos: todo en verde. Bit flips: B+ tree 79 detectados al abrir · 451 al leer · 470 inocuos; LSM 115 · 885 · 0. Truncamientos: 1000/1000 detectados al abrir en ambos. Ningún dato erróneo ni retroceso.
+Pasada adicional de estrés con `SPIKE_SEEDS=1000` sobre las suites compartidas de ambos candidatos, en el mismo commit ([`tests-seeds1000.log`](../../spikes/storage/results/2026-10-27/tests-seeds1000.log)): todo en verde. Bit flips: B+ tree 79 detectados al abrir · 451 al leer · 470 inocuos; LSM 122 · 878 · 0. Truncamientos: 1000/1000 detectados al abrir en ambos. Ningún dato erróneo ni retroceso.
 
 Los «inocuos» del B+ tree son bytes que el motor nunca lee (páginas libres, relleno del meta, la segunda copia del meta cuando la primera está intacta). El LSM no tiene bytes sin cubrir: todo daño se detecta.
 
