@@ -14,7 +14,7 @@ Todo vive en [`spikes/storage/spike-core`](../../spikes/storage/spike-core):
 |---|---|
 | `Engine` / `Snapshot` | Contrato común a ambos candidatos (batches atómicos, secuencia de commit, snapshots, apertura exclusiva, errores tipados). |
 | `Vfs` | Todo acceso a archivos pasa por esta abstracción; los motores nunca usan `std::fs` directamente. |
-| `SimVfs` | Sistema de archivos en memoria que simula **corte de energía** (escrituras no sincronizadas descartadas, reordenadas o rotas a 512 B; metadatos de directorio como prefijo journaled) y **muerte del proceso** (sobrevive todo lo escrito). Puede provocar la caída justo antes de la *n*-ésima operación de E/S mutante. |
+| `SimVfs` | Sistema de archivos en memoria que simula **corte de energía** (escrituras no sincronizadas descartadas, reordenadas o rotas a 512 B; metadatos de directorio como prefijo journaled) y **muerte del proceso** (sobrevive todo lo escrito). Puede provocar la caída justo antes de la *n*-ésima operación de E/S mutante, o **un único error de E/S** (EIO) en esa operación con el dispositivo vivo. |
 | `CountingVfs` | Cuenta bytes, operaciones y `fsync` para medir amplificación. |
 | `engine_test_suite!` | Genera la misma batería de pruebas para cada motor. |
 | `LogEngine` | Motor trivialmente correcto que valida el propio harness (si falla una prueba compartida, la prueba está mal). |
@@ -26,6 +26,8 @@ Antes de confiar en el harness se le inyectaron fallos conocidos a `LogEngine`:
 | Mutación | Detectada por |
 |---|---|
 | Omitir `fsync` en commits `Sync` | `power_loss_sync`, `power_loss_at_every_io_point` |
+| Ignorar el error de un `fsync` fallido y confirmar el commit | `single_io_failure_at_every_point` (variante con corte de energía inmediato; la primera versión, sin ella, no lo detectaba) |
+| Sincronizar el directorio solo si el archivo «acaba de crearse» | `single_io_failure_at_every_point` — **error real** de `LogEngine`, corregido |
 | `rename` del archivo reescrito sin `fsync` previo | `power_loss_sync`, `power_loss_buffered` (tras reducir el espacio de claves del workload para forzar reescrituras del log; la primera versión del harness no lo detectaba) |
 | Tratar corrupción a mitad del log como cola rota | `bit_flips_are_detected_or_harmless` |
 | (Log truncado tras cierre limpio) | `truncations_are_detected_or_harmless` — por eso `LogEngine` declara `detects_truncation = false` |
@@ -37,7 +39,7 @@ Antes de confiar en el harness se le inyectaron fallos conocidos a `LogEngine`:
 | La misma secuencia de operaciones produce el mismo estado lógico en cada candidato | `spike-bench/tests/differential.rs` (prototipos, `LogEngine`, redb, fjall y SQLite) |
 | Insert/update/delete/reopen recupera el estado esperado | `functional::*` (reapertura limpia y sucia, modelo aleatorio de 1200 commits, aislamiento, concurrencia, espacio) |
 | Detecta o rechaza archivos truncados | `corruption::truncations`, `corruption::bit_flips` |
-| Fallos en puntos predefinidos comparados con la matriz esperada | `crash::every_point` (caída antes de **cada** operación de E/S de un escenario fijo, para corte de energía y muerte de proceso) y `crash::run` (puntos aleatorios en historias largas, incluso durante la recuperación) |
+| Fallos en puntos predefinidos comparados con la matriz esperada | `crash::every_point` (caída antes de **cada** operación de E/S de un escenario fijo, para corte de energía y muerte de proceso), `faults::single_failure_at_every_point` (un EIO aislado en cada punto) y `crash::run` (puntos aleatorios en historias largas, incluso durante la recuperación) |
 | Benchmarks repetibles con un único comando | [`spikes/storage/run-benchmarks.sh`](../../spikes/storage/run-benchmarks.sh) |
 | Al menos una medición de rango, recuperación y memoria/disco | `range_scans`, `bulk_load`/`cauce` (`recovery_ms`), `peak_rss_mb`, `space_amp*` |
 
@@ -64,7 +66,7 @@ SPIKE_POINT=57 cargo test -p spike-lsm shared_crash::power_loss_at_every_io_poin
 | Unitarias | codificación de nodos/bloques, filtros bloom, manifest, WAL | + serialización documental, claves, políticas |
 | Propiedades / modelo | modelo `BTreeMap` con historias aleatorias | `proptest` con reducción de casos; modelos de revisiones e índices |
 | Integración | contrato `Engine` | API pública, CLI, documentos, revisiones |
-| Crash testing | `SimVfs` (energía y proceso, todos los puntos de E/S) | + kill -9 real de procesos y dispositivo con pérdida de escrituras (LazyFS / `dm-log-writes`); `fsync` que falla con el dispositivo vivo (I-10) |
+| Crash testing | `SimVfs` (energía y proceso, todos los puntos de E/S; un EIO aislado en cada punto) | + kill -9 real de procesos y dispositivo con pérdida de escrituras (LazyFS / `dm-log-writes`); semántica Linux de páginas descartadas tras `fsync` fallido |
 | Corrupción | bit flips y truncamientos tras cierre limpio | + daño durante uso, archivos fabricados |
 | Fuzzing | — | `cargo fuzz` sobre lectores de formato, WAL/manifest y parser documental (Fase 6) |
 | Compatibilidad | — | vectores de prueba por versión de formato, migraciones con interrupción simulada |
