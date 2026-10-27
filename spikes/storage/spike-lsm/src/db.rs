@@ -33,7 +33,12 @@ enum FileKind {
 }
 
 fn parse_name(name: &str) -> FileKind {
-    let number = |s: &str| (!s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())).then(|| s.parse().ok()).flatten();
+    // Only canonical names (as produced by `wal_name` / `sst_name`) count:
+    // a stray "1.wal" would otherwise be opened and deleted as "000001.wal".
+    let number = |s: &str| {
+        let n: u64 = s.bytes().all(|b| b.is_ascii_digit()).then(|| s.parse().ok()).flatten()?;
+        (format!("{n:06}") == s).then_some(n)
+    };
     if name == MANIFEST {
         FileKind::Manifest
     } else if name == MANIFEST_TMP {
@@ -225,11 +230,17 @@ fn recover(ctx: &Arc<TableCtx>) -> Result<Recovered> {
     next_file += 1;
     manifest::write(vfs, dir, &manifest_data(&levels, last_seq, wal_number, next_file))?;
     let live: HashSet<u64> = levels.iter().flatten().map(|t| t.number).collect();
+    // A snapshot that outlived the previous handle may delete one of these
+    // obsolete files concurrently; a file that is already gone is fine.
+    let remove = |path: &Path| match vfs.remove_file(path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        r => r,
+    };
     for &n in &wals {
-        vfs.remove_file(&dir.join(wal_name(n)))?;
+        remove(&dir.join(wal_name(n)))?;
     }
     for &n in ssts.iter().filter(|n| !live.contains(n)) {
-        vfs.remove_file(&ctx.path(n))?;
+        remove(&ctx.path(n))?;
     }
     let wal = WalWriter::create(vfs, dir, wal_number)?;
     vfs.sync_dir(dir)?;
@@ -295,9 +306,9 @@ impl Inner {
             return Ok(w.last_seq);
         }
         self.make_room(&mut w)?;
-        let seq = w.last_seq + 1;
-        let record = wal::encode_record(seq, batch.ops());
+        let seq = w.last_seq.checked_add(1).ok_or_else(|| Error::Corruption("commit sequence exhausted".into()))?;
         let sync = self.durability == Durability::Sync;
+        let record = wal::encode_record(seq, batch.ops(), sync)?;
         let io = w.wal.append(&record).and_then(|()| if sync { w.wal.sync() } else { Ok(()) });
         if let Err(e) = io {
             self.poison(format!("WAL write failed: {e}"));
@@ -484,6 +495,32 @@ impl Inner {
 
     // ---- shutdown ----
 
+    /// Runs compactions in the calling thread until no level is over its
+    /// target. Used by `close` (after the background threads stopped and
+    /// the final flush), so that a database is never left with a growing
+    /// L0 backlog: before, close abandoned the running compaction and then
+    /// added one more L0 file, so many short sessions grew L0 without bound.
+    fn compact_until_settled(&self) -> Result<()> {
+        // The background threads are joined; compaction must not see the
+        // shutdown flag and abandon its work.
+        self.shutting_down.store(false, Ordering::SeqCst);
+        let mut pointers = vec![Vec::new(); NUM_LEVELS];
+        loop {
+            let plan = {
+                let st = self.state.lock();
+                compaction::pick(&st.version.levels, &self.tuning, &pointers)
+            };
+            match plan {
+                Some(plan) => {
+                    if !self.compact(&plan, &mut pointers)? {
+                        return Ok(());
+                    }
+                }
+                None => return Ok(()),
+            }
+        }
+    }
+
     /// Flushes every memtable, writes a MANIFEST that needs no WAL, removes
     /// the WALs. Background threads must already be stopped.
     fn close(&self) -> Result<()> {
@@ -564,6 +601,11 @@ impl Engine for LsmEngine {
 
     fn open(vfs: Arc<dyn Vfs>, dir: &Path, opts: &Options) -> Result<Self> {
         vfs.create_dir_all(dir)?;
+        // The directory itself must be durable in its parent, or a power
+        // loss can remove a newly created database with everything in it.
+        if let Some(parent) = dir.parent().filter(|p| !p.as_os_str().is_empty()) {
+            vfs.sync_dir(parent)?;
+        }
         let lock = vfs.lock(&dir.join("LOCK")).map_err(|e| match e.kind() {
             io::ErrorKind::WouldBlock => Error::Locked,
             _ => Error::Io(e),
@@ -612,7 +654,10 @@ impl Engine for LsmEngine {
     fn close(self) -> Result<()> {
         self.stop_threads();
         self.inner.check_poisoned()?;
-        self.inner.or_poison("close failed", || self.inner.close())
+        self.inner.or_poison("close failed", || {
+            self.inner.close()?;
+            self.inner.compact_until_settled()
+        })
     }
 
     fn stats(&self) -> Vec<(String, u64)> {

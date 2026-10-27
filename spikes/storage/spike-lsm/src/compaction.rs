@@ -48,7 +48,7 @@ impl Tuning {
         Tuning {
             write_buffer,
             target_file_size: write_buffer as u64,
-            l1_max_bytes: (L0_COMPACTION_TRIGGER * write_buffer) as u64,
+            l1_max_bytes: (L0_COMPACTION_TRIGGER as u64).saturating_mul(write_buffer as u64),
         }
     }
 

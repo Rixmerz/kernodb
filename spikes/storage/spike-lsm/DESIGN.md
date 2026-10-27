@@ -18,7 +18,10 @@ damage and reasonably fast, not tuned. All file I/O goes through
 WAL and SST numbers come from one increasing counter (`next_file`) and are
 never reused. On open, files that match these patterns but are not live are
 deleted: WALs older than the MANIFEST's `log_number`, SSTs it does not
-reference, and `MANIFEST.tmp`. Files with other names are left alone.
+reference, and `MANIFEST.tmp`. Only canonical names (`NNNNNN.wal`, six or more
+digits exactly as written) match; files with other names, such as a stray
+`1.wal`, are left alone. A file that is already gone when recovery tries to
+delete it (a snapshot of a previous handle dropped it concurrently) is fine.
 
 ## Formats
 
@@ -26,7 +29,9 @@ All integers are little endian. `varint` is unsigned LEB128, and `bytes` is
 a varint length followed by the data. Every checksum is crc32c.
 
 **WAL record.** `len u32 | crc u32 | seq u64 | batch`. The crc covers
-`len`, `seq` and `batch`. The batch is `count varint` followed by
+`len`, `seq` and `batch`. Bit 31 of `len` (`SYNCED`) marks a record written in
+`Sync` mode; the body length is the low 31 bits, so a batch that encodes to
+2 GiB or more is rejected with `InvalidArgument` before anything is written. The batch is `count varint` followed by
 `tag u8 (1 put / 2 delete) | key bytes | [value bytes]` per op. Each record
 goes out in a single `write_at`.
 
@@ -152,7 +157,8 @@ it is dropped. That drop can happen on any thread.
 
 ## Recovery (every open, including a fresh database)
 
-1. Take the lock and list the directory. If the MANIFEST is present, read
+1. Sync the parent directory (so a newly created database directory is
+   durable), take the lock and list the directory. If the MANIFEST is present, read
    and verify it; corruption is reported, never treated as "start empty".
    If it is absent but WAL or SST files exist, that is `Corruption`. If the
    directory is empty, this is a new database.
@@ -166,6 +172,16 @@ it is dropped. That drop can happen on any thread.
    - Replay of a log stops at the first incomplete or crc-failing record.
      That is accepted only in the newest log; in an older log it is
      `Corruption`.
+   - **Torn tail or media damage.** A log is written by one handle in one
+     durability mode, and in `Sync` mode a record is only written after the
+     previous one is durable. If an invalid record is followed anywhere in
+     the file by a valid `SYNCED` record, the invalid one was durable and has
+     been damaged since: `Corruption`, and nothing is deleted. (Found by the
+     M0 adversarial review: before, such damage was truncated as a torn
+     tail, silently dropping acknowledged commits and deleting the log.)
+     Damage to the *last* record of a log is still indistinguishable from a
+     torn in-flight commit, and in `Buffered` mode out-of-order writes make a
+     valid record after an invalid one a normal power-loss outcome.
 4. Write the replayed commits to a new L0 SST (synced, then `sync_dir`).
 5. Write a MANIFEST whose `log_number` is a fresh WAL number, so every
    existing WAL becomes obsolete. Delete obsolete WALs and orphan SSTs,
@@ -188,6 +204,10 @@ Consequences:
 3. Write a MANIFEST with `last_seq` equal to the newest commit and a
    `log_number` above every WAL.
 4. Delete all WALs, then `sync_dir`.
+5. Run compactions in the calling thread until no level is over its target.
+   (Found by the M0 adversarial review: before, close abandoned the running
+   compaction and step 2 added one more L0 file, so many short sessions grew
+   L0 without bound and every reopen started with a compaction backlog.)
 
 After a clean close the directory holds only `LOCK`, `MANIFEST` and SSTs,
 and every byte of them is checksummed. That is why a flipped bit or a

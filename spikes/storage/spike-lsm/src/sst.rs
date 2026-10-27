@@ -324,7 +324,7 @@ impl Table {
             if e.offset != expected || e.len < 8 || (i > 0 && index[i - 1].last_key >= e.last_key) {
                 return Err(corrupt("malformed index entry"));
             }
-            expected = e.offset + e.len;
+            expected = e.offset.checked_add(e.len).ok_or_else(|| corrupt("malformed index entry"))?;
         }
         let largest = index.last().map(|e| e.last_key.clone()).ok_or_else(|| corrupt("empty index"))?;
         if expected != f.filter_off || smallest > index[0].last_key {
