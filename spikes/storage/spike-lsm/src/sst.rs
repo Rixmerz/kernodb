@@ -488,7 +488,15 @@ impl InternalIterator for TableIter<'_> {
         }
         let block = self.table.read_block(idx, self.fill_cache)?;
         let entry = block.lower_bound(target).ok_or_else(|| self.table.corrupt("unreadable block".into()))?;
-        self.load(idx, entry)
+        if entry < block.len() {
+            // Position in the block already read (a second `read_block`
+            // would hit the disk again when the cache is bypassed).
+            let e = block.entry(entry).ok_or_else(|| self.table.corrupt("unreadable block".into()))?;
+            self.block_idx = idx;
+            self.pos = Some((block, entry, e));
+            return Ok(());
+        }
+        self.load(idx + 1, 0)
     }
 
     fn next(&mut self) -> Result<()> {
