@@ -681,6 +681,10 @@ dependencies = [
 name = "spike-lsm"
 version = "0.0.0"
 dependencies = [
+ "crc32c",
+ "crossbeam-skiplist",
+ "parking_lot",
+ "quick_cache",
  "spike-core",
 ]
 
