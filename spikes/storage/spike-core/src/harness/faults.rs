@@ -110,6 +110,9 @@ pub fn single_failure_at_every_point<E: Engine>() {
             let ctx = format!("I/O error at mutating op #{point} of {total}, then {after:?}");
             let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let disk = SimVfs::new(point);
+                if point % 2 == 1 {
+                    disk.set_tear_unit(1);
+                }
                 let then = match after {
                     After::Restart => None,
                     After::PowerLoss => Some(CrashKind::PowerLoss),

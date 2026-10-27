@@ -56,19 +56,36 @@ fn damage_suite<E: Engine>(damage: Damage) {
         db.close().unwrap();
 
         let files: Vec<(PathBuf, u64)> = disk.files().into_iter().filter(|(_, len)| *len > 0).collect();
-        let total: u64 = files.iter().map(|(_, l)| l).sum();
-        let mut pick = rng.below(total);
-        let (path, offset) = files
-            .iter()
-            .find_map(|(p, len)| {
-                if pick < *len {
-                    Some((p.clone(), pick))
-                } else {
-                    pick -= len;
-                    None
+        let (path, offset) = if rng.chance(1, 2) {
+            // Uniform over all bytes on disk.
+            let total: u64 = files.iter().map(|(_, l)| l).sum();
+            let mut pick = rng.below(total);
+            files
+                .iter()
+                .find_map(|(p, len)| {
+                    if pick < *len {
+                        Some((p.clone(), pick))
+                    } else {
+                        pick -= len;
+                        None
+                    }
+                })
+                .unwrap()
+        } else {
+            // Aimed at structural bytes, which uniform damage almost never
+            // hits: the head or tail of a file (headers, footers, metas) or
+            // the head of a 4 KiB-aligned block (page and block headers).
+            let (p, len) = &files[rng.below(files.len() as u64) as usize];
+            let offset = match rng.below(3) {
+                0 => rng.below((*len).min(512)),
+                1 => len - 1 - rng.below((*len).min(512)),
+                _ => {
+                    let block = rng.below(len.div_ceil(4096)) * 4096;
+                    (block + rng.below(128)).min(len - 1)
                 }
-            })
-            .unwrap();
+            };
+            (p.clone(), offset)
+        };
         let what = match damage {
             Damage::BitFlip => {
                 let mask = 1u8 << rng.below(8);

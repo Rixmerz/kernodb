@@ -35,6 +35,10 @@ fn one_seed<E: Engine>(seed: u64, kind: CrashKind, durability: Durability) {
     opts.durability = durability;
 
     let mut disk = SimVfs::new(seed);
+    if seed % 2 == 1 {
+        // Odd seeds: writes can tear at any byte, not only at sectors.
+        disk.set_tear_unit(1);
+    }
     // History of every batch ever attempted, indexed by sequence - 1.
     let mut history: Vec<WriteBatch> = Vec::new();
     // State known to be recovered at the start of the round, and its seq.
@@ -247,6 +251,9 @@ pub fn every_point<E: Engine>(kind: CrashKind) {
         let ctx = format!("{kind:?} crash before mutating op #{point} of {total}");
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let disk = SimVfs::new(point);
+            if point % 2 == 1 {
+                disk.set_tear_unit(1);
+            }
             disk.crash_after(point, kind);
             let (acked, attempted) = run_scenario::<E>(&disk, &steps, &opts);
             let image = if disk.has_crashed() { disk.take_crash_image().unwrap() } else { disk.crash_now(kind) };

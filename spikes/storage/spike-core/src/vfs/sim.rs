@@ -11,8 +11,9 @@
 //!   page cache survives a process crash).
 //! * [`CrashKind::PowerLoss`] keeps only durable state plus a random subset
 //!   of the pending writes: each one is dropped, applied, or torn at 512-byte
-//!   sector granularity, independently and in no particular order. Pending
-//!   namespace operations survive as a random *prefix* (journaled metadata).
+//!   sector granularity (or a finer unit set with [`SimVfs::set_tear_unit`]),
+//!   independently and in no particular order. Pending namespace operations
+//!   survive as a random *prefix* (journaled metadata).
 //!
 //! Crashes can be triggered at an exact mutating operation with
 //! [`SimVfs::crash_after`]; from then on the old instance fails every call,
@@ -114,6 +115,8 @@ struct State {
     fault_injected: bool,
     dead: bool,
     image: Option<Box<State>>,
+    /// Granularity at which a pending write can be torn by a power loss.
+    tear_unit: u64,
     rng: Rng,
 }
 
@@ -142,6 +145,7 @@ impl State {
             fault_injected: false,
             dead: false,
             image: None,
+            tear_unit: SECTOR,
             rng,
         }
     }
@@ -217,7 +221,8 @@ impl State {
                                     let end = off + data.len() as u64;
                                     let mut pos = *off;
                                     while pos < end {
-                                        let next = ((pos / SECTOR) + 1) * SECTOR;
+                                        let unit = self.tear_unit;
+                                        let next = ((pos / unit) + 1) * unit;
                                         let piece_end = next.min(end);
                                         if rng.chance(1, 2) {
                                             let a = (pos - off) as usize;
@@ -241,6 +246,7 @@ impl State {
         image.durable_names = names.clone();
         image.names = names;
         image.dirs = self.dirs.clone();
+        image.tear_unit = self.tear_unit;
         image
     }
 
@@ -271,6 +277,14 @@ impl SimVfs {
 
     pub fn as_vfs(&self) -> Arc<dyn Vfs> {
         Arc::new(self.clone())
+    }
+
+    /// Sets the granularity (bytes, >= 1) at which power loss can tear a
+    /// pending write. The default, 512, models sector-atomic devices; 1
+    /// models devices that guarantee nothing, which catches designs that
+    /// rely on small records being written atomically.
+    pub fn set_tear_unit(&self, unit: u64) {
+        self.state.lock().tear_unit = unit.max(1);
     }
 
     /// Number of mutating operations (writes, syncs, creates, renames, ...)
