@@ -12,7 +12,7 @@ use spike_core::rng::Rng;
 use spike_core::vfs::{CountingVfs, IoCounters, IoSnapshot, StdVfs};
 use spike_core::{Durability, Engine, Options, Result, Snapshot, WriteBatch};
 
-use crate::metrics::{dir_size, proc_io, Lat, Report};
+use crate::metrics::{Lat, Report, dir_size, proc_io};
 
 /// M0 workloads (SAD §17.3) followed by the reference use cases (SAD §1.3).
 pub const WORKLOADS: &[&str] = &[
@@ -34,6 +34,8 @@ pub struct Ctx {
     /// Number of records in the base data set.
     pub n: u64,
     pub seed: u64,
+    /// Drop the OS page cache before measured read phases (needs root).
+    pub cold: bool,
 }
 
 struct Db<E: Engine> {
@@ -158,10 +160,20 @@ fn bulk_load<E: Engine>(ctx: &Ctx, rep: &mut Report) -> Result<()> {
     db.close()
 }
 
+/// Flushes dirty pages and drops the OS page cache so that the next reads
+/// come from the device. Returns whether it worked (requires root).
+pub fn drop_os_caches() -> bool {
+    let synced = std::process::Command::new("sync").status().map(|s| s.success()).unwrap_or(false);
+    synced && std::fs::write("/proc/sys/vm/drop_caches", "3").is_ok()
+}
+
 fn preload_and_reopen<E: Engine>(ctx: &Ctx, rng: &mut Rng, rep: &mut Report) -> Result<Db<E>> {
     let mut db = Db::<E>::open(ctx)?;
     load(db.get(), ctx.n, rng, 100, 1000)?;
     db.close()?;
+    if ctx.cold {
+        rep.num("cold_cache", if drop_os_caches() { 1.0 } else { 0.0 });
+    }
     let t = Instant::now();
     db.reopen(ctx)?;
     rep.num("reopen_ms", t.elapsed().as_secs_f64() * 1000.0);

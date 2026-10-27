@@ -3,7 +3,7 @@
 //! ```text
 //! spike-bench suite  [--engines btree,lsm,redb,fjall,sqlite] [--workloads all|a,b]
 //!                    [--scales small,medium] [--reps 3] [--durability sync|buffered]
-//!                    [--dir bench-data] [--out results.jsonl]
+//!                    [--cold true] [--dir bench-data] [--out results.jsonl]
 //! spike-bench run    --engine E --workload W --n N [--durability sync] [--dir D] [--seed S]
 //! spike-bench report --input results.jsonl [--env env.json]   (Markdown to stdout)
 //! spike-bench env    [--dir bench-data]                        (JSON to stdout)
@@ -14,10 +14,6 @@
 //! fresh directory, interleaving engines within each repetition so that
 //! slow drifts of the machine do not favour one engine.
 
-mod adapters;
-mod metrics;
-mod workloads;
-
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -27,8 +23,9 @@ use std::time::Instant;
 use serde_json::Value;
 use spike_core::{Durability, Engine, Options};
 
-use metrics::{peak_rss_kib, Report};
-use workloads::{Ctx, WORKLOADS};
+use spike_bench::adapters;
+use spike_bench::metrics::{self, Report, peak_rss_kib};
+use spike_bench::workloads::{self, Ctx, WORKLOADS};
 
 const ENGINES: &[&str] = &["btree", "lsm", "redb", "fjall", "sqlite"];
 
@@ -113,12 +110,14 @@ fn cmd_run(args: &Args) {
         std::fs::remove_dir_all(&dir).unwrap();
     }
     let opts = Options { durability, cache_bytes: 64 << 20, write_buffer_bytes: 8 << 20 };
-    let ctx = Ctx { dir: dir.clone(), opts, n, seed: args.get_or("seed", "42").parse().unwrap() };
+    let cold = args.get_or("cold", "false") == "true";
+    let ctx = Ctx { dir: dir.clone(), opts, n, seed: args.get_or("seed", "42").parse().unwrap(), cold };
     let mut rep = Report::default();
     rep.str("engine", &engine);
     rep.str("workload", &workload);
     rep.num("n", n as f64);
     rep.str("durability", &args.get_or("durability", "sync"));
+    rep.str("cache", if cold { "cold" } else { "warm" });
     let t = Instant::now();
     dispatch(&engine, &workload, &ctx, &mut rep);
     rep.num("wall_s", t.elapsed().as_secs_f64());
@@ -133,6 +132,7 @@ fn cmd_suite(args: &Args) {
     let scales = args.list("scales", &[], "small");
     let reps: u32 = args.get_or("reps", "3").parse().unwrap();
     let durability = args.get_or("durability", "sync");
+    let cold = args.get_or("cold", "false");
     let dir = args.get_or("dir", "bench-data");
     let out = PathBuf::from(args.get_or("out", "results.jsonl"));
     std::fs::create_dir_all(&dir).unwrap();
@@ -150,6 +150,7 @@ fn cmd_suite(args: &Args) {
                     let output = Command::new(&exe)
                         .args(["run", "--engine", engine, "--workload", workload, "--n", scale])
                         .args(["--durability", &durability, "--dir", &dir, "--seed", &(42 + rep).to_string()])
+                        .args(["--cold", &cold])
                         .output()
                         .unwrap();
                     let line = String::from_utf8_lossy(&output.stdout).lines().last().unwrap_or("").to_string();
@@ -177,16 +178,12 @@ fn cmd_suite(args: &Args) {
 /// Headline metrics per workload, in table column order.
 fn headline(workload: &str) -> &'static [&'static str] {
     match workload {
-        "bulk_load" => &[
-            "load_kops",
-            "write_amp",
-            "space_amp_closed",
-            "close_ms",
-            "reopen_ms",
-            "recovery_ms",
-            "peak_rss_mb",
-        ],
-        "point_reads" => &["get_1t_kops", "get_1t_p50_us", "get_1t_p95_us", "get_1t_p99_us", "get_4t_kops", "get_4t_p99_us"],
+        "bulk_load" => {
+            &["load_kops", "write_amp", "space_amp_closed", "close_ms", "reopen_ms", "recovery_ms", "peak_rss_mb"]
+        }
+        "point_reads" => {
+            &["get_1t_kops", "get_1t_p50_us", "get_1t_p95_us", "get_1t_p99_us", "get_4t_kops", "get_4t_p99_us"]
+        }
         "range_scans" => &["scan100_kops", "scan100_p50_us", "scan100_p95_us", "scan100_p99_us"],
         "small_commits" => &[
             "commits_per_s",
@@ -197,14 +194,9 @@ fn headline(workload: &str) -> &'static [&'static str] {
             "write_amp",
             "commit_fsyncs_per_commit",
         ],
-        "append_seq" => &[
-            "append_kops",
-            "update_kops",
-            "update_commit100_p99_us",
-            "write_amp",
-            "space_amp",
-            "peak_rss_mb",
-        ],
+        "append_seq" => {
+            &["append_kops", "update_kops", "update_commit100_p99_us", "write_amp", "space_amp", "peak_rss_mb"]
+        }
         "mixed" => &["mixed_kops", "read_p50_us", "read_p99_us", "write_p50_us", "write_p99_us"],
         "history_sim" => &[
             "revisions_per_s_k",
@@ -222,13 +214,7 @@ fn headline(workload: &str) -> &'static [&'static str] {
             "module_scan_p50_us",
             "module_scan_p99_us",
         ],
-        "cauce" => &[
-            "steps_per_s",
-            "step_commit_p50_us",
-            "step_commit_p99_us",
-            "step_read_p99_us",
-            "recovery_ms",
-        ],
+        "cauce" => &["steps_per_s", "step_commit_p50_us", "step_commit_p99_us", "step_read_p99_us", "recovery_ms"],
         "agent_memory" => &[
             "steps_per_s",
             "memory_write_p50_us",
@@ -270,9 +256,15 @@ fn cmd_report(args: &Args) {
         let workload = v["workload"].as_str().unwrap().to_string();
         let engine = v["engine"].as_str().unwrap().to_string();
         let n = v["n"].as_f64().unwrap() as u64;
-        let durability = v["durability"].as_str().unwrap_or("sync").to_string();
+        let mut durability = v["durability"].as_str().unwrap_or("sync").to_string();
+        if v["cache"].as_str() == Some("cold") {
+            durability += ", cold cache";
+        }
         if let Some(e) = v.get("error") {
-            failures.push(format!("{engine} / {workload} / n={n}: {}", e.as_str().unwrap_or("").lines().last().unwrap_or("")));
+            failures.push(format!(
+                "{engine} / {workload} / n={n}: {}",
+                e.as_str().unwrap_or("").lines().last().unwrap_or("")
+            ));
             continue;
         }
         let w_idx = WORKLOADS.iter().position(|w| *w == workload).unwrap_or(99);
@@ -334,7 +326,11 @@ fn env_info(dir: &Path) -> String {
         .find_map(|l| l.strip_prefix("MemTotal:").and_then(|v| v.trim().trim_end_matches("kB").trim().parse().ok()))
         .unwrap_or(0);
     let cmd = |c: &str, a: &[&str]| {
-        Command::new(c).args(a).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
+        Command::new(c)
+            .args(a)
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default()
     };
     // fdatasync latency of the benchmark file system: the floor for any
     // durable commit, and the number that most changes between machines.
@@ -358,7 +354,14 @@ fn env_info(dir: &Path) -> String {
     v.insert("kernel".into(), read("/proc/sys/kernel/osrelease").trim().into());
     v.insert("rustc".into(), cmd("rustc", &["--version"]).into());
     v.insert("git_commit".into(), cmd("git", &["rev-parse", "--short", "HEAD"]).into());
-    let fs = cmd("df", &["-T", dir.to_str().unwrap()]).lines().nth(1).unwrap_or("").split_whitespace().nth(1).unwrap_or("").to_string();
+    let fs = cmd("df", &["-T", dir.to_str().unwrap()])
+        .lines()
+        .nth(1)
+        .unwrap_or("")
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("")
+        .to_string();
     v.insert("filesystem".into(), fs.into());
     Value::Object(v).to_string()
 }

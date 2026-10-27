@@ -67,9 +67,7 @@ impl Report {
 pub fn proc_io() -> (u64, u64) {
     let s = std::fs::read_to_string("/proc/self/io").unwrap_or_default();
     let field = |name: &str| {
-        s.lines()
-            .find_map(|l| l.strip_prefix(name).and_then(|v| v.trim().parse::<u64>().ok()))
-            .unwrap_or(0)
+        s.lines().find_map(|l| l.strip_prefix(name).and_then(|v| v.trim().parse::<u64>().ok())).unwrap_or(0)
     };
     (field("rchar:"), field("wchar:"))
 }
