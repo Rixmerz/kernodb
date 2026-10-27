@@ -20,19 +20,19 @@ Los dos candidatos implementan el mismo contrato (`spike_core::Engine`) y pasan 
 
 ### 2.1 Resultado final
 
-Ejecución con `SPIKE_SEEDS=400 cargo test --release` sobre el commit final (ver `results/2026-10-27/`):
+Ejecución con `SPIKE_SEEDS=400 cargo test --workspace --all-features --release` sobre el commit `a7d40d7` (log completo en [`tests-seeds400.log`](../../spikes/storage/results/2026-10-27/tests-seeds400.log)):
 
 | Suite (compartida salvo indicación) | B+ tree | LSM |
 |---|---|---|
 | Funcionales (14 pruebas: modelo aleatorio, reaperturas limpias y sucias, aislamiento bajo churn, 4 lectores concurrentes, límites, espacio, FS real) | ✅ | ✅ |
-| Caídas en puntos aleatorios (400 semillas × 5 rondas, incluidas caídas durante la recuperación y desgarro a nivel de byte en la mitad de las semillas) | ✅ 3 variantes (sin `Buffered` + corte de energía) | ✅ 4 variantes |
+| Caídas en puntos aleatorios (`crash::run`: 400 semillas × 5 rondas, incluidas caídas durante la recuperación y desgarro a nivel de byte en la mitad de las semillas) | ✅ 3 variantes (sin `Buffered` + corte de energía) | ✅ 4 variantes |
 | Caída antes de **cada** operación de E/S del escenario fijo (corte de energía y muerte de proceso en `Sync`, muerte de proceso en `Buffered`; tras recuperar, un commit más, cierre y corte de energía) | ✅ | ✅ |
 | Un EIO aislado en **cada** operación de E/S (reinicio y corte inmediato) | ✅ | ✅ |
 | `Buffered` + corte de energía = prefijo consistente | ⚠️ no lo garantiza (ver §2.3) | ✅ |
-| Bit flips tras cierre limpio (400; la mitad dirigidos a cabeceras/metas/pies) | ✅ 28 detectados al abrir · 191 al leer · 181 inocuos · **0 datos erróneos · 0 retrocesos** | ✅ 34 al abrir · 366 al leer · 0 inocuos · **0 datos erróneos · 0 retrocesos** |
-| Truncamientos tras cierre limpio (400, ¼ a 0 bytes) | ✅ 400/400 detectados al abrir | ✅ 400/400 detectados al abrir |
-| Pruebas unitarias propias | ✅ 32 | ✅ 31 |
-| Regresiones de la revisión adversarial | ✅ 6 | ✅ 5 |
+| Bit flips tras cierre limpio (400; la mitad dirigidos a cabeceras/metas/pies) | ✅ 28 detectados al abrir · 191 al leer · 181 inocuos · **0 datos erróneos · 0 retrocesos** | ✅ 36 al abrir · 364 al leer · 0 inocuos · **0 datos erróneos · 0 retrocesos** |
+| Truncamientos tras cierre limpio (400; la mitad dirigidos a cabeceras/metas/pies, ¼ a 0 bytes) | ✅ 400/400 detectados al abrir | ✅ 400/400 detectados al abrir |
+| Pruebas unitarias propias | ✅ 32 | ✅ 24 unitarias + 7 de integración |
+| Regresiones de la revisión adversarial y de la auditoría previa al merge | ✅ 9 | ✅ 7 |
 | Prueba diferencial (misma historia en btree, lsm, LogEngine, redb, fjall, SQLite) | ✅ | ✅ |
 
 Pasada adicional de estrés con `SPIKE_SEEDS=1000` sobre las suites compartidas de ambos candidatos: todo en verde. Bit flips: B+ tree 79 detectados al abrir · 451 al leer · 470 inocuos; LSM 115 · 885 · 0. Truncamientos: 1000/1000 detectados al abrir en ambos. Ningún dato erróneo ni retroceso.
