@@ -260,6 +260,12 @@ impl SimVfs {
         s.trigger = Some((at, kind));
     }
 
+    /// Cancels a pending [`crash_after`](Self::crash_after) trigger (no
+    /// effect if the crash already happened).
+    pub fn disarm(&self) {
+        self.state.lock().trigger = None;
+    }
+
     /// Crashes immediately (if not already crashed) and returns the disk as
     /// it looks after reboot.
     pub fn crash_now(&self, kind: CrashKind) -> SimVfs {

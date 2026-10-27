@@ -70,11 +70,19 @@ pub trait Vfs: Send + Sync + 'static {
 }
 
 /// Total size in bytes of the files directly inside `dir`.
+///
+/// Safe to call while an engine's background threads delete or rename
+/// files: an entry that disappears between listing and opening no longer
+/// takes space and is skipped.
 pub fn dir_size(vfs: &dyn Vfs, dir: &Path) -> io::Result<u64> {
     let mut total = 0;
     for name in vfs.list(dir)? {
         let path: PathBuf = dir.join(name);
-        total += vfs.open(&path, OpenMode::Existing)?.len()?;
+        match vfs.open(&path, OpenMode::Existing) {
+            Ok(f) => total += f.len()?,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
     }
     Ok(total)
 }

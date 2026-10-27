@@ -60,6 +60,12 @@ fn one_seed<E: Engine>(seed: u64, kind: CrashKind, durability: Durability) {
                 continue;
             }
         };
+        // Recovery finished before the trigger fired: cancel it, so that
+        // background work started by `open` cannot pull the device away in
+        // the middle of verification. (If it already fired in that window,
+        // the `has_crashed` branch below handles it.) The workload trigger
+        // armed further down still covers crashes during that background work.
+        disk.disarm();
         let snap = match db.snapshot() {
             Ok(s) => s,
             Err(e) => {
