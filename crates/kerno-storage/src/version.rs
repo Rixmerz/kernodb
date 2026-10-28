@@ -10,6 +10,7 @@ use kerno_core::Result;
 
 use crate::format::bloom;
 use crate::iter::{InternalIterator, LevelIter, MergeIter};
+use crate::manifest::FileMeta;
 use crate::memtable::{InternalKey, Memtable};
 use crate::sst::Table;
 
@@ -23,6 +24,11 @@ pub struct Version {
 }
 
 pub type Levels = Vec<Vec<Arc<Table>>>;
+
+/// The files of `levels` as the MANIFEST records them.
+pub fn level_metas(levels: &Levels) -> Vec<Vec<FileMeta>> {
+    levels.iter().enumerate().map(|(l, files)| files.iter().map(|t| t.meta(l as u8)).collect()).collect()
+}
 
 impl Version {
     /// Newest value of `key` visible at `seq`.

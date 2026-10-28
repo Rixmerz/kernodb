@@ -30,7 +30,7 @@
 use kerno_core::contract::{Engine, Options, Snapshot};
 use kerno_core::{Durability, Error, WriteBatch};
 
-use super::crash::{Step, commits, scenario, scenario_with_config};
+use super::crash::{OpFilter, Step, commits, scenario, scenario_with_config};
 use super::{Model, SuiteConfig, apply, assert_snapshot_matches, open};
 use crate::rng::Rng;
 use crate::vfs::{CrashKind, FsyncFailure, SimVfs};
@@ -158,13 +158,39 @@ pub fn failure_sweep_steps<E: Engine>(
     afters: &[After],
     steps: &[Step<E>],
 ) {
+    failure_sweep_filtered::<E>(durability, fsync, afters, steps, None);
+}
+
+/// [`failure_sweep_steps`] restricted to the operations `filter` accepts: the
+/// error hits each such operation in turn ([`SimVfs::fail_when`]).
+pub fn failure_sweep_matching<E: Engine>(
+    durability: Durability,
+    fsync: FsyncFailure,
+    afters: &[After],
+    steps: &[Step<E>],
+    filter: OpFilter,
+) {
+    failure_sweep_filtered::<E>(durability, fsync, afters, steps, Some(filter));
+}
+
+fn failure_sweep_filtered<E: Engine>(
+    durability: Durability,
+    fsync: FsyncFailure,
+    afters: &[After],
+    steps: &[Step<E>],
+    filter: Option<OpFilter>,
+) {
     let mut opts = Options::small_for_tests();
     opts.durability = durability;
     let batches = commits(steps);
     let dry = SimVfs::new(0);
+    dry.start_trace();
     let out = run_with_fault::<E>(&dry, steps, &opts, "dry run");
     assert_eq!(out.acked as usize, batches.len(), "dry run must complete");
-    let total = dry.mutating_ops() + 20;
+    let total = match &filter {
+        Some(f) => dry.trace().iter().filter(|t| f(&t.op)).count() as u64 + 3,
+        None => dry.mutating_ops() + 20,
+    };
     let only: Option<u64> = std::env::var("SPIKE_POINT").ok().and_then(|s| s.parse().ok());
     let mode = match (durability, fsync) {
         (Durability::Sync, FsyncFailure::KeepPending) => String::new(),
@@ -188,7 +214,13 @@ pub fn failure_sweep_steps<E: Engine>(
                     After::Restart => None,
                     After::PowerLoss => Some(CrashKind::PowerLoss),
                 };
-                disk.fail_after(point, then);
+                match &filter {
+                    Some(f) => {
+                        let f = f.clone();
+                        disk.fail_when(move |op| f(op), point, then);
+                    }
+                    None => disk.fail_after(point, then),
+                }
                 let out = run_with_fault::<E>(&disk, steps, &opts, &ctx);
                 let disk = match after {
                     After::Restart => {

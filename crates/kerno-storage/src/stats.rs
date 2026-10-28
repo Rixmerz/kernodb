@@ -76,7 +76,15 @@ pub struct Stats {
 
     // Maintenance.
     pub manifest_writes: AtomicU64,
+    pub manifest_records: AtomicU64,
+    pub manifest_checkpoints: AtomicU64,
+    /// Size of the MANIFEST file now (a gauge).
+    pub manifest_bytes: AtomicU64,
     pub obsolete_files_deleted: AtomicU64,
+    /// Bytes of obsolete files queued for deletion and not yet deleted (a
+    /// gauge).
+    pub obsolete_bytes_pending: AtomicU64,
+    pub delete_failures: AtomicU64,
 
     // The open of this handle.
     pub last_open_replayed_records: AtomicU64,
@@ -283,7 +291,12 @@ impl Stats {
             },
             maintenance: MaintenanceMetrics {
                 manifest_writes: load(&self.manifest_writes),
+                manifest_records: load(&self.manifest_records),
+                manifest_checkpoints: load(&self.manifest_checkpoints),
+                manifest_bytes: load(&self.manifest_bytes),
                 obsolete_files_deleted: load(&self.obsolete_files_deleted),
+                obsolete_bytes_pending: load(&self.obsolete_bytes_pending),
+                delete_failures: load(&self.delete_failures),
             },
             last_open: OpenMetrics {
                 clean: replayed_records == 0,

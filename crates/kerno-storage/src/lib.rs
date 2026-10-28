@@ -17,8 +17,9 @@
 //!   ratio 10). Writers are slowed down or stalled when flushes or L0
 //!   compactions fall behind.
 //! * The LSM shape (levels, last flushed sequence, live WAL range) lives in
-//!   a single checksummed MANIFEST that is replaced atomically; each
-//!   replacement is a new generation holding one snapshot record.
+//!   a checksummed MANIFEST that is an edit log: a snapshot record followed
+//!   by one appended record per flush, compaction or session start, replaced
+//!   by a new snapshot generation at clean close and when it grows.
 //! * A snapshot is an `Arc<Version>` plus a sequence number; SST files are
 //!   deleted only when no MANIFEST and no live `Version` references them.
 //! * Every on-disk byte that influences results is covered by a crc32c.
@@ -31,12 +32,14 @@ mod commit_queue;
 mod compaction;
 mod config;
 mod db;
+mod deleter;
 mod files;
 mod flush;
 mod iter;
 mod manifest;
 mod memtable;
 pub mod metrics;
+mod recovery;
 mod sst;
 mod stats;
 mod sync;
@@ -51,7 +54,8 @@ pub mod format;
 pub mod testing;
 
 pub use config::{
-    AccessMode, CloseBudget, CompactionConfig, Config, GroupCommitConfig, L0Metric, Limits, SlowdownPolicy,
+    AccessMode, CloseBudget, CompactionConfig, Config, GroupCommitConfig, L0Metric, Limits, ReadOnlyReason,
+    SlowdownPolicy,
 };
 #[doc(hidden)]
 pub use config::{Background, TestConfig};

@@ -1,4 +1,6 @@
-# Matriz de fallos (M0)
+# Matriz de fallos
+
+> **Histórico:** las secciones 1 a 5 describen el M0 (spikes de Fase 0) y se conservan como referencia. La matriz vigente del formato LSM v1 está en la sección 6.
 
 Estado: borrador para revisión · Anexo de [ADR-0002](../adr/0002-transacciones-y-durabilidad.md) · Criterio 3 de [SAD §17.5](SAD.md#175-criterios-de-aceptación)
 
@@ -108,9 +110,46 @@ Protocolo de commit `Sync`: registro `[len|crc|seq|batch]` en el WAL activo (un 
 - Pruebas con dispositivos reales (kill -9, LazyFS / `dm-log-writes`).
 - Fallos durante migraciones de formato (no existen todavía).
 
-## 6. LSM v1 (`kerno-storage`): group commit y `sync()`
+## 6. LSM v1 (`kerno-storage`)
 
-Esta sección es la de `kerno-storage` ([diseño de la Fase 1](phase1-design.md) §6.3 y §8); las secciones 2–4 describen el M0 y quedan como histórico. Cada paquete de la Fase 1 añade aquí sus filas; WP12b aporta las filas de grupo (G1–G3), de `sync()` (S1–S2) y de `fsync` fallido en `Buffered` (FL). Notación: `N` = último commit confirmado antes del grupo o de la llamada; `N+k` = el grupo de `k` commits en curso, **completo**.
+Matriz del motor de Fase 1 ([diseño](phase1-design.md), §6.3). Las filas se asignan a los puntos de E/S por `(fase, tipo de archivo, operación)` en `crates/kerno-storage/tests/coverage.rs`, que ejecuta el escenario B en modo `Inline` y falla si una fila no recibe ningún punto. Las filas con prima (L5′, L7′, L10′, L12′, L13′) sustituyen a las del M0 por el protocolo del log de ediciones del MANIFEST.
+
+| Fila | Punto de fallo | Muerte del proceso | Corte de energía | Por qué |
+|---|---|---|---|---|
+| L1–L4 | commit: antes de escribir el registro, durante su escritura, antes o durante el `fsync` del WAL, tras el `fsync` | `N` o `N+1` | `N` o `N+1` (`N` si el registro se rompió o no llegó) | Un registro roto falla su crc y es la cola del WAL más nuevo → se ignora; tras el `fsync` es durable y se reproduce. |
+| L5′ | rotación: creación del WAL nuevo y escritura de su cabecera, `sync_dir` | `N` | `N` | La cabecera aún no es durable: un WAL sin tramas es huérfano y se ignora; el WAL viejo sigue vigente. |
+| L6 | flush: escritura y `fsync` de la SST | `N` | `N` | SST huérfana (ningún registro `FLUSH` la referencia) → se borra al abrir; los datos se reproducen del WAL. |
+| L7′ | flush: registro `FLUSH` en el MANIFEST | `N` | `N` | Una cola rota del MANIFEST se acepta tras una caída; si el registro es completo, la SST y `log_number` nuevo están vigentes: mismo estado lógico. |
+| L8 | flush: borrado del WAL ya volcado | `N` | `N` | WAL con número `< log_number` → se borra al abrir. |
+| L9 | compactación: escritura de las SST de salida | `N` | `N` | Salidas huérfanas → se borran al abrir. |
+| L10′ | compactación: registro `COMPACTION` | `N` | `N` | Un único registro atómico; entradas y salidas contienen el mismo estado lógico. |
+| L11 | compactación: borrado diferido de entradas obsoletas | `N` | `N` | Solo se borran cuando el MANIFEST ya no las referencia y ningún snapshot las usa; las no borradas son huérfanas y se borran al abrir. |
+| L12′ | arranque de sesión (S-2..S-5): reproducción, flush de recuperación, `SESSION_OPEN`, borrado de WAL viejos, WAL nuevo | estado previo | estado previo | Hasta que el registro nuevo es durable, el estado previo y sus WAL siguen vigentes; la recuperación es reentrante (REC-10c). |
+| L13′ | cierre limpio (W-9): flush, compactación obligatoria y con presupuesto, checkpoint `CLEAN`, borrado de WAL | `N` | `N` | Combinación de L6–L11 y CK. |
+| CK | checkpoint: `MANIFEST.tmp`, `fsync`, `rename`, `sync_dir` | `N` | `N` | Sobrevive el MANIFEST viejo o el nuevo, ambos con el mismo estado lógico. |
+| CR | creación (DIR-3) | base vacía | base vacía (con o sin archivos) | Toda apertura sincroniza el directorio antes de aceptar commits; un directorio a medio crear se completa o se rechaza sin reinicializar datos. |
+| R0 | reapertura tras `CLEAN`: registro `SESSION_OPEN` | `N` | `N` | Un `SESSION_OPEN` roto es una cola rota del MANIFEST; el estado `CLEAN` anterior sigue siendo el de `N`. |
+| RO | apertura de solo lectura y `verify()` | `N` | `N` | **Cero** operaciones mutantes (I-18); no hay punto de fallo propio. |
+| FL | `fsync` fallido con semántica de Linux | error; sin commit confirmado | `N` | El handle queda envenenado; las escrituras descartadas nunca se confirman. |
+| NS | disco lleno (ENOSPC) | error `Io` o `Poisoned` | `N` | Sin efecto sobre lo confirmado; la base se recupera al liberar espacio. |
+| KP | muerte del proceso que deja pendiente lo no sincronizado, seguida de corte de energía | `N` o `N+1` | `N` o `N+1` | La recuperación hace durable su estado antes de aceptar commits. |
+
+Las filas de grupos y `sync()` (G1–G3, S1–S2, FLb) están en la subsección siguiente (WP12b); RT, DC y SC (rangos, `compact_range`, subcompactaciones) las añaden los paquetes que las implementan.
+
+### Presupuesto de `fsync` (LSM v1)
+
+| Operación | `fsync` |
+|---|---|
+| Commit en `Sync` | 1 (< 1 con concurrencia, por group commit) |
+| Rotación de WAL | 1 `sync_dir` (+1 `sync_data` del WAL viejo en `Buffered`) |
+| Flush | 3 |
+| Compactación | salidas + directorio + 1 |
+| Checkpoint | 2 + `rename` |
+| Reapertura limpia | 2 |
+
+### Group commit y `sync()`
+
+WP12b aporta las filas de grupo (G1–G3), de `sync()` (S1–S2) y de `fsync` fallido en `Buffered` (FLb). Notación: `N` = último commit confirmado antes del grupo o de la llamada; `N+k` = el grupo de `k` commits en curso, **completo**.
 
 Protocolo de commit (`Sync`, un grupo): el líder toma `writer` y el grupo FIFO → `make_room` una vez → asigna secuencias consecutivas → **una trama** (`count = k`, un CRC) en **un** `write_at` → `sync_data` del WAL → aplica a la memtable en orden → publica `last_seq` y `durable_seq` **una vez**, tras el `fsync` → completa a los miembros y cede el liderazgo.
 
@@ -121,9 +160,9 @@ Protocolo de commit (`Sync`, un grupo): el líder toma `writer` y el grupo FIFO 
 | G3 | Antes o durante el `fsync` del grupo, o tras él y antes de publicar | `N` o `N+k` | `N` o `N+k` | La trama puede haber llegado entera. Si el `fsync` falla, **todos** los miembros reciben `Io`, los encolados detrás del grupo reciben `Poisoned` sin que se escriba nada más y el handle queda envenenado; tras reabrir, el grupo está entero o ausente. Los lectores no vieron ninguna secuencia del grupo (publicación después del `fsync`, I-16). |
 | S1 | `sync()` con tramas sin sincronizar (`Buffered`): antes o durante su `fsync` | prefijo ≥ `N` | prefijo ≥ último `sync()` correcto | `sync()` encola una petición sin lote; el líder hace `sync_data` solo si hay tramas sin sincronizar y devuelve la secuencia duradera. Hasta que vuelve, solo vale lo anterior. Con la base en `Sync`, o sin tramas pendientes, `sync()` no hace E/S. |
 | S2 | `sync()` cuyo `fsync` falla | `N` (todo lo confirmado) | prefijo ≥ último `sync()` correcto | `sync()` devuelve `Io` y envenena; `commit` y `sync` posteriores devuelven `Poisoned` sin E/S. |
-| FL | `Buffered` tras un `fsync` fallido con semántica de Linux (`FsyncFailure::LinuxDropPages`) | todo lo confirmado | prefijo ≥ último `sync()` correcto | Linux descarta las páginas del `fsync` fallido y el siguiente `fsync` devuelve `Ok` sin persistirlas: los commits `Buffered` posteriores al último `sync()` correcto pueden perderse aunque se confirmaran. El motor no reintenta (CONTRIBUTING): envenena, y el estado recuperado sigue siendo un prefijo consistente no anterior a ese `sync()`. |
+| FLb | `Buffered` tras un `fsync` fallido con semántica de Linux (`FsyncFailure::LinuxDropPages`) | todo lo confirmado | prefijo ≥ último `sync()` correcto | Linux descarta las páginas del `fsync` fallido y el siguiente `fsync` devuelve `Ok` sin persistirlas: los commits `Buffered` posteriores al último `sync()` correcto pueden perderse aunque se confirmaran. El motor no reintenta (CONTRIBUTING): envenena, y el estado recuperado sigue siendo un prefijo consistente no anterior a ese `sync()`. |
 
-**Presupuesto de `fsync`** (WP12b): un commit `Sync` cuesta **1 `sync_data` por grupo** del WAL (exactamente 1 con un escritor; menos de 1 por commit con escritores concurrentes: `fsyncs_per_commit_below_half_with_8_writers`); `sync()` cuesta 0 en `Sync` y 0 o 1 en `Buffered` (1 solo si hay tramas sin sincronizar). La rotación, el flush y la compactación no cambian respecto del M0.
+**Presupuesto de `fsync` de los grupos** (WP12b): un commit `Sync` cuesta **1 `sync_data` por grupo** del WAL (exactamente 1 con un escritor; menos de 1 por commit con escritores concurrentes: `fsyncs_per_commit_below_half_with_8_writers`); `sync()` cuesta 0 en `Sync` y 0 o 1 en `Buffered` (1 solo si hay tramas sin sincronizar). La rotación, el flush y la compactación no cambian respecto del M0.
 
 **Cómo se verifica.**
 
@@ -131,7 +170,7 @@ Protocolo de commit (`Sync`, un grupo): el líder toma `writer` y el grupo FIFO 
 |---|---|
 | `shared_concurrency::scenario_c_*` (escenario C: 4 escritores × 10 commits con `set_sync_latency`; muerte de proceso, corte de energía, muerte con pendientes y barridos EIO con ambos modelos de `fsync`, en `Sync` y `Buffered`), sobre `KernoDb`, `Profiled<Inline>` y `Profiled<Serial>` | G1–G3 |
 | `shared_concurrency::multi_writer_power_loss_prefix_no_holes`, `no_reader_sees_undurable_data` | G2, G3 (I-01, I-16) |
-| `shared_sync::*` (`sync_makes_buffered_commits_durable`, `sync_failure_poisons`, `sync_on_poisoned_returns_poisoned`, `power_loss_at_every_io_point_buffered_with_sync`, `scenario_c_*_with_sync`) | S1, S2, FL (I-17) |
+| `shared_sync::*` (`sync_makes_buffered_commits_durable`, `sync_failure_poisons`, `sync_on_poisoned_returns_poisoned`, `power_loss_at_every_io_point_buffered_with_sync`, `scenario_c_*_with_sync`) | S1, S2, FLb (I-17) |
 | `group_commit.rs::failed_group_fsync_fails_all_members_and_poisons`, `queued_requests_get_poisoned_after_failure`, `leader_panic_poisons_and_wakes_followers`, `group_frame_torn_by_power_loss_recovers_prefix`, `sync_mode_readers_never_see_undurable_seq` | G2, G3 |
 | `loom_leader_handoff`, `loom_poison_fanout`, `loom_txn_gate_drain`, `loom_backpressure` (`--cfg kerno_loom`) | el protocolo de la cola |
 

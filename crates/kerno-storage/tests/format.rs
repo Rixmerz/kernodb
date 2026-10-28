@@ -199,7 +199,7 @@ fn header_round_trip_all_kinds() {
         assert_eq!((h.compat, h.ro_compat), (0, 0));
         assert_eq!(h.encode()[..], bytes[..HEADER_LEN], "{}: re-encoding changes the bytes", file.display());
         match kind {
-            FileKind::Manifest => assert!(h.file_number >= 2, "creation is generation 1, every session adds one"),
+            FileKind::Manifest => assert_eq!(h.file_number, 1, "creation is generation 1; appended records keep it"),
             FileKind::Wal => assert!(h.per_type >= 1, "base_seq"),
             FileKind::Sst => assert_eq!(h.per_type, 4096, "block size"),
         }
@@ -462,16 +462,6 @@ fn unknown_compat_bit_ignored() {
     db.close().unwrap();
 }
 
-#[test]
-fn unknown_ro_compat_is_refused_until_read_only_exists() {
-    for ext in ["wal", "sst", "MANIFEST"] {
-        let (mut image, _) = unclean_image();
-        let file = first_file(&image, ext);
-        patch_header(&mut image, &file, |h| or_u64(h, 24, 1 << 3));
-        assert_incompatible(&reject_untouched(&image), "read-only open not yet supported");
-    }
-}
-
 // -------------------------------------------------------------------- WAL
 
 #[test]
@@ -622,8 +612,10 @@ fn wal_base_seq_gap_is_corruption() {
 #[test]
 fn wal_file_number_mismatch_is_corruption() {
     let (mut image, _) = unclean_image();
+    // A copy under another number joins the live chain after the real log
+    // (the real one must stay: REC-9 requires the one the MANIFEST names).
     let wal = first_file(&image, "wal");
-    let bytes = image.files.remove(&wal).unwrap();
+    let bytes = image.files[&wal].clone();
     image.files.insert(path(&format!("{:06}.wal", file_number(&wal) + 5)), bytes);
     assert_corruption(&reject_untouched(&image), "HDR-10");
 }
@@ -923,7 +915,9 @@ fn wal_replay_reads_in_bounded_chunks() {
     assert!(largest <= 1 << 20, "a replay read of {largest} bytes");
     assert!(reads.len() >= 4, "the 4 MiB log is read in several chunks: {reads:?}");
     let total: u64 = reads.iter().sum();
-    assert!(total < wal_size as u64 + (2 << 20), "{total} bytes read to replay {wal_size}");
+    // Classification (S-1) reads the log once and the replay of S-2 reads it
+    // again, so that recovery memory does not grow with the log.
+    assert!(total < 2 * wal_size as u64 + (2 << 20), "{total} bytes read to replay {wal_size}");
 }
 
 #[test]

@@ -30,7 +30,7 @@ use super::concurrency::{
 use super::faults::After;
 use super::{Model, SuiteConfig, Workload, apply, assert_snapshot_matches, for_each_seed, open, read_all, seeds};
 use crate::rng::Rng;
-use crate::vfs::{CrashKind, FsyncFailure, SimVfs};
+use crate::vfs::{CrashKind, FsyncFailure, OpInfo, SimVfs};
 
 const ROUNDS: usize = 5;
 const COMMITS_PER_ROUND: u64 = 80;
@@ -252,6 +252,39 @@ pub fn scenario_with_config<E>(seed: u64, cfg: &SuiteConfig) -> Vec<Step<E>> {
     steps
 }
 
+/// Scenario B ("format"): the lifecycle that exercises the metadata log of
+/// the engine: creation, commits, clean close, reopen, more commits, a dropped
+/// handle (an unclean end), recovery, commits, a forced metadata checkpoint
+/// (`checkpoint`, an engine-specific [`Step::Ext`]) and more commits, then a
+/// clean close. Later work packages extend it with their own steps (directed
+/// compaction, transactions, `sync`). Deterministic for a given seed; the
+/// sweeps use seed 7.
+pub fn scenario_b<E>(seed: u64, checkpoint: ExtFn<E>) -> Vec<Step<E>> {
+    let mut w = Workload::with_config(seed, SuiteConfig::default().workload);
+    w.key_space = 120;
+    w.large_per_mille = 100;
+    let mut model = Model::new();
+    let mut steps = vec![Step::Open];
+    let mut commits = |n: usize, steps: &mut Vec<Step<E>>| {
+        for _ in 0..n {
+            let b = w.batch(&model);
+            apply(&mut model, &b);
+            steps.push(Step::Commit(b));
+        }
+    };
+    commits(30, &mut steps);
+    steps.push(Step::Close);
+    steps.push(Step::Open);
+    commits(15, &mut steps);
+    steps.push(Step::Drop);
+    steps.push(Step::Open);
+    commits(10, &mut steps);
+    steps.push(Step::Ext("checkpoint", checkpoint));
+    commits(5, &mut steps);
+    steps.push(Step::Close);
+    steps
+}
+
 /// Runs the scenario until the device fails (every error must come from a
 /// crash). Returns (acked, attempted) commit counts.
 pub fn run_scenario<E: Engine>(disk: &SimVfs, steps: &[Step<E>], opts: &Options) -> (u64, u64) {
@@ -332,6 +365,45 @@ pub fn every_point_steps<E: Engine>(
     configure: &dyn Fn(&SimVfs),
     steps: &[Step<E>],
 ) {
+    every_point_filtered::<E>(kind, durability, configure, steps, None);
+}
+
+/// A predicate over mutating operations that aims a sweep at part of the
+/// protocol (see [`every_matching_point`]).
+pub type OpFilter = Arc<dyn Fn(&OpInfo) -> bool + Send + Sync>;
+
+/// [`every_point_steps`] restricted to the operations `filter` accepts: the
+/// crash comes right before each such operation in turn
+/// ([`SimVfs::crash_when`]), instead of before every operation. This is how
+/// a sweep reaches every point of the MANIFEST protocol without paying for
+/// the ones of the WAL.
+pub fn every_matching_point<E: Engine>(kind: CrashKind, durability: Durability, steps: &[Step<E>], filter: OpFilter) {
+    every_point_filtered::<E>(kind, durability, &|_| {}, steps, Some(filter));
+}
+
+/// The number of mutating operations `filter` accepts in a dry run of
+/// `steps`.
+pub fn count_matching<E: Engine>(
+    steps: &[Step<E>],
+    opts: &Options,
+    configure: &dyn Fn(&SimVfs),
+    filter: &OpFilter,
+) -> u64 {
+    let dry = SimVfs::new(0);
+    configure(&dry);
+    dry.start_trace();
+    let (acked, _) = run_scenario::<E>(&dry, steps, opts);
+    assert_eq!(acked as usize, commits(steps).len(), "dry run must complete");
+    dry.trace().iter().filter(|t| filter(&t.op)).count() as u64
+}
+
+fn every_point_filtered<E: Engine>(
+    kind: CrashKind,
+    durability: Durability,
+    configure: &dyn Fn(&SimVfs),
+    steps: &[Step<E>],
+    filter: Option<OpFilter>,
+) {
     assert!(
         durability == Durability::Sync || kind != CrashKind::PowerLoss,
         "Buffered commits only promise to survive process kills at every point"
@@ -339,25 +411,37 @@ pub fn every_point_steps<E: Engine>(
     let mut opts = Options::small_for_tests();
     opts.durability = durability;
     let batches = commits(steps);
-    let dry = SimVfs::new(0);
-    configure(&dry);
-    let (acked, _) = run_scenario::<E>(&dry, steps, &opts);
-    assert_eq!(acked as usize, batches.len(), "dry run must complete");
     // Background work makes the exact count vary a little; go past it.
-    let total = dry.mutating_ops() + 20;
+    let total = match &filter {
+        Some(f) => count_matching::<E>(steps, &opts, configure, f) + 3,
+        None => {
+            let dry = SimVfs::new(0);
+            configure(&dry);
+            let (acked, _) = run_scenario::<E>(&dry, steps, &opts);
+            assert_eq!(acked as usize, batches.len(), "dry run must complete");
+            dry.mutating_ops() + 20
+        }
+    };
     let only: Option<u64> = std::env::var("SPIKE_POINT").ok().and_then(|s| s.parse().ok());
+    let what = if filter.is_some() { "matching " } else { "" };
     for point in 1..=total {
         if only.is_some_and(|p| p != point) {
             continue;
         }
-        let ctx = format!("{kind:?} ({durability:?}) crash before mutating op #{point} of {total}");
+        let ctx = format!("{kind:?} ({durability:?}) crash before {what}mutating op #{point} of {total}");
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let disk = SimVfs::new(point);
             if point % 2 == 1 {
                 disk.set_tear_unit(1);
             }
             configure(&disk);
-            disk.crash_after(point, kind);
+            match &filter {
+                Some(f) => {
+                    let f = f.clone();
+                    disk.crash_when(move |op| f(op), point, kind);
+                }
+                None => disk.crash_after(point, kind),
+            }
             let (acked, attempted) = run_scenario::<E>(&disk, steps, &opts);
             let image = if disk.has_crashed() { disk.take_crash_image().unwrap() } else { disk.crash_now(kind) };
             let vfs = image.as_vfs();

@@ -282,6 +282,14 @@ pub trait TestHooks {
         let _ = (start, end);
         Err(unsupported())
     }
+
+    /// Replaces the metadata log with a fresh checkpoint of the current
+    /// state, as the engine does on its own at a clean close, after a torn
+    /// tail and when the log has grown (the MANIFEST checkpoint of
+    /// `docs/file-format/v1.md` §8.9).
+    fn checkpoint(&self) -> Result<()> {
+        Err(unsupported())
+    }
 }
 
 fn unsupported() -> crate::Error {
@@ -315,9 +323,11 @@ mod tests {
         assert!(is_unsupported(hooks.compact_once()));
         assert!(is_unsupported(hooks.compact_range(Bound::Included(b"a"), Bound::Excluded(b"b"))));
         assert!(is_unsupported(hooks.compact_range(Bound::Unbounded, Bound::Unbounded)));
+        assert!(is_unsupported(hooks.checkpoint()));
         let idle: &dyn TestHooks = &Idle;
         assert!(idle.wait_idle().is_ok());
         assert!(is_unsupported(idle.compact_once()));
         assert!(is_unsupported(idle.compact_range(Bound::Unbounded, Bound::Unbounded)));
+        assert!(is_unsupported(idle.checkpoint()));
     }
 }

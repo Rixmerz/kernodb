@@ -26,13 +26,38 @@ use std::sync::Arc;
 use kerno_core::vfs::{File, OpenMode, Vfs};
 use kerno_core::{Error, Result};
 
-use crate::files::{FileSource, read_error, require_read_write};
+use crate::files::{FileSource, read_error};
 use crate::format::features::{SLOT_LEN, WRITE_INCOMPAT, frame_has_slot};
 use crate::format::header::{HEADER_LEN, Header};
-use crate::format::wal::{CanonicalCommit, WalHeaderState, WalScan, WalScanParams, frame_len, reseal_frame, scan_wal};
+use crate::format::wal::{CanonicalCommit, WalScan, WalScanParams, frame_len, reseal_frame, scan_wal};
 
 pub fn wal_name(number: u64) -> String {
     format!("{number:06}.wal")
+}
+
+/// The file of a [`WalWriter::read_only`] log: nothing can be written to it.
+struct ReadOnlyLog;
+
+impl File for ReadOnlyLog {
+    fn read_at(&self, _: &mut [u8], _: u64) -> io::Result<()> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
+    fn write_at(&self, _: &[u8], _: u64) -> io::Result<()> {
+        Err(io::ErrorKind::ReadOnlyFilesystem.into())
+    }
+
+    fn len(&self) -> io::Result<u64> {
+        Ok(0)
+    }
+
+    fn set_len(&self, _: u64) -> io::Result<()> {
+        Err(io::ErrorKind::ReadOnlyFilesystem.into())
+    }
+
+    fn sync_data(&self) -> io::Result<()> {
+        Err(io::ErrorKind::ReadOnlyFilesystem.into())
+    }
 }
 
 pub struct WalWriter {
@@ -54,6 +79,13 @@ impl WalWriter {
         file.write_at(&Header::wal(db_id, number, base_seq).encode(), 0)?;
         vfs.sync_dir(dir)?;
         Ok(WalWriter { file, number, offset: HEADER_LEN as u64, synced_len: 0 })
+    }
+
+    /// The placeholder log of a read-only handle: every entry point that
+    /// writes rejects the call before it gets here, and a write that did get
+    /// here would fail without touching the disk.
+    pub fn read_only(number: u64) -> Self {
+        WalWriter { file: Arc::new(ReadOnlyLog), number, offset: HEADER_LEN as u64, synced_len: 0 }
     }
 
     pub fn number(&self) -> u64 {
@@ -113,35 +145,41 @@ impl WalWriter {
 /// header is the caller's decision (REC-10).
 ///
 /// The commits are provisional until the caller has checked the whole chain
-/// of live logs; `apply` may only build in-memory state.
+/// of live logs: `apply` may build in-memory state, and recovery writes
+/// (S-2) only from a second replay, after the chain was classified. An error
+/// from `apply` stops the replay and is returned as it is.
 pub fn replay(
     vfs: &dyn Vfs,
     dir: &Path,
     number: u64,
     db_id: [u8; 16],
     expected_seq: u64,
-    mut apply: impl FnMut(u64, &CanonicalCommit<Vec<u8>>),
+    mut apply: impl FnMut(u64, &CanonicalCommit<Vec<u8>>) -> Result<()>,
 ) -> Result<WalScan> {
     let name = wal_name(number);
     let file = vfs.open(&dir.join(&name), OpenMode::Existing)?;
     let mut src = FileSource::new(&*file)?;
     let params = WalScanParams { file_number: number, db_id, expected_seq };
     let mut has_ranges = false;
-    let scan = scan_wal(&mut src, &params, |_, frame| {
+    let mut failed = None;
+    let scanned = scan_wal(&mut src, &params, |_, frame| {
         for (i, commit) in frame.commits.iter().enumerate() {
             if !commit.ranges.is_empty() {
                 // The caller's apply may not accept ranges; the log is refused below.
                 has_ranges = true;
                 continue;
             }
-            apply(frame.first_seq + i as u64, commit);
+            if let Err(e) = apply(frame.first_seq + i as u64, commit) {
+                failed = Some(e);
+                return Err(io::Error::other("replay stopped by its caller"));
+            }
         }
         Ok(())
-    })
-    .map_err(|e| read_error(&name, e))?;
-    if let WalHeaderState::Valid(header) = &scan.header {
-        require_read_write(&name, header)?;
+    });
+    if let Some(e) = failed {
+        return Err(e);
     }
+    let scan = scanned.map_err(|e| read_error(&name, e))?;
     if has_ranges {
         // Applying such a log without its ranges would bring deleted keys
         // back: refuse it instead.
@@ -154,7 +192,7 @@ pub fn replay(
 mod tests {
     use super::*;
     use crate::format::End;
-    use crate::format::wal::{CommitOp, canonicalize, seal_frame};
+    use crate::format::wal::{CommitOp, WalHeaderState, canonicalize, seal_frame};
     use kerno_core::WriteBatch;
     use kerno_testkit::vfs::{CrashKind, SimVfs};
 
@@ -181,7 +219,10 @@ mod tests {
 
     fn collect(vfs: &dyn Vfs, first: u64) -> Result<(WalScan, Commits)> {
         let mut got = Vec::new();
-        let scan = replay(vfs, Path::new("/w"), 1, DB, first, |s, c| got.push((s, c.clone())))?;
+        let scan = replay(vfs, Path::new("/w"), 1, DB, first, |s, c| {
+            got.push((s, c.clone()));
+            Ok(())
+        })?;
         Ok((scan, got))
     }
 
@@ -398,7 +439,10 @@ mod tests {
         w.append_group(1, &[&canonical(&b)]).unwrap();
         assert!(matches!(collect(&*vfs, 1), Err(Error::Incompatible(m)) if m.contains("range deletions")));
         // The callback never sees a commit with ranges.
-        let r = replay(&*vfs, Path::new("/w"), 1, DB, 1, |_, c| assert!(c.ranges.is_empty()));
+        let r = replay(&*vfs, Path::new("/w"), 1, DB, 1, |_, c| {
+            assert!(c.ranges.is_empty());
+            Ok(())
+        });
         assert!(matches!(r, Err(Error::Incompatible(_))));
     }
 }

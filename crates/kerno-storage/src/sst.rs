@@ -28,7 +28,8 @@ use kerno_core::{Error, Result};
 use quick_cache::Weighter;
 
 use crate::block::{Block, EntryPos};
-use crate::files::{FileSource, format_error, read_error, require_read_write};
+use crate::deleter::Deleter;
+use crate::files::{FileSource, format_error, read_error};
 use crate::format::ByteSource;
 use crate::format::filter::Filter;
 use crate::format::limits::{MAX_BLOCK_SIZE, MAX_SEQ, MIN_BLOCK_SIZE};
@@ -72,12 +73,21 @@ pub struct TableCtx {
     pub bytes_per_sync: Option<u64>,
     /// The database id every table of this engine carries (HDR-10).
     pub db_id: [u8; 16],
+    /// Where an obsolete table's file is queued when its last reference goes
+    /// away (W-13).
+    pub deleter: Arc<Deleter>,
 }
 
 impl TableCtx {
     pub fn new(vfs: Arc<dyn Vfs>, dir: PathBuf, cache_bytes: usize, stats: Arc<Stats>, block_size: usize) -> Self {
         let cache = BlockCache::with_weighter((cache_bytes / block_size).max(1), cache_bytes as u64, BlockWeighter);
-        TableCtx { vfs, dir, cache, stats, block_size, bytes_per_sync: None, db_id: [0; 16] }
+        let deleter = Deleter::inline(vfs.clone(), stats.clone());
+        TableCtx { vfs, dir, cache, stats, block_size, bytes_per_sync: None, db_id: [0; 16], deleter }
+    }
+
+    pub fn with_deleter(mut self, deleter: Arc<Deleter>) -> Self {
+        self.deleter = deleter;
+        self
     }
 
     pub fn with_bytes_per_sync(mut self, bytes_per_sync: Option<u64>) -> Self {
@@ -224,6 +234,9 @@ pub struct Table {
     filter: Filter,
     ctx: Arc<TableCtx>,
     obsolete: AtomicBool,
+    /// `ro_compat` bits of the header this engine does not know (HDR-7):
+    /// a database with such a file opens read-only.
+    pub unknown_ro_compat: u64,
 }
 
 impl Table {
@@ -256,7 +269,6 @@ impl Table {
             let size = src.len();
             (open_sst_from(&mut src, &ex).map_err(|e| read_error(&name, e))?, size)
         };
-        require_read_write(&name, &opened.header)?;
         if opened.props.range_fragments > 0 {
             return Err(Error::Incompatible(format!("{name}: range deletions are not supported yet")));
         }
@@ -271,6 +283,7 @@ impl Table {
             filter: opened.filter,
             ctx: ctx.clone(),
             obsolete: AtomicBool::new(false),
+            unknown_ro_compat: opened.header.unknown_ro_compat(),
         })
     }
 
@@ -348,10 +361,7 @@ impl Table {
 impl Drop for Table {
     fn drop(&mut self) {
         if self.obsolete.load(Ordering::Acquire) {
-            let _phase = kerno_core::probe::phase("delete");
-            if self.ctx.vfs.remove_file(&self.ctx.path(self.number)).is_ok() {
-                bump(&self.ctx.stats.obsolete_files_deleted, 1);
-            }
+            self.ctx.deleter.submit(self.ctx.path(self.number), self.size);
         }
     }
 }

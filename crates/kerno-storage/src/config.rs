@@ -22,9 +22,29 @@ pub enum AccessMode {
     /// Reads and writes.
     #[default]
     ReadWrite,
-    /// Reads only. Not implemented yet: [`KernoDb::open`](crate::KernoDb::open)
-    /// rejects it with [`Error::InvalidArgument`].
+    /// Reads only: the open takes the exclusive `LOCK`, classifies the
+    /// directory and replays the live WALs in memory, and never creates,
+    /// syncs, deletes or checkpoints anything (v1.md §9.5, RO-1..RO-3).
+    /// Writes fail with [`Error::ReadOnly`]. A database whose files carry
+    /// `ro_compat` bits this engine does not know opens like this even when
+    /// read-write was asked for.
     ReadOnly,
+}
+
+/// Why a handle is read-only ([`KernoDb::is_read_only`](crate::KernoDb::is_read_only)).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReadOnlyReason {
+    /// [`AccessMode::ReadOnly`] was requested.
+    Requested,
+    /// A file has `ro_compat` bits this engine does not know (HDR-7): it can
+    /// still read the database, but writing could break what those bits
+    /// protect.
+    UnknownRoCompat {
+        /// Name of the first such file.
+        file: String,
+        /// The unknown bits of its header.
+        bits: u64,
+    },
 }
 
 /// How a handle runs flushes and compactions (test configuration, see
@@ -674,11 +694,11 @@ mod tests {
     }
 
     #[test]
-    fn read_only_access_is_rejected_until_implemented() {
+    fn read_only_access_never_creates_a_database() {
         let sim = SimVfs::new(1);
         let cfg = Config { access: AccessMode::ReadOnly, ..Config::default() };
         match KernoDb::open(sim.as_vfs(), Path::new("/db"), &cfg) {
-            Err(Error::InvalidArgument(m)) => assert_eq!(m, "read-only mode not implemented yet"),
+            Err(Error::InvalidArgument(m)) => assert!(m.contains("no database"), "{m}"),
             other => panic!("expected InvalidArgument, got {:?}", other.err()),
         }
         assert_eq!(sim.mutating_ops(), 0);

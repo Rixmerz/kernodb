@@ -21,6 +21,7 @@ pub mod crash;
 pub mod ext;
 pub mod faults;
 pub mod functional;
+pub mod matrix;
 pub mod sync;
 pub mod txn;
 

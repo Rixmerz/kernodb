@@ -2,7 +2,7 @@
 
 > **Procedencia.** Derivado de `spike-lsm@0cba925`; formato v1 en borrador, nunca para datos de usuario (SAD §20.6).
 >
-> Este crate nació como copia de `spikes/storage/spike-lsm` con solo renombres ([diseño de la Fase 1](../../docs/architecture/phase1-design.md) §5.1). Desde WP07 escribe y lee **solo** el formato v1 ([`docs/file-format/v1.md`](../../docs/file-format/v1.md)), todavía en borrador: todo archivo lleva el bit `DRAFT`, de modo que ninguna base creada ahora pueda leerse con el formato congelado (ADR-0003). Los archivos del prototipo M0 se rechazan con `Incompatible`. `spike-lsm` queda congelado como línea base del M0 (ADR-0012); este documento se actualiza con cada paquete de la Fase 1 que cambia el motor. Los códecs puros (sin E/S) están en `src/format/` (WP06); `wal.rs`, `sst.rs`, `block.rs` y `manifest.rs` los conectan con el `Vfs`.
+> Este crate nació como copia de `spikes/storage/spike-lsm` con solo renombres ([diseño de la Fase 1](../../docs/architecture/phase1-design.md) §5.1). Desde WP07 escribe y lee **solo** el formato v1 ([`docs/file-format/v1.md`](../../docs/file-format/v1.md)), todavía en borrador: todo archivo lleva el bit `DRAFT`, de modo que ninguna base creada ahora pueda leerse con el formato congelado (ADR-0003). Los archivos del prototipo M0 se rechazan con `Incompatible`. `spike-lsm` queda congelado como línea base del M0 (ADR-0012); este documento se actualiza con cada paquete de la Fase 1 que cambia el motor. Desde WP08 el MANIFEST es un log de ediciones, la apertura sigue el arranque de sesión S-1..S-6 con la función pura `recovery::classify`, existe la apertura de solo lectura y los archivos obsoletos los borra un hilo dedicado. Los códecs puros (sin E/S) están en `src/format/` (WP06); `wal.rs`, `sst.rs`, `block.rs` y `manifest.rs` los conectan con el `Vfs`.
 
 Un árbol LSM nivelado al estilo de LevelDB/RocksDB que implementa directamente el contrato del harness `kerno_core::contract::Engine` (`KernoDb`, `KernoSnapshot`). Pretende ser correcto ante caídas y daños del medio y razonablemente rápido, no estar afinado. Toda la E/S de archivos pasa por `Arc<dyn Vfs>`.
 
@@ -12,7 +12,7 @@ Un árbol LSM nivelado al estilo de LevelDB/RocksDB que implementa directamente 
 
 | Campo | Defecto | Efecto |
 |---|---|---|
-| `access` | `ReadWrite` | `ReadOnly` todavía no está implementado: `open` devuelve `InvalidArgument` sin tocar nada |
+| `access` | `ReadWrite` | `ReadOnly` abre sin escribir nada ni lanzar hilos (ver [Solo lectura](#solo-lectura)); sin base existente, `open` devuelve `InvalidArgument` y no crea ni el directorio |
 | `create_if_missing` | `true` | con `false`, si `dir` no tiene `MANIFEST`, `open` falla antes de crear o modificar nada (ni el directorio ni `LOCK`): `Corruption` si hay archivos WAL o SST canónicos (una base dañada, igual que con `true`) y `InvalidArgument` en otro caso (no hay base) |
 | `durability` | `Sync` | modo de durabilidad de todos los commits del handle |
 | `cache_bytes` | 64 MiB | capacidad de la caché de bloques |
@@ -49,12 +49,12 @@ El módulo oculto `testing` define `Profile` y `Profiled<P>`: un tipo de motor d
 | Archivo        | Función |
 |----------------|---------|
 | `LOCK`         | `Vfs::lock` (apertura exclusiva, `Error::Locked`); sin estado, 0 bytes |
-| `MANIFEST`     | forma del LSM con cabecera común de 96 bytes: una generación, con un único registro `SNAPSHOT`, reemplazada de forma atómica |
-| `MANIFEST.tmp` | solo existe mientras se escribe un MANIFEST nuevo |
+| `MANIFEST`     | forma del LSM como **log de ediciones**: cabecera común de 96 bytes, un `SNAPSHOT` y los registros anexados desde entonces; se reemplaza de forma atómica por una generación nueva en cada checkpoint |
+| `MANIFEST.tmp` | solo existe mientras se escribe un checkpoint |
 | `NNNNNN.wal`   | log de escritura anticipada (WAL), uno por memtable |
 | `NNNNNN.sst`   | tabla ordenada (SST) |
 
-Los números de WAL y de SST salen de un único contador creciente (`next_file`) y nunca se reutilizan. Al abrir se borran los archivos que siguen estos patrones pero no están vivos: los WAL anteriores al `log_number` del MANIFEST, las SST que este no referencia y `MANIFEST.tmp`. Solo cuentan los nombres canónicos (DIR-1: `{n:06}.wal` o `{n:06}.sst` con `1 ≤ n ≤ 2^48−1`, exactamente como se escriben); los archivos con otros nombres, como un `1.wal` suelto o un número fuera de rango, son desconocidos: no se abren, no se cuentan y no se tocan. Un archivo que ya no existe cuando la recuperación intenta borrarlo (lo borró a la vez una instantánea de un handle anterior) no es un error.
+Los números de WAL y de SST salen de un único contador creciente (`next_file`) y nunca se reutilizan. Al abrir en lectura-escritura se borran los archivos que siguen estos patrones pero no están vivos (huérfanos: REC-7, REC-8, REC-11), junto con los WAL ya reproducidos y `MANIFEST.tmp`; una apertura de solo lectura los informa y no los toca. Solo cuentan los nombres canónicos (DIR-1: `{n:06}.wal` o `{n:06}.sst` con `1 ≤ n ≤ 2^48−1`, exactamente como se escriben); los archivos con otros nombres, como un `1.wal` suelto o un número fuera de rango, son desconocidos: no se abren, no se cuentan y no se tocan. Un archivo que ya no existe cuando la recuperación intenta borrarlo (lo borró a la vez una instantánea de un handle anterior) no es un error.
 
 **Creación y archivos ajenos (DIR-2, DIR-3, REC-1..3).** Sin `MANIFEST`, solo se crea una base si el directorio no existe o contiene únicamente `LOCK` y/o `MANIFEST.tmp` (lo que deja una caída durante la creación). Si hay archivos WAL o SST canónicos, es `Corruption` (REC-2); si hay cualquier otro archivo (el `data.kbt` del B+ tree, el `log` del motor de referencia, un `notes.txt`), `InvalidArgument("not a Kerno database")` sin tocar nada, ni siquiera `LOCK`. La creación hace `create_dir_all` y `sync_dir` de los directorios que contienen los creados **solo al crear**, toma el `LOCK` y escribe el primer MANIFEST (generación 1, `SNAPSHOT` vacío y `CLEAN`) por `MANIFEST.tmp → sync_data → rename → sync_dir`; después sigue el arranque normal. El directorio se vuelve a listar con el `LOCK` tomado: esa es la lista con la que se recupera.
 
@@ -62,14 +62,16 @@ Los números de WAL y de SST salen de un único contador creciente (`next_file`)
 
 El formato está especificado byte a byte en [`docs/file-format/v1.md`](../../docs/file-format/v1.md); aquí solo lo que el motor hace con él.
 
-- **Cabecera común** (96 bytes, §3) en los tres tipos de archivo: `magic`, `format_version`, bits `compat` / `ro_compat` / `incompat`, `db_id`, número de archivo (la generación en el MANIFEST) y un campo por tipo (`first_edit_seq`, `base_seq`, tamaño de bloque), con un CRC32C propio. Se valida entera (HDR-1..10) en todo archivo que se lee, antes de interpretar nada más y antes de escribir nada. El motor pone `DRAFT` en `incompat` de todo lo que escribe; un bit `incompat` desconocido, `AEAD` o `format_version > 1` es `Incompatible`; los bits `compat` desconocidos se ignoran (y un archivo reescrito no los conserva); un bit `ro_compat` desconocido da por ahora `Incompatible("read-only open not yet supported")` (WP08 lo convertirá en apertura de solo lectura).
+- **Cabecera común** (96 bytes, §3) en los tres tipos de archivo: `magic`, `format_version`, bits `compat` / `ro_compat` / `incompat`, `db_id`, número de archivo (la generación en el MANIFEST) y un campo por tipo (`first_edit_seq`, `base_seq`, tamaño de bloque), con un CRC32C propio. Se valida entera (HDR-1..10) en todo archivo que se lee, antes de interpretar nada más y antes de escribir nada. El motor pone `DRAFT` en `incompat` de todo lo que escribe; un bit `incompat` desconocido, `AEAD` o `format_version > 1` es `Incompatible`; los bits `compat` desconocidos se ignoran (y un archivo reescrito no los conserva); un bit `ro_compat` desconocido (HDR-7) abre la base entera en solo lectura (`KernoDb::is_read_only` devuelve `UnknownRoCompat { file, bits }`).
 - **WAL** (§6): trama de 32 bytes de cabecera + carga, **una trama por grupo de commits** (WP12; un grupo de un commit cuando el group commit está apagado o hay un solo escritor). Cada trama lleva `first_seq`, `count` (los commits del grupo, con secuencias consecutivas) y `synced_len` (W-11): el prefijo del archivo que el escritor sabía duradero al escribirla. El CRC lleva como contexto el número de archivo. La carga es el commit en forma canónica (WAL-C1).
 - **SST** (§7): cabecera, bloques de datos, filtro, propiedades, índice y pie de 80 bytes. Cada bloque va encapsulado como `carga ‖ ranura AEAD de 40 bytes (ceros) ‖ crc`, con el desplazamiento del bloque como contexto del CRC. Guarda una versión por clave de usuario y una secuencia por entrada. Sin compresión de prefijos ni de bloques; la búsqueda binaria dentro de un bloque usa el array de desplazamientos.
-- **MANIFEST** (§8): un registro `SNAPSHOT` con `next_file`, `last_seq`, `log_number`, `num_levels` (7), `flags` (`CLEAN`), `prev_generation` y un `FileMeta` por archivo (nivel, número, tamaño, entradas, fragmentos de rango —siempre 0—, rango de secuencias, extremos de clave). L0 se lista del más nuevo al más viejo; L1 y los siguientes, ordenados y sin solapes. Significado de los campos:
+- **MANIFEST** (§8): registro 0 `SNAPSHOT` con `next_file`, `last_seq`, `log_number`, `num_levels` (7), `flags` (`CLEAN`), `prev_generation` y un `FileMeta` por archivo (nivel, número, tamaño, entradas, fragmentos de rango —siempre 0—, rango de secuencias, extremos de clave). L0 se lista del más nuevo al más viejo; L1 y los siguientes, ordenados y sin solapes. Los demás registros son `SESSION_OPEN` (arranque de sesión), `FLUSH` y `COMPACTION` (con su motivo: segundo plano, cierre o movimiento trivial). Significado de los campos:
   - `last_seq`: el commit más nuevo contenido en las SST.
-  - `log_number`: los WAL numerados `>= log_number` contienen, en orden, los commits posteriores a `last_seq`.
+  - `log_number`: el número **exacto** del WAL vivo más antiguo (W-5); los WAL numerados `>= log_number` contienen, en orden, los commits posteriores a `last_seq`. Tras un cierre limpio (`CLEAN`) es `next_file`.
 
-Cada actualización del MANIFEST es la del M0 sobre registros v1: `write MANIFEST.tmp → sync_data → rename → sync_dir`, con la generación + 1 y el `edit_seq` siguiente (continúa entre generaciones). WP08 pasa a anexar registros al archivo vigente.
+Un cambio de la forma del LSM es **un registro anexado**: un `write_at` y un `sync_data` (W-3), antes de borrar nada de lo que deja obsoleto y antes de publicar la versión nueva. `ManifestWriter` guarda el manejador de anexado, la posición del siguiente registro y el `edit_seq` vigente; un anexado fallido envenena el handle y nunca se vuelve a anexar tras una cola posiblemente inválida (W-7).
+
+Un **checkpoint** (W-10) reemplaza el archivo por una generación nueva con un único `SNAPSHOT`: `MANIFEST.tmp → sync_data → rename → sync_dir`, con la generación + 1 y el `edit_seq` siguiente (que continúa entre generaciones). Se escribe en lugar del siguiente anexado cuando (a) el MANIFEST terminó en una cola rota al abrir, (b) los bytes anexados superan `máx(4 MiB, 4 × tamaño del registro 0)` y (c) bajo demanda (`TestHooks::checkpoint`); y con `CLEAN` al cerrar. El tamaño del archivo queda así acotado por el de la forma del LSM y no crece con la historia.
 
 ## Camino de commit
 
@@ -90,7 +92,7 @@ Todo commit no vacío pasa por la cola de commits (`commit_queue.rs`, ver [Group
 **fsyncs por commit `Sync`: un `sync_data` (el del WAL) por grupo**, es decir, exactamente 1 con un solo escritor y menos de 1 con escritores concurrentes. Amortizados además:
 
 - Un `sync_dir` por cambio de memtable, es decir, cada `write_buffer_bytes`.
-- En segundo plano, por flush: `sync_data` de la SST, `sync_dir` y después `sync_data` + `sync_dir` del MANIFEST.
+- En segundo plano, por flush: 3 sincronizaciones (`sync_data` de la SST, `sync_dir` y `sync_data` del registro `FLUSH`; el M0 y WP07 pagaban 4). Por compactación: `sync_data` de cada salida, un `sync_dir` y el `sync_data` del registro `COMPACTION`. Una reapertura limpia cuesta 2 (`sync_dir` del WAL nuevo y `sync_data` del `SESSION_OPEN`).
 
 La cabecera de la trama (32 bytes) se paga una vez por grupo; con un solo escritor añade 16 bytes por commit respecto del M0.
 
@@ -117,13 +119,13 @@ La cabecera de la trama (32 bytes) se paga una vez por grupo; con un solo escrit
 
 ## Trabajo en segundo plano
 
-Hay dos hilos: el de **flush** (`kerno-flush`) y el de **compactación** (`kerno-compact-0`). Comparten una variable de condición con el escritor. Las ediciones del MANIFEST se serializan con un mutex propio: cada titular calcula los niveles nuevos a partir de los últimos duraderos, escribe el MANIFEST y después instala una `Version` nueva.
+Hay dos hilos: el de **flush** (`kerno-flush`) y el de **compactación** (`kerno-compact-0`). Comparten una variable de condición con el escritor. Las ediciones del MANIFEST se serializan con un mutex propio: cada titular calcula los niveles nuevos a partir de los últimos duraderos, anexa su registro (o escribe el checkpoint que toca) y después instala una `Version` nueva. Un tercer hilo, `kerno-delete`, borra los archivos obsoletos (ver [Versiones, instantáneas y vida de los archivos](#versiones-instantáneas-y-vida-de-los-archivos)).
 
 **Flush** (primero la memtable inmutable más vieja):
 
 1. Escribe la versión más nueva de cada clave en una o más SST de L0 nuevas (varias si `flush_split` corta alrededor de archivos de L1, ver `flush.rs`), y después `sync_data` y `sync_dir`.
-2. Escribe la generación siguiente del MANIFEST con las tablas, como grupo, al principio de L0, `last_seq = max(last_seq, mem.max_seq)` y `log_number = mem.wal_number + 1` (en WP08 pasará a ser el número exacto del WAL vivo más antiguo).
-3. Instala la versión nueva y borra el WAL. El borrado es de mejor esfuerzo; la recuperación elimina los restos.
+2. Anexa un registro `FLUSH` con las tablas, como grupo, al principio de L0 (un flush de una memtable cuyos commits no tuvieron efecto no produce tablas, pero sube `last_seq`), `last_seq = max(last_seq, mem.max_seq)` y `log_number` = el número del WAL de la memtable siguiente más vieja, o el de la activa: el WAL vivo más antiguo **exacto** (el M0 usaba `wal_number + 1`, que podía no ser un WAL).
+3. Instala la versión nueva y borra el WAL (W-5: solo después de que el registro sea duradero). El borrado es de mejor esfuerzo; la recuperación elimina los restos.
 
 **Compactación** (nivelada, como en LevelDB):
 
@@ -133,9 +135,9 @@ Hay dos hilos: el de **flush** (`kerno-flush`) y el de **compactación** (`kerno
 - Los archivos de salida se cortan en `target_file_size` (por defecto, el *write buffer* efectivo) y cuando solapan más de `grandparent_overlap_bytes` del nivel por debajo del de salida.
 - La fusión conserva solo la versión más nueva de cada clave. Las instantáneas más antiguas siguen leyendo los archivos de entrada a través de su propia `Version`.
 - Una lápida se descarta cuando ningún archivo de un nivel inferior al de salida tiene un rango de claves que contenga la clave.
-- Las salidas se sincronizan, después `sync_dir`, después el MANIFEST y después la instalación de la versión. Solo entonces se marcan obsoletas las entradas.
+- Las salidas se sincronizan, después `sync_dir`, después se anexa el registro `COMPACTION` (los `delete_file` de las entradas y los `add_file` de las salidas, con el motivo; un movimiento trivial es un borrado y un alta del mismo archivo, motivo 4) y después se instala la versión. Solo entonces se marcan obsoletas las entradas.
 - Al apagar, la compactación en curso se abandona y sus salidas parciales se eliminan.
-- Si la escritura del MANIFEST falla, no se borra nada. Un `rename` cuyo `sync_dir` falló puede sobrevivir, así que las salidas podrían estar referenciadas. La siguiente recuperación borra los archivos que el MANIFEST superviviente no referencia.
+- Si el anexado falla, no se borra nada y el handle queda envenenado: el registro pudo llegar al disco, así que las salidas podrían estar referenciadas. La siguiente recuperación decide con lo que el MANIFEST superviviente dice, y borra los archivos que este no referencia.
 
 ### Modo en línea (`Background::Inline`)
 
@@ -149,11 +151,12 @@ Sin hilos, la secuencia de operaciones del sistema de archivos depende solo de l
 
 | Gancho | `Threads` | `Inline` |
 |---|---|---|
-| `wait_idle` | espera a que no haya flush pendiente o en curso ni compactación pendiente o en curso (incluidos los borrados que siguen a cada una) | vuelve enseguida |
+| `wait_idle` | espera a que no haya flush pendiente o en curso ni compactación pendiente o en curso, y a que el borrador haya intentado todos los archivos encolados (los que fallan se cuentan y no retienen la espera) | borra lo pendiente y vuelve |
 | `flush` | cambia la memtable activa si tiene commits y espera a que el hilo de flush escriba todas las inmutables | lo mismo, en el hilo que llama; no compacta |
 | `compact_once` | las compactaciones corren solas: espera como `wait_idle` y devuelve `true` si terminó al menos una mientras esperaba (entre ellas, cualquiera pendiente o en curso al llamarlo; puede haber más de una) | ejecuta como mucho una compactación; `true` si había alguna pendiente |
+| `checkpoint` | escribe una generación nueva del MANIFEST con la forma actual (W-10), sin `CLEAN` | igual |
 
-Todos devuelven `Poisoned` si el handle está envenenado. El código del motor etiqueta su E/S con `kerno_core::probe::phase`, que `SimVfs::trace` registra con cada operación: `create` (apertura de una base nueva: sincronización de los directorios que la contienen y recuperación inicial), `session` (apertura de una base existente: recuperación), `commit`, `rotate`, `flush`, `compact`, `close`, `checkpoint` (el MANIFEST del cierre, que no necesita ningún WAL) y `delete` (borrado de WAL y SST obsoletos, también en `Table::drop`).
+Todos devuelven `Poisoned` si el handle está envenenado y `ReadOnly` (salvo `wait_idle`) si es de solo lectura. El código del motor etiqueta su E/S con `kerno_core::probe::phase`, que `SimVfs::trace` registra con cada operación: `create` (apertura de una base nueva: sincronización de los directorios que la contienen y recuperación inicial), `session` (apertura de una base existente: recuperación), `commit`, `rotate`, `flush`, `compact`, `close`, `checkpoint` (toda escritura de una generación nueva del MANIFEST, también la del cierre `CLEAN`; ver [`harness::matrix`](../kerno-testkit/src/harness/matrix.rs) para la correspondencia con las filas de la matriz de fallos) y `delete` (borrado de WAL obsoletos tras un `FLUSH` y de SST obsoletas por el hilo `kerno-delete`). Las operaciones del arranque de sesión (S-2..S-5) llevan `session` y las del paso final del cierre (WAL), `close`.
 
 ## Versiones, instantáneas y vida de los archivos
 
@@ -162,13 +165,13 @@ Todos devuelven `Poisoned` si el handle está envenenado. El código del motor e
 - **Get:** memtable activa, después las inmutables, después L0 de la más nueva a la más vieja, después un archivo candidato por cada nivel más profundo (búsqueda binaria sobre `largest`). En cada archivo comprueba el rango de claves, el filtro bloom y después el índice.
 - **Scan:** una fusión de k vías (mínimo lineal sobre un número pequeño de fuentes) que entrega la versión visible más nueva de cada clave. Se saltan las lápidas, se tratan todas las combinaciones de `Bound` y los rangos vacíos o invertidos no devuelven nada.
 
-Una SST se borra en `Table::drop`, pero solo si la tabla está marcada como obsoleta. Una tabla se marca obsoleta solo después de que un MANIFEST duradero deje de referenciarla, así que desaparece cuando se suelta la última `Version` o instantánea que la usa. Ese `drop` puede ocurrir en cualquier hilo.
+Una SST se borra cuando se suelta su última referencia, pero solo si la tabla está marcada como obsoleta, y eso solo ocurre después de que un registro duradero del MANIFEST deje de referenciarla. `Table::drop` ya no borra (W-13): **encola la ruta** en el `Deleter` compartido (`deleter.rs`). Mientras el motor vive, un hilo `kerno-delete` borra lo encolado y reintenta los fallos con espera creciente (10 ms hasta 1 s), contando `delete_failures`; en `Background::Inline` no hay hilo y quien encola borra en el acto (los fallos se reintentan en la siguiente llamada). Al cerrar el handle (o soltarlo), el borrador se detiene, intenta una vez todo lo que quede y, desde entonces, cada `drop` borra en línea, como en el M0. Así un lector que suelta la última instantánea nunca paga el borrado mientras el motor está vivo. Un archivo cuyo borrado sigue fallando queda como huérfano y lo borra la siguiente recuperación. Métricas: `obsolete_bytes_pending` (bytes encolados sin borrar), `obsolete_files_deleted` y `delete_failures`.
 
 ## Recuperación (en cada apertura, también la de una base nueva)
 
 Primero se **clasifica y valida** todo, sin escribir; solo después se escribe.
 
-0. Antes de tocar nada, `open` rechaza con `InvalidArgument` una `Config` inválida (límites fuera del formato, `max_immutable_memtables = 0`, `Sync` en una plataforma sin verificar) y el acceso `ReadOnly` (todavía no implementado). Lista el directorio. Sin `MANIFEST`: `Corruption` si hay archivos WAL o SST canónicos (REC-2), `InvalidArgument("not a Kerno database")` si hay otros archivos (REC-3), `InvalidArgument` si no hay base y `create_if_missing` es `false`; en todos estos casos no se crea ni se modifica nada. Con `create_if_missing` y un directorio vacío (o con solo `LOCK` y `MANIFEST.tmp`) se crea la base (ver Creación arriba).
+0. Antes de tocar nada, `open` rechaza con `InvalidArgument` una `Config` inválida (límites fuera del formato, `max_immutable_memtables = 0`, `Sync` en una plataforma sin verificar) (el acceso `ReadOnly` ya no se rechaza). Lista el directorio. Sin `MANIFEST`: `Corruption` si hay archivos WAL o SST canónicos (REC-2), `InvalidArgument("not a Kerno database")` si hay otros archivos (REC-3), `InvalidArgument` si no hay base y `create_if_missing` es `false` (o el acceso es `ReadOnly`, que nunca crea); en todos estos casos no se crea ni se modifica nada. Con `create_if_missing` y un directorio vacío (o con solo `LOCK` y `MANIFEST.tmp`) se crea la base (ver Creación arriba).
 1. Crear el directorio y sincronizar sus padres ocurre **solo al crear** y antes del `LOCK` (el `LOCK` vive dentro del directorio). Se sincroniza el directorio que contiene el de la base y el que contiene cada directorio que `create_dir_all` acaba de crear (antes mira cuáles faltan): sin un único journal de metadatos, la entrada de un directorio solo es duradera cuando se sincroniza el que la contiene (lo encontró el modelo de durabilidad por directorio de WP03b: con `/data/apps/db` sobre un disco vacío, un corte de energía podía borrar la base entera tras commits `Sync` confirmados). En una ruta relativa de un solo componente, ese directorio es el actual, `.`. Estas sincronizaciones son obligatorias: si una falla, la apertura falla. Los ancestros de más arriba no tienen por qué haber cambiado, y sincronizarlos puede fallar por motivos ajenos a la base (`sync_dir` abre el directorio y necesita permiso de lectura, que falta en un ancestro que solo se puede atravesar, como un `home` en modo 0711 o los datos de una app en Android; un sistema de archivos de solo lectura puede no admitir `fsync` de directorios). Pero una apertura anterior de una base nueva pudo crear parte de la cadena (`create_dir_all` crea un nivel cada vez) y fallar o morir antes de sincronizarlos. Como no se sabe cuáles, en toda base nueva los ancestros por encima del más alto sincronizado de forma obligatoria se sincronizan además sin garantía, de abajo arriba. La subida se detiene en silencio solo cuando el error muestra que el proceso no puede sincronizar ese directorio (`PermissionDenied`, `ReadOnlyFilesystem`, `Unsupported`). Cualquier otro error, como un `EIO`, hace fallar la apertura: tras un `fsync` fallido no se reintenta suponiendo que los datos llegaron al disco (ADR-0002, I-10). Después toma el bloqueo y vuelve a listar el directorio: nadie más puede cambiarlo, y esa lista es con la que se recupera.
 2. Lee el MANIFEST (HDR-1..9, MAN-R*, MAN-S*): la corrupción se informa, nunca se trata como «empezar vacío»; un *magic* del M0, una versión o un bit `incompat` desconocidos son `Incompatible`. Abre cada SST referenciada (SST-O1..O7): cabecera (con `db_id` y número de archivo, HDR-10), tamaño, pie, disposición, bloques meta, índice, propiedades, filtro y todos los campos del `FileMeta` (rango de secuencias incluido, que debe caber en `last_seq`).
 3. Reproduce los WAL `>= log_number` en orden de número, en flujo (lecturas de 1 MiB; el archivo no se carga entero). Cada log empieza en la secuencia siguiente al anterior (`base_seq`, WAL-R1) y las tramas llevan secuencias consecutivas:
@@ -176,28 +179,50 @@ Primero se **clasifica y valida** todo, sin escribir; solo después se escribe.
    - La lectura de un log se detiene en la primera trama incompleta o con CRC incorrecto en `P`. Si desde `P` todo son ceros, es relleno; si no, se buscan tramas posteriores válidas con `P < synced_len ≤ q`: si existe alguna, el daño era duradero → `Corruption`; si no, es una cola rota (WAL-R5).
    - Una cabecera rota (WAL-R6: HDR-1, HDR-3 o un *magic* desconocido) con una trama posterior que dice haber sido sincronizada es `Corruption`; si no, el log cuenta como vacío (un WAL recién creado cuya cabecera aún no era duradera).
    - Qué logs pueden terminar rotos lo decide REC-10 sobre toda la cadena: los anteriores al último con commits están íntegros (cabecera válida, sin cola rota), ese puede tener cola rota y los posteriores no tienen commits.
-4. Escribe los commits reproducidos en una SST de L0 nueva (`creation_reason` 3, sincronizada, y después `sync_dir`).
-5. Escribe la generación siguiente del MANIFEST, cuyo `log_number` es un número de WAL nuevo, de modo que todos los WAL existentes quedan obsoletos. Borra los WAL obsoletos y las SST huérfanas, crea el WAL nuevo (cabecera, `sync_dir`).
-
-El orden 4-5 es el del M0: el MANIFEST antes del WAL nuevo. Su `base_seq` es así el `last_seq` que un MANIFEST ya duradero contiene, y una caída entre ambos deja un MANIFEST sin WAL vivo, que se acepta. WP08 lo cambia (WAL antes del `SESSION_OPEN`, con REC-10c); por eso no se aplica aquí ninguna regla de WAL ausente (REC-9) ni del estado limpio (REC-6..8).
+4. **Clasifica** (`recovery::classify`, una función pura sobre el listado, la reproducción del MANIFEST y lo que dijo el escaneo de los WAL; v1.md §9.1–§9.3). Con la forma de la base, aplica REC-4..REC-13:
+   - REC-5: una SST referenciada y ausente, de otro tamaño, `db_id` o propiedades es `Corruption`.
+   - Estado **limpio** (el último registro es un `SNAPSHOT` con `CLEAN`): una SST numerada `next_file` o más es `Corruption` (REC-6: un `SESSION_OPEN` perdido); un WAL numerado `next_file` o más con alguna trama es `Corruption` y sin tramas (vacío o con la cabecera rota) es un huérfano (REC-7); todo lo demás sin referenciar es huérfano (REC-8).
+   - Estado **sucio**: debe existir el WAL `log_number` (REC-9, «WAL requerido»: un último `FLUSH` o `SESSION_OPEN` dañado cuyo WAL ya se borró aparece como `Corruption`, no como una base más pequeña); los WAL vivos son los `>= log_number` y forman una cadena (REC-10a–d); las SST sin referenciar y los WAL menores que `log_number` son huérfanos (REC-11).
+   - `MANIFEST.tmp` se ignora y, en lectura-escritura, se borra (REC-12); los archivos desconocidos se ignoran y nunca se borran (REC-13).
+5. Solo si todo lo anterior fue bien, **escribe** (`recovery::apply`; arranque de sesión S-2..S-6):
+   - **S-2.** Vuelve a leer los WAL vivos —la clasificación no conserva commits— y escribe una SST de L0 cada vez que la memtable reproducida alcanza `write_buffer_bytes` (la memoria de recuperación queda acotada por el buffer, no por el log; una recuperación lee cada log dos veces); `sync_data` de cada una y un `sync_dir`.
+   - **S-2b.** `sync_data` del WAL más nuevo que tenía tramas. Sus tramas pueden no ser duraderas (`Buffered`, o un proceso que murió con la caché del SO intacta) y el WAL del paso siguiente va a afirmar, con su `base_seq`, que existen; hasta que el `SESSION_OPEN` sea duradero la cadena vieja es lo que leería una recuperación, y un corte de energía en esa ventana dejaría un hueco entre ambos (encontrado por `single_io_failure_at_every_point_buffered` con hilos).
+   - **S-3.** Crea el WAL `X` (`next_file`, sin reutilizar ningún número del directorio) con `base_seq = last_seq + 1`: cabecera y `sync_dir` (W-1), **antes** de su registro. REC-10c hace reentrante esa ventana.
+   - **S-4.** Anexa `SESSION_OPEN { next_file, last_seq, log_number = X, tablas de S-2 }` y `sync_data`; o, si el MANIFEST terminó en una cola rota o supera el disparador de tamaño, escribe un checkpoint sin `CLEAN` con `log_number = X` (W-7, W-10). Ninguna trama se escribe antes de que este registro sea duradero (W-8): el estado deja de ser limpio antes de la primera trama.
+   - **S-5.** Borra los huérfanos, los WAL reproducidos y `MANIFEST.tmp`; `sync_dir` solo si borró algo.
+   - **S-6.** Lanza los hilos de segundo plano y el borrador.
 
 Consecuencias:
 
-- A una cola rota nunca le siguen anexados, porque el log viejo no se vuelve a escribir.
-- El estado que informa `open` es duradero antes de que `open` vuelva.
-- Una caída en cualquier paso deja o bien el MANIFEST viejo con todos sus WAL, o bien el MANIFEST nuevo. Ambos se recuperan al mismo estado.
-- Un fallo antes del cambio de MANIFEST (un disco lleno al escribir la SST o el MANIFEST) no cambia ningún archivo que ya existiera; después, el directorio es una base consistente que no necesita WAL.
+- A una cola rota nunca le siguen anexados: el log viejo no se vuelve a escribir y un MANIFEST con cola rota se reemplaza.
+- El estado que informa `open` es duradero antes de que `open` vuelva (SST + `SESSION_OPEN`, o el checkpoint).
+- Una caída en cualquier paso se recupera con las mismas reglas: antes de S-4, el MANIFEST viejo y sus WAL siguen vigentes (las SST de S-2 son huérfanas y el WAL `X` es un WAL sin tramas tras el último con tramas, REC-10c); después, el estado nuevo. Lo prueban `chained_crash_during_session_start_after_torn_wal`, `recovery_makes_replayed_frames_durable_before_the_new_wal` y los barridos de `manifest_log.rs`.
+- Un fallo antes de S-4 (un disco lleno al escribir una SST) no cambia ningún archivo que ya existiera.
 - Si los niveles superan su objetivo, la compactación se programa justo después de abrir (en modo `Inline`, se ejecuta en el siguiente cambio de memtable o en el cierre).
+
+La recuperación sigue la misma vía en las aperturas de solo lectura hasta el paso 4 inclusive; ver [Solo lectura](#solo-lectura).
 
 ## Cierre limpio
 
-1. Detiene y espera a los hilos de segundo plano. Si el handle está envenenado, devuelve `Poisoned`.
-2. Hace flush de todas las memtables a L0.
-3. Escribe un MANIFEST con `last_seq` igual al commit más nuevo y un `log_number` por encima de todos los WAL. Es el MANIFEST **limpio** (`CLEAN`, con `log_number = next_file`, W-9) si no hay ninguna compactación pendiente; si la hay, este es uno sin `CLEAN`.
-4. Borra todos los WAL y después `sync_dir`.
-5. `compact_for_close`, en el hilo que llama: primero, **siempre**, compacta L0 hasta que su métrica baje de `l0_trigger` (la misma elección que el trabajo normal, salvo que con `l0_partial` toma solo los archivos más viejos que hacen falta para dejar la métrica por debajo: con una carga en orden aleatorio cada archivo de L0 arrastra todo L1, así que los que quedan son bytes que el cierre no reescribe ni borra); después, una compactación cada vez mientras queden bytes y tiempo de `close_budget` (los bytes leídos y escritos de todas las compactaciones del cierre, las obligatorias incluidas; el tiempo, desde el inicio del cierre) y algún nivel supere su objetivo. Una compactación que empieza dentro del presupuesto de bytes puede acabar por encima de él; no empieza una que, al ritmo de las compactaciones anteriores del mismo cierre (borrado de sus entradas incluido), acabaría después de `max_duration`. Estas compactaciones usan `close_subcompactions` y no hacen los `sync_data` intermedios de `bytes_per_sync`. Lo que queda pendiente lo retoma la puntuación tras la siguiente apertura: el formato no registra deuda. `close` devuelve un `CloseReport { duration, flushed_bytes, compacted_bytes, budget_exhausted, l0_files, l0_depth }` (el `Engine::close` del contrato lo descarta). `max_duration: None` hace el cierre determinista. (Lo encontró la revisión adversarial del M0: antes, el cierre abandonaba la compactación en curso y el paso 2 añadía un archivo más a L0, así que muchas sesiones cortas hacían crecer L0 sin límite y cada reapertura empezaba con compactaciones atrasadas.) La marca `CLEAN` va siempre después de la última compactación del cierre, no antes: el paso 3 solo la escribe si no quedaba ninguna compactación pendiente; si no, o si este paso ejecutó alguna, la escribe este paso al terminar.
+Sigue W-9:
 
-Tras un cierre limpio el directorio contiene solo `LOCK`, `MANIFEST` y SST, y todos sus bytes tienen checksum. Por eso un bit invertido o un truncado producen un error en lugar de un commit más antiguo. Las reglas del estado limpio (qué archivos sobrantes delatan un cierre que no terminó) llegan con WP08; hasta entonces `CLEAN` solo se escribe.
+1. Detiene y espera a los hilos de flush y compactación. Si el handle está envenenado, devuelve `Poisoned`.
+2. Si la memtable activa recibió commits, la **rota** (WAL nuevo vacío: W-1, W-2): así el último `FLUSH` puede nombrar un WAL que existe como el vivo más antiguo.
+3. Hace flush de las inmutables, de la más vieja a la más nueva, con un registro `FLUSH` cada una.
+4. `compact_for_close`, en el hilo que llama: primero, **siempre**, compacta L0 hasta que su métrica baje de `l0_trigger` (la misma elección que el trabajo normal, salvo que con `l0_partial` toma solo los archivos más viejos que hacen falta para dejar la métrica por debajo: con una carga en orden aleatorio cada archivo de L0 arrastra todo L1, así que los que quedan son bytes que el cierre no reescribe ni borra); después, una compactación cada vez mientras queden bytes y tiempo de `close_budget` (los bytes leídos y escritos de todas las compactaciones del cierre, las obligatorias incluidas; el tiempo, desde el inicio del cierre) y algún nivel supere su objetivo. Una compactación que empieza dentro del presupuesto de bytes puede acabar por encima de él; no empieza una que, al ritmo de las compactaciones anteriores del mismo cierre (borrado de sus entradas incluido), acabaría después de `max_duration`. Estas compactaciones usan `close_subcompactions` y no hacen los `sync_data` intermedios de `bytes_per_sync`. Lo que queda pendiente lo retoma la puntuación tras la siguiente apertura: el formato no registra deuda. `close` devuelve un `CloseReport { duration, flushed_bytes, compacted_bytes, budget_exhausted, l0_files, l0_depth }` (el `Engine::close` del contrato lo descarta). `max_duration: None` hace el cierre determinista. (Lo encontró la revisión adversarial del M0: antes, el cierre abandonaba la compactación en curso y se añadía un archivo más a L0, así que muchas sesiones cortas hacían crecer L0 sin límite y cada reapertura empezaba con compactaciones atrasadas.)
+5. **Checkpoint `CLEAN`** con `log_number = next_file`: una generación nueva con un único registro. Va siempre después de la última compactación (antes se escribía antes de las compactaciones del cierre y se volvía a escribir después).
+6. Borra todos los WAL (W-5: solo ahora que el checkpoint es duradero) y `sync_dir`. Al soltar el handle, el borrador intenta una última vez los archivos obsoletos que queden.
+
+Tras un cierre limpio el directorio contiene solo `LOCK`, `MANIFEST` (un único registro) y SST, y todos sus bytes tienen checksum. Por eso un bit invertido o un truncado producen un error en lugar de un commit más antiguo, y por eso los archivos sobrantes tienen significado: una SST o un WAL con trama numerados `next_file` o más delatan una sesión cuyo `SESSION_OPEN` se perdió (REC-6, REC-7). Una caída en cualquier punto del cierre deja un estado que se recupera sin pérdida (`crash_at_every_point_of_close`).
+
+## Solo lectura
+
+`AccessMode::ReadOnly`, o un bit `ro_compat` desconocido en cualquier archivo que la apertura lee (el MANIFEST, las SST referenciadas, los WAL vivos), abre la base sin escribir (v1.md §9.5; invariante I-18): toma el `LOCK` exclusivo (`Locked` si otro handle, de lectura o escritura, la tiene), clasifica el directorio con la misma función que la apertura de lectura-escritura, abre las SST y reproduce los WAL vivos **en una sola memtable en memoria** (la memoria es proporcional a los WAL vivos). No hace `create_dir_all`, `sync_dir`, borrados, checkpoints ni flush, no lanza hilos y no crea nada (el `LOCK` puede crearse). Los huérfanos, `MANIFEST.tmp` y los archivos desconocidos se informan (`recovery_orphans`, oculto) y no se tocan.
+
+- `commit` (aunque el lote esté vacío), `TestHooks::flush`, `compact_once` y `checkpoint` devuelven `Error::ReadOnly`. `begin_write`, `sync` y `compact_range` (WP13b, WP12b y WP10b) deben comprobarlo igual con `Inner::check_writable`.
+- Las lecturas, las instantáneas y `wait_idle` funcionan; `close` no escribe nada.
+- `KernoDb::is_read_only()` devuelve `Requested` o `UnknownRoCompat { file, bits }` (el primer archivo con bits desconocidos). Con ambos motivos, gana `Requested`.
+- El `Writer` interno de un handle de solo lectura lleva un WAL de marcador (`WalWriter::read_only`) cuyas escrituras fallarían sin tocar el disco; ningún punto de entrada llega a usarlo.
 
 ## Cobertura de integridad
 
@@ -219,7 +244,7 @@ Cualquier discrepancia devuelve `Error::Corruption`. La corrupción encontrada p
 - **Buffered:** sin sincronización por commit, pero los registros se escriben con `write_at` antes de que `commit` vuelva, así que una caída del proceso no pierde nada confirmado. Ante un corte de energía, el estado recuperado es un **prefijo de commits**, nunca más antiguo que el estado que informó la última `open`. Se cumple porque:
   - el WAL viejo se sincroniza antes de crear uno nuevo, así que solo el log más nuevo puede tener huecos, y la reproducción se detiene en el primer hueco;
   - la SST y el MANIFEST son duraderos antes de borrar cualquier WAL al que sustituyen;
-  - la recuperación hace duradero su resultado antes de volver.
+  - la recuperación hace duradero su resultado antes de volver: las SST y el `SESSION_OPEN` (o el checkpoint) y, antes de crear el WAL nuevo, el WAL viejo cuyas tramas reprodujo (S-2b).
 
   `sync()` (ADR-0002) hace duradero lo confirmado hasta ese momento y devuelve la secuencia duradera (ver [Group commit](#group-commit-y-sync)).
 
@@ -227,7 +252,7 @@ Cualquier discrepancia devuelve `Error::Corruption`. La corrupción encontrada p
 
 Cualquier error de E/S en el camino de commit (anexado, sincronización, cambio de memtable), un pánico del líder o un error en un hilo de segundo plano (flush, compactación, escritura del MANIFEST) envenena el handle. A partir de ahí, `commit`, `sync`, `snapshot` y `close` devuelven `Poisoned` hasta que se reabre la base. Los miembros del grupo que falló reciben `Io`. Las instantáneas tomadas antes siguen funcionando sobre lo que siga siendo legible.
 
-`Drop` activa la marca de apagado, despierta a todos los que esperan y espera a los dos hilos, que terminan al apagar, al envenenarse o en su primera E/S fallida. Un pánico en un hilo de segundo plano se captura y envenena el handle.
+`Drop` activa la marca de apagado, despierta a todos los que esperan y espera a los hilos de flush y compactación, que terminan al apagar, al envenenarse o en su primera E/S fallida; después detiene el borrador (ver arriba). Un pánico en un hilo de segundo plano se captura y envenena el handle.
 
 ## Estadísticas (`Engine::stats`)
 
@@ -239,20 +264,20 @@ Cualquier error de E/S en el camino de commit (anexado, sincronización, cambio 
 - **Bloqueos:** `stall_episodes_{memtable,l0}`, `stall_micros_{memtable,l0}`, `stall_micros_max`, `slowdown_commits`, `slowdown_micros`; los nombres del M0 `write_stalls`, `write_stall_micros` y `write_slowdowns` se derivan de ellos.
 - **Segundo plano:** flushes y bytes de flush (incluidos los del cierre y de la recuperación), `flush_micros_max`, compactaciones, `compaction_micros_max`, movimientos triviales, bytes leídos y escritos por la compactación, lápidas descartadas, compactaciones de L0 con sus bytes de entrada y archivos de L1 reescritos (totales y máximos), `compactions_while_l0_slowdown` (compactaciones de niveles profundos elegidas con L0 en frenado) y `pending_compaction_bytes` (bytes por encima del objetivo de L1 a L5, más todo L0 cuando alcanza `l0_trigger`).
 - **Lecturas:** comprobaciones del bloom, negativos y falsos positivos; aciertos y fallos de la caché de bloques. Cada contador se reparte en 16 ranuras alineadas a 64 bytes (una por hilo, por turno) que se suman al leer, para que los lectores concurrentes no compitan por la misma línea de caché.
-- **Mantenimiento:** escrituras del MANIFEST, archivos obsoletos borrados.
+- **Mantenimiento:** `manifest_writes` (registros anexados más checkpoints), `manifest_records`, `manifest_checkpoints`, `manifest_bytes` (tamaño del archivo ahora), `obsolete_files_deleted`, `obsolete_bytes_pending` (bytes encolados sin borrar) y `delete_failures`.
 - **Apertura:** `last_open_clean` (1 si no se reprodujo ningún commit del WAL) y `last_open_replayed_bytes` (bytes de las tramas válidas reproducidas, sin las cabeceras de los logs).
 
 ## Limitaciones conocidas / qué cambiaría para producción
 
 Los paquetes de la Fase 1 atacan varias de ellas ([diseño de la Fase 1](../../docs/architecture/phase1-design.md) §5).
 
-- **MANIFEST.** Cada generación es una instantánea completa que se reescribe en cada flush y compactación, con coste O(archivos); WP08 lo convierte en un log de ediciones de solo anexado con checkpoints periódicos.
+- **MANIFEST.** El log de ediciones crece hasta `máx(4 MiB, 4 × registro 0)` antes de reemplazarse por un checkpoint, y la apertura lo reproduce entero: con muchas ediciones por sesión, el coste de arranque crece hasta ese límite. El disparador por tamaño no tiene prueba que lo ejerza a escala de producción más que `manifest_checkpoint_bounds_file_size`.
 - **Escrituras.** El commit se copia a la petición para que el líder lo lea mientras su dueño espera (una copia de claves y valores por commit). El líder de un grupo hace de líder de **un** grupo: bajo carga, cada grupo cuesta un relevo de hilo. No se reciclan los WAL, así que cada cambio de memtable paga una creación más `sync_dir`. Un grupo que espera en `make_room` (un bloqueo por flush) retrasa a todos sus miembros.
 - **Compactación.** Por defecto un único hilo de compactación y sin subcompactaciones (`max_background_compactions` y `max_subcompactions` existen pero están apagadas). No hay tamaños de nivel dinámicos. El frenado por tasa mira solo L0, no la deuda de los niveles profundos.
 - **Formato de SST.** Sin compresión de prefijos, sin compresión, sin índice o filtro particionados y sin versionado del formato más allá de los números mágicos.
 - **Memoria y archivos.** El índice y el filtro de cada tabla quedan residentes y todas las tablas quedan abiertas, así que la memoria crece con el número de archivos. La caché de bloques solo guarda bloques de datos.
-- **Coste de arranque.** La recuperación siempre reescribe la cola reproducida del WAL como una SST de L0 y escribe una generación nueva del MANIFEST, aunque el cierre anterior fuera limpio. Es sencillo y hace duradero el resultado de `open`, pero cada apertura tras un cierre sucio paga un flush.
+- **Coste de arranque.** Una apertura tras un cierre sucio lee los WAL vivos dos veces (clasificar y reproducir) y reescribe lo reproducido como SST de L0; una tras un cierre limpio no reproduce nada y cuesta dos sincronizaciones. Es sencillo y hace duradero el resultado de `open`.
 - **Lecturas.** Las fusiones de más de 8 hijos usan un montículo binario (los recorridos siempre con el umbral por defecto; `heap_merge_threshold` solo gobierna flush y compactación), y copian claves y valores. Los `get` reservan memoria para una clave de sondeo.
-- **Efectos secundarios del borrado.** El borrado de archivos ocurre en el hilo que suelta la última referencia (quizá un lector que suelta una instantánea), y sus errores se ignoran; los restos se limpian en la siguiente apertura.
+- **Borrado.** El hilo `kerno-delete` reintenta con espera creciente sin límite de intentos mientras el handle vive; tras cerrarlo, un fallo se cuenta pero no se reintenta (los restos los borra la siguiente apertura). El borrado de un WAL tras un `FLUSH` sigue siendo de mejor esfuerzo en el hilo de flush.
 - **Archivos desconocidos** en el directorio se ignoran en lugar de borrarse (y, en un directorio sin `MANIFEST`, hacen que no se cree la base).
-- **Solo lectura y rangos.** Un bit `ro_compat` desconocido y las lápidas de rango (un WAL con rangos o una SST con fragmentos) se rechazan con `Incompatible` hasta WP08 y WP10; no se ignoran, porque ignorarlos devolvería claves borradas.
+- **Rangos.** Las lápidas de rango (un WAL con rangos o una SST con fragmentos) se rechazan con `Incompatible` hasta WP10; no se ignoran, porque ignorarlos devolvería claves borradas.

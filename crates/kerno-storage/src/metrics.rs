@@ -378,8 +378,20 @@ pub struct ReadMetrics {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct MaintenanceMetrics {
+    /// MANIFEST changes: appended records plus checkpoints.
     pub manifest_writes: u64,
+    /// Records appended to the MANIFEST (v1.md §8, W-3).
+    pub manifest_records: u64,
+    /// New MANIFEST generations written (W-10).
+    pub manifest_checkpoints: u64,
+    /// Size of the MANIFEST file now.
+    pub manifest_bytes: u64,
+    /// Obsolete files deleted by the deleter (W-13).
     pub obsolete_files_deleted: u64,
+    /// Bytes of obsolete files waiting to be deleted.
+    pub obsolete_bytes_pending: u64,
+    /// Deletions that failed (each retry that fails counts again).
+    pub delete_failures: u64,
 }
 
 /// What the `open` of this handle found.
@@ -498,7 +510,12 @@ impl Metrics {
 
         let m = &self.maintenance;
         put("manifest_writes", m.manifest_writes);
+        put("manifest_records", m.manifest_records);
+        put("manifest_checkpoints", m.manifest_checkpoints);
+        put("manifest_bytes", m.manifest_bytes);
         put("obsolete_files_deleted", m.obsolete_files_deleted);
+        put("obsolete_bytes_pending", m.obsolete_bytes_pending);
+        put("delete_failures", m.delete_failures);
 
         put("last_open_clean", u64::from(self.last_open.clean));
         put("last_open_replayed_bytes", self.last_open.replayed_bytes);

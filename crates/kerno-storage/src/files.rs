@@ -3,10 +3,9 @@
 
 use std::io;
 
+use kerno_core::Error;
 use kerno_core::vfs::File;
-use kerno_core::{Error, Result};
 
-use crate::format::header::Header;
 use crate::format::{ByteSource, ErrorClass, FormatError, ReadError};
 
 /// A [`ByteSource`] over an open file; its length is the one at creation.
@@ -52,24 +51,9 @@ pub fn read_error(file: &str, e: ReadError<io::Error>) -> Error {
     }
 }
 
-/// HDR-7: a file with `ro_compat` bits this engine does not know can only be
-/// opened read-only.
-// ponytail: read-only handles do not exist yet (WP08), so such a database is
-// refused. WP08 turns this check into the read-only fallback.
-pub fn require_read_write(file: &str, header: &Header) -> Result<()> {
-    if header.unknown_ro_compat() != 0 {
-        return Err(Error::Incompatible(format!(
-            "read-only open not yet supported: {file} has unknown ro_compat bits {:#x}",
-            header.unknown_ro_compat()
-        )));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::format::header::FileKind;
 
     #[test]
     fn format_errors_keep_their_class() {
@@ -80,15 +64,5 @@ mod tests {
         );
         let i = format_error("000003.sst", FormatError::incompatible("HDR-2", 0, "M0 prototype format"));
         assert!(matches!(&i, Error::Incompatible(m) if m.contains("M0 prototype format")), "{i:?}");
-    }
-
-    #[test]
-    fn unknown_ro_compat_is_refused_until_read_only_exists() {
-        let mut h = Header::new(FileKind::Sst, [1; 16], 4, 4096);
-        assert!(require_read_write("000004.sst", &h).is_ok());
-        h.ro_compat = 1 << 9;
-        h.compat = 1 << 3; // unknown compat bits are ignored
-        let e = require_read_write("000004.sst", &h).unwrap_err();
-        assert!(matches!(&e, Error::Incompatible(m) if m.contains("read-only open not yet supported")), "{e:?}");
     }
 }

@@ -133,6 +133,8 @@ fn old_snapshot_pins_files_until_dropped() {
     let pinned = dir_size(&*vfs);
     let deleted_before = stat(&db, "obsolete_files_deleted");
     drop(old);
+    // The files go to the deleter thread (W-13): wait for it.
+    db.hooks().wait_idle().unwrap();
     assert!(stat(&db, "obsolete_files_deleted") > deleted_before, "dropping the snapshot should free files");
     assert!(dir_size(&*vfs) < pinned);
     assert!(read_all(&db.snapshot().unwrap()).unwrap() == model);

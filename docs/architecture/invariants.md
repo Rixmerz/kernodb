@@ -27,6 +27,7 @@ Las pruebas citadas viven en [`crates/kerno-testkit/src/harness/`](../../crates/
 | I-13 | **Límites explícitos.** Claves ≤ 512 B y valores ≤ 1 MiB en el spike; fuera de rango → `InvalidArgument` antes de escribir. | `functional::size_limits` | verificada |
 | I-14 | **Equivalencia lógica entre candidatos.** La misma secuencia de operaciones produce el mismo estado lógico y la misma secuencia en todos los motores. | `spike-bench/tests/differential.rs` (contenido y escaneos acotados en los seis motores; la secuencia, solo en los que la persisten: candidatos y `LogEngine`) | verificada |
 | I-15 | **Formato versionado.** Cada archivo persistente lleva magic y versión; una versión desconocida se rechaza sin modificar el archivo. | `regressions.rs::format_version` de cada candidato (meta del B+ tree; MANIFEST del LSM, que fija la versión de todo el directorio) | parcial: las SST del LSM solo llevan una versión implícita en el magic (`KRNOSST1`) y su WAL no lleva ni magic ni versión (ADR-0003) |
+| I-18 | **Sin mutación en aperturas que no escriben** *(propuesta, Fase 1)*. La apertura de solo lectura, `verify()`, `inspect()` y toda apertura rechazada no mutan el directorio (salvo crear `LOCK`). | `read_only_open_writes_nothing`, `verify_is_read_only`, `*_rejected_untouched` (`kerno-storage`, WP08–WP09) | propuesta |
 
 ### 1.1 Invariantes del motor `kerno-storage` (Fase 1, propuestas)
 

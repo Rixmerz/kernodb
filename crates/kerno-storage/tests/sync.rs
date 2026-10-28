@@ -8,7 +8,7 @@ use std::sync::Arc;
 use kerno_core::contract::{Engine, Options, Snapshot, SyncEngine};
 use kerno_core::{Durability, Error, WriteBatch};
 use kerno_storage::{Config, KernoDb};
-use kerno_testkit::vfs::SimVfs;
+use kerno_testkit::vfs::{SimVfs, assert_dir_unchanged};
 
 kerno_testkit::sync_test_suite!(kerno_storage::KernoDb);
 kerno_testkit::group_commit_test_suite!(kerno_storage::KernoDb);
@@ -92,4 +92,25 @@ fn sync_after_a_failed_commit_is_poisoned() {
     assert!(matches!(db.commit(&b), Err(Error::Io(_))));
     assert!(matches!(db.sync(), Err(Error::Poisoned(_))));
     assert!(matches!(SyncEngine::sync(&*db), Err(Error::Poisoned(_))));
+}
+
+/// `sync()` on a read-only handle returns `ReadOnly`, like every other
+/// mutation, and writes nothing.
+#[test]
+fn sync_on_read_only_returns_read_only() {
+    let disk = SimVfs::new(1);
+    let db = open(&disk, Durability::Buffered);
+    put(&db, "k1");
+    db.close().unwrap();
+    for durability in [Durability::Buffered, Durability::Sync] {
+        let cfg = Config {
+            access: kerno_storage::AccessMode::ReadOnly,
+            ..Config::from(&Options { durability, ..Options::small_for_tests() })
+        };
+        let before = disk.dump();
+        let db = KernoDb::open(disk.as_vfs(), Path::new("/db"), &cfg).unwrap();
+        assert!(matches!(db.sync(), Err(Error::ReadOnly(_))), "{durability:?}: sync on a read-only handle");
+        db.close().unwrap();
+        assert_dir_unchanged(&before, &disk.dump(), &["LOCK"]);
+    }
 }
