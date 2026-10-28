@@ -44,6 +44,7 @@ Las suites aleatorias aceptan `SPIKE_SEEDS=<n>` (más semillas) y `SPIKE_SEED=<n
 
 ## Dependencias y licencias
 
+- Kerno se licencia como `MIT OR Apache-2.0` ([LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE)); toda contribución se acepta bajo esas mismas dos licencias. Las dependencias nuevas del núcleo deben tener una licencia compatible (MIT, Apache-2.0, BSD, ISC, Zlib o equivalente permisiva).
 - No se copia código de otros proyectos sin revisar su licencia y registrarlo. Leer el diseño de proyectos de referencia (redb, RocksDB, LevelDB, LMDB, SQLite) está bien; copiar su implementación no.
 - Cada dependencia nueva del núcleo debe justificarse en el PR (tamaño, mantenimiento, licencia). Las dependencias usadas solo en benchmarks viven en `spike-bench` o `benchmarks/`.
 - `Cargo.lock` se versiona.

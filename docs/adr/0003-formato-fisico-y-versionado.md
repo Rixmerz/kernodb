@@ -2,8 +2,8 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | Propuesto (reglas de versionado e integridad; el formato concreto se congela al cerrar Fase 1) |
-| Fecha | 2026-10-27 |
+| Estado | **Aceptado** (2026-10-28, por el propietario del proyecto): las reglas de versionado e integridad son obligatorias; el formato concreto se congela al cerrar Fase 1 |
+| Fecha | 2026-10-27 (propuesta) · 2026-10-28 (aceptación) |
 | Relacionado con | SAD §13, D-10; ADR-0001, ADR-0002, ADR-0006; [principios de formato](../file-format/README.md); invariantes I-08, I-09, I-15, I-30 |
 
 ## Contexto
@@ -12,7 +12,7 @@ Una vez existan bases de datos reales, cambiar el formato será una migración, 
 
 M0 no congela ningún formato: los dos prototipos tienen formatos propios, versionados solo por *magic* y un número de versión. Lo que sí deja M0 es evidencia de **qué propiedades de formato hacen falta** para pasar las pruebas de integridad y de fallos, y eso es lo que fija este ADR.
 
-## Decisión propuesta
+## Decisión
 
 ### 1. Identificación y versión de cada archivo
 

@@ -2,8 +2,8 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | Propuesto (borrador con evidencia de M0; pendiente de aprobación junto con ADR-0001) |
-| Fecha | 2026-10-27 |
+| Estado | **Aceptado** (2026-10-28, por el propietario del proyecto, junto con ADR-0001) |
+| Fecha | 2026-10-27 (propuesta) · 2026-10-28 (aceptación) |
 | Relacionado con | SAD §4.2, §6.2, §7.2, §7.3; [matriz de fallos](../architecture/failure-matrix.md); invariantes I-01…I-11; ADR-0001 |
 
 ## Contexto
@@ -27,7 +27,7 @@ El criterio de aprobación (SAD §15) es una **matriz de fallos** con el estado 
 
 Ambas opciones principales se implementaron en M0 y se probaron con la misma matriz de fallos.
 
-## Decisión propuesta
+## Decisión
 
 ### Semántica de commit (independiente del motor)
 
