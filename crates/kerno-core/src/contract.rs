@@ -116,3 +116,68 @@ pub trait Snapshot: Send + 'static {
     /// order. Pagination: call again with `Bound::Excluded(last_key)`.
     fn scan(&self, start: Bound<&[u8]>, end: Bound<&[u8]>, limit: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>>;
 }
+
+/// Test-only control over an engine's background work, so that suites can
+/// put the engine into a known state (everything flushed, compaction run)
+/// instead of waiting on timing.
+///
+/// Every method has a default body that returns
+/// `Err(Error::InvalidArgument("unsupported"))`, so methods added later never
+/// break existing implementers; an engine overrides what it supports. The
+/// trait stays object safe (`KernoDb::hooks() -> &dyn TestHooks`).
+#[doc(hidden)]
+pub trait TestHooks {
+    /// Blocks until no background work (flush, compaction, deferred
+    /// deletion) is running or queued. Returns the background error that
+    /// poisoned the handle, if any.
+    fn wait_idle(&self) -> Result<()> {
+        Err(unsupported())
+    }
+
+    /// Rotates the active write buffer if it holds commits and writes every
+    /// immutable buffer to disk, returning when that is done.
+    fn flush(&self) -> Result<()> {
+        Err(unsupported())
+    }
+
+    /// Runs at most one compaction. `Ok(true)` if one ran, `Ok(false)` if
+    /// none was due.
+    fn compact_once(&self) -> Result<bool> {
+        Err(unsupported())
+    }
+}
+
+fn unsupported() -> crate::Error {
+    crate::Error::InvalidArgument("unsupported".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Error;
+
+    struct NoHooks;
+    impl TestHooks for NoHooks {}
+
+    struct Idle;
+    impl TestHooks for Idle {
+        fn wait_idle(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn is_unsupported<T: std::fmt::Debug>(r: Result<T>) -> bool {
+        matches!(r, Err(Error::InvalidArgument(m)) if m == "unsupported")
+    }
+
+    #[test]
+    fn test_hooks_default_to_unsupported() {
+        let hooks: &dyn TestHooks = &NoHooks;
+        assert!(is_unsupported(hooks.wait_idle()));
+        assert!(is_unsupported(hooks.flush()));
+        assert!(is_unsupported(hooks.compact_once()));
+        let idle: &dyn TestHooks = &Idle;
+        assert!(idle.wait_idle().is_ok());
+        assert!(is_unsupported(idle.compact_once()));
+    }
+}

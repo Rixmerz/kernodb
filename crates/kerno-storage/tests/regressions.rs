@@ -109,7 +109,7 @@ mod wal_damage {
                     drop(db);
                     after
                 }
-                CrashKind::ProcessKill => {
+                CrashKind::ProcessKill | CrashKind::ProcessKillKeepPending => {
                     drop(db); // unclean shutdown: no close()
                     sim
                 }

@@ -5,3 +5,5 @@ kerno_testkit::engine_test_suite!(
     buffered_power_loss_prefix = true,
     detects_truncation = false
 );
+
+kerno_testkit::extended_failure_suite!(kerno_testkit::reference::LogEngine, buffered_power_loss_prefix = true);

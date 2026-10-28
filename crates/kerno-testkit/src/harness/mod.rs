@@ -1,5 +1,7 @@
 //! Reusable test suites. Every candidate engine runs exactly the same tests
-//! through [`engine_test_suite!`](crate::engine_test_suite).
+//! through [`engine_test_suite!`](crate::engine_test_suite), and the
+//! extended failure models through
+//! [`extended_failure_suite!`](crate::extended_failure_suite).
 //!
 //! Randomized tests are reproducible: they print the failing seed, and the
 //! `SPIKE_SEED=<n>` environment variable re-runs only that seed.
@@ -7,6 +9,7 @@
 
 pub mod corruption;
 pub mod crash;
+pub mod ext;
 pub mod faults;
 pub mod functional;
 

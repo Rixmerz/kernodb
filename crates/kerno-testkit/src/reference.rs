@@ -202,7 +202,33 @@ impl Engine for LogEngine {
             // Torn tail from a crash (or the clean marker): cut it off so new
             // records follow the last valid one.
             file.set_len(pos as u64)?;
+        }
+        if pos > 0 {
+            // Make exactly the recovered state durable before anything is
+            // acknowledged on top of it. Write it again rather than only
+            // syncing: what was read may never have been synced (a buffered
+            // session, a crash before the sync), and after a failed fsync
+            // Linux drops the pages for good while readers still see them,
+            // so a sync alone would succeed without persisting them. These
+            // are the bytes already there: a crash mid-rewrite can only leave
+            // some not-yet-durable records torn, which the checksums catch as
+            // before.
+            file.write_at(&buf[..pos], 0)?;
+        }
+        if pos > 0 || (pos as u64) < len {
             file.sync_data()?;
+        }
+        if len == 0 {
+            // A new database: every directory `create_dir_all` may have
+            // created must survive a power loss, and on file systems without
+            // a global metadata journal each one's entry is durable only
+            // once its own parent is synced. Which ones were created is not
+            // known on a retried open (an earlier attempt may have created
+            // them and failed), so sync every ancestor. (Repeated until the
+            // first commit, so a failure here is retried by the next open.)
+            for ancestor in dir.ancestors().skip(1).filter(|p| !p.as_os_str().is_empty()) {
+                vfs.sync_dir(ancestor)?;
+            }
         }
         let map = Arc::new(map);
         let live_bytes = map_bytes(&map);
@@ -266,6 +292,14 @@ impl Engine for LogEngine {
         if w.poisoned {
             return Err(Error::Poisoned("earlier I/O failure".into()));
         }
+        if self.durability == Durability::Buffered {
+            // The records must be durable before the marker that vouches for
+            // them: a power loss may persist any subset of unsynced writes,
+            // so a marker synced together with them could land while an
+            // earlier record does not, and recovery would then report a
+            // cleanly closed log with a hole as corruption.
+            w.file.sync_data()?;
+        }
         w.file.write_at(&clean_marker(w.end), w.end)?;
         w.file.sync_data()?;
         Ok(())
@@ -293,5 +327,182 @@ impl Snapshot for LogSnapshot {
             return Ok(Vec::new());
         }
         Ok(self.map.range::<[u8], _>((start, end)).take(limit).map(|(k, v)| (k.clone(), v.clone())).collect())
+    }
+}
+
+/// Regressions found by the extended failure suite (WP03a): each one failed
+/// before the fix it names.
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::*;
+    use crate::vfs::{CrashKind, DirDurability, FsyncFailure, OpKind, SimVfs};
+
+    fn opts(durability: Durability) -> Options {
+        Options { durability, ..Options::small_for_tests() }
+    }
+
+    fn open_db(vfs: &SimVfs, durability: Durability) -> Result<LogEngine> {
+        LogEngine::open(vfs.as_vfs(), Path::new("/db"), &opts(durability))
+    }
+
+    fn put(db: &LogEngine, i: u32) -> Result<u64> {
+        let mut b = WriteBatch::new();
+        b.put(format!("key-{i}"), vec![i as u8; 100]);
+        db.commit(&b)
+    }
+
+    fn seq_and_keys(db: &LogEngine) -> (u64, usize) {
+        let snap = db.snapshot().unwrap();
+        (snap.seq(), snap.scan(Bound::Unbounded, Bound::Unbounded, usize::MAX).unwrap().len())
+    }
+
+    /// Fix: a new database syncs every ancestor of its directory (each new
+    /// directory's entry lives in its parent), not only the immediate parent.
+    #[test]
+    fn new_database_directory_survives_power_loss_with_per_dir_durability() {
+        for dir in ["/db", "/data/db", "/srv/data/db"] {
+            for seed in 0..32 {
+                let disk = SimVfs::new(seed);
+                disk.set_dir_durability(DirDurability::PerDir);
+                let db = LogEngine::open(disk.as_vfs(), Path::new(dir), &opts(Durability::Sync)).unwrap();
+                assert_eq!(put(&db, 1).unwrap(), 1);
+                let image = disk.crash_now(CrashKind::PowerLoss);
+                drop(db);
+                let db = LogEngine::open(image.as_vfs(), Path::new(dir), &opts(Durability::Sync)).unwrap();
+                assert_eq!(
+                    seq_and_keys(&db),
+                    (1, 1),
+                    "{dir}, seed {seed}: an acknowledged commit vanished with its directory"
+                );
+            }
+        }
+    }
+
+    /// Harness fix (SimVfs): with Linux fsync semantics a failed sync drops
+    /// dirty pages but not a pending truncation. Recovery cuts a torn record
+    /// with `set_len`; if that sync fails and the retried open (which sees
+    /// the cut length and does not truncate again) could not persist it, a
+    /// later commit of the same size as the torn record would revive the
+    /// stale record after it.
+    #[test]
+    fn recovery_truncation_survives_a_failed_sync() {
+        let commit = |db: &LogEngine, k: &str, v: &[u8]| {
+            let mut b = WriteBatch::new();
+            b.put(k, v.to_vec());
+            db.commit(&b)
+        };
+        let history: [(&str, &[u8]); 3] = [("k1", b"aaaa"), ("k2", b"bbbb"), ("k3", b"cccc")];
+        let model =
+            |s: usize| -> Map { history[..s].iter().map(|(k, v)| (k.as_bytes().to_vec(), v.to_vec())).collect() };
+        let state = |db: &LogEngine| {
+            let snap = db.snapshot().unwrap();
+            let all = snap.scan(Bound::Unbounded, Bound::Unbounded, usize::MAX).unwrap();
+            (snap.seq(), all.into_iter().collect::<Map>())
+        };
+        let mut failed_recoveries = 0;
+        for seed in 0..400 {
+            let disk = SimVfs::new(seed);
+            disk.set_fsync_failure(FsyncFailure::LinuxDropPages);
+            let db = open_db(&disk, Durability::Buffered).unwrap();
+            for (i, (k, v)) in history.iter().enumerate() {
+                assert_eq!(commit(&db, k, v).unwrap(), i as u64 + 1);
+            }
+            let image = disk.crash_now(CrashKind::PowerLoss);
+            drop(db);
+            // Recovery's sync fails; then the process restarts.
+            image.fail_when(|op| op.kind == OpKind::SyncData, 1, None);
+            let first = open_db(&image, Durability::Sync);
+            image.disarm();
+            if first.is_err() {
+                failed_recoveries += 1;
+            }
+            drop(first);
+            let db = open_db(&image, Durability::Sync).unwrap();
+            let (s, map) = state(&db);
+            assert_eq!(map, model(s as usize), "seed {seed}: recovered state is not a prefix");
+            assert_eq!(commit(&db, "k2", b"XXXX").unwrap(), s + 1);
+            let mut expected = model(s as usize);
+            expected.insert(b"k2".to_vec(), b"XXXX".to_vec());
+            let after = image.crash_now(CrashKind::PowerLoss);
+            drop(db);
+            let db = open_db(&after, Durability::Sync).unwrap();
+            assert_eq!(state(&db), (s + 1, expected), "seed {seed}: a stale record came back");
+        }
+        assert!(failed_recoveries > 0, "no seed made recovery's sync fail");
+    }
+
+    /// Fix: recovery writes the recovered prefix again instead of trusting
+    /// pages that a failed fsync may have dropped.
+    #[test]
+    fn recovery_rewrites_pages_dropped_by_a_failed_fsync() {
+        let disk = SimVfs::new(1);
+        disk.set_fsync_failure(FsyncFailure::LinuxDropPages);
+        let db = open_db(&disk, Durability::Sync).unwrap();
+        put(&db, 1).unwrap();
+        disk.fail_when(|op| op.kind == OpKind::SyncData, 1, None);
+        assert!(put(&db, 2).is_err(), "the failed fsync is reported");
+        assert!(matches!(put(&db, 3), Err(Error::Poisoned(_))));
+        drop(db);
+        // Restart on the same machine: commit 2 is still readable, but its
+        // pages will never reach the disk unless they are written again.
+        let db = open_db(&disk, Durability::Sync).unwrap();
+        assert_eq!(seq_and_keys(&db), (2, 2));
+        put(&db, 3).unwrap();
+        db.close().unwrap();
+        let db = open_db(&disk.crash_now(CrashKind::PowerLoss), Durability::Sync).unwrap();
+        assert_eq!(seq_and_keys(&db), (3, 3));
+    }
+
+    /// Fix: recovery makes what it recovered durable, even if the previous
+    /// process never synced it.
+    #[test]
+    fn recovery_makes_an_unsynced_tail_durable() {
+        for seed in 0..16 {
+            let disk = SimVfs::new(seed);
+            let db = open_db(&disk, Durability::Buffered).unwrap();
+            for i in 1..=5 {
+                put(&db, i).unwrap();
+            }
+            let image = disk.crash_now(CrashKind::ProcessKillKeepPending);
+            drop(db);
+            let db = open_db(&image, Durability::Buffered).unwrap();
+            assert_eq!(seq_and_keys(&db), (5, 5));
+            let after = image.crash_now(CrashKind::PowerLoss);
+            drop(db);
+            let db = open_db(&after, Durability::Buffered).unwrap();
+            assert_eq!(seq_and_keys(&db), (5, 5), "seed {seed}: recovered state lost by the next power loss");
+        }
+    }
+
+    /// Fix: in `Buffered` mode, `close` syncs the records before it writes
+    /// the clean marker.
+    #[test]
+    fn buffered_close_makes_records_durable_before_the_clean_marker() {
+        for seed in 0..32 {
+            let disk = SimVfs::new(seed);
+            let db = open_db(&disk, Durability::Buffered).unwrap();
+            for i in 1..=8 {
+                put(&db, i).unwrap();
+            }
+            // Power loss right before the sync that follows the marker write.
+            let marker_written = AtomicBool::new(false);
+            disk.crash_when(
+                move |op| {
+                    if op.kind == OpKind::WriteAt && op.len == CLEAN_LEN as u64 {
+                        marker_written.store(true, Ordering::SeqCst);
+                    }
+                    op.kind == OpKind::SyncData && marker_written.load(Ordering::SeqCst)
+                },
+                1,
+                CrashKind::PowerLoss,
+            );
+            assert!(db.close().is_err());
+            let image = disk.take_crash_image().expect("crashed during close");
+            let db = open_db(&image, Durability::Buffered)
+                .unwrap_or_else(|e| panic!("seed {seed}: a log whose close was interrupted must recover: {e}"));
+            assert_eq!(seq_and_keys(&db), (8, 8), "seed {seed}");
+        }
     }
 }

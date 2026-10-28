@@ -12,8 +12,11 @@
 //! | Buffered + kill   | last acknowledged, or the one in flight          |
 //! | Buffered + power  | anything from the round's starting point upward  |
 
+use std::fmt;
+use std::sync::Arc;
+
 use kerno_core::contract::{Engine, Options, Snapshot};
-use kerno_core::{Durability, WriteBatch};
+use kerno_core::{Durability, Result, WriteBatch};
 
 use super::{Model, Workload, apply, assert_snapshot_matches, for_each_seed, open, read_all, seeds};
 use crate::rng::Rng;
@@ -153,25 +156,64 @@ fn one_seed<E: Engine>(seed: u64, kind: CrashKind, durability: Durability) {
     }
 }
 
-/// One step of the deterministic scenario used by [`every_point`].
-pub(super) enum Step {
+/// An engine-specific action of a [`Step::Ext`].
+pub type ExtFn<E> = Arc<dyn Fn(&E) -> Result<()> + Send + Sync>;
+
+/// One step of a deterministic scenario (see [`scenario`] and
+/// [`run_scenario`]).
+pub enum Step<E> {
     Open,
     Commit(WriteBatch),
     Close,
     /// Drop the handle without `close` (process exit without shutdown).
     Drop,
+    /// An engine-specific action on the open handle (`sync`, a directed
+    /// compaction, a forced checkpoint, ...), named for diagnostics. It must
+    /// not commit: the runners count commits from [`Step::Commit`] only.
+    Ext(&'static str, ExtFn<E>),
 }
 
-/// Fixed scenario touching every phase of an engine's life: creation,
-/// commits (small, large values, deletes), clean close, reopen, unclean
-/// drop, recovery and more commits. Deterministic for a given seed.
-pub(super) fn scenario(seed: u64) -> Vec<Step> {
+impl<E> Clone for Step<E> {
+    fn clone(&self) -> Self {
+        match self {
+            Step::Open => Step::Open,
+            Step::Commit(b) => Step::Commit(b.clone()),
+            Step::Close => Step::Close,
+            Step::Drop => Step::Drop,
+            Step::Ext(name, f) => Step::Ext(name, f.clone()),
+        }
+    }
+}
+
+impl<E> fmt::Debug for Step<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Step::Open => f.write_str("Open"),
+            Step::Commit(b) => write!(f, "Commit({} ops)", b.ops().len()),
+            Step::Close => f.write_str("Close"),
+            Step::Drop => f.write_str("Drop"),
+            Step::Ext(name, _) => write!(f, "Ext({name})"),
+        }
+    }
+}
+
+/// The batches of every [`Step::Commit`], in order (batch `i` gets
+/// sequence `i + 1`).
+pub fn commits<E>(steps: &[Step<E>]) -> Vec<&WriteBatch> {
+    steps.iter().filter_map(|s| if let Step::Commit(b) = s { Some(b) } else { None }).collect()
+}
+
+/// Scenario A: a fixed scenario touching every phase of an engine's life:
+/// creation, commits (small, large values, deletes), clean close, reopen,
+/// unclean drop, recovery and more commits. Deterministic for a given seed;
+/// the sweeps use seed 7.
+pub fn scenario<E>(seed: u64) -> Vec<Step<E>> {
     let mut w = Workload::new(seed);
     w.key_space = 120;
     w.large_per_mille = 100;
     let mut model = Model::new();
     let mut steps = vec![Step::Open];
-    let mut commits = |n: usize, steps: &mut Vec<Step>| {
+    let mut commits = |n: usize, steps: &mut Vec<Step<E>>| {
         for _ in 0..n {
             let b = w.batch(&model);
             apply(&mut model, &b);
@@ -189,9 +231,9 @@ pub(super) fn scenario(seed: u64) -> Vec<Step> {
     steps
 }
 
-/// Runs the scenario until the device fails. Returns (acked, attempted)
-/// commit counts.
-fn run_scenario<E: Engine>(disk: &SimVfs, steps: &[Step], opts: &Options) -> (u64, u64) {
+/// Runs the scenario until the device fails (every error must come from a
+/// crash). Returns (acked, attempted) commit counts.
+pub fn run_scenario<E: Engine>(disk: &SimVfs, steps: &[Step<E>], opts: &Options) -> (u64, u64) {
     let vfs = disk.as_vfs();
     let mut db: Option<E> = None;
     let (mut acked, mut attempted) = (0u64, 0u64);
@@ -224,6 +266,13 @@ fn run_scenario<E: Engine>(disk: &SimVfs, steps: &[Step], opts: &Options) -> (u6
                 }
             }
             Step::Drop => drop(db.take()),
+            Step::Ext(name, f) => {
+                let handle = db.as_ref().unwrap_or_else(|| panic!("step {name} needs an open handle"));
+                if let Err(e) = f(handle) {
+                    assert!(disk.has_crashed(), "{name} failed without a crash: {e}");
+                    break;
+                }
+            }
         }
     }
     drop(db);
@@ -240,16 +289,23 @@ fn run_scenario<E: Engine>(disk: &SimVfs, steps: &[Step], opts: &Options) -> (u6
 /// [`CrashKind::ProcessKill`] (whatever was acknowledged was handed to the
 /// OS and survives a process crash).
 pub fn every_point<E: Engine>(kind: CrashKind, durability: Durability) {
+    every_point_with::<E>(kind, durability, &|_| {});
+}
+
+/// [`every_point`] on devices that `configure` sets up before each run (an
+/// opt-in failure model such as per-directory durability). The crash images
+/// inherit that configuration, so the final power loss uses it too.
+pub fn every_point_with<E: Engine>(kind: CrashKind, durability: Durability, configure: &dyn Fn(&SimVfs)) {
     assert!(
-        durability == Durability::Sync || kind == CrashKind::ProcessKill,
+        durability == Durability::Sync || kind != CrashKind::PowerLoss,
         "Buffered commits only promise to survive process kills at every point"
     );
     let mut opts = Options::small_for_tests();
     opts.durability = durability;
-    let steps = scenario(7);
-    let batches: Vec<&WriteBatch> =
-        steps.iter().filter_map(|s| if let Step::Commit(b) = s { Some(b) } else { None }).collect();
+    let steps = scenario::<E>(7);
+    let batches = commits(&steps);
     let dry = SimVfs::new(0);
+    configure(&dry);
     let (acked, _) = run_scenario::<E>(&dry, &steps, &opts);
     assert_eq!(acked as usize, batches.len(), "dry run must complete");
     // Background work makes the exact count vary a little; go past it.
@@ -265,6 +321,7 @@ pub fn every_point<E: Engine>(kind: CrashKind, durability: Durability) {
             if point % 2 == 1 {
                 disk.set_tear_unit(1);
             }
+            configure(&disk);
             disk.crash_after(point, kind);
             let (acked, attempted) = run_scenario::<E>(&disk, &steps, &opts);
             let image = if disk.has_crashed() { disk.take_crash_image().unwrap() } else { disk.crash_now(kind) };
@@ -300,5 +357,85 @@ pub fn every_point<E: Engine>(kind: CrashKind, durability: Durability) {
             eprintln!("\n*** {ctx}; reproduce with SPIKE_POINT={point}\n");
             std::panic::resume_unwind(e);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use kerno_core::Op;
+
+    use super::*;
+
+    /// crc32c over every step and every operation of a scenario.
+    fn digest<E>(steps: &[Step<E>]) -> u32 {
+        let mut crc = 0u32;
+        for step in steps {
+            let (tag, batch) = match step {
+                Step::Open => (0, None),
+                Step::Commit(b) => (1, Some(b)),
+                Step::Close => (2, None),
+                Step::Drop => (3, None),
+                Step::Ext(..) => (4, None),
+            };
+            crc = crc32c::crc32c_append(crc, &[tag]);
+            for op in batch.map(|b| b.ops()).unwrap_or(&[]) {
+                match op {
+                    Op::Put { key, value } => {
+                        crc = crc32c::crc32c_append(crc, &[1]);
+                        crc = crc32c::crc32c_append(crc, &(key.len() as u64).to_le_bytes());
+                        crc = crc32c::crc32c_append(crc, key);
+                        crc = crc32c::crc32c_append(crc, &(value.len() as u64).to_le_bytes());
+                        crc = crc32c::crc32c_append(crc, value);
+                    }
+                    Op::Delete { key } => {
+                        crc = crc32c::crc32c_append(crc, &[2]);
+                        crc = crc32c::crc32c_append(crc, &(key.len() as u64).to_le_bytes());
+                        crc = crc32c::crc32c_append(crc, key);
+                    }
+                }
+            }
+        }
+        crc
+    }
+
+    /// Scenario A is what every `every_point` sweep and its point numbers
+    /// rest on. The digest was computed with the same function from the code
+    /// before `Step` became generic (`cd78fbc`).
+    #[test]
+    fn scenario_a_is_unchanged() {
+        let steps = scenario::<()>(7);
+        assert_eq!(steps.len(), 61);
+        assert_eq!(commits(&steps).len(), 55);
+        assert_eq!(digest(&steps), 3342322216);
+    }
+
+    #[test]
+    fn ext_steps_run_on_the_open_handle() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        use crate::reference::LogEngine;
+
+        let seen = Arc::new(AtomicU64::new(0));
+        let probe = seen.clone();
+        let ext: ExtFn<LogEngine> = Arc::new(move |db: &LogEngine| {
+            probe.store(db.snapshot()?.seq(), Ordering::SeqCst);
+            Ok(())
+        });
+        let mut steps = scenario::<LogEngine>(7);
+        // Right after the first 25 commits, before the clean close.
+        steps.insert(26, Step::Ext("observe", ext.clone()));
+        assert_eq!(format!("{:?}", steps[26].clone()), "Ext(observe)");
+        let disk = SimVfs::new(1);
+        let (acked, attempted) = run_scenario::<LogEngine>(&disk, &steps, &Options::small_for_tests());
+        assert_eq!((acked, attempted), (55, 55));
+        assert_eq!(seen.load(Ordering::SeqCst), 25);
+        // A failing extension step stops the run like any other failure.
+        let failing: ExtFn<LogEngine> = Arc::new(|_| Err(kerno_core::Error::Io(std::io::Error::other("boom"))));
+        steps[26] = Step::Ext("fail", failing);
+        let disk = SimVfs::new(1);
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_scenario::<LogEngine>(&disk, &steps, &Options::small_for_tests())
+        }));
+        assert!(r.is_err(), "an extension error without a crash is a test failure");
     }
 }

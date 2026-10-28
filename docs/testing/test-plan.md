@@ -14,9 +14,12 @@ El contrato, los errores y `Vfs`/`StdVfs` viven en [`crates/kerno-core`](../../c
 |---|---|
 | `Engine` / `Snapshot` | Contrato común a ambos candidatos (batches atómicos, secuencia de commit, snapshots, apertura exclusiva, errores tipados). |
 | `Vfs` | Todo acceso a archivos pasa por esta abstracción; los motores nunca usan `std::fs` directamente. |
-| `SimVfs` | Sistema de archivos en memoria que simula **corte de energía** (escrituras no sincronizadas descartadas, reordenadas o rotas a 512 B o a nivel de byte; metadatos de directorio como prefijo journaled) y **muerte del proceso** (sobrevive todo lo escrito). Puede provocar la caída justo antes de la *n*-ésima operación de E/S mutante, o **un único error de E/S** (EIO) en esa operación con el dispositivo vivo. |
+| `SimVfs` | Sistema de archivos en memoria que simula **corte de energía** (escrituras no sincronizadas descartadas, reordenadas o rotas a 512 B o a nivel de byte; metadatos de directorio como prefijo journaled) y **muerte del proceso** (sobrevive todo lo escrito). Puede provocar la caída justo antes de la *n*-ésima operación de E/S mutante, o **un único error de E/S** (EIO) en esa operación con el dispositivo vivo. Desde la Fase 1, con modelos opcionales desactivados por defecto (ver la [matriz de fallos](../architecture/failure-matrix.md)): muerte del proceso que deja pendiente lo no sincronizado (`CrashKind::ProcessKillKeepPending`), semántica de Linux tras un `fsync` fallido (`FsyncFailure::LinuxDropPages`), durabilidad por directorio (`DirDurability::PerDir`) y disco lleno (`set_space_limit`, `fill_disk_after`); además, caídas y errores filtrados por tipo de operación, ruta y fase (`crash_when`, `fail_when`, con la fase de `kerno_core::probe`), trazas de E/S, imágenes byte a byte del directorio (`dump`, `restore`, `assert_dir_unchanged`), latencia de `fsync` y daño del medio durante el uso (`corrupt_byte_live`). |
+| `HookVfs` | Envuelve otro `Vfs` y llama a un *hook* antes y después de cada operación, que decide si sigue, falla, entra en pánico o se retrasa. |
+| `process` | Relanza el binario de pruebas como proceso hijo con un rol (`spawn_child`, `child_role`), para pruebas entre procesos. |
 | `CountingVfs` | Cuenta bytes, operaciones y `fsync` para medir amplificación. |
 | `engine_test_suite!` | Genera la misma batería de pruebas para cada motor. |
+| `extended_failure_suite!` | Genera el módulo `shared_ext_failure`: los modelos opcionales de `SimVfs` en cada operación de E/S del escenario A (ver §2.2). |
 | `LogEngine` | Motor trivialmente correcto que valida el propio harness (si falla una prueba compartida, la prueba está mal). |
 
 ### 2.1 Validación del harness (mutation testing manual)
@@ -33,6 +36,18 @@ Antes de confiar en el harness se le inyectaron fallos conocidos (en `LogEngine`
 | B+ tree: `close()` no escribe el segundo slot del meta | `bit_flips_are_detected_or_harmless` (semilla 7) — **solo tras dirigir la mitad de los daños a cabeceras/metas**; con daño uniforme sobrevivía > 40 semillas |
 | B+ tree: el commit sobrescribe el slot del meta **vigente** | `power_loss_sync`, `power_loss_at_every_io_point` — **solo tras añadir desgarro a nivel de byte**; con desgarro a 512 B el meta (92 B) se escribía de forma atómica y el fallo era invisible |
 | (Log truncado tras cierre limpio) | `truncations_are_detected_or_harmless` — por eso `LogEngine` declara `detects_truncation = false` |
+
+### 2.2 Suite de fallos extendida (Fase 1)
+
+`extended_failure_suite!` ([`harness/ext.rs`](../../crates/kerno-testkit/src/harness/ext.rs)) se ejecuta sobre `LogEngine` en `kerno-testkit/tests/reference_engine.rs`. Encontró tres **errores reales** de `LogEngine`, corregidos con una prueba de regresión cada uno (en `kerno-testkit/src/reference.rs`; cada prueba falla sin su corrección):
+
+| Error real de `LogEngine` | Detectado por (`shared_ext_failure::`) | Regresión |
+|---|---|---|
+| La recuperación daba por bueno lo que podía leer: los registros no sincronizados (sesión `Buffered`, caída antes del `fsync`) y las páginas descartadas por un `fsync` fallido nunca se hacían durables, y un corte de energía posterior perdía o corrompía estado confirmado. Ahora reescribe el prefijo recuperado y lo sincroniza antes de aceptar commits. | `power_loss_after_kill_keep_pending_{sync,buffered}`, `single_io_failure_at_every_point_buffered`, `linux_fsync_drop_faults_{sync,buffered_restart}` | `recovery_makes_an_unsynced_tail_durable`, `recovery_rewrites_pages_dropped_by_a_failed_fsync` |
+| Una base nueva no sincronizaba el padre de su directorio: con durabilidad por directorio, la base entera podía desaparecer tras un commit confirmado. Ahora sincroniza todos los ancestros (una primera versión solo sincronizaba el padre inmediato y seguía fallando con rutas anidadas como `/data/db`). | `per_dir_durability_power_loss_sync` | `new_database_directory_survives_power_loss_with_per_dir_durability` |
+| En `Buffered`, `close` sincronizaba la marca de cierre limpio junto con los registros que avala: un corte de energía podía conservar la marca y perder un registro anterior, y la recuperación informaba corrupción. Ahora sincroniza primero los registros. | `single_io_failure_at_every_point_buffered` | `buffered_close_makes_records_durable_before_the_clean_marker` |
+
+La revisión de la suite corrigió además dos defectos del propio modelo, cada uno con su autoprueba de `SimVfs`: un `fsync` fallido con semántica de Linux descartaba también los `set_len` pendientes, de modo que un truncamiento cuyo `fsync` fallaba nunca llegaba al disco (`linux_drop_pages_keeps_length_changes`; `recovery_truncation_survives_a_failed_sync` muestra el efecto sobre `LogEngine`: un registro obsoleto reaparecía tras un commit confirmado), y con durabilidad por directorio un `rename` entre directorios podía resucitar el nombre de origen (`per_dir_cross_dir_rename_does_not_resurrect_source`). También endureció el modelo de disco lleno: un archivo borrado o reemplazado conserva su espacio mientras siga abierto, como en Linux (`space_limit_freed_by_remove`).
 
 ## 3. Pruebas compartidas (SAD §17.6)
 
@@ -73,7 +88,7 @@ SPIKE_POINT=57 cargo test -p spike-lsm shared_crash::power_loss_at_every_io_poin
 | Unitarias | codificación de nodos/bloques, filtros bloom, manifest, WAL | + serialización documental, claves, políticas |
 | Propiedades / modelo | modelo `BTreeMap` con historias aleatorias | `proptest` con reducción de casos; modelos de revisiones e índices |
 | Integración | contrato `Engine` | API pública, CLI, documentos, revisiones |
-| Crash testing | `SimVfs` (energía y proceso, todos los puntos de E/S; un EIO aislado en cada punto) | + kill -9 real de procesos y dispositivo con pérdida de escrituras (LazyFS / `dm-log-writes`); semántica Linux de páginas descartadas tras `fsync` fallido |
+| Crash testing | `SimVfs` (energía y proceso, todos los puntos de E/S; un EIO aislado en cada punto) | + modelos opcionales de `SimVfs` en cada punto (`extended_failure_suite!`: semántica Linux de páginas descartadas tras `fsync` fallido, durabilidad por directorio, disco lleno, muerte del proceso sin pérdida de lo pendiente); kill -9 real de procesos y dispositivo con pérdida de escrituras (LazyFS / `dm-log-writes`) |
 | Corrupción | bit flips y truncamientos tras cierre limpio | + daño durante uso, archivos fabricados |
 | Fuzzing | — | `cargo fuzz` sobre lectores de formato, WAL/manifest y parser documental (Fase 6) |
 | Compatibilidad | — | vectores de prueba por versión de formato, migraciones con interrupción simulada |

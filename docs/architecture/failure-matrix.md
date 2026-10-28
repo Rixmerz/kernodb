@@ -16,6 +16,15 @@ Tipos de fallo (modelados por [`SimVfs`](../../crates/kerno-testkit/src/vfs/sim.
 | **Corte de energía** | Solo lo sincronizado; cada escritura pendiente se pierde, se aplica o se rompe (a 512 B o, en la mitad de las semillas y puntos, en cualquier byte), en cualquier orden; las operaciones de directorio no sincronizadas sobreviven como prefijo. |
 | **EIO aislado** | Una operación falla (sin efecto; un `fsync` fallido deja sus escrituras sin garantía) y el dispositivo sigue funcionando. |
 
+Desde la Fase 1, `SimVfs` ofrece además modelos opcionales, desactivados por defecto (el comportamiento por defecto, incluidas las extracciones del generador aleatorio, está fijado por la prueba `default_mode_crash_images_unchanged`):
+
+| Fallo (opción de `SimVfs`) | Qué sobrevive |
+|---|---|
+| **Muerte del proceso sin pérdida de lo pendiente** (`CrashKind::ProcessKillKeepPending`) | Lo mismo que en la muerte del proceso, pero lo no sincronizado sigue pendiente: un corte de energía posterior aún puede perderlo. |
+| **`fsync` fallido con semántica de Linux** (`FsyncFailure::LinuxDropPages`) | Las escrituras cubiertas por el `fsync` fallido se descartan para siempre aunque los lectores las sigan viendo, y el siguiente `fsync` devuelve `Ok` sin persistirlas; los cambios de longitud (`set_len`) son metadatos y siguen pendientes hasta el siguiente `fsync` correcto. Por defecto (`FsyncFailure::KeepPending`) quedan pendientes, no perdidas. |
+| **Durabilidad por directorio** (`DirDurability::PerDir`) | `sync_dir(d)` solo persiste las operaciones sobre entradas de `d` (un `rename` cuenta para el directorio de destino), junto con las anteriores de las que dependen (mismo inodo o mismo nombre); un directorio nuevo solo es durable cuando se sincroniza su padre. |
+| **Disco lleno** (`set_space_limit`, `fill_disk_after`) | La escritura o el `set_len` que haría crecer el espacio usado por encima del límite falla con `StorageFull` (ENOSPC) y no tiene efecto; un archivo borrado o reemplazado libera su espacio cuando se cierra su último handle, como en Linux. |
+
 ## 1. Cómo se verifica
 
 La matriz no es solo documentación: cada fila se ejercita automáticamente.
@@ -26,6 +35,7 @@ La matriz no es solo documentación: cada fila se ejercita automáticamente.
 | `faults::single_failure_at_every_point` | Un EIO en **cada** operación de E/S del mismo escenario, seguido de reinicio o de corte de energía inmediato | error devuelto, handle envenenado, ningún commit confirmado con `fsync` fallido, recuperación correcta |
 | `crash::run` | Caídas en puntos aleatorios de historias largas (5 rondas por semilla, incluidas caídas **durante** la recuperación y durante trabajo en segundo plano), en `Sync` y `Buffered`; el corte de energía en `Buffered` solo para motores que declaran prefijo consistente | igual que arriba, encadenando recuperaciones; en `Buffered` + corte de energía, cualquier prefijo desde el inicio de la ronda |
 | `corruption::*` | Bit flips y truncamientos tras cierre limpio | dato correcto o error; nunca otro dato ni retroceso |
+| `shared_ext_failure::*` (`extended_failure_suite!`, hoy sobre `LogEngine`) | Los modelos opcionales en **cada** operación de E/S del escenario anterior: muerte del proceso sin pérdida de lo pendiente seguida de un corte de energía inmediato (`Sync` y `Buffered`), un EIO con semántica de Linux (`Sync`; `Buffered` con reinicio), un EIO en `Buffered`, corte de energía con durabilidad por directorio (`Sync`) y disco lleno | `confirmados ≤ s ≤ intentados`; tras la muerte del proceso y el corte inmediato, exactamente el `s` recuperado (la recuperación hizo durable su estado); con disco lleno, solo errores `Io` o `Poisoned` y recuperación correcta al liberar espacio; al final, un commit más, cierre, corte de energía y comparación con el modelo |
 
 Los puntos concretos del escenario varían con el motor (cada uno hace un número distinto de operaciones); las filas siguientes agrupan esos puntos por fase del protocolo. Las pruebas comprueban la regla común a todas las filas (`N ≤ s ≤ N+1` respecto del commit en curso), no el valor concreto que predice cada fila: las filas explican por qué la regla se cumple en cada punto. Las filas de modo `Buffered` se ejercitan con caídas aleatorias (`crash::run`) y con el barrido de muerte de proceso en `Buffered`; no hay barrido de corte de energía en `Buffered`, porque ahí la única garantía es el prefijo (LSM) o ninguna (B+ tree).
 
@@ -94,7 +104,6 @@ Protocolo de commit `Sync`: registro `[len|crc|seq|batch]` en el WAL activo (un 
 
 ## 5. Fuera del modelo (pendiente para Fase 1)
 
-- Semántica de Linux tras un `fsync` fallido (páginas sucias marcadas como limpias): el modelo deja las escrituras pendientes, no perdidas (R-S2).
-- Daño del medio **durante** el uso o combinado con caídas.
+- Daño del medio **durante** el uso o combinado con caídas: `SimVfs::corrupt_byte_live` ya puede provocarlo, pero ninguna suite lo aplica todavía.
 - Pruebas con dispositivos reales (kill -9, LazyFS / `dm-log-writes`).
 - Fallos durante migraciones de formato (no existen todavía).

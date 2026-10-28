@@ -19,66 +19,92 @@
 //! Failures of operations whose effect the engine can safely ignore (e.g.
 //! deleting an obsolete file) may go unreported, as long as every
 //! guarantee above still holds.
+//!
+//! [`failure_sweep`] runs the same sweep in `Buffered` mode and under
+//! Linux `fsync` semantics ([`FsyncFailure::LinuxDropPages`]: the writes of a
+//! failed sync are gone for good, so recovery must not trust what it can
+//! still read but never persisted). In `Buffered` mode a power loss may lose
+//! acknowledged commits, but never the state the last successful open
+//! recovered (which recovery must have made durable).
 
 use kerno_core::contract::{Engine, Options, Snapshot};
-use kerno_core::{Error, WriteBatch};
+use kerno_core::{Durability, Error, WriteBatch};
 
-use super::crash::{Step, scenario};
+use super::crash::{Step, commits, scenario};
 use super::{Model, apply, assert_snapshot_matches, open};
 use crate::rng::Rng;
-use crate::vfs::{CrashKind, SimVfs};
+use crate::vfs::{CrashKind, FsyncFailure, SimVfs};
 
-#[derive(Clone, Copy, Debug)]
-enum After {
+/// What happens right after the injected failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum After {
     /// The process restarts; the device and its caches are intact.
     Restart,
     /// The machine loses power right after the failure was observed.
     PowerLoss,
 }
 
-/// Runs the scenario with one injected fault. Returns (acked, attempted).
-fn run_with_fault<E: Engine>(disk: &SimVfs, steps: &[Step], opts: &Options, ctx: &str) -> (u64, u64) {
+/// Commit counts of one faulty run.
+struct Outcome {
+    acked: u64,
+    attempted: u64,
+    /// `acked` when the last successful open returned.
+    opened: u64,
+}
+
+/// Runs the scenario with one injected fault.
+fn run_with_fault<E: Engine>(disk: &SimVfs, steps: &[Step<E>], opts: &Options, ctx: &str) -> Outcome {
     let vfs = disk.as_vfs();
     let mut db: Option<E> = None;
-    let (mut acked, mut attempted) = (0u64, 0u64);
+    let mut out = Outcome { acked: 0, attempted: 0, opened: 0 };
+    // A failed commit or extension step must leave the handle poisoned.
+    let check_poisoned = |db: &E, what: &str, e: &Error| {
+        assert!(disk.fault_injected(), "{ctx}: {what} failed without a fault: {e}");
+        if disk.has_crashed() {
+            return;
+        }
+        let mut probe = WriteBatch::new();
+        probe.put("probe-after-failure", "x");
+        let r = db.commit(&probe);
+        assert!(
+            matches!(r, Err(Error::Poisoned(_))),
+            "{ctx}: after an I/O failure the handle must be poisoned, got {r:?}"
+        );
+    };
     for step in steps {
         match step {
             Step::Open => match open::<E>(&vfs, opts) {
-                Ok(d) => db = Some(d),
+                Ok(d) => {
+                    db = Some(d);
+                    out.opened = out.acked;
+                }
                 Err(e) => {
                     assert!(disk.fault_injected(), "{ctx}: open failed without a fault: {e}");
                     if disk.has_crashed() {
-                        return (acked, attempted);
+                        return out;
                     }
                     // The fault is one-shot: opening again must work (unless
                     // the power-loss variant pulls the plug meanwhile).
                     match open::<E>(&vfs, opts) {
-                        Ok(d) => db = Some(d),
-                        Err(_) if disk.has_crashed() => return (acked, attempted),
+                        Ok(d) => {
+                            db = Some(d);
+                            out.opened = out.acked;
+                        }
+                        Err(_) if disk.has_crashed() => return out,
                         Err(e) => panic!("{ctx}: second open failed: {e}"),
                     }
                 }
             },
             Step::Commit(b) => {
-                attempted += 1;
+                out.attempted += 1;
                 match db.as_ref().unwrap().commit(b) {
                     Ok(seq) => {
-                        assert_eq!(seq, attempted, "{ctx}: unexpected commit sequence");
-                        acked = seq;
+                        assert_eq!(seq, out.attempted, "{ctx}: unexpected commit sequence");
+                        out.acked = seq;
                     }
                     Err(e) => {
-                        assert!(disk.fault_injected(), "{ctx}: commit failed without a fault: {e}");
-                        if disk.has_crashed() {
-                            return (acked, attempted);
-                        }
-                        let mut probe = WriteBatch::new();
-                        probe.put("probe-after-failure", "x");
-                        let r = db.as_ref().unwrap().commit(&probe);
-                        assert!(
-                            matches!(r, Err(Error::Poisoned(_))),
-                            "{ctx}: after an I/O failure the handle must be poisoned, got {r:?}"
-                        );
-                        return (acked, attempted);
+                        check_poisoned(db.as_ref().unwrap(), "commit", &e);
+                        return out;
                     }
                 }
             }
@@ -86,42 +112,68 @@ fn run_with_fault<E: Engine>(disk: &SimVfs, steps: &[Step], opts: &Options, ctx:
                 if let Err(e) = db.take().unwrap().close() {
                     // (The fault may have hit earlier background work.)
                     assert!(disk.fault_injected(), "{ctx}: close failed without a fault: {e}");
-                    return (acked, attempted);
+                    return out;
                 }
             }
             Step::Drop => drop(db.take()),
+            Step::Ext(name, f) => {
+                let handle = db.as_ref().unwrap_or_else(|| panic!("{ctx}: step {name} needs an open handle"));
+                if let Err(e) = f(handle) {
+                    check_poisoned(handle, name, &e);
+                    return out;
+                }
+            }
         }
     }
-    (acked, attempted)
+    out
 }
 
+/// The original sweep: `Sync` mode, failed syncs keep their writes pending,
+/// then restart and power loss.
 pub fn single_failure_at_every_point<E: Engine>() {
-    let opts = Options::small_for_tests();
-    let steps = scenario(7);
-    let batches: Vec<&WriteBatch> =
-        steps.iter().filter_map(|s| if let Step::Commit(b) = s { Some(b) } else { None }).collect();
+    failure_sweep::<E>(Durability::Sync, FsyncFailure::KeepPending, &[After::Restart, After::PowerLoss]);
+}
+
+/// One injected I/O failure at every mutating operation of scenario A, in
+/// `durability` mode, with failed syncs behaving as `fsync`, followed by
+/// each of `afters`. The recovered sequence `s` must satisfy
+/// `lower <= s <= attempted`, where `lower` is the last acknowledged commit,
+/// except for a power loss in `Buffered` mode, where it is the state the last
+/// successful open recovered.
+pub fn failure_sweep<E: Engine>(durability: Durability, fsync: FsyncFailure, afters: &[After]) {
+    let mut opts = Options::small_for_tests();
+    opts.durability = durability;
+    let steps = scenario::<E>(7);
+    let batches = commits(&steps);
     let dry = SimVfs::new(0);
-    let (acked, _) = run_with_fault::<E>(&dry, &steps, &opts, "dry run");
-    assert_eq!(acked as usize, batches.len(), "dry run must complete");
+    let out = run_with_fault::<E>(&dry, &steps, &opts, "dry run");
+    assert_eq!(out.acked as usize, batches.len(), "dry run must complete");
     let total = dry.mutating_ops() + 20;
     let only: Option<u64> = std::env::var("SPIKE_POINT").ok().and_then(|s| s.parse().ok());
-    for after in [After::Restart, After::PowerLoss] {
+    let mode = match (durability, fsync) {
+        (Durability::Sync, FsyncFailure::KeepPending) => String::new(),
+        _ => format!(" ({durability:?}, failed fsync {fsync:?})"),
+    };
+    for &after in afters {
         for point in 1..=total {
             if only.is_some_and(|p| p != point) {
                 continue;
             }
-            let ctx = format!("I/O error at mutating op #{point} of {total}, then {after:?}");
+            let ctx = format!("I/O error at mutating op #{point} of {total}{mode}, then {after:?}");
             let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let disk = SimVfs::new(point);
                 if point % 2 == 1 {
                     disk.set_tear_unit(1);
+                }
+                if fsync != FsyncFailure::KeepPending {
+                    disk.set_fsync_failure(fsync);
                 }
                 let then = match after {
                     After::Restart => None,
                     After::PowerLoss => Some(CrashKind::PowerLoss),
                 };
                 disk.fail_after(point, then);
-                let (acked, attempted) = run_with_fault::<E>(&disk, &steps, &opts, &ctx);
+                let out = run_with_fault::<E>(&disk, &steps, &opts, &ctx);
                 let disk = match after {
                     After::Restart => {
                         // A fault point past the end of the scenario must not
@@ -134,10 +186,18 @@ pub fn single_failure_at_every_point<E: Engine>() {
                         None => disk.crash_now(CrashKind::PowerLoss),
                     },
                 };
+                let lower = match (after, durability) {
+                    (After::PowerLoss, Durability::Buffered) => out.opened,
+                    _ => out.acked,
+                };
                 let vfs = disk.as_vfs();
                 let db: E = open(&vfs, &opts).unwrap_or_else(|e| panic!("{ctx}: recovery failed: {e}"));
                 let s = db.snapshot().unwrap().seq();
-                assert!(acked <= s && s <= attempted, "{ctx}: recovered seq {s} outside {acked}..={attempted}");
+                assert!(
+                    lower <= s && s <= out.attempted,
+                    "{ctx}: recovered seq {s} outside {lower}..={}",
+                    out.attempted
+                );
                 let mut model = Model::new();
                 for b in &batches[..s as usize] {
                     apply(&mut model, b);
