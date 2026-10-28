@@ -58,6 +58,10 @@
 //!   byte-level images of the whole file system.
 //! * [`SimVfs::corrupt_byte_live`]: media damage while writes are pending.
 //!
+//! Relative paths live under a root of their own, the empty path, which
+//! stands for the current directory: as on a real file system, `.` and the
+//! empty path name that directory, and `./db` and `db` the same entry.
+//!
 //! Every crash image inherits the device's failure models (tear unit, fsync
 //! failure, directory durability, space limit, sync latency); triggers,
 //! faults and traces are not inherited.
@@ -66,7 +70,7 @@ use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
@@ -295,6 +299,18 @@ impl NsOp {
     fn depends_on(&self, earlier: &NsOp) -> bool {
         let same_ino = self.ino().is_some() && self.ino() == earlier.ino();
         same_ino || self.paths().into_iter().flatten().any(|p| earlier.paths().into_iter().flatten().any(|q| p == q))
+    }
+}
+
+/// The path a [`Vfs`] call names, with a leading `.` resolved: relative
+/// paths are kept relative to the empty path (the root of relative paths,
+/// see the module documentation), so `.` becomes the empty path and `./db`
+/// becomes `db`.
+fn resolve(path: &Path) -> &Path {
+    let mut components = path.components();
+    match components.next() {
+        Some(Component::CurDir) => components.as_path(),
+        _ => path,
     }
 }
 
@@ -1065,6 +1081,7 @@ impl Drop for SimLock {
 
 impl Vfs for SimVfs {
     fn create_dir_all(&self, path: &Path) -> io::Result<()> {
+        let path = resolve(path);
         let mut s = self.state.lock();
         s.check_alive()?;
         match s.dir_durability {
@@ -1091,6 +1108,7 @@ impl Vfs for SimVfs {
     }
 
     fn open(&self, path: &Path, mode: OpenMode) -> io::Result<Arc<dyn File>> {
+        let path = resolve(path);
         let mut s = self.state.lock();
         s.check_alive()?;
         let existing = s.names.get(path).copied();
@@ -1119,12 +1137,14 @@ impl Vfs for SimVfs {
     }
 
     fn exists(&self, path: &Path) -> io::Result<bool> {
+        let path = resolve(path);
         let s = self.state.lock();
         s.check_alive()?;
         Ok(s.names.contains_key(path) || s.dirs.contains(path))
     }
 
     fn remove_file(&self, path: &Path) -> io::Result<()> {
+        let path = resolve(path);
         let mut s = self.state.lock();
         s.check_alive()?;
         if !s.names.contains_key(path) {
@@ -1138,6 +1158,7 @@ impl Vfs for SimVfs {
     }
 
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        let (from, to) = (resolve(from), resolve(to));
         let mut s = self.state.lock();
         s.check_alive()?;
         if !s.names.contains_key(from) {
@@ -1153,6 +1174,7 @@ impl Vfs for SimVfs {
     }
 
     fn list(&self, dir: &Path) -> io::Result<Vec<String>> {
+        let dir = resolve(dir);
         let s = self.state.lock();
         s.check_alive()?;
         if !s.dirs.contains(dir) {
@@ -1166,6 +1188,7 @@ impl Vfs for SimVfs {
     }
 
     fn sync_dir(&self, dir: &Path) -> io::Result<()> {
+        let dir = resolve(dir);
         let mut s = self.state.lock();
         s.check_alive()?;
         if !s.dirs.contains(dir) {
@@ -1218,6 +1241,7 @@ impl Vfs for SimVfs {
     }
 
     fn lock(&self, path: &Path) -> io::Result<Box<dyn Any + Send + Sync>> {
+        let path = resolve(path);
         let mut s = self.state.lock();
         s.check_alive()?;
         if s.locks.contains(path) {
@@ -1699,6 +1723,48 @@ mod tests {
             vfs.sync_dir(&path("/")).unwrap();
             let after = vfs.crash_now(CrashKind::PowerLoss);
             assert_eq!(read_all(&after, "/db/sub/a"), b"x");
+        }
+    }
+
+    /// Relative paths: `.` and the empty path are the same directory (the
+    /// root of relative paths), and `./x` and `x` the same entry, so an
+    /// engine can sync the current directory under either name.
+    #[test]
+    fn current_dir_aliases_name_the_same_directory() {
+        let setup = |seed| {
+            let vfs = SimVfs::new(seed);
+            vfs.set_dir_durability(DirDurability::PerDir);
+            vfs.create_dir_all(&path("./data/db")).unwrap();
+            let f = vfs.open(&path("data/db/a"), OpenMode::CreateNew).unwrap();
+            f.write_at(b"x", 0).unwrap();
+            f.sync_data().unwrap();
+            vfs.sync_dir(&path("./data/db")).unwrap();
+            vfs
+        };
+        let vfs = setup(0);
+        for (a, b) in [("./data/db/a", "data/db/a"), ("./data", "data"), (".", "")] {
+            assert!(vfs.exists(&path(a)).unwrap() && vfs.exists(&path(b)).unwrap(), "{a} and {b}");
+        }
+        assert_eq!(vfs.list(&path("./data/db")).unwrap(), ["a"]);
+        assert!(matches!(
+            vfs.open(&path("./data/db/a"), OpenMode::CreateNew),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists
+        ));
+        // `data` and `data/db` are durable only once `.` and `data` are
+        // synced, whichever name the sync uses.
+        let mut vanished = 0;
+        for seed in 0..32 {
+            if !setup(seed).crash_now(CrashKind::PowerLoss).exists(&path("data/db/a")).unwrap() {
+                vanished += 1;
+            }
+        }
+        assert!(vanished > 0, "a relative directory whose parent was never synced must be able to vanish");
+        for (seed, current) in (0..16).zip([".", ""].into_iter().cycle()) {
+            let vfs = setup(seed);
+            vfs.sync_dir(&path("data")).unwrap();
+            vfs.sync_dir(&path(current)).unwrap();
+            let after = vfs.crash_now(CrashKind::PowerLoss);
+            assert_eq!(read_all(&after, "./data/db/a"), b"x", "seed {seed}, sync_dir({current:?})");
         }
     }
 

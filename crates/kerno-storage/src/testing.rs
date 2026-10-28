@@ -7,16 +7,23 @@
 //! macros (`kerno_testkit::engine_test_suite!` and the like) can be
 //! instantiated once per profile without touching `Options`
 //! (phase1-design.md §5.1). Not a public API.
+//!
+//! Profiles:
+//!
+//! * [`Inline`] (`kerno-inline`): flushes and compactions run in the
+//!   committing thread instead of background threads
+//!   ([`Background::Inline`]), so the sequence of file-system operations is
+//!   deterministic.
 
 use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::Arc;
 
-use kerno_core::contract::{Engine, Options};
+use kerno_core::contract::{Engine, Options, TestHooks};
 use kerno_core::vfs::Vfs;
 use kerno_core::{Result, WriteBatch};
 
-use crate::{Config, KernoDb, KernoSnapshot};
+use crate::{Background, Config, KernoDb, KernoSnapshot};
 
 /// A named adjustment of the [`Config`] derived from the harness
 /// [`Options`].
@@ -30,6 +37,30 @@ pub trait Profile: Send + Sync + 'static {
 
 /// [`KernoDb`] opened with the configuration of profile `P`.
 pub struct Profiled<P>(KernoDb, PhantomData<P>);
+
+impl<P> Profiled<P> {
+    /// The underlying handle.
+    pub fn db(&self) -> &KernoDb {
+        &self.0
+    }
+
+    /// Test-only control over flushes and compactions (see [`TestHooks`]).
+    pub fn hooks(&self) -> &dyn TestHooks {
+        self.0.hooks()
+    }
+}
+
+/// Flushes and compactions run in the calling thread, without background
+/// threads ([`Background::Inline`]).
+pub struct Inline;
+
+impl Profile for Inline {
+    const NAME: &'static str = "kerno-inline";
+
+    fn adjust(cfg: &mut Config) {
+        cfg.test.background = Background::Inline;
+    }
+}
 
 impl<P: Profile> Engine for Profiled<P> {
     type Snapshot = KernoSnapshot;
@@ -117,5 +148,28 @@ mod tests {
         assert_eq!(snap.get(b"k").unwrap().as_deref(), Some(&b"v"[..]));
         drop(snap);
         db.close().unwrap();
+    }
+
+    #[test]
+    fn inline_profile_runs_without_threads() {
+        assert_eq!(Profiled::<Inline>::name(), "kerno-inline");
+        let sim = SimVfs::new(1);
+        sim.start_trace();
+        let db = Profiled::<Inline>::open(sim.as_vfs(), Path::new("/db"), &Options::small_for_tests()).unwrap();
+        for i in 0..200u32 {
+            let mut b = WriteBatch::new();
+            b.put(i.to_be_bytes(), [7u8; 300]);
+            db.commit(&b).unwrap();
+        }
+        assert!(stat(&db, "flushes") > 0, "200 commits of 300 bytes must fill a 16 KiB memtable");
+        assert_eq!(stat(&db, "immutable_memtables"), 0, "inline flushes finish inside the commit");
+        db.hooks().wait_idle().unwrap();
+        db.close().unwrap();
+        // Every file-system operation ran on this thread.
+        let me = std::thread::current().name().unwrap().to_string();
+        let trace = sim.trace();
+        assert!(!trace.is_empty());
+        let other = trace.iter().find(|e| e.thread != me);
+        assert!(other.is_none(), "operation from another thread: {other:?}");
     }
 }

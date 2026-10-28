@@ -20,6 +20,37 @@ pub enum AccessMode {
     ReadOnly,
 }
 
+/// How a handle runs flushes and compactions (test configuration, see
+/// [`TestConfig`]).
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Background {
+    /// Two background threads, `kerno-flush` and `kerno-compact-0`, as in
+    /// the M0 engine (the default).
+    #[default]
+    Threads,
+    /// No threads. The commit that finds the active memtable full rotates
+    /// it, writes the immutable memtable to L0 and runs every compaction that
+    /// is due, all before it writes its own WAL record; `close` flushes and
+    /// compacts in the calling thread as always. The sequence of file-system
+    /// operations then depends only on the calls made, so crash sweeps
+    /// number their points identically in every run (phase1-design.md §1
+    /// item 6).
+    Inline,
+}
+
+/// Settings that only tests use. Not part of the API.
+#[doc(hidden)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TestConfig {
+    /// Background threads (default) or inline flushes and compactions.
+    pub background: Background,
+    /// Fixed database id for a new database, so that test vectors are
+    /// reproducible. The M0 development format has no database id: it is
+    /// ignored until the engine writes format v1.
+    pub db_id: Option<[u8; 16]>,
+}
+
 /// Options of [`KernoDb::open`](crate::KernoDb::open).
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -43,6 +74,9 @@ pub struct Config {
     /// Writers wait while this many memtables are waiting to be flushed
     /// (default 4, the M0 value; at least 1).
     pub max_immutable_memtables: usize,
+    /// Test-only settings (default: background threads).
+    #[doc(hidden)]
+    pub test: TestConfig,
 }
 
 impl Default for Config {
@@ -54,6 +88,7 @@ impl Default for Config {
             cache_bytes: 64 << 20,
             write_buffer_bytes: 8 << 20,
             max_immutable_memtables: MAX_IMMUTABLE,
+            test: TestConfig::default(),
         }
     }
 }
@@ -108,6 +143,15 @@ mod tests {
         assert_eq!(c.cache_bytes, o.cache_bytes);
         assert_eq!(c.write_buffer_bytes, o.write_buffer_bytes);
         assert_eq!(c.max_immutable_memtables, 4);
+    }
+
+    #[test]
+    fn default_test_config_uses_background_threads() {
+        let c = Config::default();
+        assert_eq!(c.test.background, Background::Threads);
+        assert_eq!(c.test.db_id, None);
+        let c = Config::from(&Options::small_for_tests());
+        assert_eq!(c.test, TestConfig::default());
     }
 
     #[test]

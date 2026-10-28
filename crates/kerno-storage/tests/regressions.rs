@@ -483,3 +483,252 @@ mod file_names {
         }
     }
 }
+
+// Found by the per-directory durability model (`DirDurability::PerDir`) of
+// WP03b: a new database synced only the immediate parent of its directory.
+// When `create_dir_all` also created that parent (`/data/apps/db` on an
+// empty disk), the parent's own entry was never made durable, and a power
+// loss after acknowledged `Sync` commits could remove the whole database.
+//
+// The first fix synced every ancestor up to `/`, and the review of WP03b
+// found two defects in it. `sync_dir` opens the directory, which needs read
+// permission, so an ancestor the process may only traverse (a home directory
+// in mode 0711, app data on Android) made creating a database fail for good.
+// And the current directory, the empty parent of a relative path, was never
+// synced, so `db` or `data/apps/db` could still vanish. A new database now
+// syncs the directory holding each directory it created (`.` included), and
+// the higher ancestors only best effort, and only when its directory already
+// existed (an earlier open may have created it and failed).
+mod nested_new_directory {
+    use std::io;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+
+    use kerno_core::contract::{Engine, Snapshot};
+    use kerno_core::{Error, WriteBatch};
+    use kerno_storage::{Config, KernoDb};
+    use kerno_testkit::vfs::{
+        CrashKind, DirDurability, HookAction, HookOpKind, HookPoint, HookVfs, OpKind, SimVfs, StdVfs, Vfs,
+    };
+    use parking_lot::Mutex;
+
+    fn commit_one(db: &KernoDb) {
+        let mut b = WriteBatch::new();
+        b.put("k", "v");
+        assert_eq!(db.commit(&b).unwrap(), 1);
+    }
+
+    /// Reopens `dir` without creating it and checks the one acknowledged
+    /// commit.
+    fn check_one_commit(vfs: Arc<dyn Vfs>, dir: &Path, label: &str) {
+        let reopen = Config { create_if_missing: false, ..Config::default() };
+        let db = KernoDb::open(vfs, dir, &reopen).unwrap_or_else(|e| panic!("{label}: the database vanished: {e}"));
+        let snap = db.snapshot().unwrap();
+        assert_eq!(snap.seq(), 1, "{label}: acknowledged commit lost");
+        assert_eq!(snap.get(b"k").unwrap().as_deref(), Some(&b"v"[..]), "{label}");
+    }
+
+    #[test]
+    fn new_nested_database_directory_survives_power_loss_with_per_dir_durability() {
+        // Relative paths too: their outermost new directory is an entry of
+        // the current directory, `.`.
+        for dir in ["/data/apps/db", "db", "data/apps/db", "./db"] {
+            for seed in 0..32 {
+                let disk = SimVfs::new(seed);
+                disk.set_dir_durability(DirDurability::PerDir);
+                let db = KernoDb::open(disk.as_vfs(), Path::new(dir), &Config::default()).unwrap();
+                commit_one(&db);
+                let image = disk.crash_now(CrashKind::PowerLoss);
+                drop(db);
+                check_one_commit(image.as_vfs(), Path::new(dir), &format!("{dir}, seed {seed}"));
+            }
+        }
+    }
+
+    /// An earlier open created the directories and failed before syncing
+    /// them all; the retried open finds the database directory already there
+    /// and must still make its ancestors durable.
+    #[test]
+    fn retried_open_syncs_the_ancestors_an_earlier_open_created() {
+        let dir = Path::new("/data/apps/db");
+        for seed in 0..32 {
+            let disk = SimVfs::new(seed);
+            disk.set_dir_durability(DirDurability::PerDir);
+            disk.fail_when(|op| op.kind == OpKind::SyncDir && op.path == Path::new("/data"), 1, None);
+            let first = KernoDb::open(disk.as_vfs(), dir, &Config::default());
+            assert!(matches!(first, Err(Error::Io(_))), "seed {seed}: {:?}", first.err());
+            let db = KernoDb::open(disk.as_vfs(), dir, &Config::default()).unwrap();
+            commit_one(&db);
+            let image = disk.crash_now(CrashKind::PowerLoss);
+            drop(db);
+            check_one_commit(image.as_vfs(), dir, &format!("seed {seed}"));
+        }
+    }
+
+    /// An earlier open died inside `create_dir_all`, which (like std's)
+    /// makes one level at a time: `/data` and `/data/apps` exist, unsynced,
+    /// and `db` does not. The retried open creates only `db`, and must still
+    /// make the entries of `/data` and `/data/apps` durable (WP03b review).
+    #[test]
+    fn retried_open_after_a_partial_create_dir_all_syncs_the_ancestors() {
+        let dir = Path::new("/data/apps/db");
+        for seed in 0..32 {
+            let disk = SimVfs::new(seed);
+            disk.set_dir_durability(DirDurability::PerDir);
+            let inner = disk.as_vfs();
+            let failed = Arc::new(Mutex::new(false));
+            let vfs = HookVfs::wrap(disk.as_vfs(), move |op| {
+                if op.kind == HookOpKind::CreateDirAll && op.point == HookPoint::Before && op.path == dir {
+                    let mut failed = failed.lock();
+                    if !*failed {
+                        *failed = true;
+                        inner.create_dir_all(Path::new("/data/apps")).unwrap();
+                        return HookAction::Fail(io::ErrorKind::StorageFull);
+                    }
+                }
+                HookAction::Proceed
+            });
+            let first = KernoDb::open(vfs.clone(), dir, &Config::default());
+            assert!(matches!(first, Err(Error::Io(_))), "seed {seed}: {:?}", first.err());
+            let db = KernoDb::open(vfs, dir, &Config::default()).unwrap();
+            commit_one(&db);
+            let image = disk.crash_now(CrashKind::PowerLoss);
+            drop(db);
+            check_one_commit(image.as_vfs(), dir, &format!("seed {seed}"));
+        }
+    }
+
+    /// An ancestor whose fsync fails with an I/O error (not a permission
+    /// error) fails every open that needs it, the retried one included: the
+    /// failure must not be swallowed by the best-effort walk (WP03b review).
+    #[test]
+    fn retried_open_does_not_swallow_an_io_error_syncing_an_ancestor() {
+        let dir = Path::new("/data/apps/db");
+        let disk = SimVfs::new(6);
+        disk.set_dir_durability(DirDurability::PerDir);
+        let vfs = HookVfs::wrap(disk.as_vfs(), |op| {
+            if op.kind == HookOpKind::SyncDir && op.point == HookPoint::Before && op.path == Path::new("/data") {
+                HookAction::Fail(io::ErrorKind::Other)
+            } else {
+                HookAction::Proceed
+            }
+        });
+        for attempt in 0..3 {
+            match KernoDb::open(vfs.clone(), dir, &Config::default()) {
+                Err(Error::Io(e)) => assert_eq!(e.kind(), io::ErrorKind::Other, "attempt {attempt}"),
+                other => panic!("attempt {attempt}: the open must fail, got {:?}", other.err()),
+            }
+        }
+    }
+
+    /// `inner` with `sync_dir` failing as it does for a directory this
+    /// process may traverse but not read (`unreadable`); records every
+    /// `sync_dir` attempted outside the database directory `db_dir`.
+    fn traverse_only(
+        inner: Arc<dyn Vfs>,
+        db_dir: &'static str,
+        unreadable: &'static [&'static str],
+    ) -> (Arc<dyn Vfs>, Arc<Mutex<Vec<PathBuf>>>) {
+        let synced = Arc::new(Mutex::new(Vec::new()));
+        let log = synced.clone();
+        let vfs = HookVfs::wrap(inner, move |op| {
+            if op.kind != HookOpKind::SyncDir || op.point != HookPoint::Before || op.path.starts_with(db_dir) {
+                return HookAction::Proceed;
+            }
+            log.lock().push(op.path.to_path_buf());
+            if unreadable.iter().any(|d| op.path == Path::new(d)) {
+                HookAction::Fail(io::ErrorKind::PermissionDenied)
+            } else {
+                HookAction::Proceed
+            }
+        });
+        (vfs, synced)
+    }
+
+    #[test]
+    fn traverse_only_ancestors_do_not_prevent_creating_a_database() {
+        const DIR: &str = "/home/shared/db";
+        // `/home` and `/` may only be traversed; `/home/shared` is readable.
+        for (pre_existing, nested, expected) in [
+            // A new directory: the directories that hold new entries, then
+            // best effort upwards, stopping at the first this process may
+            // not read.
+            (false, false, &["/home/shared", "/home"][..]),
+            (false, true, &["/home/shared/db", "/home/shared", "/home"][..]),
+            // An existing one (maybe left by a failed open): the parent, then
+            // best effort upwards, stopping at the first that fails.
+            (true, false, &["/home/shared", "/home"][..]),
+        ] {
+            let disk = SimVfs::new(3);
+            disk.create_dir_all(Path::new("/home/shared")).unwrap();
+            if pre_existing {
+                disk.create_dir_all(Path::new(DIR)).unwrap();
+            }
+            let db_dir = if nested { "/home/shared/db/nested" } else { DIR };
+            let (vfs, synced) = traverse_only(disk.as_vfs(), db_dir, &["/home", "/"]);
+            let label = format!("pre-existing {pre_existing}, {db_dir}");
+            let db = KernoDb::open(vfs.clone(), Path::new(db_dir), &Config::default())
+                .unwrap_or_else(|e| panic!("{label}: creating the database failed: {e}"));
+            commit_one(&db);
+            db.close().unwrap();
+            let synced = synced.lock().clone();
+            assert_eq!(synced, expected.iter().map(PathBuf::from).collect::<Vec<_>>(), "{label}");
+            check_one_commit(vfs, Path::new(db_dir), &label);
+        }
+    }
+
+    /// The directory that holds the database directory is still synced
+    /// strictly: if that fails, so does the open.
+    #[test]
+    fn unsyncable_parent_fails_the_open() {
+        for pre_existing in [false, true] {
+            let disk = SimVfs::new(4);
+            disk.create_dir_all(Path::new("/home/shared")).unwrap();
+            if pre_existing {
+                disk.create_dir_all(Path::new("/home/shared/db")).unwrap();
+            }
+            let (vfs, _) = traverse_only(disk.as_vfs(), "/home/shared/db", &["/home/shared"]);
+            match KernoDb::open(vfs, Path::new("/home/shared/db"), &Config::default()) {
+                Err(Error::Io(e)) => assert_eq!(e.kind(), io::ErrorKind::PermissionDenied),
+                other => panic!("pre-existing {pre_existing}: {:?}", other.err()),
+            }
+        }
+    }
+
+    /// The same on the real file system, under an ancestor in mode 0111.
+    /// Skipped where permission bits are not enforced (a process with
+    /// CAP_DAC_OVERRIDE or CAP_DAC_READ_SEARCH, such as root): run it there
+    /// with `setpriv --bounding-set=-dac_override,-dac_read_search`.
+    #[test]
+    fn execute_only_ancestor_on_the_real_file_system() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let base =
+            Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("kerno-execute-only-ancestor-{}", std::process::id()));
+        let outer = base.join("outer");
+        let inner = outer.join("inner");
+        fs::create_dir_all(inner.join("pre-existing")).unwrap();
+        fs::set_permissions(&outer, fs::Permissions::from_mode(0o111)).unwrap();
+        let enforced = fs::File::open(&outer).is_err();
+        let result = std::panic::catch_unwind(|| {
+            if !enforced {
+                eprintln!("skipped: permission bits are not enforced for this process");
+                return;
+            }
+            for name in ["db", "pre-existing", "nested/db"] {
+                let dir = inner.join(name);
+                let db = KernoDb::open(StdVfs::shared(), &dir, &Config::default())
+                    .unwrap_or_else(|e| panic!("{name}: creating the database failed: {e}"));
+                commit_one(&db);
+                db.close().unwrap();
+                check_one_commit(StdVfs::shared(), &dir, name);
+            }
+        });
+        fs::set_permissions(&outer, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::remove_dir_all(&base).unwrap();
+        if let Err(panic) = result {
+            std::panic::resume_unwind(panic);
+        }
+    }
+}

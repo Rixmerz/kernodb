@@ -431,8 +431,11 @@ impl Table {
 
 impl Drop for Table {
     fn drop(&mut self) {
-        if self.obsolete.load(Ordering::Acquire) && self.ctx.vfs.remove_file(&self.ctx.path(self.number)).is_ok() {
-            bump(&self.ctx.stats.obsolete_files_deleted, 1);
+        if self.obsolete.load(Ordering::Acquire) {
+            let _phase = kerno_core::probe::phase("delete");
+            if self.ctx.vfs.remove_file(&self.ctx.path(self.number)).is_ok() {
+                bump(&self.ctx.stats.obsolete_files_deleted, 1);
+            }
         }
     }
 }

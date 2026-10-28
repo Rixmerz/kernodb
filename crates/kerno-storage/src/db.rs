@@ -1,23 +1,24 @@
 //! `KernoDb`: recovery, the commit path, background flush/compaction
-//! threads, snapshots and clean shutdown.
+//! threads (or their inline equivalent), snapshots and clean shutdown.
 
 use std::any::Any;
 use std::collections::HashSet;
 use std::io;
 use std::ops::Bound;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use kerno_core::contract::{Engine, Options, Snapshot};
+use kerno_core::contract::{Engine, Options, Snapshot, TestHooks};
+use kerno_core::probe;
 use kerno_core::vfs::Vfs;
 use kerno_core::{Durability, Error, Result, WriteBatch};
 use parking_lot::{Condvar, Mutex};
 
 use crate::compaction::{self, BLOCK_SIZE, L0_SLOWDOWN, L0_STOP, NUM_LEVELS, Plan, Tuning};
-use crate::config::{AccessMode, Config};
+use crate::config::{AccessMode, Background, Config};
 use crate::iter::{InternalIterator, MergeIter};
 use crate::manifest::{self, MANIFEST, MANIFEST_TMP, ManifestData};
 use crate::memtable::Memtable;
@@ -59,7 +60,15 @@ struct Writer {
     wal: WalWriter,
     mem: Arc<Memtable>,
     last_seq: u64,
+    /// Inline mode: round-robin position per level for the compactions run
+    /// under the writer lock (largest key of the last compaction out of it).
+    /// The background compactor keeps its own.
+    pointers: Vec<Vec<u8>>,
 }
+
+/// Round-robin positions that choose nothing: `compaction::pick` decides
+/// whether a compaction is due regardless of them.
+static NO_POINTERS: [Vec<u8>; NUM_LEVELS] = [const { Vec::new() }; NUM_LEVELS];
 
 /// Published state, read by snapshots and background threads.
 struct State {
@@ -68,6 +77,35 @@ struct State {
     last_seq: u64,
     poisoned: Option<String>,
     shutdown: bool,
+    /// A background thread is working on a flush or a compaction (including
+    /// the deletions that follow it). See `Inner::wait_idle`.
+    flush_running: bool,
+    compaction_running: bool,
+}
+
+/// The kinds of background work.
+#[derive(Clone, Copy)]
+enum Job {
+    Flush,
+    Compaction,
+}
+
+/// Marks a background job as running until dropped (also on a panic).
+struct Running<'a> {
+    inner: &'a Inner,
+    job: Job,
+}
+
+impl Drop for Running<'_> {
+    fn drop(&mut self) {
+        let mut st = self.inner.state.lock();
+        match self.job {
+            Job::Flush => st.flush_running = false,
+            Job::Compaction => st.compaction_running = false,
+        }
+        drop(st);
+        self.inner.cv.notify_all();
+    }
 }
 
 /// Durable LSM shape as of the last MANIFEST written. Held while computing
@@ -86,6 +124,8 @@ struct Inner {
     tuning: Tuning,
     /// Writers wait while this many memtables are waiting to be flushed.
     max_immutable: usize,
+    /// Background threads, or flushes and compactions inline.
+    background: Background,
     ctx: Arc<TableCtx>,
     stats: Arc<Stats>,
     next_file: AtomicU64,
@@ -240,11 +280,14 @@ fn recover(ctx: &Arc<TableCtx>) -> Result<Recovered> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
         r => r,
     };
-    for &n in &wals {
-        remove(&dir.join(wal_name(n)))?;
-    }
-    for &n in ssts.iter().filter(|n| !live.contains(n)) {
-        remove(&ctx.path(n))?;
+    {
+        let _phase = probe::phase("delete");
+        for &n in &wals {
+            remove(&dir.join(wal_name(n)))?;
+        }
+        for &n in ssts.iter().filter(|n| !live.contains(n)) {
+            remove(&ctx.path(n))?;
+        }
     }
     let wal = WalWriter::create(vfs, dir, wal_number)?;
     vfs.sync_dir(dir)?;
@@ -260,6 +303,10 @@ impl Inner {
         }
         drop(st);
         self.cv.notify_all();
+    }
+
+    fn inline(&self) -> bool {
+        self.background == Background::Inline
     }
 
     fn check_poisoned(&self) -> Result<()> {
@@ -304,6 +351,7 @@ impl Inner {
 
     fn commit(&self, batch: &WriteBatch) -> Result<u64> {
         batch.validate()?;
+        let _phase = probe::phase("commit");
         let mut w = self.writer.lock();
         self.check_poisoned()?;
         if batch.is_empty() {
@@ -332,6 +380,9 @@ impl Inner {
     /// Applies backpressure and switches to a new memtable when the active
     /// one is full (LevelDB's `MakeRoomForWrite`).
     fn make_room(&self, w: &mut Writer) -> Result<()> {
+        if self.inline() {
+            return self.make_room_inline(w);
+        }
         let mut slowed = false;
         loop {
             self.check_poisoned()?;
@@ -361,7 +412,22 @@ impl Inner {
         }
     }
 
+    /// [`make_room`](Self::make_room) without background threads: there is
+    /// nothing to wait for, so no slowdown and no stall. A full memtable is
+    /// rotated, flushed and followed by every due compaction, all in the
+    /// calling thread, before the commit writes its own record.
+    fn make_room_inline(&self, w: &mut Writer) -> Result<()> {
+        if w.mem.approx_bytes() < self.tuning.write_buffer {
+            return Ok(());
+        }
+        self.or_poison("memtable switch failed", || self.rotate(w))?;
+        self.flush_inline()?;
+        while self.compact_inline(w)? {}
+        Ok(())
+    }
+
     fn rotate(&self, w: &mut Writer) -> Result<()> {
+        let _phase = probe::phase("rotate");
         if self.durability == Durability::Buffered {
             // Every older log must be complete before a newer one exists,
             // so that recovery's "only the newest log may be torn" holds.
@@ -390,30 +456,47 @@ impl Inner {
 
     // ---- background work ----
 
-    /// Waits for `next` to produce work; `None` on shutdown or poison.
-    fn wait_for_work<T>(&self, mut next: impl FnMut(&State) -> Option<T>) -> Option<T> {
+    /// Waits for `next` to produce work; `None` on shutdown or poison. The
+    /// job counts as running until the returned guard is dropped.
+    fn wait_for_work<T>(&self, job: Job, mut next: impl FnMut(&State) -> Option<T>) -> Option<(T, Running<'_>)> {
         let mut st = self.state.lock();
         loop {
             if st.shutdown || st.poisoned.is_some() {
                 return None;
             }
             if let Some(work) = next(&st) {
-                return Some(work);
+                match job {
+                    Job::Flush => st.flush_running = true,
+                    Job::Compaction => st.compaction_running = true,
+                }
+                return Some((work, Running { inner: self, job }));
             }
             self.cv.wait(&mut st);
         }
     }
 
     fn flusher(&self) {
-        while let Some(mem) = self.wait_for_work(|st| st.version.imms.last().cloned()) {
+        while let Some((mem, _running)) = self.wait_for_work(Job::Flush, |st| st.version.imms.last().cloned()) {
             if self.or_poison("flush failed", || self.flush(&mem)).is_err() {
                 return;
             }
         }
     }
 
+    /// Inline mode: flushes every immutable memtable, oldest first, in the
+    /// calling thread (which holds the writer lock).
+    fn flush_inline(&self) -> Result<()> {
+        loop {
+            let Some(mem) = self.state.lock().version.imms.last().cloned() else {
+                return Ok(());
+            };
+            self.or_poison("flush failed", || self.flush(&mem))?;
+        }
+    }
+
     /// Writes the oldest immutable memtable to L0 and retires its WAL.
     fn flush(&self, mem: &Arc<Memtable>) -> Result<()> {
+        let _phase = probe::phase("flush");
         let table = if mem.is_empty() {
             None
         } else {
@@ -437,24 +520,54 @@ impl Inner {
         drop(ms);
         // The MANIFEST no longer needs this log (best effort: a leftover
         // log below `log_number` is deleted by the next recovery).
+        let _delete = probe::phase("delete");
         let _ = self.vfs.remove_file(&self.dir.join(wal_name(mem.wal_number())));
         bump(&self.stats.flushes, 1);
         Ok(())
     }
 
+    /// Whether some level is over its target (what `compaction::pick`
+    /// decides; the round-robin positions only choose the input file).
+    fn compaction_due(&self, levels: &Levels) -> bool {
+        compaction::pick(levels, &self.tuning, &NO_POINTERS).is_some()
+    }
+
     fn compactor(&self) {
         // Round-robin position per level: largest key of the last compaction.
         let mut pointers = vec![Vec::new(); NUM_LEVELS];
-        while let Some(plan) = self.wait_for_work(|st| compaction::pick(&st.version.levels, &self.tuning, &pointers)) {
-            match self.or_poison("compaction failed", || self.compact(&plan, &mut pointers)) {
+        while let Some((plan, running)) =
+            self.wait_for_work(Job::Compaction, |st| compaction::pick(&st.version.levels, &self.tuning, &pointers))
+        {
+            let r = self.or_poison("compaction failed", || self.compact(&plan, &mut pointers));
+            // The inputs it made obsolete are deleted while the job still
+            // counts as running.
+            drop(plan);
+            drop(running);
+            match r {
                 Ok(true) => {}
                 Ok(false) | Err(_) => return,
             }
         }
     }
 
+    /// Inline mode: picks the most urgent compaction and runs it in the
+    /// calling thread, which holds the writer lock. `false` if none is due.
+    /// The inputs it made obsolete are deleted before this returns (unless a
+    /// snapshot still uses them).
+    fn compact_inline(&self, w: &mut Writer) -> Result<bool> {
+        let plan = {
+            let st = self.state.lock();
+            compaction::pick(&st.version.levels, &self.tuning, &w.pointers)
+        };
+        match plan {
+            Some(plan) => self.or_poison("compaction failed", || self.compact(&plan, &mut w.pointers)),
+            None => Ok(false),
+        }
+    }
+
     /// Returns `false` if the compaction was abandoned for shutdown.
     fn compact(&self, plan: &Plan, pointers: &mut [Vec<u8>]) -> Result<bool> {
+        let _phase = probe::phase("compact");
         pointers[plan.level] = plan.largest_input_key().to_vec();
         if plan.is_trivial_move() {
             let mut ms = self.manifest.lock();
@@ -528,6 +641,7 @@ impl Inner {
     /// Flushes every memtable, writes a MANIFEST that needs no WAL, removes
     /// the WALs. Background threads must already be stopped.
     fn close(&self) -> Result<()> {
+        let _phase = probe::phase("close");
         let w = self.writer.lock();
         let v = self.state.lock().version.clone();
         let mut tables = Vec::new();
@@ -546,7 +660,12 @@ impl Inner {
             levels[0].insert(0, t);
         }
         let log_number = self.next_file.fetch_add(1, Ordering::SeqCst);
-        self.write_manifest(&levels, w.last_seq, log_number)?;
+        {
+            // The M0 counterpart of the clean checkpoint: a MANIFEST that
+            // needs no WAL.
+            let _checkpoint = probe::phase("checkpoint");
+            self.write_manifest(&levels, w.last_seq, log_number)?;
+        }
         ms.levels = levels.clone();
         ms.last_seq = w.last_seq;
         ms.log_number = log_number;
@@ -558,6 +677,7 @@ impl Inner {
             let mem = Arc::new(Memtable::new(log_number));
             st.version = Arc::new(Version { mem, imms: Vec::new(), levels });
         }
+        let _delete = probe::phase("delete");
         for name in self.vfs.list(&self.dir)? {
             if let FileKind::Wal(_) = parse_name(&name) {
                 self.vfs.remove_file(&self.dir.join(name))?;
@@ -565,6 +685,72 @@ impl Inner {
         }
         self.vfs.sync_dir(&self.dir)?;
         Ok(())
+    }
+
+    // ---- test hooks ----
+
+    /// [`TestHooks::wait_idle`]: with threads, waits until no flush is
+    /// pending or running and no compaction is due or running.
+    fn wait_idle(&self) -> Result<()> {
+        let mut st = self.state.lock();
+        loop {
+            if let Some(msg) = &st.poisoned {
+                return Err(Error::Poisoned(msg.clone()));
+            }
+            let idle = self.inline()
+                || st.shutdown
+                || (!st.flush_running
+                    && !st.compaction_running
+                    && st.version.imms.is_empty()
+                    && !self.compaction_due(&st.version.levels));
+            if idle {
+                return Ok(());
+            }
+            self.cv.wait(&mut st);
+        }
+    }
+
+    /// [`TestHooks::flush`]: rotates a non-empty active memtable and waits
+    /// until every immutable memtable is on disk (inline: writes them).
+    fn flush_all(&self) -> Result<()> {
+        let mut w = self.writer.lock();
+        self.check_poisoned()?;
+        if !w.mem.is_empty() {
+            self.or_poison("memtable switch failed", || self.rotate(&mut w))?;
+        }
+        if self.inline() {
+            return self.flush_inline();
+        }
+        drop(w);
+        let mut st = self.state.lock();
+        loop {
+            if let Some(msg) = &st.poisoned {
+                return Err(Error::Poisoned(msg.clone()));
+            }
+            if st.shutdown || (st.version.imms.is_empty() && !st.flush_running) {
+                return Ok(());
+            }
+            self.cv.wait(&mut st);
+        }
+    }
+
+    /// [`TestHooks::compact_once`]. With background threads, compactions
+    /// run on their own: this waits until none is due or running and
+    /// returns whether at least one finished meanwhile. Every compaction
+    /// that was due or running when it was called is among those (the
+    /// counters are read before waiting, and a compaction counts itself
+    /// before it stops counting as running); more than one may have run.
+    fn compact_once(&self) -> Result<bool> {
+        if !self.inline() {
+            let finished =
+                || self.stats.compactions.load(Ordering::SeqCst) + self.stats.trivial_moves.load(Ordering::SeqCst);
+            let before = finished();
+            self.wait_idle()?;
+            return Ok(finished() > before);
+        }
+        let mut w = self.writer.lock();
+        self.check_poisoned()?;
+        self.compact_inline(&mut w)
     }
 }
 
@@ -596,6 +782,28 @@ impl Drop for KernoDb {
     }
 }
 
+impl KernoDb {
+    /// Test-only control over flushes and compactions (see [`TestHooks`]).
+    #[doc(hidden)]
+    pub fn hooks(&self) -> &dyn TestHooks {
+        self
+    }
+}
+
+impl TestHooks for KernoDb {
+    fn wait_idle(&self) -> Result<()> {
+        self.inner.wait_idle()
+    }
+
+    fn flush(&self) -> Result<()> {
+        self.inner.flush_all()
+    }
+
+    fn compact_once(&self) -> Result<bool> {
+        self.inner.compact_once()
+    }
+}
+
 #[cfg(test)]
 impl KernoDb {
     /// Wakes every thread waiting on the engine's condition variable. Every
@@ -623,6 +831,91 @@ fn missing_manifest(vfs: &dyn Vfs, dir: &Path) -> Error {
     Error::InvalidArgument(format!("{}: no database (no {MANIFEST}) and create_if_missing is false", dir.display()))
 }
 
+/// The directory that holds `path`'s entry. For a relative path with a
+/// single component that is the current directory, `.` (where
+/// `Path::parent` returns an empty path, which no real file system opens).
+/// `None` for a root, and for `.` or `..` alone, whose parent this process
+/// does not name.
+fn parent_dir(path: &Path) -> Option<&Path> {
+    let parent = path.parent()?;
+    if !parent.as_os_str().is_empty() {
+        return Some(parent);
+    }
+    match path.components().next() {
+        Some(Component::Normal(_)) => Some(Path::new(".")),
+        _ => None,
+    }
+}
+
+/// `dir` and those of its ancestors that do not exist, deepest first: what
+/// `create_dir_all(dir)` is about to create. Only reads.
+fn missing_dirs(vfs: &dyn Vfs, dir: &Path) -> io::Result<Vec<PathBuf>> {
+    let mut missing = Vec::new();
+    let mut next = Some(dir);
+    while let Some(d) = next {
+        if vfs.exists(d)? {
+            break;
+        }
+        missing.push(d.to_path_buf());
+        next = parent_dir(d);
+    }
+    Ok(missing)
+}
+
+/// Makes the database directory `dir` durable where it lives, after
+/// `create_dir_all`. `created` is what that call created (see
+/// [`missing_dirs`]); `new` is whether the database is new (no MANIFEST).
+///
+/// On file systems without a single metadata journal, an entry is durable
+/// only once the directory that holds it is synced. So this syncs the
+/// directory that holds `dir` (on every open, as in M0) and the one that
+/// holds each directory created now: entries this open made, so failing to
+/// sync them fails the open. Directories above those are not touched in
+/// general: their entries did not change, and syncing them can fail for
+/// reasons that do not concern the database (an ancestor that may only be
+/// traversed, as with home directories in mode 0711 or app data on Android;
+/// a read-only file system without directory fsync).
+///
+/// Except for a new database: an earlier open may have created some of
+/// these directories (`create_dir_all` makes one level at a time, so even a
+/// partial chain, without the database directory itself) and failed or died
+/// before syncing them. Which ones is not known, so the ancestors above the
+/// highest directory synced strictly are synced best effort, bottom up. The
+/// walk stops quietly only where this process cannot sync the directory at
+/// all (see [`not_ours`]): one it may not read was not created by it, and
+/// neither was anything above it. Any other error (an `EIO`) fails the open,
+/// as a failed fsync must never be taken as durable (ADR-0002).
+fn sync_dir_entries(vfs: &dyn Vfs, dir: &Path, created: &[PathBuf], new: bool) -> io::Result<()> {
+    let mut synced: Vec<&Path> = Vec::new();
+    for d in std::iter::once(dir).chain(created.iter().map(PathBuf::as_path)) {
+        if let Some(parent) = parent_dir(d)
+            && !synced.contains(&parent)
+        {
+            vfs.sync_dir(parent)?;
+            synced.push(parent);
+        }
+    }
+    if new {
+        let highest = created.last().map_or(dir, PathBuf::as_path);
+        let mut ancestor = parent_dir(highest).and_then(parent_dir);
+        while let Some(a) = ancestor {
+            match vfs.sync_dir(a) {
+                Ok(()) => ancestor = parent_dir(a),
+                Err(e) if not_ours(&e) => break,
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether a failed `sync_dir` of an ancestor shows a directory this process
+/// cannot sync at all (so did not create): no read permission, or a file
+/// system that is read-only or does not support directory fsync.
+fn not_ours(e: &io::Error) -> bool {
+    matches!(e.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem | io::ErrorKind::Unsupported)
+}
+
 impl KernoDb {
     /// Opens the database stored in `dir` (creating it if it does not exist
     /// and `cfg.create_if_missing` is set), running crash recovery if the
@@ -634,15 +927,14 @@ impl KernoDb {
         }
         // Checked before anything is created: without a MANIFEST there is no
         // database to open, and the directory must stay untouched.
-        if !cfg.create_if_missing && !vfs.exists(&dir.join(MANIFEST))? {
+        let exists = vfs.exists(&dir.join(MANIFEST))?;
+        if !cfg.create_if_missing && !exists {
             return Err(missing_manifest(&*vfs, dir));
         }
+        let _phase = probe::phase(if exists { "session" } else { "create" });
+        let created = if exists { Vec::new() } else { missing_dirs(&*vfs, dir)? };
         vfs.create_dir_all(dir)?;
-        // The directory itself must be durable in its parent, or a power
-        // loss can remove a newly created database with everything in it.
-        if let Some(parent) = dir.parent().filter(|p| !p.as_os_str().is_empty()) {
-            vfs.sync_dir(parent)?;
-        }
+        sync_dir_entries(&*vfs, dir, &created, !exists)?;
         let lock = vfs.lock(&dir.join("LOCK")).map_err(|e| match e.kind() {
             io::ErrorKind::WouldBlock => Error::Locked,
             _ => Error::Io(e),
@@ -658,21 +950,36 @@ impl KernoDb {
             durability: cfg.durability,
             tuning: Tuning::new(cfg),
             max_immutable: cfg.max_immutable_memtables,
+            background: cfg.test.background,
             ctx,
             stats,
             next_file: AtomicU64::new(r.next_file),
-            writer: Mutex::new(Writer { wal: r.wal, mem, last_seq: r.last_seq }),
+            writer: Mutex::new(Writer {
+                wal: r.wal,
+                mem,
+                last_seq: r.last_seq,
+                pointers: vec![Vec::new(); NUM_LEVELS],
+            }),
             manifest: Mutex::new(ManifestState { levels: r.levels, last_seq: r.last_seq, log_number: r.log_number }),
-            state: Mutex::new(State { version, last_seq: r.last_seq, poisoned: None, shutdown: false }),
+            state: Mutex::new(State {
+                version,
+                last_seq: r.last_seq,
+                poisoned: None,
+                shutdown: false,
+                flush_running: false,
+                compaction_running: false,
+            }),
             cv: Condvar::new(),
             poisoned: AtomicBool::new(false),
             shutting_down: AtomicBool::new(false),
             _lock: lock,
         });
         let engine = KernoDb { inner: inner.clone(), threads: Mutex::new(Vec::new()) };
-        for (name, body) in [("kerno-flush", Inner::flusher as fn(&Inner)), ("kerno-compact-0", Inner::compactor)] {
-            let handle = Self::spawn(&inner, name, body)?;
-            engine.threads.lock().push(handle);
+        if cfg.test.background == Background::Threads {
+            for (name, body) in [("kerno-flush", Inner::flusher as fn(&Inner)), ("kerno-compact-0", Inner::compactor)] {
+                let handle = Self::spawn(&inner, name, body)?;
+                engine.threads.lock().push(handle);
+            }
         }
         Ok(engine)
     }
@@ -707,6 +1014,7 @@ impl Engine for KernoDb {
     }
 
     fn close(self) -> Result<()> {
+        let _phase = probe::phase("close");
         self.stop_threads();
         self.inner.check_poisoned()?;
         self.inner.or_poison("close failed", || {

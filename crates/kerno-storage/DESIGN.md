@@ -18,8 +18,9 @@ Un árbol LSM nivelado al estilo de LevelDB/RocksDB que implementa directamente 
 | `cache_bytes` | 64 MiB | capacidad de la caché de bloques |
 | `write_buffer_bytes` | 8 MiB | tamaño de memtable que provoca el cambio y el flush (mínimo efectivo 4 KiB); también el tamaño objetivo de las SST |
 | `max_immutable_memtables` | 4 | los escritores esperan con este número de memtables pendientes de flush (mínimo 1; `0` es `InvalidArgument`) |
+| `test` (oculto, solo pruebas) | `TestConfig::default()` | `background`: `Threads` (hilos de segundo plano, como en el M0) o `Inline` (ver [Modo en línea](#modo-en-línea-backgroundinline)); `db_id`: identificador fijo para bases nuevas, ignorado hasta que el motor escriba el formato v1 (el formato del M0 no tiene `db_id`) |
 
-El módulo oculto `testing` define `Profile` y `Profiled<P>`: un tipo de motor distinto por perfil, que abre `KernoDb` con `Config::from(opts)` ajustada por `P::adjust`, para ejecutar las macros del harness en varias configuraciones sin tocar `Options`.
+El módulo oculto `testing` define `Profile` y `Profiled<P>`: un tipo de motor distinto por perfil, que abre `KernoDb` con `Config::from(opts)` ajustada por `P::adjust`, para ejecutar las macros del harness en varias configuraciones sin tocar `Options`. Perfiles: `Inline` (`Engine::name()` = `kerno-inline`, `test.background = Inline`).
 
 ## Estructura del directorio
 
@@ -104,6 +105,24 @@ Hay dos hilos: el de **flush** (`kerno-flush`) y el de **compactación** (`kerno
 - Al apagar, la compactación en curso se abandona y sus salidas parciales se eliminan.
 - Si la escritura del MANIFEST falla, no se borra nada. Un `rename` cuyo `sync_dir` falló puede sobrevivir, así que las salidas podrían estar referenciadas. La siguiente recuperación borra los archivos que el MANIFEST superviviente no referencia.
 
+### Modo en línea (`Background::Inline`)
+
+Configuración solo de pruebas (`Config::test.background`, perfil `testing::Inline`; [diseño de la Fase 1](../../docs/architecture/phase1-design.md) §1 punto 6 y §5.1). No se lanza ningún hilo. `make_room` no aplica ralentización ni bloqueo (no hay nadie a quien esperar): si la memtable activa está llena, el mismo commit, con el mutex del escritor tomado, la cambia (paso 2 del camino de commit), escribe en L0 la inmutable más vieja con el flush de siempre y ejecuta todas las compactaciones que elija `pick` hasta que no quede ninguna pendiente; solo entonces escribe su propio registro en el WAL nuevo. El orden de bloqueo sigue siendo `escritor → manifest → estado`, y las posiciones por turno de estas compactaciones viven en el estado del escritor. El cierre es el de siempre, también en el hilo que llama. Si uno de esos pasos falla, el propio commit devuelve el error de ese paso (`Io`, o `Corruption` si la compactación encuentra una SST dañada) y el handle queda envenenado: desde ahí, `Poisoned`.
+
+Sin hilos, la secuencia de operaciones del sistema de archivos depende solo de las llamadas: los barridos `every_point` numeran igual en cada ejecución, las trazas de `SimVfs` se repiten operación por operación (`inline_io_trace_is_deterministic`) y la prueba de modelo `proptest` reduce y reproduce cualquier fallo.
+
+### Ganchos de prueba (`TestHooks`) y sonda de fase
+
+`KernoDb` implementa `kerno_core::contract::TestHooks` (también por `hooks()`, oculto):
+
+| Gancho | `Threads` | `Inline` |
+|---|---|---|
+| `wait_idle` | espera a que no haya flush pendiente o en curso ni compactación pendiente o en curso (incluidos los borrados que siguen a cada una) | vuelve enseguida |
+| `flush` | cambia la memtable activa si tiene commits y espera a que el hilo de flush escriba todas las inmutables | lo mismo, en el hilo que llama; no compacta |
+| `compact_once` | las compactaciones corren solas: espera como `wait_idle` y devuelve `true` si terminó al menos una mientras esperaba (entre ellas, cualquiera pendiente o en curso al llamarlo; puede haber más de una) | ejecuta como mucho una compactación; `true` si había alguna pendiente |
+
+Todos devuelven `Poisoned` si el handle está envenenado. El código del motor etiqueta su E/S con `kerno_core::probe::phase`, que `SimVfs::trace` registra con cada operación: `create` (apertura de una base nueva: sincronización de los directorios que la contienen y recuperación inicial), `session` (apertura de una base existente: recuperación), `commit`, `rotate`, `flush`, `compact`, `close`, `checkpoint` (el MANIFEST del cierre, que no necesita ningún WAL) y `delete` (borrado de WAL y SST obsoletos, también en `Table::drop`).
+
 ## Versiones, instantáneas y vida de los archivos
 
 `Version = { memtable activa, memtables inmutables (de la más nueva a la más vieja), niveles de Arc<Table> }`. Cada cambio de memtable, flush y compactación instala una versión nueva. Una instantánea guarda un `Arc<Version>` y su seq.
@@ -116,7 +135,7 @@ Una SST se borra en `Table::drop`, pero solo si la tabla está marcada como obso
 ## Recuperación (en cada apertura, también la de una base nueva)
 
 0. Antes de tocar nada, `open` rechaza con `InvalidArgument` una `Config` inválida y el acceso `ReadOnly` (todavía no implementado). Con `create_if_missing = false` y un directorio sin `MANIFEST`, solo lo lista: si hay archivos WAL o SST canónicos es `Corruption`, el mismo error que en el paso 1; si no (directorio inexistente, vacío o con otros archivos), `InvalidArgument`.
-1. Sincroniza el directorio padre (para que un directorio de base recién creado sea duradero), toma el bloqueo y lista el directorio. Si el MANIFEST existe, lo lee y lo verifica; la corrupción se informa, nunca se trata como «empezar vacío». Si no existe pero hay archivos WAL o SST, es `Corruption`. Si el directorio está vacío, es una base nueva.
+1. Sincroniza el directorio que contiene el de la base (en cada apertura, como en el M0, para que un directorio de base recién creado sea duradero). Una base nueva (sin `MANIFEST`) sincroniza además el que contiene cada directorio que `create_dir_all` acaba de crear (antes mira cuáles faltan): sin un único journal de metadatos, la entrada de un directorio solo es duradera cuando se sincroniza el que la contiene (lo encontró el modelo de durabilidad por directorio de WP03b: con `/data/apps/db` sobre un disco vacío, un corte de energía podía borrar la base entera tras commits `Sync` confirmados). En una ruta relativa de un solo componente, ese directorio es el actual, `.`. Estas sincronizaciones son obligatorias: si una falla, la apertura falla. Los ancestros de más arriba no tienen por qué haber cambiado, y sincronizarlos puede fallar por motivos ajenos a la base (`sync_dir` abre el directorio y necesita permiso de lectura, que falta en un ancestro que solo se puede atravesar, como un `home` en modo 0711 o los datos de una app en Android; un sistema de archivos de solo lectura puede no admitir `fsync` de directorios). Pero una apertura anterior de una base nueva pudo crear parte de la cadena (`create_dir_all` crea un nivel cada vez: un corte, un `ENOSPC` o un `EIO` a mitad deja ancestros nuevos sin el directorio de la base, o con él) y fallar o morir antes de sincronizarlos. Como no se sabe cuáles, en toda base nueva los ancestros por encima del más alto sincronizado de forma obligatoria se sincronizan además sin garantía, de abajo arriba. La subida se detiene en silencio solo cuando el error muestra que el proceso no puede sincronizar ese directorio (`PermissionDenied`, `ReadOnlyFilesystem`, `Unsupported`): uno que no puede leer no lo creó él, ni nada por encima. Cualquier otro error, como un `EIO`, hace fallar la apertura: tras un `fsync` fallido no se reintenta suponiendo que los datos llegaron al disco (ADR-0002, I-10); antes una reapertura se lo tragaba y confirmaba commits sobre un directorio no duradero (revisión de WP03b). La primera corrección sincronizaba todos los ancestros hasta `/`: con un ancestro de solo travesía, la base no se podía crear nunca, y en una ruta relativa saltaba `.` (revisión de WP03b). DIR-3 ([v1.md](../../docs/file-format/v1.md) §2) pide hoy solo `sync_dir(padre)`; WP07 debe conservar esta regla para rutas anidadas y relativas. Después toma el bloqueo y lista el directorio. Si el MANIFEST existe, lo lee y lo verifica; la corrupción se informa, nunca se trata como «empezar vacío». Si no existe pero hay archivos WAL o SST, es `Corruption`. Si el directorio está vacío, es una base nueva.
 2. Abre cada SST referenciada. Comprueba que existe y después su tamaño, pie, índice (disposición y orden), checksum del filtro, número de entradas y rango de claves contra el MANIFEST.
 3. Reproduce los WAL `>= log_number` en orden de número. Los registros deben llevar seqs consecutivas a partir de `last_seq + 1`:
    - Un registro que verifica pero tiene una seq incorrecta o un lote mal formado es `Corruption`.
@@ -130,7 +149,7 @@ Consecuencias:
 - A una cola rota nunca le siguen anexados, porque el log viejo no se vuelve a escribir.
 - El estado que informa `open` es duradero antes de que `open` vuelva.
 - Una caída en cualquier paso deja o bien el MANIFEST viejo con todos sus WAL, o bien el MANIFEST nuevo. Ambos se recuperan al mismo estado.
-- Si los niveles superan su objetivo, la compactación se programa justo después de abrir.
+- Si los niveles superan su objetivo, la compactación se programa justo después de abrir (en modo `Inline`, se ejecuta en el siguiente cambio de memtable o en el cierre).
 
 ## Cierre limpio
 

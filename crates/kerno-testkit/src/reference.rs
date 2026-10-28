@@ -19,7 +19,7 @@
 
 use std::collections::BTreeMap;
 use std::ops::Bound;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use kerno_core::contract::{Engine, Options, RangeDeleteEngine, Snapshot};
@@ -180,6 +180,68 @@ impl LogEngine {
     }
 }
 
+/// The directory that holds `path`'s entry: `.` for a relative path with a
+/// single component (`Path::parent` gives an empty path there); `None` for a
+/// root and for `.` or `..` alone.
+fn parent_dir(path: &Path) -> Option<&Path> {
+    match path.parent()? {
+        p if !p.as_os_str().is_empty() => Some(p),
+        _ => matches!(path.components().next(), Some(Component::Normal(_))).then_some(Path::new(".")),
+    }
+}
+
+/// `dir` and its missing ancestors, deepest first: what `create_dir_all(dir)`
+/// is about to create.
+fn missing_dirs(vfs: &dyn Vfs, dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut missing = Vec::new();
+    let mut next = Some(dir);
+    while let Some(d) = next {
+        if vfs.exists(d)? {
+            break;
+        }
+        missing.push(d.to_path_buf());
+        next = parent_dir(d);
+    }
+    Ok(missing)
+}
+
+/// For a new database: on file systems without a single metadata journal an
+/// entry is durable only once the directory holding it is synced. Syncs the
+/// directory holding `dir` and the one holding each directory in `created`
+/// (entries this open made: an error fails the open). An earlier open may
+/// have created some of these directories, even only part of the chain, and
+/// failed before syncing them, so the ancestors above the highest one synced
+/// strictly are synced best effort: the walk stops quietly only on an error
+/// showing a directory this process cannot sync (no read permission, a
+/// read-only file system, no directory fsync); any other error fails.
+fn sync_new_dir_entries(vfs: &dyn Vfs, dir: &Path, created: &[PathBuf]) -> std::io::Result<()> {
+    use std::io::ErrorKind;
+    let mut synced: Vec<&Path> = Vec::new();
+    for parent in std::iter::once(dir).chain(created.iter().map(PathBuf::as_path)).filter_map(parent_dir) {
+        if !synced.contains(&parent) {
+            vfs.sync_dir(parent)?;
+            synced.push(parent);
+        }
+    }
+    let highest = created.last().map_or(dir, PathBuf::as_path);
+    let mut ancestor = parent_dir(highest).and_then(parent_dir);
+    while let Some(a) = ancestor {
+        match vfs.sync_dir(a) {
+            Ok(()) => ancestor = parent_dir(a),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    ErrorKind::PermissionDenied | ErrorKind::ReadOnlyFilesystem | ErrorKind::Unsupported
+                ) =>
+            {
+                break;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
 impl Engine for LogEngine {
     type Snapshot = LogSnapshot;
 
@@ -188,6 +250,7 @@ impl Engine for LogEngine {
     }
 
     fn open(vfs: Arc<dyn Vfs>, dir: &Path, opts: &Options) -> Result<Self> {
+        let created = missing_dirs(&*vfs, dir)?;
         vfs.create_dir_all(dir)?;
         let lock = vfs.lock(&dir.join("LOCK")).map_err(|e| match e.kind() {
             std::io::ErrorKind::WouldBlock => Error::Locked,
@@ -254,16 +317,11 @@ impl Engine for LogEngine {
             file.sync_data()?;
         }
         if len == 0 {
-            // A new database: every directory `create_dir_all` may have
-            // created must survive a power loss, and on file systems without
-            // a global metadata journal each one's entry is durable only
-            // once its own parent is synced. Which ones were created is not
-            // known on a retried open (an earlier attempt may have created
-            // them and failed), so sync every ancestor. (Repeated until the
-            // first commit, so a failure here is retried by the next open.)
-            for ancestor in dir.ancestors().skip(1).filter(|p| !p.as_os_str().is_empty()) {
-                vfs.sync_dir(ancestor)?;
-            }
+            // A new database: its directory, and every directory
+            // `create_dir_all` created for it, must survive a power loss.
+            // (Repeated until the first commit, so a failure here is retried
+            // by the next open.)
+            sync_new_dir_entries(&*vfs, dir, &created)?;
         }
         let map = Arc::new(map);
         let live_bytes = map_bytes(&map);
@@ -416,11 +474,13 @@ mod tests {
         (snap.seq(), snap.scan(Bound::Unbounded, Bound::Unbounded, usize::MAX).unwrap().len())
     }
 
-    /// Fix: a new database syncs every ancestor of its directory (each new
-    /// directory's entry lives in its parent), not only the immediate parent.
+    /// Fix: a new database syncs the directory holding each directory it
+    /// created (each new directory's entry lives there), not only the
+    /// immediate parent; for a relative path that includes the current
+    /// directory, `.` (WP03b review: it was skipped as an empty path).
     #[test]
     fn new_database_directory_survives_power_loss_with_per_dir_durability() {
-        for dir in ["/db", "/data/db", "/srv/data/db"] {
+        for dir in ["/db", "/data/db", "/srv/data/db", "db", "data/db", "./data/db"] {
             for seed in 0..32 {
                 let disk = SimVfs::new(seed);
                 disk.set_dir_durability(DirDurability::PerDir);
@@ -435,6 +495,41 @@ mod tests {
                     "{dir}, seed {seed}: an acknowledged commit vanished with its directory"
                 );
             }
+        }
+    }
+
+    /// WP03b review: an earlier open died inside `create_dir_all` after
+    /// creating `/data` and `/data/apps` but not `db`; the retried open must
+    /// still sync their entries. And an I/O error syncing an ancestor fails
+    /// every open, the retried one included, instead of being swallowed.
+    #[test]
+    fn partial_create_dir_all_and_ancestor_io_errors() {
+        let dir = Path::new("/data/apps/db");
+        for seed in 0..32 {
+            let disk = SimVfs::new(seed);
+            disk.set_dir_durability(DirDurability::PerDir);
+            disk.create_dir_all(Path::new("/data/apps")).unwrap();
+            let db = LogEngine::open(disk.as_vfs(), dir, &opts(Durability::Sync)).unwrap();
+            assert_eq!(put(&db, 1).unwrap(), 1);
+            let image = disk.crash_now(CrashKind::PowerLoss);
+            drop(db);
+            let db = LogEngine::open(image.as_vfs(), dir, &opts(Durability::Sync)).unwrap();
+            assert_eq!(seq_and_keys(&db), (1, 1), "seed {seed}: the database vanished");
+        }
+        let disk = SimVfs::new(6);
+        disk.set_dir_durability(DirDurability::PerDir);
+        let vfs = crate::vfs::HookVfs::wrap(disk.as_vfs(), |op| {
+            if op.kind == crate::vfs::HookOpKind::SyncDir
+                && op.point == crate::vfs::HookPoint::Before
+                && op.path == Path::new("/data")
+            {
+                crate::vfs::HookAction::Fail(std::io::ErrorKind::Other)
+            } else {
+                crate::vfs::HookAction::Proceed
+            }
+        });
+        for attempt in 0..3 {
+            assert!(LogEngine::open(vfs.clone(), dir, &opts(Durability::Sync)).is_err(), "attempt {attempt}");
         }
     }
 

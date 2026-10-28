@@ -47,4 +47,6 @@ pub mod format;
 pub mod testing;
 
 pub use config::{AccessMode, Config};
+#[doc(hidden)]
+pub use config::{Background, TestConfig};
 pub use db::{KernoDb, KernoSnapshot};

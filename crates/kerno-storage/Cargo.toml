@@ -17,3 +17,4 @@ crossbeam-skiplist.workspace = true
 
 [dev-dependencies]
 kerno-testkit.workspace = true
+proptest.workspace = true
