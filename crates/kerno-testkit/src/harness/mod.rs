@@ -12,7 +12,8 @@
 //! [`sync_test_suite!`](crate::sync_test_suite), and every engine that takes
 //! commits from several threads runs
 //! [`group_commit_test_suite!`](crate::group_commit_test_suite) (multiple
-//! writers, scenario C).
+//! writers, scenario C). Engines with write transactions also run
+//! [`txn_test_suite!`](crate::txn_test_suite).
 
 pub mod concurrency;
 pub mod corruption;
@@ -21,6 +22,7 @@ pub mod ext;
 pub mod faults;
 pub mod functional;
 pub mod sync;
+pub mod txn;
 
 pub mod range;
 

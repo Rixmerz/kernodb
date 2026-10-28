@@ -63,7 +63,12 @@ fn range(start: impl Into<Vec<u8>>, end: impl Into<Vec<u8>>) -> WriteBatch {
 
 /// The expected result of `scan(start, end, limit)`: empty for an inverted
 /// or empty pair of bounds.
-fn model_scan(model: &Model, start: Bound<&[u8]>, end: Bound<&[u8]>, limit: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
+pub(super) fn model_scan(
+    model: &Model,
+    start: Bound<&[u8]>,
+    end: Bound<&[u8]>,
+    limit: usize,
+) -> Vec<(Vec<u8>, Vec<u8>)> {
     if let (Bound::Included(a) | Bound::Excluded(a), Bound::Included(b) | Bound::Excluded(b)) = (start, end)
         && (a > b || (a == b && !matches!((start, end), (Bound::Included(_), Bound::Included(_)))))
     {

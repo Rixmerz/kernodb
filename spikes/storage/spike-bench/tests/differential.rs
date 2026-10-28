@@ -10,6 +10,11 @@
 //! reject them (the spikes and the production engines) run through
 //! `kerno_testkit::emulated::Emulated`, which turns each range into point
 //! deletions under a commit mutex. `kerno` joins when it implements them.
+//!
+//! `differential_rmw` does it with read-modify-write transactions (what a
+//! transaction writes depends on what it read) against a model oracle; the
+//! engines run through `Emulated<E>` until they have transactions of their
+//! own.
 
 use std::collections::BTreeMap;
 use std::ops::Bound;
@@ -17,6 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use kerno_testkit::emulated::Emulated;
+use spike_core::engine::{Txn, TxnEngine};
 use spike_core::harness::{Model, Workload, WorkloadCfg, apply, read_all};
 use spike_core::rng::Rng;
 use spike_core::vfs::{SimVfs, StdVfs};
@@ -413,4 +419,367 @@ fn engines_without_range_deletes_reject_them() {
     rejects_on_real_fs::<spike_bench::adapters::RedbEngine>();
     rejects_on_real_fs::<spike_bench::adapters::FjallEngine>();
     rejects_on_real_fs::<spike_bench::adapters::SqliteEngine>();
+}
+
+// ---------------------------------------------------------------------------
+// Read-modify-write transactions
+// ---------------------------------------------------------------------------
+
+/// A transaction of `differential_rmw`: what it writes depends on what it
+/// reads, so an engine that shows a transaction a wrong state (its own
+/// writes, a range it deleted, a stale value) writes different data.
+#[derive(Clone, Debug)]
+enum Program {
+    /// `ctr/k += 1`.
+    Increment { k: u64 },
+    /// `acct/a += amount`.
+    Deposit { acct: u64, amount: u64 },
+    /// Moves `amount` between two accounts if the first has it, else aborts.
+    Transfer { from: u64, to: u64, amount: u64 },
+    /// Sums `ctr/lo..ctr/hi`, stores the sum under `sum/n`, deletes the range
+    /// and writes the sum back to `ctr/lo`, observing the range after each
+    /// step.
+    Rollup { lo: u64, hi: u64, n: usize },
+    /// Random puts, deletes and range deletions over `blob/…` with scans in
+    /// between.
+    Churn { seed: u64 },
+    /// Writes, observes them, and aborts.
+    Abandon { seed: u64 },
+    /// Only reads: an empty transaction, which commits without a sequence.
+    Observe { lo: u64, hi: u64 },
+}
+
+const RMW_PROGRAMS: usize = 300;
+const RMW_SEEDS: [u64; 2] = [2028, 7];
+
+fn rmw_history(seed: u64) -> Vec<Program> {
+    let mut rng = Rng::new(seed);
+    (0..RMW_PROGRAMS)
+        .map(|n| match rng.below(20) {
+            0..=5 => Program::Increment { k: rng.below(12) },
+            6..=8 => Program::Deposit { acct: rng.below(6), amount: rng.range(50, 500) },
+            9..=12 => {
+                let from = rng.below(6);
+                Program::Transfer { from, to: (from + 1 + rng.below(5)) % 6, amount: rng.range(1, 300) }
+            }
+            13 | 14 => {
+                let lo = rng.below(10);
+                Program::Rollup { lo, hi: lo + rng.range(2, 4), n }
+            }
+            15 | 16 => Program::Churn { seed: rng.next_u64() },
+            17 => Program::Abandon { seed: rng.next_u64() },
+            _ => {
+                let lo = rng.below(10);
+                Program::Observe { lo, hi: lo + rng.range(1, 4) }
+            }
+        })
+        .collect()
+}
+
+fn ctr(k: u64) -> Vec<u8> {
+    format!("ctr/{k:03}").into_bytes()
+}
+
+fn acct(a: u64) -> Vec<u8> {
+    format!("acct/{a:03}").into_bytes()
+}
+
+fn blob(i: u64) -> Vec<u8> {
+    format!("blob/{i:03}").into_bytes()
+}
+
+fn num(v: Option<Vec<u8>>) -> u64 {
+    v.map_or(0, |v| u64::from_le_bytes(v.try_into().expect("8-byte number")))
+}
+
+/// What a program observed, in order: the value of each `get`, the rows of
+/// each `scan`.
+type Trace = Vec<Option<Vec<u8>>>;
+
+fn see_scan<T: Txn>(
+    t: &T,
+    start: Bound<&[u8]>,
+    end: Bound<&[u8]>,
+    limit: usize,
+    trace: &mut Trace,
+) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let rows = t.scan(start, end, limit).unwrap();
+    trace.push(Some(format!("{rows:?}").into_bytes()));
+    rows
+}
+
+fn see_get<T: Txn>(t: &T, key: &[u8], trace: &mut Trace) -> Option<Vec<u8>> {
+    let v = t.get(key).unwrap();
+    trace.push(v.clone());
+    v
+}
+
+/// Random writes over `blob/…`, with observations after every fourth.
+fn blob_writes<T: Txn>(t: &mut T, seed: u64, ops: u64, trace: &mut Trace) {
+    let mut rng = Rng::new(seed);
+    for i in 0..ops {
+        match rng.below(8) {
+            0..=3 => {
+                let len = if rng.chance(1, 8) { rng.range(2000, 4000) } else { rng.range(0, 60) };
+                t.put(&blob(rng.below(40)), &rng.bytes(len as usize)).unwrap();
+            }
+            4 | 5 => t.delete(&blob(rng.below(40))).unwrap(),
+            _ => {
+                let (a, b) = (rng.below(40), rng.below(40));
+                t.delete_range(&blob(a.min(b)), &blob(a.max(b))).unwrap();
+            }
+        }
+        if i % 4 == 3 {
+            let from = blob(rng.below(40));
+            see_scan(t, Bound::Included(&from), Bound::Excluded(b"blob0"), 7, trace);
+            see_get(t, &blob(rng.below(40)), trace);
+        }
+    }
+}
+
+/// Runs `p` on `t`; `true` to commit, `false` to abort.
+fn run_program<T: Txn>(t: &mut T, p: &Program, trace: &mut Trace) -> bool {
+    match *p {
+        Program::Increment { k } => {
+            let v = num(see_get(t, &ctr(k), trace));
+            t.put(&ctr(k), &(v + 1).to_le_bytes()).unwrap();
+        }
+        Program::Deposit { acct: a, amount } => {
+            let v = num(see_get(t, &acct(a), trace));
+            t.put(&acct(a), &(v + amount).to_le_bytes()).unwrap();
+        }
+        Program::Transfer { from, to, amount } => {
+            let (a, b) = (num(see_get(t, &acct(from), trace)), num(see_get(t, &acct(to), trace)));
+            if a < amount {
+                return false;
+            }
+            t.put(&acct(from), &(a - amount).to_le_bytes()).unwrap();
+            t.put(&acct(to), &(b + amount).to_le_bytes()).unwrap();
+        }
+        Program::Rollup { lo, hi, n } => {
+            let (start, end) = (ctr(lo), ctr(hi));
+            let rows = see_scan(t, Bound::Included(&start), Bound::Excluded(&end), 100, trace);
+            let sum: u64 = rows.into_iter().map(|(_, v)| num(Some(v))).sum();
+            t.put(format!("sum/{n:04}").as_bytes(), &sum.to_le_bytes()).unwrap();
+            t.delete_range(&start, &end).unwrap();
+            see_scan(t, Bound::Included(&start), Bound::Excluded(&end), 100, trace);
+            t.put(&start, &sum.to_le_bytes()).unwrap();
+            see_scan(t, Bound::Included(&start), Bound::Excluded(&end), 100, trace);
+            see_get(t, &ctr(lo + 1), trace);
+        }
+        Program::Churn { seed } => blob_writes(t, seed, 12, trace),
+        Program::Abandon { seed } => {
+            blob_writes(t, seed, 6, trace);
+            return false;
+        }
+        Program::Observe { lo, hi } => {
+            see_scan(t, Bound::Included(&ctr(lo)), Bound::Excluded(&ctr(hi)), 100, trace);
+            see_get(t, &acct(lo), trace);
+        }
+    }
+    true
+}
+
+/// The oracle: a transaction on a plain map, written independently of
+/// `Emulated<E>` and of every engine.
+struct Oracle {
+    map: Model,
+    seq: u64,
+}
+
+struct OracleTxn<'a> {
+    oracle: &'a mut Oracle,
+    work: Model,
+    writes: usize,
+}
+
+impl Oracle {
+    fn begin(&mut self) -> OracleTxn<'_> {
+        OracleTxn { work: self.map.clone(), oracle: self, writes: 0 }
+    }
+}
+
+impl Txn for OracleTxn<'_> {
+    fn get(&self, key: &[u8]) -> spike_core::Result<Option<Vec<u8>>> {
+        Ok(self.work.get(key).cloned())
+    }
+
+    fn scan(
+        &self,
+        start: Bound<&[u8]>,
+        end: Bound<&[u8]>,
+        limit: usize,
+    ) -> spike_core::Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        Ok(self.work.range::<[u8], _>((start, end)).take(limit).map(|(k, v)| (k.clone(), v.clone())).collect())
+    }
+
+    fn put(&mut self, key: &[u8], value: &[u8]) -> spike_core::Result<()> {
+        self.work.insert(key.to_vec(), value.to_vec());
+        self.writes += 1;
+        Ok(())
+    }
+
+    fn delete(&mut self, key: &[u8]) -> spike_core::Result<()> {
+        self.work.remove(key);
+        self.writes += 1;
+        Ok(())
+    }
+
+    fn delete_range(&mut self, start: &[u8], end: &[u8]) -> spike_core::Result<()> {
+        let doomed: Vec<Vec<u8>> = self
+            .work
+            .range::<[u8], _>((Bound::Included(start), Bound::Excluded(end)))
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in doomed {
+            self.work.remove(&k);
+        }
+        self.writes += 1;
+        Ok(())
+    }
+
+    fn commit(self) -> spike_core::Result<u64> {
+        if self.writes > 0 {
+            self.oracle.map = self.work;
+            self.oracle.seq += 1;
+        }
+        Ok(self.oracle.seq)
+    }
+}
+
+/// What a run of `Program`s produced.
+struct RmwRun {
+    /// What each program observed.
+    traces: Vec<Trace>,
+    /// The sequence each program's commit returned (`None` for an aborted
+    /// program, and everywhere for engines that do not persist sequences).
+    seqs: Vec<Option<u64>>,
+    /// Contents at every checkpoint.
+    checkpoints: Vec<Observation>,
+}
+
+fn oracle_run(programs: &[Program]) -> RmwRun {
+    let ranges = scan_ranges(1);
+    let mut oracle = Oracle { map: Model::new(), seq: 0 };
+    let mut run = RmwRun { traces: Vec::new(), seqs: Vec::new(), checkpoints: Vec::new() };
+    for (i, p) in programs.iter().enumerate() {
+        let mut t = oracle.begin();
+        let mut trace = Trace::new();
+        let commit = run_program(&mut t, p, &mut trace);
+        run.seqs.push(commit.then(|| t.commit().unwrap()));
+        run.traces.push(trace);
+        if (i + 1) % CHECKPOINT_EVERY == 0 {
+            let scans = ranges
+                .iter()
+                .map(|(a, z, limit)| {
+                    oracle
+                        .map
+                        .range::<Vec<u8>, _>((Bound::Included(a), Bound::Excluded(z)))
+                        .take(*limit)
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect()
+                })
+                .collect();
+            run.checkpoints.push(Observation { seq: Some(oracle.seq), contents: oracle.map.clone(), scans });
+        }
+    }
+    run
+}
+
+/// Runs the programs as transactions of `E`, with a clean reopen at every
+/// checkpoint like [`run`].
+fn run_rmw<E: TxnEngine>(vfs: Arc<dyn Vfs>, dir: &Path, programs: &[Program], persistent_seq: bool) -> RmwRun {
+    let opts = Options::small_for_tests();
+    let ranges = scan_ranges(1);
+    let mut run = RmwRun { traces: Vec::new(), seqs: Vec::new(), checkpoints: Vec::new() };
+    let mut db = E::open(vfs.clone(), dir, &opts).unwrap();
+    for (i, p) in programs.iter().enumerate() {
+        let mut t = db.begin_write().unwrap();
+        let mut trace = Trace::new();
+        let seq = if run_program(&mut t, p, &mut trace) {
+            Some(t.commit().unwrap())
+        } else {
+            t.abort();
+            None
+        };
+        run.seqs.push(seq.filter(|_| persistent_seq));
+        run.traces.push(trace);
+        if (i + 1) % CHECKPOINT_EVERY == 0 {
+            run.checkpoints.push(observe(&db.snapshot().unwrap(), &ranges, persistent_seq));
+            db.close().unwrap();
+            db = E::open(vfs.clone(), dir, &opts).unwrap();
+            let after = observe(&db.snapshot().unwrap(), &ranges, persistent_seq);
+            assert_eq!(after, *run.checkpoints.last().unwrap(), "{}: state changed across a clean reopen", E::name());
+        }
+    }
+    db.close().unwrap();
+    run
+}
+
+fn sim_rmw<E: TxnEngine>(programs: &[Program]) -> RmwRun {
+    run_rmw::<E>(SimVfs::new(1).as_vfs(), Path::new("/db"), programs, true)
+}
+
+fn real_rmw<E: TxnEngine>(programs: &[Program]) -> RmwRun {
+    let dir = temp_dir::<E>();
+    let out = run_rmw::<E>(StdVfs::shared(), &dir, programs, false);
+    std::fs::remove_dir_all(&dir).unwrap();
+    out
+}
+
+/// Read-modify-write histories through every engine: the transactions of
+/// `Emulated<E>` (engines without transactions of their own) must observe and
+/// write exactly what the model oracle does — the values each program reads,
+/// the sequence of each commit, the contents at every checkpoint — across
+/// aborts, empty transactions, range deletions that hide committed and
+/// written keys, and clean reopens. `kerno` joins when it has transactions.
+#[test]
+fn differential_rmw() {
+    for seed in RMW_SEEDS {
+        let programs = rmw_history(seed);
+        let want = oracle_run(&programs);
+        let aborted = want.seqs.iter().filter(|s| s.is_none()).count();
+        let empty = want.seqs.windows(2).filter(|w| w[0].is_some() && w[0] == w[1]).count();
+        assert!(
+            aborted >= 10 && empty >= 5,
+            "seed {seed}: the history must abort ({aborted}) and commit empty ({empty})"
+        );
+        assert!(want.seqs.iter().flatten().max() >= Some(&100), "seed {seed}: the history must commit transactions");
+
+        let mut results: BTreeMap<&str, RmwRun> = BTreeMap::new();
+        results.insert("log", sim_rmw::<Emulated<spike_core::reference::LogEngine>>(&programs));
+        #[cfg(feature = "candidates")]
+        {
+            results.insert("btree", sim_rmw::<Emulated<spike_btree::BTreeEngine>>(&programs));
+            results.insert("lsm", sim_rmw::<Emulated<spike_lsm::LsmEngine>>(&programs));
+        }
+        results.insert("redb", real_rmw::<Emulated<spike_bench::adapters::RedbEngine>>(&programs));
+        results.insert("fjall", real_rmw::<Emulated<spike_bench::adapters::FjallEngine>>(&programs));
+        results.insert("sqlite", real_rmw::<Emulated<spike_bench::adapters::SqliteEngine>>(&programs));
+
+        for (engine, got) in &results {
+            for (i, (g, w)) in got.traces.iter().zip(&want.traces).enumerate() {
+                assert!(
+                    g == w,
+                    "seed {seed}, {engine}: program {i} ({:?}) observed something else than the oracle",
+                    programs[i]
+                );
+            }
+            for (i, (g, w)) in got.seqs.iter().zip(&want.seqs).enumerate() {
+                assert!(
+                    g.is_none() || g == w,
+                    "seed {seed}, {engine}: program {i} ({:?}) committed at {g:?}, the oracle at {w:?}",
+                    programs[i]
+                );
+            }
+            assert_eq!(got.checkpoints.len(), want.checkpoints.len(), "{engine}: wrong number of checkpoints");
+            for (n, (g, w)) in got.checkpoints.iter().zip(&want.checkpoints).enumerate() {
+                if let Some(seq) = g.seq {
+                    assert_eq!(Some(seq), w.seq, "seed {seed}, {engine}: sequence differs at checkpoint {n}");
+                }
+                assert!(g.contents == w.contents, "seed {seed}, {engine}: contents differ at checkpoint {n}");
+                assert!(g.scans == w.scans, "seed {seed}, {engine}: bounded scans differ at checkpoint {n}");
+            }
+        }
+    }
 }

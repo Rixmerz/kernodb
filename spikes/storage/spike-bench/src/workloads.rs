@@ -8,6 +8,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use kerno_testkit::emulated::Emulated;
+use spike_core::engine::{Txn, TxnEngine};
 use spike_core::rng::Rng;
 use spike_core::vfs::{CountingVfs, IoCounters, IoSnapshot, StdVfs};
 use spike_core::{Durability, Engine, Options, Result, Snapshot, WriteBatch};
@@ -28,6 +30,7 @@ pub const WORKLOADS: &[&str] = &[
     "cauce",
     "agent_memory",
     "concurrent_commits",
+    "rmw_counters",
 ];
 
 pub struct Ctx {
@@ -135,6 +138,8 @@ pub fn run<E: Engine>(workload: &str, ctx: &Ctx, rep: &mut Report) -> Result<()>
         "cauce" => cauce::<E>(ctx, rep),
         "agent_memory" => agent_memory::<E>(ctx, rep),
         "concurrent_commits" => concurrent_commits::<E>(ctx, rep),
+        // Engines without transactions of their own run it emulated.
+        "rmw_counters" => rmw_counters::<Emulated<E>>(ctx, rep),
         other => panic!("unknown workload {other}"),
     }
 }
@@ -886,4 +891,83 @@ impl CommitTrace {
             rep.num(&format!("{prefix}_first_fifth"), count(&|r| r.step < steps / 5));
         }
     }
+}
+
+/// Threads of `rmw_counters`.
+const RMW_THREADS: u64 = 8;
+
+/// Read-modify-write transactions (T9, the cost of ADR-0002 transactions):
+/// eight threads each read a random counter in a transaction, add one and
+/// write it back. A write transaction owns the engine's only write slot for
+/// its whole life, so the throughput is that of one writer and the latency
+/// includes the wait for the slot; the fsyncs per transaction show what the
+/// engine does for each. Checks that no increment was lost. Engines without
+/// transactions of their own run it through `Emulated<E>`; the product engine
+/// runs it natively (`rmw_counters::<KernoDb>`).
+pub fn rmw_counters<E: TxnEngine>(ctx: &Ctx, rep: &mut Report) -> Result<()> {
+    let counters = (ctx.n / 20).clamp(100, 10_000);
+    let txns = if ctx.opts.durability == Durability::Sync { 4_000 } else { 20_000 };
+    let per_thread = txns / RMW_THREADS;
+    let key = |i: u64| format!("ctr/{i:06}").into_bytes();
+    let read = |v: Option<Vec<u8>>| u64::from_le_bytes(v.expect("counter exists").try_into().expect("8 bytes"));
+    let db = Db::<E>::open(ctx)?;
+    let mut b = WriteBatch::new();
+    for i in 0..counters {
+        b.put(key(i), 0u64.to_le_bytes());
+        if b.len() == 1000 || i + 1 == counters {
+            db.get().commit(&b)?;
+            b = WriteBatch::new();
+        }
+    }
+    let io0 = db.io.snapshot();
+    let engine = db.get();
+    let t = Instant::now();
+    let lats: Vec<Lat> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..RMW_THREADS)
+            .map(|th| {
+                scope.spawn(move || {
+                    let mut rng = Rng::new(ctx.seed + 2000 + th);
+                    let mut lat = Lat::new();
+                    for _ in 0..per_thread {
+                        let k = key(rng.below(counters));
+                        lat.time(|| -> Result<u64> {
+                            let mut txn = engine.begin_write()?;
+                            let v = read(txn.get(&k)?);
+                            txn.put(&k, &(v + 1).to_le_bytes())?;
+                            txn.commit()
+                        })
+                        .unwrap();
+                    }
+                    lat
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let secs = t.elapsed().as_secs_f64();
+    let done = per_thread * RMW_THREADS;
+    let mut all = Lat::new();
+    for l in &lats {
+        all.merge(l);
+    }
+    let io = db.io.snapshot().since(&io0);
+    // No lost update: the counters add up to the increments made.
+    let snap = db.get().snapshot()?;
+    let (mut sum, mut last) = (0, None::<Vec<u8>>);
+    loop {
+        let start = last.as_deref().map_or(Bound::Unbounded, Bound::Excluded);
+        let page = snap.scan(start, Bound::Unbounded, 1000)?;
+        sum += page.iter().map(|(_, v)| read(Some(v.clone()))).sum::<u64>();
+        last = page.last().map(|(k, _)| k.clone());
+        if page.len() < 1000 {
+            break;
+        }
+    }
+    assert_eq!(sum, done, "lost updates: the counters add up to {sum}, {done} increments were committed");
+    rep.num("rmw_threads", RMW_THREADS as f64);
+    rep.num("rmw_keys", counters as f64);
+    rep.num("rmw_txns_per_s", done as f64 / secs);
+    all.report(rep, "rmw_txn");
+    io_report(rep, "rmw", &io, done);
+    Ok(())
 }

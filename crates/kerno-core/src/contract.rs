@@ -34,6 +34,8 @@
 //! * **Single writer** — `commit` may be called from several threads; the
 //!   engine serializes them. Snapshots can be used concurrently from any
 //!   number of threads.
+//! * **Transactions** — an engine may offer read-modify-write transactions
+//!   ([`TxnEngine`]) on top of the single writer.
 //! * **Exclusive open** — opening a directory that is already open (in this
 //!   or another process) fails with [`Error::Locked`].
 //! * **Integrity** — damaged data is reported as [`Error::Corruption`] (or an
@@ -164,6 +166,82 @@ pub trait SyncEngine: Engine {
     /// Makes every commit acknowledged so far durable and returns the
     /// durable sequence (see the [trait documentation](SyncEngine)).
     fn sync(&self) -> Result<u64>;
+}
+
+/// An engine with read-modify-write transactions (ADR-0002, Phase 1): an
+/// exclusive write transaction that reads its own writes and commits them as
+/// one batch.
+///
+/// A separate trait, so that engines without it (the frozen spikes) need no
+/// change; `kerno_testkit::emulated::Emulated` gives any [`Engine`] this
+/// interface. The shared suite `txn_test_suite!` of `kerno-testkit` checks
+/// these semantics.
+///
+/// # Semantics
+///
+/// * **Serializable by exclusion** — [`begin_write`](Self::begin_write)
+///   returns the engine's one write slot, and the transaction keeps it until
+///   it commits, aborts or is dropped. Meanwhile every other
+///   `begin_write` **and every blind [`Engine::commit`]** blocks (a long
+///   transaction stalls all writers by design), so nothing commits between
+///   the reads of a transaction and its own commit: a read-modify-write can
+///   never lose an update. Readers are not blocked: [`Engine::snapshot`]
+///   works at any time and never sees an open transaction's writes. Calling
+///   `begin_write` or `commit` on the thread that holds a transaction
+///   deadlocks.
+/// * **Reads** — a transaction reads the latest committed state as of
+///   `begin_write` (nobody else can commit afterwards) overlaid with its own
+///   writes, in order: a later write to a key wins over an earlier one, a
+///   `delete_range` hides the keys written before it, and a key written after
+///   it is visible again. `scan` follows the rules of [`Snapshot::scan`].
+/// * **Writes** — `put`, `delete` and `delete_range` follow the batch rules
+///   of [`WriteBatch`] and check their limits at once: an oversized key or
+///   value, or a range with `start > end`, returns
+///   [`Error::InvalidArgument`], has no effect and leaves the transaction
+///   usable.
+/// * **Commit** — [`Txn::commit`] applies the writes that succeeded, in
+///   order, as one atomic batch with the next commit sequence, and returns
+///   that sequence. A transaction without any successful write returns the
+///   current sequence and consumes none, exactly like an empty batch; one
+///   whose only writes are empty ranges is a non-empty batch and does
+///   consume one. Durability, atomicity, failed-`fsync` poisoning and crash
+///   behaviour are those of [`Engine::commit`].
+/// * **Abort** — [`Txn::abort`] and dropping the transaction (also while a
+///   panic unwinds) write nothing, consume no sequence and release the write
+///   slot.
+///
+/// [`Error::InvalidArgument`]: crate::Error::InvalidArgument
+pub trait TxnEngine: Engine {
+    type Txn<'a>: Txn
+    where
+        Self: 'a;
+
+    /// Waits for the write slot and starts a transaction on the latest
+    /// committed state (see the [trait documentation](TxnEngine)).
+    fn begin_write(&self) -> Result<Self::Txn<'_>>;
+}
+
+/// A write transaction (see [`TxnEngine`] for the semantics).
+pub trait Txn: Sized {
+    /// The value of `key` as the transaction sees it.
+    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>>;
+
+    /// Up to `limit` entries with keys in `(start, end)` as the transaction
+    /// sees them, in ascending key order; paginated like [`Snapshot::scan`].
+    fn scan(&self, start: Bound<&[u8]>, end: Bound<&[u8]>, limit: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>>;
+
+    fn put(&mut self, key: &[u8], value: &[u8]) -> Result<()>;
+
+    fn delete(&mut self, key: &[u8]) -> Result<()>;
+
+    /// Deletes `[start, end)`; `start == end` deletes nothing.
+    fn delete_range(&mut self, start: &[u8], end: &[u8]) -> Result<()>;
+
+    /// Commits the writes and returns their commit sequence.
+    fn commit(self) -> Result<u64>;
+
+    /// Discards the writes (same as dropping the transaction).
+    fn abort(self) {}
 }
 
 /// Test-only control over an engine's background work, so that suites can

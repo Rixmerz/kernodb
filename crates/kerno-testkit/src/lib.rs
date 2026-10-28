@@ -14,7 +14,8 @@
 //! * [`reference`](mod@reference) — `LogEngine`, the trivially correct engine
 //!   that validates the harness itself (range deletions included).
 //! * [`emulated`] — `Emulated<E>`, which gives any engine range deletions by
-//!   rewriting them into point deletions.
+//!   rewriting them into point deletions, and write transactions
+//!   ([`kerno_core::contract::TxnEngine`], suite [`txn_test_suite!`]).
 //! * [`rng`] — the deterministic PRNG every randomized test is seeded with.
 //! * [`process`] — re-executes the test binary as a child process.
 
@@ -38,5 +39,5 @@ pub mod vfs {
     pub use sim::*;
 }
 
-pub use kerno_core::contract::{Engine, Options, RangeDeleteEngine, Snapshot};
+pub use kerno_core::contract::{Engine, Options, RangeDeleteEngine, Snapshot, Txn, TxnEngine};
 pub use kerno_core::{Durability, Error, MAX_KEY_LEN, MAX_VALUE_LEN, Op, Result, WriteBatch};

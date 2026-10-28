@@ -10,6 +10,9 @@ repository.workspace = true
 
 [dependencies]
 spike-core.workspace = true
+# `Emulated<E>`: the `rmw_counters` workload runs engines without transactions
+# through it, and the differential test uses it for range deletions as well.
+kerno-testkit.workspace = true
 hdrhistogram = "7.5"
 redb = "4"
 fjall = "3"
@@ -19,10 +22,6 @@ serde_json = "1"
 spike-btree = { workspace = true, optional = true }
 spike-lsm = { workspace = true, optional = true }
 kerno-storage = { workspace = true, optional = true }
-
-[dev-dependencies]
-# `Emulated<E>` for the differential test with range deletions.
-kerno-testkit.workspace = true
 
 [features]
 default = []

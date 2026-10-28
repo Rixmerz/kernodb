@@ -1,4 +1,5 @@
-//! `Emulated<E>`: range deletions for any engine, emulated in the test kit.
+//! `Emulated<E>`: range deletions and write transactions for any engine,
+//! emulated in the test kit.
 //!
 //! Engines that do not implement [`Op::DeleteRange`] (the frozen spikes and
 //! the production engines of the benchmark) reject a batch that contains
@@ -22,16 +23,30 @@
 //! (fjall panics on it): it only deletes it when the batch's own operations
 //! or the stored state already contain it, which an engine that rejects it
 //! can never have.
+//!
+//! # Transactions
+//!
+//! `Emulated<E>` also implements [`TxnEngine`]: [`begin_write`] takes the
+//! commit mutex and keeps it for the whole life of the transaction (so
+//! transactions are exclusive and blind commits wait for them, as the
+//! contract requires), reads from a snapshot of the latest state overlaid
+//! with the transaction's own writes ([`EmulatedTxn`]), and commits the
+//! writes as one batch through the same path as [`Engine::commit`], range
+//! deletions rewritten included. Nothing reaches the wrapped engine before
+//! the commit, so an abort, a drop or a panic leaves no trace in it.
+//!
+//! [`begin_write`]: TxnEngine::begin_write
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ops::Bound;
 use std::path::Path;
 use std::sync::Arc;
 
-use kerno_core::contract::{Engine, Options, RangeDeleteEngine, Snapshot};
+use kerno_core::contract::{Engine, Options, RangeDeleteEngine, Snapshot, Txn, TxnEngine};
 use kerno_core::vfs::Vfs;
 use kerno_core::{MAX_KEY_LEN, Op, Result, WriteBatch};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, MutexGuard};
 
 /// Page size of the snapshot scans that list the keys of a range.
 const SCAN_PAGE: usize = 1024;
@@ -47,6 +62,18 @@ impl<E: Engine> Emulated<E> {
     /// The wrapped engine.
     pub fn inner(&self) -> &E {
         &self.inner
+    }
+
+    /// Commits `batch` with the commit mutex held by the caller.
+    fn commit_locked(&self, batch: &WriteBatch) -> Result<u64> {
+        if !batch.has_range_deletes() {
+            return self.inner.commit(batch);
+        }
+        // Rejected batches must not touch the engine at all (not even a
+        // snapshot): same errors as a native engine, before anything else.
+        batch.validate()?;
+        let rewritten = self.rewrite(batch)?;
+        self.inner.commit(&rewritten)
     }
 
     /// `batch` with every range deletion replaced by point deletions of the
@@ -165,14 +192,7 @@ impl<E: Engine> Engine for Emulated<E> {
 
     fn commit(&self, batch: &WriteBatch) -> Result<u64> {
         let _commit = self.commit.lock();
-        if !batch.has_range_deletes() {
-            return self.inner.commit(batch);
-        }
-        // Rejected batches must not touch the engine at all (not even a
-        // snapshot): same errors as a native engine, before anything else.
-        batch.validate()?;
-        let rewritten = self.rewrite(batch)?;
-        self.inner.commit(&rewritten)
+        self.commit_locked(batch)
     }
 
     fn snapshot(&self) -> Result<E::Snapshot> {
@@ -189,6 +209,177 @@ impl<E: Engine> Engine for Emulated<E> {
 }
 
 impl<E: Engine> RangeDeleteEngine for Emulated<E> {}
+
+impl<E: Engine> TxnEngine for Emulated<E> {
+    type Txn<'a>
+        = EmulatedTxn<'a, E>
+    where
+        Self: 'a;
+
+    fn begin_write(&self) -> Result<EmulatedTxn<'_, E>> {
+        let gate = self.commit.lock();
+        let snap = self.inner.snapshot()?;
+        Ok(EmulatedTxn {
+            db: self,
+            snap,
+            overlay: BTreeMap::new(),
+            ranges: Vec::new(),
+            batch: WriteBatch::new(),
+            _gate: gate,
+        })
+    }
+}
+
+/// A write transaction of [`Emulated<E>`] (see the [module
+/// documentation](self)).
+pub struct EmulatedTxn<'a, E: Engine> {
+    db: &'a Emulated<E>,
+    /// The latest state when the transaction began: nobody can commit while
+    /// the commit mutex is held, so it stays the latest.
+    snap: E::Snapshot,
+    /// Final state of the keys the transaction wrote one by one (`None` is a
+    /// deletion). A range deletion removes the entries it covers.
+    overlay: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
+    /// The non-empty ranges deleted, `[start, end)`. Hide the snapshot's keys
+    /// they cover; the overlay, which holds only what was written after them,
+    /// wins over them.
+    ranges: Vec<(Vec<u8>, Vec<u8>)>,
+    /// The writes in order, committed as they are.
+    batch: WriteBatch,
+    /// Released when the transaction ends, after the commit.
+    _gate: MutexGuard<'a, ()>,
+}
+
+/// Whether some range of `ranges` (`[start, end)`) covers `key`.
+fn covered(ranges: &[(Vec<u8>, Vec<u8>)], key: &[u8]) -> bool {
+    ranges.iter().any(|(start, end)| start.as_slice() <= key && key < end.as_slice())
+}
+
+/// Whether no key can lie within the bounds: the pairs on which
+/// `Snapshot::scan` returns nothing and `BTreeMap::range` would panic.
+fn empty_bounds(start: Bound<&[u8]>, end: Bound<&[u8]>) -> bool {
+    match (start, end) {
+        (Bound::Included(a) | Bound::Excluded(a), Bound::Included(b) | Bound::Excluded(b)) => {
+            a > b || (a == b && !matches!((start, end), (Bound::Included(_), Bound::Included(_))))
+        }
+        _ => false,
+    }
+}
+
+/// The snapshot entries of a scan that the transaction's ranges do not hide,
+/// read page by page so that a scan whose first pages are all hidden still
+/// fills its limit.
+struct BasePages<'a, S: Snapshot> {
+    snap: &'a S,
+    ranges: &'a [(Vec<u8>, Vec<u8>)],
+    from: Bound<Vec<u8>>,
+    end: Bound<&'a [u8]>,
+    page: usize,
+    buffered: VecDeque<(Vec<u8>, Vec<u8>)>,
+    done: bool,
+}
+
+impl<S: Snapshot> BasePages<'_, S> {
+    fn peek(&mut self) -> Result<Option<&(Vec<u8>, Vec<u8>)>> {
+        while self.buffered.is_empty() && !self.done {
+            let page = self.snap.scan(as_ref(&self.from), self.end, self.page)?;
+            self.done = page.len() < self.page;
+            if let Some((last, _)) = page.last() {
+                self.from = Bound::Excluded(last.clone());
+            }
+            self.buffered.extend(page.into_iter().filter(|(k, _)| !covered(self.ranges, k)));
+        }
+        Ok(self.buffered.front())
+    }
+
+    fn pop(&mut self) -> Option<(Vec<u8>, Vec<u8>)> {
+        self.buffered.pop_front()
+    }
+}
+
+impl<E: Engine> Txn for EmulatedTxn<'_, E> {
+    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        if let Some(written) = self.overlay.get(key) {
+            return Ok(written.clone());
+        }
+        if covered(&self.ranges, key) {
+            return Ok(None);
+        }
+        self.snap.get(key)
+    }
+
+    fn scan(&self, start: Bound<&[u8]>, end: Bound<&[u8]>, limit: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        if limit == 0 || empty_bounds(start, end) {
+            return Ok(Vec::new());
+        }
+        let mut written = self.overlay.range::<[u8], _>((start, end)).peekable();
+        let mut base = BasePages {
+            snap: &self.snap,
+            ranges: &self.ranges,
+            from: match start {
+                Bound::Included(k) => Bound::Included(k.to_vec()),
+                Bound::Excluded(k) => Bound::Excluded(k.to_vec()),
+                Bound::Unbounded => Bound::Unbounded,
+            },
+            end,
+            page: limit.clamp(16, SCAN_PAGE),
+            buffered: VecDeque::new(),
+            done: false,
+        };
+        let mut out = Vec::with_capacity(limit.min(SCAN_PAGE));
+        while out.len() < limit {
+            // Which source holds the next key; on a tie the overlay wins.
+            let order = match (written.peek(), base.peek()?) {
+                (None, None) => break,
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (Some((w, _)), Some((b, _))) => w.as_slice().cmp(b.as_slice()),
+            };
+            if order == Ordering::Greater {
+                out.extend(base.pop());
+                continue;
+            }
+            if order == Ordering::Equal {
+                base.pop();
+            }
+            if let Some((key, Some(value))) = written.next() {
+                out.push((key.clone(), value.clone()));
+            }
+        }
+        Ok(out)
+    }
+
+    fn put(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
+        WriteBatch::new().put(key, value).validate()?;
+        self.batch.put(key, value);
+        self.overlay.insert(key.to_vec(), Some(value.to_vec()));
+        Ok(())
+    }
+
+    fn delete(&mut self, key: &[u8]) -> Result<()> {
+        WriteBatch::new().delete(key).validate()?;
+        self.batch.delete(key);
+        self.overlay.insert(key.to_vec(), None);
+        Ok(())
+    }
+
+    fn delete_range(&mut self, start: &[u8], end: &[u8]) -> Result<()> {
+        WriteBatch::new().delete_range(start, end).validate()?;
+        self.batch.delete_range(start, end);
+        if start < end {
+            self.overlay.retain(|k, _| !(start <= k.as_slice() && k.as_slice() < end));
+            self.ranges.push((start.to_vec(), end.to_vec()));
+        }
+        Ok(())
+    }
+
+    fn commit(self) -> Result<u64> {
+        if self.batch.is_empty() {
+            return Ok(self.snap.seq());
+        }
+        self.db.commit_locked(&self.batch)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -411,6 +602,85 @@ mod tests {
         commit(&db, &mut model, &b);
         assert_eq!(model.len(), 3 + (3 * SCAN_PAGE + 7 - 3000));
         assert_eq!(db.inner().log.lock().last().unwrap().len(), 3000 - 3, "one deletion per key in the range");
+    }
+
+    /// A transaction commits the same batch the writes made, with its ranges
+    /// rewritten at their position, in one commit of the wrapped engine.
+    #[test]
+    fn txn_commit_rewrites_ranges_like_a_batch() {
+        let db = open::<PointsOnly>();
+        let mut model = Model::new();
+        let mut b = WriteBatch::new();
+        for k in ["a", "b", "c", "d", "e"] {
+            b.put(k, "0");
+        }
+        commit(&db, &mut model, &b);
+        let mut t = db.begin_write().unwrap();
+        t.put(b"bb", b"1").unwrap();
+        t.delete_range(b"b", b"d").unwrap();
+        t.put(b"c", b"2").unwrap();
+        assert_eq!(t.scan(Bound::Unbounded, Bound::Unbounded, 10).unwrap().len(), 4, "a, c, d, e");
+        assert_eq!(db.inner().log.lock().len(), 1, "nothing reaches the engine before the commit");
+        assert_eq!(t.commit().unwrap(), 2);
+        let mut expected = WriteBatch::new();
+        expected.put("bb", "1").delete("b").delete("bb").delete("c").put("c", "2");
+        assert_eq!(db.inner().log.lock().last(), Some(&expected));
+        assert_eq!(db.inner().log.lock().len(), 2, "one commit for the transaction");
+    }
+
+    #[test]
+    fn txn_without_writes_does_not_touch_the_engine() {
+        let db = open::<PointsOnly>();
+        let mut model = Model::new();
+        let mut b = WriteBatch::new();
+        b.put("a", "1");
+        commit(&db, &mut model, &b);
+        let mut t = db.begin_write().unwrap();
+        assert!(matches!(t.put(&vec![b'k'; MAX_KEY_LEN + 1], b"v"), Err(Error::InvalidArgument(_))));
+        assert!(matches!(t.delete_range(b"z", b"a"), Err(Error::InvalidArgument(_))));
+        assert_eq!(t.commit().unwrap(), 1);
+        let mut t = db.begin_write().unwrap();
+        t.put(b"x", b"1").unwrap();
+        t.abort();
+        assert_eq!(db.inner().log.lock().len(), 1);
+        assert_eq!(db.snapshot().unwrap().seq(), 1);
+    }
+
+    #[test]
+    fn txn_rewrite_never_introduces_the_empty_key() {
+        let db = open::<NoEmptyKey>();
+        let mut t = db.begin_write().unwrap();
+        t.delete_range(b"", b"a").unwrap();
+        assert_eq!(t.commit().unwrap(), 1, "a range that covers nothing is still a write");
+        let mut want = WriteBatch::new();
+        want.delete("\0");
+        assert_eq!(db.inner().0.log.lock().last(), Some(&want));
+    }
+
+    /// A scan whose first pages of the snapshot are hidden by the
+    /// transaction's ranges still fills its limit, and the written keys merge
+    /// into the right place.
+    #[test]
+    fn txn_scan_reads_past_hidden_pages() {
+        let db = open::<PointsOnly>();
+        let mut model = Model::new();
+        let mut b = WriteBatch::new();
+        for i in 0..4 * SCAN_PAGE {
+            b.put(format!("k{i:06}"), "v");
+        }
+        commit(&db, &mut model, &b);
+        let mut t = db.begin_write().unwrap();
+        t.delete_range(b"k000002", b"k003900").unwrap();
+        t.put(b"k000500", b"mine").unwrap();
+        t.put(b"k003950x", b"mine").unwrap();
+        let rows = t.scan(Bound::Unbounded, Bound::Unbounded, 6).unwrap();
+        let keys: Vec<_> = rows.iter().map(|(k, _)| String::from_utf8(k.clone()).unwrap()).collect();
+        assert_eq!(keys, ["k000000", "k000001", "k000500", "k003900", "k003901", "k003902"]);
+        let rows = t.scan(Bound::Excluded(b"k003950"), Bound::Unbounded, 3).unwrap();
+        let keys: Vec<_> = rows.iter().map(|(k, _)| String::from_utf8(k.clone()).unwrap()).collect();
+        assert_eq!(keys, ["k003950x", "k003951", "k003952"]);
+        assert!(t.scan(Bound::Included(b"k001000"), Bound::Excluded(b"k000999"), 5).unwrap().is_empty(), "inverted");
+        assert!(t.scan(Bound::Excluded(b"k000500"), Bound::Excluded(b"k000500"), 5).unwrap().is_empty());
     }
 
     #[test]

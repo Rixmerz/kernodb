@@ -20,3 +20,7 @@ kerno_testkit::range_delete_test_suite!(kerno_testkit::reference::LogEngine);
 mod emulated {
     kerno_testkit::range_delete_test_suite!(kerno_testkit::emulated::Emulated<kerno_testkit::reference::LogEngine>);
 }
+
+// Write transactions: `Emulated<E>` is the only implementation until the
+// product engine has its own; `LogEngine` is the reference underneath.
+kerno_testkit::txn_test_suite!(kerno_testkit::emulated::Emulated<kerno_testkit::reference::LogEngine>);

@@ -277,6 +277,9 @@ fn headline(workload: &str) -> &'static [&'static str] {
         "concurrent_commits" => {
             &["cc_threads", "cc_commits_per_s", "cc_commit_p50_us", "cc_commit_p99_us", "cc_fsyncs_per_commit"]
         }
+        "rmw_counters" => {
+            &["rmw_txns_per_s", "rmw_txn_p50_us", "rmw_txn_p99_us", "rmw_txn_p999_us", "rmw_fsyncs_per_commit"]
+        }
         _ => &[],
     }
 }
