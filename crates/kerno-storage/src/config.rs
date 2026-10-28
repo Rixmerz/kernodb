@@ -4,6 +4,8 @@
 //! packages add the fields that are still missing. The default configuration
 //! keeps the M0 engine's tuning.
 
+use std::time::Duration;
+
 use kerno_core::contract::Options;
 use kerno_core::{Durability, Error, Result};
 
@@ -129,10 +131,96 @@ pub struct Config {
     #[doc(hidden)]
     pub test: TestConfig,
     /// Compaction policy and write throttling (default
-    /// [`CompactionConfig::default`]: the M0 thresholds, with the sizes
-    /// derived from `write_buffer_bytes`, so that a `Config` built by struct
-    /// update from `Config::default()` keeps the M0 geometry).
+    /// [`CompactionConfig::default`]: the condition-1 levers on, with the
+    /// sizes derived from `write_buffer_bytes`, so that a `Config` built by
+    /// struct update from `Config::default()` keeps the M0 geometry).
     pub compaction: CompactionConfig,
+    /// How much compaction `close` may do (default
+    /// [`CloseBudget::default`]).
+    pub close_budget: CloseBudget,
+}
+
+/// How much compaction work a clean close may do (phase1-design.md §5.4,
+/// C-10). Whatever it leaves is picked up by the scoring after the next
+/// open: the format records no compaction debt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloseBudget {
+    /// Compact until no level is over its target, however long it takes
+    /// (the M0 behaviour).
+    Unbounded,
+    /// First, always, compact until the L0 metric is below `l0_trigger`; then
+    /// one more compaction at a time while both limits hold. A compaction
+    /// that starts under the byte budget may exceed it by up to
+    /// [`CompactionConfig::max_compaction_bytes`]; one that would end past
+    /// `max_duration` at the rate of the close's compactions so far does not
+    /// start.
+    Bounded {
+        /// Bytes read and written by the compactions of one close, the
+        /// mandatory ones included.
+        max_bytes: u64,
+        /// Wall-clock time of the compactions of one close. `None` makes the
+        /// close deterministic (tests, crash sweeps, vectors).
+        max_duration: Option<Duration>,
+    },
+}
+
+impl Default for CloseBudget {
+    /// 256 MiB and 200 ms.
+    fn default() -> Self {
+        CloseBudget::Bounded { max_bytes: 256 << 20, max_duration: Some(Duration::from_millis(200)) }
+    }
+}
+
+impl CloseBudget {
+    /// The same budget without the time limit, so that the sequence of file
+    /// operations of a close depends only on the calls made.
+    pub fn deterministic(self) -> Self {
+        match self {
+            CloseBudget::Bounded { max_bytes, .. } => CloseBudget::Bounded { max_bytes, max_duration: None },
+            CloseBudget::Unbounded => CloseBudget::Unbounded,
+        }
+    }
+
+    /// Whether a compaction of `next_bytes` (read plus written) beyond the
+    /// mandatory ones may start after `compacted_bytes` bytes and `elapsed`
+    /// time, `compacting` of it in compactions. The time limit counts the
+    /// next compaction at the rate of the ones before it (as instant if there
+    /// were none), so that the close does not overrun it by a whole
+    /// compaction.
+    pub(crate) fn allows(
+        &self,
+        compacted_bytes: u64,
+        elapsed: Duration,
+        compacting: Duration,
+        next_bytes: u64,
+    ) -> bool {
+        match *self {
+            CloseBudget::Unbounded => true,
+            CloseBudget::Bounded { max_bytes, max_duration } => {
+                let next = if compacted_bytes == 0 {
+                    Duration::ZERO
+                } else {
+                    let secs = compacting.as_secs_f64() * next_bytes as f64 / compacted_bytes as f64;
+                    Duration::try_from_secs_f64(secs).unwrap_or(Duration::MAX)
+                };
+                compacted_bytes < max_bytes && max_duration.is_none_or(|d| elapsed.saturating_add(next) < d)
+            }
+        }
+    }
+}
+
+/// What the L0 limits (`l0_trigger`, `l0_slowdown`, `l0_stop`) count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum L0Metric {
+    /// The number of L0 files (M0).
+    Files,
+    /// The largest number of L0 files whose key ranges contain one same key
+    /// (`compaction::l0_depth`). Files of one flush that were split around
+    /// L1 files do not overlap, so they count once. As a backstop against an
+    /// L0 of many disjoint files (sequential keys), every
+    /// [`L0_FILES_PER_DEPTH`](crate::compaction::L0_FILES_PER_DEPTH) files
+    /// count as one level of depth at least.
+    Depth,
 }
 
 /// How a commit is delayed while L0 has `l0_slowdown` files or more.
@@ -146,6 +234,16 @@ pub enum SlowdownPolicy {
     Sleep {
         /// Longest wait of one commit.
         micros: u64,
+    },
+    /// Each commit waits for as long as its batch needs at the current
+    /// rate: `batch bytes / rate`, at most 100 ms. The rate starts at
+    /// `initial_bytes_per_sec`, halves (down to 1 MiB/s) at each commit that
+    /// finds the L0 metric grown while at or above `l0_slowdown`, and doubles
+    /// back up to the initial rate at each commit that finds it fallen or
+    /// below the limit.
+    Rate {
+        /// Rate of the first delayed commit (default 16 MiB/s).
+        initial_bytes_per_sec: u64,
     },
 }
 
@@ -177,11 +275,49 @@ pub struct CompactionConfig {
     /// SST writers call `sync_data` every this many bytes, in addition to the
     /// final one (M0: `None`, only the final one).
     pub bytes_per_sync: Option<u64>,
+    /// Writing a memtable cuts the output between two consecutive keys
+    /// whenever an L1 file lies entirely between them (M0: off).
+    pub flush_split: bool,
+    /// What the L0 limits count (M0: [`L0Metric::Files`]).
+    pub l0_metric: L0Metric,
+    /// With the L0 metric at or above `l0_slowdown`, L0 is compacted before
+    /// any deeper level (M0: off).
+    pub l0_priority: bool,
+    /// An L0 compaction takes the oldest suffix of L0 that fits
+    /// `max_compaction_bytes` instead of all of it (M0: off).
+    pub l0_partial: bool,
+    /// Input bytes (L0 plus the L1 files they overlap) of a partial L0
+    /// compaction (`None`: 25 x the target file size).
+    pub max_compaction_bytes: Option<u64>,
+    /// A compaction output is cut once it overlaps this many bytes of the
+    /// level below the output level (`None`: 10 x the target file size;
+    /// `Some(u64::MAX)`: never, the M0 behaviour).
+    pub grandparent_overlap_bytes: Option<u64>,
+    /// The oldest L0 file moves to L1 without being rewritten when it
+    /// overlaps no L1 file (M0: off).
+    pub l0_trivial_move: bool,
+    /// Merges of more than this many children use a binary heap instead of a
+    /// linear scan (M0: never). Flush and compaction merges only; scans
+    /// always use the default.
+    pub heap_merge_threshold: usize,
+    /// Compaction threads, `kerno-compact-<i>` (M0: 1). Compactions that
+    /// read the same tables, or write overlapping key ranges to the same
+    /// level, never run at once. Not used by [`Background::Inline`].
+    pub max_background_compactions: usize,
+    /// An L0 compaction merges up to this many disjoint key ranges at once,
+    /// cut at L1 file boundaries, and installs their outputs together (M0:
+    /// 1, no split).
+    pub max_subcompactions: usize,
+    /// `max_subcompactions` for the compactions of a clean close, which run
+    /// with nothing else competing for the disk and whose mandatory L0 floor
+    /// dominates the close of a random-order load (M0: 1). Ignored by
+    /// [`Background::Inline`], whose close uses `max_subcompactions`.
+    pub close_subcompactions: usize,
 }
 
 impl CompactionConfig {
     /// The M0 engine for a write buffer of `write_buffer_bytes` (raised to
-    /// the 4 KiB minimum, as the engine does).
+    /// the 4 KiB minimum, as the engine does): every condition-1 lever off.
     pub fn m0(write_buffer_bytes: usize) -> Self {
         let write_buffer = write_buffer_bytes.max(MIN_WRITE_BUFFER) as u64;
         CompactionConfig {
@@ -193,6 +329,17 @@ impl CompactionConfig {
             target_file_size: Some(write_buffer),
             slowdown: SlowdownPolicy::Sleep { micros: 1000 },
             bytes_per_sync: None,
+            flush_split: false,
+            l0_metric: L0Metric::Files,
+            l0_priority: false,
+            l0_partial: false,
+            max_compaction_bytes: None,
+            grandparent_overlap_bytes: Some(u64::MAX),
+            l0_trivial_move: false,
+            heap_merge_threshold: usize::MAX,
+            max_background_compactions: 1,
+            max_subcompactions: 1,
+            close_subcompactions: 1,
         }
     }
 
@@ -211,15 +358,44 @@ impl CompactionConfig {
         if self.bytes_per_sync == Some(0) {
             return bad("bytes_per_sync must be at least 1");
         }
+        if self.max_compaction_bytes == Some(0) || self.grandparent_overlap_bytes == Some(0) {
+            return bad("max_compaction_bytes and grandparent_overlap_bytes must be at least 1");
+        }
+        if self.slowdown == (SlowdownPolicy::Rate { initial_bytes_per_sec: 0 }) {
+            return bad("the initial slowdown rate must be at least 1 byte per second");
+        }
+        if self.heap_merge_threshold == 0 {
+            return bad("heap_merge_threshold must be at least 1");
+        }
+        if self.max_background_compactions == 0 || self.max_subcompactions == 0 || self.close_subcompactions == 0 {
+            return bad("max_background_compactions, max_subcompactions and close_subcompactions must be at least 1");
+        }
         Ok(())
     }
 }
 
 impl Default for CompactionConfig {
-    /// The M0 thresholds, with `level_base_bytes` and `target_file_size`
-    /// left to derive from the write buffer of the `Config` (as in M0).
+    /// The M0 thresholds with the condition-1 levers on (see the field
+    /// docs), and `level_base_bytes`, `target_file_size`,
+    /// `max_compaction_bytes` and `grandparent_overlap_bytes` left to derive
+    /// from the write buffer of the `Config` (as in M0).
     fn default() -> Self {
-        CompactionConfig { level_base_bytes: None, target_file_size: None, ..CompactionConfig::m0(MIN_WRITE_BUFFER) }
+        CompactionConfig {
+            level_base_bytes: None,
+            target_file_size: None,
+            slowdown: SlowdownPolicy::Rate { initial_bytes_per_sec: 16 << 20 },
+            bytes_per_sync: Some(1 << 20),
+            flush_split: true,
+            l0_metric: L0Metric::Depth,
+            l0_priority: false,
+            l0_partial: true,
+            max_compaction_bytes: None,
+            grandparent_overlap_bytes: None,
+            l0_trivial_move: true,
+            heap_merge_threshold: 8,
+            close_subcompactions: 8,
+            ..CompactionConfig::m0(MIN_WRITE_BUFFER)
+        }
     }
 }
 
@@ -236,6 +412,7 @@ impl Default for Config {
             allow_unverified_platform: false,
             test: TestConfig::default(),
             compaction: CompactionConfig::default(),
+            close_budget: CloseBudget::default(),
         }
     }
 }
@@ -308,6 +485,44 @@ mod tests {
         assert_eq!(c.bytes_per_sync, None);
         // The engine raises tiny write buffers to 4 KiB, and so does m0.
         assert_eq!(CompactionConfig::m0(100).target_file_size, Some(4 << 10));
+        // Every condition-1 lever is off.
+        assert!(!(c.flush_split || c.l0_priority || c.l0_partial || c.l0_trivial_move));
+        assert_eq!(c.l0_metric, L0Metric::Files);
+        assert_eq!((c.max_compaction_bytes, c.grandparent_overlap_bytes), (None, Some(u64::MAX)));
+        assert_eq!((c.heap_merge_threshold, c.max_background_compactions, c.max_subcompactions), (usize::MAX, 1, 1));
+    }
+
+    #[test]
+    fn default_compaction_config_turns_the_levers_on() {
+        let c = CompactionConfig::default();
+        assert!(c.flush_split && c.l0_partial && c.l0_trivial_move);
+        assert!(!c.l0_priority, "WP04 rejected the hypothesis behind L0 priority");
+        assert_eq!(c.l0_metric, L0Metric::Depth);
+        assert_eq!(c.slowdown, SlowdownPolicy::Rate { initial_bytes_per_sec: 16 << 20 });
+        assert_eq!((c.bytes_per_sync, c.heap_merge_threshold), (Some(1 << 20), 8));
+        assert_eq!((c.max_compaction_bytes, c.grandparent_overlap_bytes), (None, None));
+        assert_eq!(Config::default().close_budget, CloseBudget::default());
+        assert_eq!(
+            CloseBudget::default(),
+            CloseBudget::Bounded { max_bytes: 256 << 20, max_duration: Some(Duration::from_millis(200)) }
+        );
+    }
+
+    #[test]
+    fn close_budget_allows_work_until_a_limit_is_reached() {
+        let ms = Duration::from_millis;
+        let b = CloseBudget::Bounded { max_bytes: 100, max_duration: Some(ms(10)) };
+        assert!(b.allows(99, ms(9), Duration::ZERO, 0));
+        assert!(!b.allows(100, Duration::ZERO, Duration::ZERO, 0));
+        assert!(!b.allows(0, ms(10), Duration::ZERO, 0));
+        // 40 bytes took 4 ms: 20 more are expected to take 2 ms.
+        assert!(b.allows(40, ms(7), ms(4), 20));
+        assert!(!b.allows(40, ms(8), ms(4), 20));
+        // Nothing compacted yet: no rate to go by.
+        assert!(b.allows(0, ms(9), Duration::ZERO, 1 << 40));
+        assert!(!b.allows(1, ms(1), Duration::MAX, u64::MAX));
+        assert!(b.deterministic().allows(99, Duration::from_secs(60), Duration::MAX, u64::MAX));
+        assert!(CloseBudget::Unbounded.allows(u64::MAX, Duration::MAX, Duration::MAX, u64::MAX));
     }
 
     #[test]
@@ -321,6 +536,12 @@ mod tests {
             CompactionConfig { level_base_bytes: Some(0), ..base.clone() },
             CompactionConfig { target_file_size: Some(0), ..base.clone() },
             CompactionConfig { bytes_per_sync: Some(0), ..base.clone() },
+            CompactionConfig { max_compaction_bytes: Some(0), ..base.clone() },
+            CompactionConfig { grandparent_overlap_bytes: Some(0), ..base.clone() },
+            CompactionConfig { slowdown: SlowdownPolicy::Rate { initial_bytes_per_sec: 0 }, ..base.clone() },
+            CompactionConfig { heap_merge_threshold: 0, ..base.clone() },
+            CompactionConfig { max_background_compactions: 0, ..base.clone() },
+            CompactionConfig { max_subcompactions: 0, ..base.clone() },
         ] {
             let sim = SimVfs::new(1);
             let cfg = Config { compaction: bad.clone(), ..Config::default() };

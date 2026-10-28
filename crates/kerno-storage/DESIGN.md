@@ -8,7 +8,7 @@ Un árbol LSM nivelado al estilo de LevelDB/RocksDB que implementa directamente 
 
 ## Configuración
 
-`KernoDb::open(vfs, dir, &Config)`; `Engine::open` delega con `Config::from(&Options)`, que toma durabilidad, caché y *write buffer* de `Options` y deja el resto por defecto. La `Config` por defecto conserva el ajuste del M0.
+`KernoDb::open(vfs, dir, &Config)`; `Engine::open` delega con `Config::from(&Options)`, que toma durabilidad, caché y *write buffer* de `Options` y deja el resto por defecto. La `Config` por defecto lleva las palancas de la condición 1 encendidas (ver [Compactación](#trabajo-en-segundo-plano)); el perfil `M0` (`CompactionConfig::m0` y cierre sin límite) reproduce el M0.
 
 | Campo | Defecto | Efecto |
 |---|---|---|
@@ -21,9 +21,27 @@ Un árbol LSM nivelado al estilo de LevelDB/RocksDB que implementa directamente 
 | `limits` | `Limits::default()` | límites de API de un commit, comprobados antes de escribir nada (v1.md §1.4): `max_key_len` 512 B, `max_value_len` 1 MiB, `max_batch_bytes` 64 MiB (bytes que el commit ocupa en el WAL) y `max_batch_ops` 2^20. Deben estar dentro de los máximos del formato (16 KiB, 64 MiB, 2^30 y 2^24) y ser al menos 1: si no, `open` devuelve `InvalidArgument` sin tocar nada |
 | `allow_unverified_platform` | `false` | las garantías de `Durability::Sync` solo están verificadas en Linux (ext4, xfs). En otra plataforma, abrir con `Sync` devuelve `InvalidArgument("durability not verified on this platform")` salvo que esto sea `true`; `Buffered` no lo necesita |
 | `test` (oculto, solo pruebas) | `TestConfig::default()` | `background`: `Threads` (hilos de segundo plano, como en el M0) o `Inline` (ver [Modo en línea](#modo-en-línea-backgroundinline)); `db_id`: identificador fijo para una base nueva (por defecto, uno aleatorio), para que los vectores y las pruebas sean reproducibles |
-| `compaction` | `CompactionConfig::default()` | umbrales de L0 (`l0_trigger` 4, `l0_slowdown` 8, `l0_stop` 12), `level_multiplier` 10, frenado (`Sleep` de hasta 1 ms) y `bytes_per_sync` (`None`); `level_base_bytes` y `target_file_size` son `None` y se derivan del *write buffer* efectivo (4 × y 1 ×, como en el M0), así que una `Config` construida con `..Config::default()` y otro `write_buffer_bytes` conserva la geometría del M0; `CompactionConfig::m0(wb)` fija esos tamaños de forma explícita |
+| `compaction` | `CompactionConfig::default()` | umbrales de L0 (`l0_trigger` 4, `l0_slowdown` 8, `l0_stop` 12) medidos por **profundidad** de L0, `level_multiplier` 10, frenado por tasa (`Rate`, 16 MiB/s iniciales) y las palancas de la tabla de abajo; `level_base_bytes`, `target_file_size`, `max_compaction_bytes` y `grandparent_overlap_bytes` son `None` y se derivan del *write buffer* efectivo (4 ×, 1 ×, 25 × y 10 × el tamaño objetivo), así que una `Config` construida con `..Config::default()` y otro `write_buffer_bytes` conserva la geometría; `CompactionConfig::m0(wb)` apaga todas las palancas y fija esos tamaños de forma explícita |
+| `close_budget` | `Bounded { max_bytes: 256 MiB, max_duration: Some(200 ms) }` | compactación máxima de un cierre limpio, más allá de la obligatoria (ver [Cierre limpio](#cierre-limpio)); `Unbounded` es el M0 |
 
-El módulo oculto `testing` define `Profile` y `Profiled<P>`: un tipo de motor distinto por perfil, que abre `KernoDb` con `Config::from(opts)` ajustada por `P::adjust`, para ejecutar las macros del harness en varias configuraciones sin tocar `Options`. Perfiles: `Inline` (`Engine::name()` = `kerno-inline`, `test.background = Inline`).
+El módulo oculto `testing` define `Profile` y `Profiled<P>`: un tipo de motor distinto por perfil, que abre `KernoDb` con `Config::from(opts)` ajustada por `P::adjust`, para ejecutar las macros del harness en varias configuraciones sin tocar `Options`. Perfiles: `Inline` (`Engine::name()` = `kerno-inline`, `test.background = Inline` y cierre sin límite de tiempo, para que la secuencia de E/S sea determinista) y `M0` (`kerno-m0`, `CompactionConfig::m0` y `CloseBudget::Unbounded`), con el que se ejecuta también la suite compartida para poder bisecar una regresión hasta una palanca.
+
+**Palancas de la condición 1** (`CompactionConfig`; [diseño de la Fase 1](../../docs/architecture/phase1-design.md) §5.4; el valor entre paréntesis es el del perfil `M0`):
+
+| Campo | Defecto | Qué hace |
+|---|---|---|
+| `flush_split` | `true` (`false`) | al escribir una memtable, corta la salida entre dos claves consecutivas siempre que algún archivo de L1 quede entero entre ellas; los fragmentos de un flush no se solapan y entran juntos al principio de L0 |
+| `l0_metric` | `Depth` (`Files`) | `l0_trigger`, `l0_slowdown` y `l0_stop` cuentan la profundidad de L0 (máximo de archivos que contienen una misma clave), no los archivos. Como cota contra un L0 de muchos archivos disjuntos (claves secuenciales), cada 2 archivos cuentan como un nivel de profundidad como mínimo |
+| `l0_priority` | `false` (`false`) | con la métrica ≥ `l0_slowdown`, L0 gana siempre. Apagada por defecto: WP04 rechazó «L0 sin prioridad» como causa de la cola |
+| `l0_partial` | `true` (`false`) | la compactación de L0 toma el **sufijo más viejo** de L0 (la lista es de más nuevo a más viejo) mientras los bytes de L0 más los de L1 solapado no pasen de `max_compaction_bytes`, y al menos un archivo. Es seguro porque lo que queda es más nuevo que todo lo que baja |
+| `max_compaction_bytes` | 25 × objetivo | tope de la compactación parcial de L0 |
+| `grandparent_overlap_bytes` | 10 × objetivo (`u64::MAX`) | una salida de compactación se corta cuando solapa más de tantos bytes del nivel por debajo del de salida |
+| `l0_trivial_move` | `true` (`false`) | el archivo más viejo de L0 sin solape con L1 baja a L1 sin reescribirse |
+| `slowdown` | `Rate { 16 MiB/s }` (`Sleep { 1 ms }`) | `Rate`: cada commit espera `bytes del lote / tasa` (como mucho 100 ms); la tasa se divide entre 2 (mínimo 1 MiB/s) mientras la métrica crece con L0 en frenado y se duplica de nuevo (hasta la inicial) cuando baja |
+| `bytes_per_sync` | 1 MiB (`None`) | `sync_data` de la SST cada tantos bytes escritos (salvo en las compactaciones del cierre, que solo sincronizan al terminar cada SST: no hay WAL con el que competir) |
+| `heap_merge_threshold` | 8 (`usize::MAX`) | las fusiones de flush y compactación con más hijos usan un montículo binario |
+| `max_background_compactions`, `max_subcompactions` | 1, 1 (1, 1) | hilos de compactación (`kerno-compact-<i>`; dos compactaciones que leen las mismas tablas o escriben rangos que se solapan en el mismo nivel nunca coinciden) y partes en que se divide una compactación de L0 (cortes en límites de archivos de L1; salidas instaladas con una sola edición del MANIFEST). Condicionales de WP05: apagadas porque no mostraron mejora de T1 fuera del ruido ([resultados](../../docs/testing/f1-diagnostico-colas.md#7-resultados-de-wp05)) |
+| `close_subcompactions` | 8 (1) | `max_subcompactions` de las compactaciones de un cierre limpio, que no compiten con ningún escritor y cuyo tramo obligatorio domina el cierre de una carga en orden aleatorio. El modo `Inline` lo ignora y usa `max_subcompactions` (no lanza hilos propios) |
 
 ## Estructura del directorio
 
@@ -72,9 +90,9 @@ No hay *group commit*: los escritores concurrentes pagan cada uno su propia sinc
 
 **Contrapresión:**
 
-- Con ≥ `l0_slowdown` archivos en L0 (8 por defecto), cada commit espera una vez hasta 1 ms a la compactación (`SlowdownPolicy::Sleep`; `Off` lo desactiva).
-- Con ≥ `max_immutable_memtables` memtables inmutables (4 por defecto) o ≥ `l0_stop` archivos en L0 (12 por defecto), el commit se bloquea hasta que un hilo de segundo plano avanza.
-- Los umbrales están en `Config::compaction` (`CompactionConfig`); `CompactionConfig::m0(write_buffer)`, el valor por defecto, reproduce las constantes del M0.
+- Con la métrica de L0 ≥ `l0_slowdown` (8 por defecto), cada commit espera una vez (`SlowdownPolicy::Sleep`: hasta 1 ms, como el M0; `Rate`: `bytes / tasa`, hasta que se cumple el retraso o la métrica baja; `Off` lo desactiva). En modo `Inline` no hay frenado.
+- Con ≥ `max_immutable_memtables` memtables inmutables (4 por defecto) o la métrica de L0 ≥ `l0_stop` (12 por defecto), el commit se bloquea hasta que un hilo de segundo plano avanza.
+- Los umbrales están en `Config::compaction` (`CompactionConfig`); `CompactionConfig::m0(write_buffer)` reproduce las constantes del M0.
 - Cada bloqueo es un **episodio**: se cuenta una vez al entrar en la espera, por motivo (memtables o L0), con su duración; los despertares intermedios no cuentan (el M0 contaba despertares).
 
 ## Trabajo en segundo plano
@@ -83,16 +101,16 @@ Hay dos hilos: el de **flush** (`kerno-flush`) y el de **compactación** (`kerno
 
 **Flush** (primero la memtable inmutable más vieja):
 
-1. Escribe la versión más nueva de cada clave en una SST de L0 nueva, y después `sync_data` y `sync_dir`.
-2. Escribe la generación siguiente del MANIFEST con la tabla al principio de L0, `last_seq = max(last_seq, mem.max_seq)` y `log_number = mem.wal_number + 1` (en WP08 pasará a ser el número exacto del WAL vivo más antiguo).
+1. Escribe la versión más nueva de cada clave en una o más SST de L0 nuevas (varias si `flush_split` corta alrededor de archivos de L1, ver `flush.rs`), y después `sync_data` y `sync_dir`.
+2. Escribe la generación siguiente del MANIFEST con las tablas, como grupo, al principio de L0, `last_seq = max(last_seq, mem.max_seq)` y `log_number = mem.wal_number + 1` (en WP08 pasará a ser el número exacto del WAL vivo más antiguo).
 3. Instala la versión nueva y borra el WAL. El borrado es de mejor esfuerzo; la recuperación elimina los restos.
 
 **Compactación** (nivelada, como en LevelDB):
 
-- L0 puntúa `archivos / l0_trigger`; Ln (n = 1..5), `bytes / (level_base_bytes × level_multiplier^(n−1))`; con los valores por defecto, `archivos / 4` y `bytes / (4 × write_buffer × 10^(n−1))`. Gana la puntuación más alta ≥ 1.
-- La compactación de L0 fusiona todos los archivos de L0 y los de L1 que se solapan en L1.
+- L0 puntúa `métrica / l0_trigger` (la métrica es la profundidad, o el número de archivos en el perfil `M0`); Ln (n = 1..5), `bytes / (level_base_bytes × level_multiplier^(n−1))`; con los valores por defecto, `bytes / (4 × write_buffer × 10^(n−1))`. Gana la puntuación más alta ≥ 1; con `l0_priority` y la métrica ≥ `l0_slowdown`, gana L0.
+- La compactación de L0 fusiona el sufijo más viejo de L0 que cabe en `max_compaction_bytes` (todo L0 con `l0_partial` apagado) y los archivos de L1 que se solapan en L1; si el archivo más viejo no solapa L1 y `l0_trivial_move` está encendido, baja de nivel sin reescribirse.
 - La de Ln toma un archivo, elegido por turno según la clave, más los de Ln+1 que se solapan. Un archivo sin solape se baja de nivel sin reescribirlo.
-- Los archivos de salida se cortan en `target_file_size` (por defecto, el *write buffer* efectivo).
+- Los archivos de salida se cortan en `target_file_size` (por defecto, el *write buffer* efectivo) y cuando solapan más de `grandparent_overlap_bytes` del nivel por debajo del de salida.
 - La fusión conserva solo la versión más nueva de cada clave. Las instantáneas más antiguas siguen leyendo los archivos de entrada a través de su propia `Version`.
 - Una lápida se descarta cuando ningún archivo de un nivel inferior al de salida tiene un rango de claves que contenga la clave.
 - Las salidas se sincronizan, después `sync_dir`, después el MANIFEST y después la instalación de la versión. Solo entonces se marcan obsoletas las entradas.
@@ -157,7 +175,7 @@ Consecuencias:
 2. Hace flush de todas las memtables a L0.
 3. Escribe un MANIFEST con `last_seq` igual al commit más nuevo y un `log_number` por encima de todos los WAL. Es el MANIFEST **limpio** (`CLEAN`, con `log_number = next_file`, W-9) si no hay ninguna compactación pendiente; si la hay, este es uno sin `CLEAN`.
 4. Borra todos los WAL y después `sync_dir`.
-5. Ejecuta compactaciones en el hilo que llama hasta que ningún nivel supere su objetivo. (Lo encontró la revisión adversarial del M0: antes, el cierre abandonaba la compactación en curso y el paso 2 añadía un archivo más a L0, así que muchas sesiones cortas hacían crecer L0 sin límite y cada reapertura empezaba con compactaciones atrasadas.) Si se ejecutó alguna, escribe después el MANIFEST `CLEAN`: la marca de limpio va siempre después de la última compactación, no antes.
+5. `compact_for_close`, en el hilo que llama: primero, **siempre**, compacta L0 hasta que su métrica baje de `l0_trigger` (la misma elección que el trabajo normal, salvo que con `l0_partial` toma solo los archivos más viejos que hacen falta para dejar la métrica por debajo: con una carga en orden aleatorio cada archivo de L0 arrastra todo L1, así que los que quedan son bytes que el cierre no reescribe ni borra); después, una compactación cada vez mientras queden bytes y tiempo de `close_budget` (los bytes leídos y escritos de todas las compactaciones del cierre, las obligatorias incluidas; el tiempo, desde el inicio del cierre) y algún nivel supere su objetivo. Una compactación que empieza dentro del presupuesto de bytes puede acabar por encima de él; no empieza una que, al ritmo de las compactaciones anteriores del mismo cierre (borrado de sus entradas incluido), acabaría después de `max_duration`. Estas compactaciones usan `close_subcompactions` y no hacen los `sync_data` intermedios de `bytes_per_sync`. Lo que queda pendiente lo retoma la puntuación tras la siguiente apertura: el formato no registra deuda. `close` devuelve un `CloseReport { duration, flushed_bytes, compacted_bytes, budget_exhausted, l0_files, l0_depth }` (el `Engine::close` del contrato lo descarta). `max_duration: None` hace el cierre determinista. (Lo encontró la revisión adversarial del M0: antes, el cierre abandonaba la compactación en curso y el paso 2 añadía un archivo más a L0, así que muchas sesiones cortas hacían crecer L0 sin límite y cada reapertura empezaba con compactaciones atrasadas.) La marca `CLEAN` va siempre después de la última compactación del cierre, no antes: el paso 3 solo la escribe si no quedaba ninguna compactación pendiente; si no, o si este paso ejecutó alguna, la escribe este paso al terminar.
 
 Tras un cierre limpio el directorio contiene solo `LOCK`, `MANIFEST` y SST, y todos sus bytes tienen checksum. Por eso un bit invertido o un truncado producen un error en lugar de un commit más antiguo. Las reglas del estado limpio (qué archivos sobrantes delatan un cierre que no terminó) llegan con WP08; hasta entonces `CLEAN` solo se escribe.
 
@@ -208,11 +226,11 @@ Los paquetes de la Fase 1 atacan varias de ellas ([diseño de la Fase 1](../../d
 
 - **MANIFEST.** Cada generación es una instantánea completa que se reescribe en cada flush y compactación, con coste O(archivos); WP08 lo convierte en un log de ediciones de solo anexado con checkpoints periódicos.
 - **Escrituras.** No hay *group commit*, así que los escritores `Sync` concurrentes se serializan con un fsync cada uno. Tampoco se reciclan los WAL, así que cada cambio de memtable paga una creación más `sync_dir`.
-- **Compactación.** Un único hilo de compactación, sin subcompactaciones ni limitación de ritmo. L0→L1 siempre toma todo L0. No hay límites de solape con el nivel abuelo en los archivos de salida ni tamaños de nivel dinámicos.
+- **Compactación.** Por defecto un único hilo de compactación y sin subcompactaciones (`max_background_compactions` y `max_subcompactions` existen pero están apagadas). No hay tamaños de nivel dinámicos. El frenado por tasa mira solo L0, no la deuda de los niveles profundos.
 - **Formato de SST.** Sin compresión de prefijos, sin compresión, sin índice o filtro particionados y sin versionado del formato más allá de los números mágicos.
 - **Memoria y archivos.** El índice y el filtro de cada tabla quedan residentes y todas las tablas quedan abiertas, así que la memoria crece con el número de archivos. La caché de bloques solo guarda bloques de datos.
 - **Coste de arranque.** La recuperación siempre reescribe la cola reproducida del WAL como una SST de L0 y escribe una generación nueva del MANIFEST, aunque el cierre anterior fuera limpio. Es sencillo y hace duradero el resultado de `open`, pero cada apertura tras un cierre sucio paga un flush.
-- **Lecturas.** Los recorridos fusionan con una búsqueda lineal del mínimo en lugar de un montículo, y copian claves y valores. Los `get` reservan memoria para una clave de sondeo.
+- **Lecturas.** Las fusiones de más de 8 hijos usan un montículo binario (los recorridos siempre con el umbral por defecto; `heap_merge_threshold` solo gobierna flush y compactación), y copian claves y valores. Los `get` reservan memoria para una clave de sondeo.
 - **Efectos secundarios del borrado.** El borrado de archivos ocurre en el hilo que suelta la última referencia (quizá un lector que suelta una instantánea), y sus errores se ignoran; los restos se limpian en la siguiente apertura.
 - **Archivos desconocidos** en el directorio se ignoran en lugar de borrarse (y, en un directorio sin `MANIFEST`, hacen que no se cree la base).
 - **Solo lectura y rangos.** Un bit `ro_compat` desconocido y las lápidas de rango (un WAL con rangos o una SST con fragmentos) se rechazan con `Incompatible` hasta WP08 y WP10; no se ignoran, porque ignorarlos devolvería claves borradas.

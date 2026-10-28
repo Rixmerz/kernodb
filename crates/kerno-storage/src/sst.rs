@@ -163,6 +163,12 @@ impl TableBuilder {
         })
     }
 
+    /// Syncs the file once, when finished, whatever `bytes_per_sync` says.
+    pub fn without_intermediate_syncs(mut self) -> Self {
+        self.sink.bytes_per_sync = None;
+        self
+    }
+
     pub fn add(&mut self, key: &[u8], seq: u64, value: Option<&[u8]>) -> Result<()> {
         self.inner.add(key, seq, value);
         self.entries += 1;
@@ -223,6 +229,11 @@ pub struct Table {
 impl Table {
     /// Opens the table `meta` describes, against the MANIFEST that has it at
     /// `last_seq` (SST-O1..O7).
+    /// Point entries in the table (the `point_entries` property).
+    pub fn entries(&self) -> u64 {
+        self.props.point_entries
+    }
+
     pub fn open(ctx: &Arc<TableCtx>, meta: &FileMeta, last_seq: u64) -> Result<Table> {
         let file = match ctx.vfs.open(&ctx.path(meta.number), OpenMode::Existing) {
             Ok(f) => f,
@@ -270,11 +281,6 @@ impl Table {
 
     pub fn mark_obsolete(&self) {
         self.obsolete.store(true, Ordering::Release);
-    }
-
-    /// Whether the table's key range intersects `[lo, hi]`.
-    pub fn overlaps(&self, lo: &[u8], hi: &[u8]) -> bool {
-        self.largest.as_slice() >= lo && self.smallest.as_slice() <= hi
     }
 
     fn corrupt(&self, msg: String) -> Error {
@@ -579,12 +585,15 @@ mod tests {
     #[test]
     fn bytes_per_sync_syncs_while_writing() {
         use kerno_testkit::vfs::CountingVfs;
-        for every in [None, Some(1u64)] {
+        for (every, suppressed) in [(None, false), (Some(1u64), false), (Some(1u64), true)] {
             let (vfs, io) = CountingVfs::wrap(SimVfs::new(1).as_vfs());
             vfs.create_dir_all(Path::new("/t")).unwrap();
             let stats = Arc::new(Stats::default());
             let ctx = Arc::new(TableCtx::new(vfs, PathBuf::from("/t"), 1 << 20, stats, 64).with_bytes_per_sync(every));
             let mut b = TableBuilder::create(&ctx, 1, REASON_FLUSH).unwrap();
+            if suppressed {
+                b = b.without_intermediate_syncs();
+            }
             // About 1 MiB of entries: several 256 KiB chunks.
             for i in 0..1000 {
                 b.add(&key(i), 1, Some(&[7u8; 1000])).unwrap();
@@ -595,10 +604,15 @@ mod tests {
             let expected = match every {
                 // Only the final sync.
                 None => 1,
+                Some(_) if suppressed => 1,
                 // After every write, plus the final one.
                 Some(_) => io.writes + 1,
             };
-            assert_eq!(io.file_syncs, expected, "bytes_per_sync {every:?}, {} writes", io.writes);
+            assert_eq!(
+                io.file_syncs, expected,
+                "bytes_per_sync {every:?} (suppressed: {suppressed}), {} writes",
+                io.writes
+            );
         }
     }
 

@@ -17,19 +17,19 @@ use kerno_core::vfs::Vfs;
 use kerno_core::{Durability, Error, Op, Result, WriteBatch};
 use parking_lot::{Condvar, Mutex};
 
-use crate::compaction::{self, BLOCK_SIZE, NUM_LEVELS, Plan, Tuning};
-use crate::config::{AccessMode, Background, Config, Limits, SlowdownPolicy};
+use crate::compaction::{self, BLOCK_SIZE, Busy, Claim, NUM_LEVELS, Plan, RateController, Tuning};
+use crate::config::{AccessMode, Background, CloseBudget, Config, Limits, SlowdownPolicy};
+use crate::flush;
 use crate::format::header::{HEADER_LEN, new_db_id};
 use crate::format::limits::{MAX_FILE_NUMBER, MAX_SEQ};
 use crate::format::manifest::ManifestState as RecoveredState;
 use crate::format::props::{REASON_FLUSH, REASON_RECOVERY};
 use crate::format::wal::{CanonicalCommit, CommitOp, canonicalize};
 use crate::format::{End, wal::WalHeaderState};
-use crate::iter::{InternalIterator, MergeIter};
 use crate::manifest::{self, MANIFEST, MANIFEST_TMP, ManifestWriter, Snapshot as ManifestSnapshot};
 use crate::memtable::Memtable;
 use crate::metrics::{LevelMetrics, Metrics, ShapeMetrics};
-use crate::sst::{Table, TableBuilder, TableCtx};
+use crate::sst::{Table, TableCtx};
 use crate::stats::{BackgroundIo, StallEpisode, StallReason, Stats, bump, bump_max, nanos};
 use crate::version::{Levels, Version};
 use crate::wal::{self, WalWriter, wal_name};
@@ -122,6 +122,8 @@ struct Writer {
     /// under the writer lock (largest key of the last compaction out of it).
     /// The background compactor keeps its own.
     pointers: Vec<Vec<u8>>,
+    /// The rate of `SlowdownPolicy::Rate`.
+    rate: RateController,
 }
 
 /// Round-robin positions that choose nothing: `compaction::pick` decides
@@ -138,7 +140,13 @@ struct State {
     /// A background thread is working on a flush or a compaction (including
     /// the deletions that follow it). See `Inner::wait_idle`.
     flush_running: bool,
-    compaction_running: bool,
+    /// Compactions in progress (at most `max_background_compactions`).
+    compactions_running: usize,
+    /// What they read and write, for choosing the next one.
+    busy: Busy,
+    /// Round-robin position per level for the compaction threads (largest
+    /// key of the last compaction chosen out of it).
+    pointers: Vec<Vec<u8>>,
 }
 
 /// The kinds of background work.
@@ -152,6 +160,8 @@ enum Job {
 struct Running<'a> {
     inner: &'a Inner,
     job: Job,
+    /// The compaction's claim on its inputs and output range.
+    claim: Option<Claim>,
 }
 
 impl Drop for Running<'_> {
@@ -159,7 +169,10 @@ impl Drop for Running<'_> {
         let mut st = self.inner.state.lock();
         match self.job {
             Job::Flush => st.flush_running = false,
-            Job::Compaction => st.compaction_running = false,
+            Job::Compaction => st.compactions_running -= 1,
+        }
+        if let Some(claim) = &self.claim {
+            st.busy.release(claim);
         }
         drop(st);
         self.inner.cv.notify_all();
@@ -182,6 +195,9 @@ struct Inner {
     dir: PathBuf,
     durability: Durability,
     tuning: Tuning,
+    /// Compaction threads (`max_background_compactions`).
+    max_compactions: usize,
+    close_budget: CloseBudget,
     /// Writers wait while this many memtables are waiting to be flushed.
     max_immutable: usize,
     limits: Limits,
@@ -212,6 +228,23 @@ pub struct KernoSnapshot {
     seq: u64,
 }
 
+/// What [`KernoDb::close`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CloseReport {
+    /// Wall-clock time of the close.
+    pub duration: Duration,
+    /// Bytes of the tables written from memtables.
+    pub flushed_bytes: u64,
+    /// Bytes read and written by the compactions of the close.
+    pub compacted_bytes: u64,
+    /// The [`CloseBudget`] stopped compaction work that was still due.
+    pub budget_exhausted: bool,
+    /// L0 files left.
+    pub l0_files: u64,
+    /// L0 depth left (see [`L0Metric::Depth`](crate::config::L0Metric::Depth)).
+    pub l0_depth: u64,
+}
+
 impl Snapshot for KernoSnapshot {
     fn seq(&self) -> u64 {
         self.seq
@@ -223,27 +256,6 @@ impl Snapshot for KernoSnapshot {
 
     fn scan(&self, start: Bound<&[u8]>, end: Bound<&[u8]>, limit: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         self.version.scan(self.seq, start, end, limit)
-    }
-}
-
-/// Writes the newest version of every key in `mem` to a new synced table.
-fn write_memtable(ctx: &Arc<TableCtx>, mem: &Memtable, number: u64, reason: u8) -> Result<Table> {
-    let mut b = TableBuilder::create(ctx, number, reason)?;
-    let fill = (|| {
-        let mut it = MergeIter::new(vec![Box::new(mem.iter(u64::MAX))]);
-        it.seek_to_first()?;
-        while it.valid() {
-            b.add(it.key(), it.seq(), it.value())?;
-            it.next()?;
-        }
-        Ok::<_, Error>(())
-    })();
-    match fill {
-        Ok(()) => b.finish(),
-        Err(e) => {
-            b.abandon();
-            Err(e)
-        }
     }
 }
 
@@ -334,12 +346,14 @@ fn recover(ctx: &Arc<TableCtx>, listing: &Listing, loaded: manifest::Loaded) -> 
 
     let (mem, last_seq) = replay_live_wals(ctx, listing, db_id, &state)?;
     if !mem.is_empty() {
-        let table = write_memtable(ctx, &mem, next_file, REASON_RECOVERY)?;
-        next_file += 1;
+        let tables = flush::write_memtable(ctx, &mem, REASON_RECOVERY, &[], &mut || {
+            next_file += 1;
+            next_file - 1
+        })?;
         vfs.sync_dir(dir)?;
         bump(&ctx.stats.flushes, 1);
-        bump(&ctx.stats.flush_bytes_written, table.size);
-        levels[0].insert(0, Arc::new(table));
+        bump(&ctx.stats.flush_bytes_written, tables.iter().map(|t| t.size).sum());
+        levels[0].splice(0..0, tables.into_iter().map(Arc::new));
     }
 
     let wal_number = next_file;
@@ -527,7 +541,7 @@ impl Inner {
             return Err(Error::InvalidArgument("commit sequence exhausted".into()));
         }
         let room_start = Instant::now();
-        self.make_room(&mut w)?;
+        self.make_room(&mut w, batch.payload_bytes() as u64)?;
         let write_start = Instant::now();
         let seq = w.last_seq + 1;
         let sync = self.durability == Durability::Sync;
@@ -567,26 +581,42 @@ impl Inner {
 
     /// Applies backpressure and switches to a new memtable when the active
     /// one is full (LevelDB's `MakeRoomForWrite`).
-    fn make_room(&self, w: &mut Writer) -> Result<()> {
+    fn make_room(&self, w: &mut Writer, batch_bytes: u64) -> Result<()> {
         if self.inline() {
             return self.make_room_inline(w);
         }
         let mut slowed = false;
+        let mut observed = false;
         // Counted once, however many times the writer wakes up; timed until
         // the loop ends.
         let mut stall = StallEpisode::new(&self.stats);
         loop {
             self.check_poisoned()?;
             let mut st = self.state.lock();
-            let l0 = st.version.levels[0].len();
-            if !slowed
-                && l0 >= self.tuning.l0_slowdown
-                && let SlowdownPolicy::Sleep { micros } = self.tuning.slowdown
-            {
+            let l0 = self.tuning.l0_metric(&st.version.levels[0]);
+            if !observed {
+                observed = true;
+                w.rate.observe(l0, self.tuning.l0_slowdown);
+            }
+            if !slowed && l0 >= self.tuning.l0_slowdown && self.tuning.slowdown != SlowdownPolicy::Off {
                 // Give compaction a moment instead of stopping hard later.
                 slowed = true;
                 let start = Instant::now();
-                self.cv.wait_for(&mut st, Duration::from_micros(micros));
+                match self.tuning.slowdown {
+                    SlowdownPolicy::Sleep { micros } => {
+                        self.cv.wait_for(&mut st, Duration::from_micros(micros));
+                    }
+                    _ => {
+                        // Until the delay is served or L0 is relieved.
+                        let deadline = start + w.rate.delay(batch_bytes);
+                        while st.poisoned.is_none()
+                            && !st.shutdown
+                            && !self.cv.wait_until(&mut st, deadline).timed_out()
+                            && self.tuning.l0_metric(&st.version.levels[0]) >= self.tuning.l0_slowdown
+                        {
+                        }
+                    }
+                }
                 let slept = nanos(start, Instant::now());
                 bump(&self.stats.slowdown_commits, 1);
                 bump(&self.stats.slowdown_nanos, slept);
@@ -666,26 +696,37 @@ impl Inner {
     // ---- background work ----
 
     /// Waits for `next` to produce work; `None` on shutdown or poison. The
-    /// job counts as running until the returned guard is dropped.
-    fn wait_for_work<T>(&self, job: Job, mut next: impl FnMut(&State) -> Option<T>) -> Option<(T, Running<'_>)> {
+    /// job counts as running until the returned guard is dropped. For a
+    /// compaction, `next` also returns the claim on what it will touch, taken
+    /// in the same critical section that chose it.
+    fn wait_for_work<T>(
+        &self,
+        job: Job,
+        mut next: impl FnMut(&mut State) -> Option<(T, Option<Claim>)>,
+    ) -> Option<(T, Running<'_>)> {
         let mut st = self.state.lock();
         loop {
             if st.shutdown || st.poisoned.is_some() {
                 return None;
             }
-            if let Some(work) = next(&st) {
+            if let Some((work, claim)) = next(&mut st) {
                 match job {
                     Job::Flush => st.flush_running = true,
-                    Job::Compaction => st.compaction_running = true,
+                    Job::Compaction => {
+                        st.compactions_running += 1;
+                        bump_max(&self.stats.compactions_concurrent_max, st.compactions_running as u64);
+                    }
                 }
-                return Some((work, Running { inner: self, job }));
+                return Some((work, Running { inner: self, job, claim }));
             }
             self.cv.wait(&mut st);
         }
     }
 
     fn flusher(&self) {
-        while let Some((mem, _running)) = self.wait_for_work(Job::Flush, |st| st.version.imms.last().cloned()) {
+        while let Some((mem, _running)) =
+            self.wait_for_work(Job::Flush, |st| st.version.imms.last().cloned().map(|m| (m, None)))
+        {
             if self.or_poison("flush failed", || self.flush(&mem)).is_err() {
                 return;
             }
@@ -703,25 +744,34 @@ impl Inner {
         }
     }
 
+    /// The L1 files a flush cuts around (`flush_split`); none if it is off.
+    fn l1_for_split(&self) -> Vec<Arc<Table>> {
+        if self.tuning.flush_split { self.state.lock().version.levels[1].clone() } else { Vec::new() }
+    }
+
+    /// [`flush::write_memtable`] with file numbers from this engine.
+    fn write_memtable(&self, mem: &Memtable, l1: &[Arc<Table>]) -> Result<Vec<Arc<Table>>> {
+        let mut number = || self.next_file.fetch_add(1, Ordering::SeqCst);
+        Ok(flush::write_memtable(&self.ctx, mem, REASON_FLUSH, l1, &mut number)?.into_iter().map(Arc::new).collect())
+    }
+
     /// Writes the oldest immutable memtable to L0 and retires its WAL.
     fn flush(&self, mem: &Arc<Memtable>) -> Result<()> {
         let _phase = probe::phase("flush");
         let _io = BackgroundIo::start(&self.stats);
         let start = Instant::now();
-        let table = if mem.is_empty() {
-            None
+        let tables = if mem.is_empty() {
+            Vec::new()
         } else {
-            let number = self.next_file.fetch_add(1, Ordering::SeqCst);
-            let table = write_memtable(&self.ctx, mem, number, REASON_FLUSH)?;
+            let tables = self.write_memtable(mem, &self.l1_for_split())?;
             self.vfs.sync_dir(&self.dir)?;
-            bump(&self.stats.flush_bytes_written, table.size);
-            Some(Arc::new(table))
+            bump(&self.stats.flush_bytes_written, tables.iter().map(|t| t.size).sum());
+            tables
         };
         let mut ms = self.manifest.lock();
         let mut levels = ms.levels.clone();
-        if let Some(t) = table {
-            levels[0].insert(0, t);
-        }
+        // The pieces of one flush are key-disjoint: they go in as a group.
+        levels[0].splice(0..0, tables);
         let last_seq = ms.last_seq.max(mem.max_seq());
         let log_number = ms.log_number.max(mem.wal_number() + 1);
         self.write_manifest(&mut ms, &levels, last_seq, log_number, false)?;
@@ -742,20 +792,27 @@ impl Inner {
     /// Whether some level is over its target (what `compaction::pick`
     /// decides; the round-robin positions only choose the input file).
     fn compaction_due(&self, levels: &Levels) -> bool {
-        compaction::pick(levels, &self.tuning, &NO_POINTERS).is_some()
+        compaction::pick(levels, &self.tuning, &NO_POINTERS, &Busy::default()).is_some()
     }
 
     fn compactor(&self) {
-        // Round-robin position per level: largest key of the last compaction.
-        let mut pointers = vec![Vec::new(); NUM_LEVELS];
+        // The round-robin positions are shared by the compaction threads
+        // (`State::pointers`); `compact` only needs a place to write its own.
+        let mut unused = vec![Vec::new(); NUM_LEVELS];
         while let Some(((plan, l0_files), running)) = self.wait_for_work(Job::Compaction, |st| {
-            compaction::pick(&st.version.levels, &self.tuning, &pointers).map(|p| (p, st.version.levels[0].len()))
+            if st.compactions_running >= self.max_compactions {
+                return None;
+            }
+            let plan = compaction::pick(&st.version.levels, &self.tuning, &st.pointers, &st.busy)?;
+            let claim = st.busy.claim(&plan);
+            st.pointers[plan.level] = plan.largest_input_key().to_vec();
+            Some(((plan, self.tuning.l0_metric(&st.version.levels[0])), Some(claim)))
         }) {
             if plan.level > 0 && l0_files >= self.tuning.l0_slowdown {
                 // L0 is slowing writers down, yet a deeper level won (H2).
                 bump(&self.stats.compactions_while_l0_slowdown, 1);
             }
-            let r = self.or_poison("compaction failed", || self.compact(&plan, &mut pointers));
+            let r = self.or_poison("compaction failed", || self.compact(&plan, &mut unused, false));
             // The inputs it made obsolete are deleted while the job still
             // counts as running.
             drop(plan);
@@ -774,16 +831,18 @@ impl Inner {
     fn compact_inline(&self, w: &mut Writer) -> Result<bool> {
         let plan = {
             let st = self.state.lock();
-            compaction::pick(&st.version.levels, &self.tuning, &w.pointers)
+            compaction::pick(&st.version.levels, &self.tuning, &w.pointers, &Busy::default())
         };
         match plan {
-            Some(plan) => self.or_poison("compaction failed", || self.compact(&plan, &mut w.pointers)),
+            Some(plan) => self.or_poison("compaction failed", || self.compact(&plan, &mut w.pointers, false)),
             None => Ok(false),
         }
     }
 
-    /// Returns `false` if the compaction was abandoned for shutdown.
-    fn compact(&self, plan: &Plan, pointers: &mut [Vec<u8>]) -> Result<bool> {
+    /// Returns `false` if the compaction was abandoned for shutdown. A
+    /// compaction of a `closing` session runs with the close-time settings
+    /// (`close_subcompactions`, no intermediate syncs).
+    fn compact(&self, plan: &Plan, pointers: &mut [Vec<u8>], closing: bool) -> Result<bool> {
         let _phase = probe::phase("compact");
         pointers[plan.level] = plan.largest_input_key().to_vec();
         if plan.is_trivial_move() {
@@ -803,8 +862,19 @@ impl Inner {
         }
         let _io = BackgroundIo::start(&self.stats);
         let start = Instant::now();
+        let closing_tuning;
+        let tuning = if closing {
+            closing_tuning = Tuning {
+                max_subcompactions: self.tuning.close_subcompactions,
+                intermediate_syncs: false,
+                ..self.tuning.clone()
+            };
+            &closing_tuning
+        } else {
+            &self.tuning
+        };
         let Some(outputs) =
-            compaction::run(&self.ctx, plan, &self.tuning, &self.next_file, &self.shutting_down, &self.stats)?
+            compaction::run(&self.ctx, plan, tuning, &self.next_file, &self.shutting_down, &self.stats)?
         else {
             return Ok(false);
         };
@@ -847,35 +917,59 @@ impl Inner {
 
     // ---- shutdown ----
 
-    /// Runs compactions in the calling thread until no level is over its
-    /// target. Used by `close` (after the background threads stopped and
-    /// the final flush), so that a database is never left with a growing
-    /// L0 backlog: before, close abandoned the running compaction and then
-    /// added one more L0 file, so many short sessions grew L0 without bound.
-    /// If any compaction ran, the clean MANIFEST that `close` could not write
-    /// before it (W-9) is written after it.
-    fn compact_until_settled(&self) -> Result<()> {
-        // The background threads are joined; compaction must not see the
-        // shutdown flag and abandon its work.
+    /// The compactions of a clean close, in the calling thread (the
+    /// background threads are joined, and the final flush is done).
+    ///
+    /// First, always: compact until the L0 metric is below `l0_trigger`, so
+    /// that many short sessions cannot grow L0 without bound (before, close
+    /// abandoned the running compaction and then added one more L0 file).
+    /// Then, one compaction at a time while the close budget allows it, until
+    /// no level is over its target. Returns the bytes compacted (read plus
+    /// written) and whether the budget stopped work that was still due.
+    fn compact_for_close(&self, start: Instant) -> Result<(u64, bool)> {
+        // The compaction must not see the shutdown flag and abandon its work.
         self.shutting_down.store(false, Ordering::SeqCst);
         let mut pointers = vec![Vec::new(); NUM_LEVELS];
-        let mut compacted = false;
+        let mut compacted = 0u64;
+        // Time spent in those compactions, the deletion of their inputs
+        // included.
+        let mut compacting = Duration::ZERO;
+        let mut ran = false;
+        // Same test as `close`'s: whether it wrote the CLEAN checkpoint.
+        let closed_clean = !self.compaction_due(&self.state.lock().version.levels);
+        let run = |plan: Plan, pointers: &mut [Vec<u8>]| -> Result<(u64, Duration)> {
+            let (before, began) = (self.compaction_io(), Instant::now());
+            self.compact(&plan, pointers, true)?;
+            drop(plan);
+            Ok((self.compaction_io() - before, began.elapsed()))
+        };
         loop {
             let plan = {
                 let st = self.state.lock();
-                compaction::pick(&st.version.levels, &self.tuning, &pointers)
-            };
-            match plan {
-                Some(plan) => {
-                    if !self.compact(&plan, &mut pointers)? {
-                        return Ok(());
-                    }
-                    compacted = true;
+                if self.tuning.l0_metric(&st.version.levels[0]) < self.tuning.l0_trigger {
+                    break;
                 }
-                None => break,
-            }
+                compaction::pick_l0_floor(&st.version.levels, &self.tuning)
+            };
+            let Some(plan) = plan else { break };
+            let (bytes, took) = run(plan, &mut pointers)?;
+            (compacted, compacting, ran) = (compacted + bytes, compacting + took, true);
         }
-        if compacted {
+        let exhausted = loop {
+            let plan = {
+                let st = self.state.lock();
+                compaction::pick(&st.version.levels, &self.tuning, &pointers, &Busy::default())
+            };
+            let Some(plan) = plan else { break false };
+            if !self.close_budget.allows(compacted, start.elapsed(), compacting, plan.io_bytes()) {
+                break true;
+            }
+            let (bytes, took) = run(plan, &mut pointers)?;
+            (compacted, compacting, ran) = (compacted + bytes, compacting + took, true);
+        };
+        // W-9: `close` wrote the CLEAN checkpoint only if no compaction was
+        // due; otherwise, or if any compaction ran since, it is written now.
+        if ran || !closed_clean {
             let _checkpoint = probe::phase("checkpoint");
             let mut ms = self.manifest.lock();
             let log_number = self.next_file.load(Ordering::SeqCst);
@@ -883,36 +977,45 @@ impl Inner {
             self.write_manifest(&mut ms, &levels, last_seq, log_number, true)?;
             ms.log_number = log_number;
         }
-        Ok(())
+        Ok((compacted, exhausted))
+    }
+
+    /// Bytes read and written by compactions so far.
+    fn compaction_io(&self) -> u64 {
+        self.stats.compaction_bytes_read.load(Ordering::Relaxed)
+            + self.stats.compaction_bytes_written.load(Ordering::Relaxed)
     }
 
     /// Flushes every memtable, writes a MANIFEST that needs no WAL, removes
-    /// the WALs. Background threads must already be stopped.
-    fn close(&self) -> Result<()> {
+    /// the WALs; returns the bytes of the tables written. Background threads
+    /// must already be stopped.
+    fn close(&self) -> Result<u64> {
         let _phase = probe::phase("close");
         let w = self.writer.lock();
         let v = self.state.lock().version.clone();
-        let mut tables = Vec::new();
+        // One group of tables per memtable, oldest memtable first.
+        let mut groups = Vec::new();
+        let l1 = self.l1_for_split();
         for mem in v.imms.iter().rev().chain(std::iter::once(&v.mem)) {
             if !mem.is_empty() {
-                let number = self.next_file.fetch_add(1, Ordering::SeqCst);
-                tables.push(Arc::new(write_memtable(&self.ctx, mem, number, REASON_FLUSH)?));
+                groups.push(self.write_memtable(mem, &l1)?);
             }
         }
-        if !tables.is_empty() {
+        if !groups.is_empty() {
             self.vfs.sync_dir(&self.dir)?;
         }
-        bump(&self.stats.flushes, tables.len() as u64);
-        bump(&self.stats.flush_bytes_written, tables.iter().map(|t| t.size).sum());
+        let flushed_bytes: u64 = groups.iter().flatten().map(|t| t.size).sum();
+        bump(&self.stats.flushes, groups.len() as u64);
+        bump(&self.stats.flush_bytes_written, flushed_bytes);
         let mut ms = self.manifest.lock();
         let mut levels = ms.levels.clone();
-        for t in tables {
-            levels[0].insert(0, t);
+        for group in groups {
+            levels[0].splice(0..0, group);
         }
         // W-9: a compaction that is due runs before the CLEAN checkpoint, so
         // this MANIFEST is the clean one only when none is (the pick is the
-        // one `compact_until_settled` starts with); otherwise it only needs
-        // no WAL, and `compact_until_settled` writes the clean one.
+        // one `compact_for_close` starts with); otherwise it only needs
+        // no WAL, and `compact_for_close` writes the clean one.
         let clean = !self.compaction_due(&levels);
         let log_number =
             if clean { self.next_file.load(Ordering::SeqCst) } else { self.next_file.fetch_add(1, Ordering::SeqCst) };
@@ -938,7 +1041,7 @@ impl Inner {
             }
         }
         self.vfs.sync_dir(&self.dir)?;
-        Ok(())
+        Ok(flushed_bytes)
     }
 
     // ---- test hooks ----
@@ -954,7 +1057,7 @@ impl Inner {
             let idle = self.inline()
                 || st.shutdown
                 || (!st.flush_running
-                    && !st.compaction_running
+                    && st.compactions_running == 0
                     && st.version.imms.is_empty()
                     && !self.compaction_due(&st.version.levels));
             if idle {
@@ -1041,6 +1144,40 @@ impl KernoDb {
     #[doc(hidden)]
     pub fn hooks(&self) -> &dyn TestHooks {
         self
+    }
+}
+
+/// A table of the current version, for tests that check the shape of the
+/// LSM tree.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TableInfo {
+    pub number: u64,
+    pub size: u64,
+    pub entries: u64,
+    pub smallest: Vec<u8>,
+    pub largest: Vec<u8>,
+}
+
+impl KernoDb {
+    /// The tables of every level of the current version (L0 newest first).
+    #[doc(hidden)]
+    pub fn level_tables(&self) -> Vec<Vec<TableInfo>> {
+        let v = self.inner.state.lock().version.clone();
+        v.levels
+            .iter()
+            .map(|l| {
+                l.iter()
+                    .map(|t| TableInfo {
+                        number: t.number,
+                        size: t.size,
+                        entries: t.entries(),
+                        smallest: t.smallest.clone(),
+                        largest: t.largest.clone(),
+                    })
+                    .collect()
+            })
+            .collect()
     }
 }
 
@@ -1228,6 +1365,8 @@ impl KernoDb {
             dir: dir.to_path_buf(),
             durability: cfg.durability,
             tuning: Tuning::new(cfg),
+            max_compactions: cfg.compaction.max_background_compactions,
+            close_budget: cfg.close_budget,
             max_immutable: cfg.max_immutable_memtables,
             limits: cfg.limits,
             background: cfg.test.background,
@@ -1239,6 +1378,10 @@ impl KernoDb {
                 mem,
                 last_seq: r.last_seq,
                 pointers: vec![Vec::new(); NUM_LEVELS],
+                rate: RateController::new(match cfg.compaction.slowdown {
+                    SlowdownPolicy::Rate { initial_bytes_per_sec } => initial_bytes_per_sec,
+                    _ => 0,
+                }),
             }),
             manifest: Mutex::new(ManifestState {
                 levels: r.levels,
@@ -1252,7 +1395,9 @@ impl KernoDb {
                 poisoned: None,
                 shutdown: false,
                 flush_running: false,
-                compaction_running: false,
+                compactions_running: 0,
+                busy: Busy::default(),
+                pointers: vec![Vec::new(); NUM_LEVELS],
             }),
             cv: Condvar::new(),
             poisoned: AtomicBool::new(false),
@@ -1261,8 +1406,12 @@ impl KernoDb {
         });
         let engine = KernoDb { inner: inner.clone(), threads: Mutex::new(Vec::new()) };
         if cfg.test.background == Background::Threads {
-            for (name, body) in [("kerno-flush", Inner::flusher as fn(&Inner)), ("kerno-compact-0", Inner::compactor)] {
-                let handle = Self::spawn(&inner, name, body)?;
+            let compactors = (0..cfg.compaction.max_background_compactions)
+                .map(|i| (format!("kerno-compact-{i}"), Inner::compactor as fn(&Inner)));
+            for (name, body) in
+                [("kerno-flush".to_string(), Inner::flusher as fn(&Inner))].into_iter().chain(compactors)
+            {
+                let handle = Self::spawn(&inner, &name, body)?;
                 engine.threads.lock().push(handle);
             }
         }
@@ -1302,12 +1451,32 @@ impl KernoDb {
         Ok(self.metrics())
     }
 
-    fn close_inner(&self) -> Result<()> {
+    /// Closes the handle: flushes every memtable, compacts within the
+    /// [`CloseBudget`] (always enough to bring the L0 metric below
+    /// `l0_trigger`) and leaves a MANIFEST that needs no WAL. Dropping the
+    /// handle instead is a crash as far as the files are concerned.
+    pub fn close(self) -> Result<CloseReport> {
+        let _phase = probe::phase("close");
+        self.close_inner()
+    }
+
+    fn close_inner(&self) -> Result<CloseReport> {
+        let start = Instant::now();
         self.stop_threads();
         self.inner.check_poisoned()?;
-        self.inner.or_poison("close failed", || {
-            self.inner.close()?;
-            self.inner.compact_until_settled()
+        let inner = &*self.inner;
+        let (flushed_bytes, (compacted_bytes, budget_exhausted)) = inner.or_poison("close failed", || {
+            let flushed = inner.close()?;
+            Ok((flushed, inner.compact_for_close(start)?))
+        })?;
+        let l0 = inner.state.lock().version.levels[0].clone();
+        Ok(CloseReport {
+            duration: start.elapsed(),
+            flushed_bytes,
+            compacted_bytes,
+            budget_exhausted,
+            l0_files: l0.len() as u64,
+            l0_depth: compaction::l0_depth(&l0) as u64,
         })
     }
 }
@@ -1341,8 +1510,7 @@ impl Engine for KernoDb {
     }
 
     fn close(self) -> Result<()> {
-        let _phase = probe::phase("close");
-        self.close_inner()
+        KernoDb::close(self).map(drop)
     }
 
     /// [`KernoDb::metrics`], flattened ([`Metrics::flatten`]).

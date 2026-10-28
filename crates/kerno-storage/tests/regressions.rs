@@ -209,7 +209,7 @@ mod outliving_snapshot {
 
     fn settle(db: &KernoDb) {
         let deadline = Instant::now() + Duration::from_secs(20);
-        while stat(db, "immutable_memtables") > 0 || stat(db, "l0_files") >= 4 {
+        while stat(db, "immutable_memtables") > 0 || stat(db, "l0_depth") >= 4 {
             assert!(Instant::now() < deadline, "background work did not settle");
             std::thread::sleep(Duration::from_millis(2));
         }
@@ -354,8 +354,11 @@ mod short_sessions {
             apply(&mut model, &b);
             db.close().unwrap();
             let db = <KernoDb as Engine>::open(vfs.clone(), dir, &opts).unwrap();
-            let l0 = stat(&db, "l0_files");
-            assert!(l0 < 4, "session {session}: {l0} L0 files after a clean close");
+            // The depth is what the trigger bounds; flush split may double
+            // the number of files.
+            let (depth, files) = (stat(&db, "l0_depth"), stat(&db, "l0_files"));
+            assert!(depth < 4, "session {session}: L0 depth {depth} after a clean close");
+            assert!(files <= 8, "session {session}: {files} L0 files after a clean close");
             drop(db);
         }
         let db = <KernoDb as Engine>::open(vfs.clone(), dir, &opts).unwrap();

@@ -4,7 +4,7 @@
 //! spike-bench suite  [--engines btree,lsm,kerno,redb,fjall,sqlite] [--workloads all|a,b]
 //!                    [--scales small,medium] [--reps 3] [--durability sync|buffered]
 //!                    [--cold true] [--threads 8] [--trace false] [--dir bench-data]
-//!                    [--out results.jsonl]
+//!                    [--out results.jsonl] [--tuning field=value,...]
 //! spike-bench run    --engine E --workload W --n N [--durability sync] [--dir D] [--seed S]
 //!                    [--threads 8] [--trace false]
 //! spike-bench report --input results.jsonl [--baseline FILE [--baseline-label L]]
@@ -25,7 +25,8 @@
 //!   commits to engine phases (`attr_*`, see `workloads::CommitTrace`).
 //! * Engine `kerno-tuned` (hidden, feature `kerno`): `kerno-storage` with the
 //!   configuration changed by `KERNO_TUNING` (A/B experiments,
-//!   `kerno_storage::testing::Tuned`); rows carry it as `tuning` and the
+//!   `kerno_storage::testing::Tuned`; `suite --tuning SPEC` sets the variable
+//!   for the runs it starts); rows carry it as `tuning` and the
 //!   report names the engine `kerno-tuned[<tuning>]`.
 //! * `report --baseline FILE --baseline-label L` adds the rows of another
 //!   results file as engines `<engine>@<L>` (default label `baseline`),
@@ -177,6 +178,8 @@ fn cmd_suite(args: &Args) {
     let trace = args.get_or("trace", "false");
     let dir = args.get_or("dir", "bench-data");
     let out = PathBuf::from(args.get_or("out", "results.jsonl"));
+    // Reaches `kerno-tuned` through its environment variable.
+    let tuning = args.get("tuning");
     std::fs::create_dir_all(&dir).unwrap();
     let exe = std::env::current_exe().unwrap();
     let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&out).unwrap();
@@ -189,7 +192,11 @@ fn cmd_suite(args: &Args) {
                     done += 1;
                     eprint!("[{done}/{total}] {scale} {workload} {engine} rep {rep} ... ");
                     let t = Instant::now();
-                    let output = Command::new(&exe)
+                    let mut command = Command::new(&exe);
+                    if let Some(tuning) = &tuning {
+                        command.env("KERNO_TUNING", tuning);
+                    }
+                    let output = command
                         .args(["run", "--engine", engine, "--workload", workload, "--n", scale])
                         .args(["--durability", &durability, "--dir", &dir, "--seed", &(42 + rep).to_string()])
                         .args(["--cold", &cold, "--threads", &threads, "--trace", &trace])

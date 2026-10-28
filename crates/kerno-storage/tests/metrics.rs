@@ -542,7 +542,8 @@ fn expected_pending(m: &Metrics, cfg: &CompactionConfig) -> u64 {
 #[test]
 fn pending_compaction_bytes_reported() {
     let sim = SimVfs::new(7);
-    let cfg = Config::from(&Options::small_for_tests());
+    // The M0 policy: this test counts L0 files against the trigger.
+    let cfg = Config { compaction: CompactionConfig::m0(16 << 10), ..Config::from(&Options::small_for_tests()) };
     assert_eq!(cfg.compaction.l0_trigger, 4);
     let value = vec![9u8; 17 << 10]; // fills a 16 KiB memtable
 
@@ -600,7 +601,7 @@ fn read_delta(after: &ReadMetrics, before: &ReadMetrics) -> [u64; 4] {
 #[test]
 fn l0_files_max_includes_the_l0_found_at_open() {
     let vfs = SimVfs::new(11).as_vfs();
-    let small = Config::from(&Options::small_for_tests());
+    let small = Config { compaction: CompactionConfig::m0(16 << 10), ..Config::from(&Options::small_for_tests()) };
     let deep = Config {
         compaction: CompactionConfig { l0_trigger: 100, l0_slowdown: 100, l0_stop: 100, ..small.compaction.clone() },
         ..small.clone()

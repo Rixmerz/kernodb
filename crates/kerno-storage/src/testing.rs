@@ -13,7 +13,12 @@
 //! * [`Inline`] (`kerno-inline`): flushes and compactions run in the
 //!   committing thread instead of background threads
 //!   ([`Background::Inline`]), so the sequence of file-system operations is
-//!   deterministic.
+//!   deterministic. Its close budget has no time limit, so a close is as
+//!   deterministic as the rest.
+//! * [`M0`] (`kerno-m0`): every condition-1 lever off and an unbounded close
+//!   ([`CompactionConfig::m0`], [`CloseBudget::Unbounded`]), so that the
+//!   shared suites also run against the M0 behaviour and a regression can be
+//!   bisected to a lever.
 
 use std::marker::PhantomData;
 use std::path::Path;
@@ -23,7 +28,7 @@ use kerno_core::contract::{Engine, Options, TestHooks};
 use kerno_core::vfs::Vfs;
 use kerno_core::{Result, WriteBatch};
 
-use crate::{Background, Config, KernoDb, KernoSnapshot, SlowdownPolicy};
+use crate::{Background, CloseBudget, CompactionConfig, Config, KernoDb, KernoSnapshot, L0Metric, SlowdownPolicy};
 
 /// A named adjustment of the [`Config`] derived from the harness
 /// [`Options`].
@@ -59,6 +64,20 @@ impl Profile for Inline {
 
     fn adjust(cfg: &mut Config) {
         cfg.test.background = Background::Inline;
+        cfg.close_budget = cfg.close_budget.deterministic();
+    }
+}
+
+/// The M0 engine: [`CompactionConfig::m0`] for the write buffer of the
+/// harness options and an unbounded close.
+pub struct M0;
+
+impl Profile for M0 {
+    const NAME: &'static str = "kerno-m0";
+
+    fn adjust(cfg: &mut Config) {
+        cfg.compaction = CompactionConfig::m0(cfg.write_buffer_bytes);
+        cfg.close_budget = CloseBudget::Unbounded;
     }
 }
 
@@ -84,7 +103,7 @@ impl<P: Profile> Engine for Profiled<P> {
     }
 
     fn close(self) -> Result<()> {
-        self.0.close()
+        self.0.close().map(drop)
     }
 
     fn stats(&self) -> Vec<(String, u64)> {
@@ -121,16 +140,63 @@ impl Profile for Tuned {
 ///   `l0_slowdown`, `l0_stop`, `level_multiplier`, `level_base_bytes`,
 ///   `target_file_size` (integers), `slowdown` (`off`, or `sleep:<micros>`),
 ///   `bytes_per_sync` (bytes, or `none`);
-/// * of [`Config`]: `max_immutable_memtables`.
+/// * of [`CompactionConfig`](crate::CompactionConfig) as well: `flush_split`,
+///   `l0_priority`, `l0_partial`, `l0_trivial_move` (`true` or `false`),
+///   `l0_metric` (`files` or `depth`), `max_compaction_bytes`,
+///   `grandparent_overlap_bytes`, `heap_merge_threshold`, `max_subcompactions`,
+///   `close_subcompactions`,
+///   `max_background_compactions` (integers), and
+///   `slowdown=rate:<bytes per second>`;
+/// * of [`Config`]: `max_immutable_memtables`, and `close_budget`
+///   (`unbounded`, or `<max bytes>` or `<max bytes>:<max millis>`).
+///
+/// `m0` alone as an item replaces the compaction configuration and the close
+/// budget with [`CompactionConfig::m0`] and an unbounded close.
 ///
 /// `KernoDb::open` validates the result as usual.
 pub fn apply_tuning(spec: &str, cfg: &mut Config) -> std::result::Result<(), String> {
     for item in spec.split(',').map(str::trim).filter(|i| !i.is_empty()) {
+        if item == "m0" {
+            cfg.compaction = CompactionConfig::m0(cfg.write_buffer_bytes);
+            cfg.close_budget = CloseBudget::Unbounded;
+            continue;
+        }
         let (key, value) = item.split_once('=').ok_or_else(|| format!("`{item}` is not field=value"))?;
         let (key, value) = (key.trim(), value.trim());
         let int = || value.parse::<u64>().map_err(|_| format!("{key}: `{value}` is not an integer"));
+        let flag = || value.parse::<bool>().map_err(|_| format!("{key}: `{value}` is neither true nor false"));
         let c = &mut cfg.compaction;
         match key {
+            "max_subcompactions" => c.max_subcompactions = int()? as usize,
+            "close_subcompactions" => c.close_subcompactions = int()? as usize,
+            "max_background_compactions" => c.max_background_compactions = int()? as usize,
+            "flush_split" => c.flush_split = flag()?,
+            "l0_priority" => c.l0_priority = flag()?,
+            "l0_partial" => c.l0_partial = flag()?,
+            "l0_trivial_move" => c.l0_trivial_move = flag()?,
+            "l0_metric" => {
+                c.l0_metric = match value {
+                    "files" => L0Metric::Files,
+                    "depth" => L0Metric::Depth,
+                    _ => return Err(format!("l0_metric: `{value}` is neither files nor depth")),
+                }
+            }
+            "max_compaction_bytes" => c.max_compaction_bytes = Some(int()?),
+            "grandparent_overlap_bytes" => c.grandparent_overlap_bytes = Some(int()?),
+            "heap_merge_threshold" => c.heap_merge_threshold = int()? as usize,
+            "close_budget" => {
+                cfg.close_budget = if value == "unbounded" {
+                    CloseBudget::Unbounded
+                } else {
+                    let (bytes, millis) = value.split_once(':').map_or((value, None), |(b, m)| (b, Some(m)));
+                    let max_bytes = bytes.parse().map_err(|_| format!("close_budget: `{bytes}` is not an integer"))?;
+                    let max_duration = millis
+                        .map(|m| m.parse().map(std::time::Duration::from_millis))
+                        .transpose()
+                        .map_err(|_| format!("close_budget: `{value}` has a bad duration"))?;
+                    CloseBudget::Bounded { max_bytes, max_duration }
+                }
+            }
             "l0_trigger" => c.l0_trigger = int()? as usize,
             "l0_slowdown" => c.l0_slowdown = int()? as usize,
             "l0_stop" => c.l0_stop = int()? as usize,
@@ -142,11 +208,15 @@ pub fn apply_tuning(spec: &str, cfg: &mut Config) -> std::result::Result<(), Str
             "slowdown" => {
                 c.slowdown = if value == "off" {
                     SlowdownPolicy::Off
+                } else if let Some(rate) = value.strip_prefix("rate:") {
+                    let initial_bytes_per_sec =
+                        rate.parse().map_err(|_| format!("slowdown: `{rate}` is not an integer"))?;
+                    SlowdownPolicy::Rate { initial_bytes_per_sec }
                 } else if let Some(us) = value.strip_prefix("sleep:") {
                     let micros = us.parse().map_err(|_| format!("slowdown: `{us}` is not an integer"))?;
                     SlowdownPolicy::Sleep { micros }
                 } else {
-                    return Err(format!("slowdown: `{value}` is neither off nor sleep:<micros>"));
+                    return Err(format!("slowdown: `{value}` is neither off, sleep:<micros> nor rate:<bytes>"));
                 }
             }
             other => return Err(format!("unknown field `{other}`")),

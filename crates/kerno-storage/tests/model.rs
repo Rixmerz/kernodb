@@ -8,6 +8,10 @@
 //! minimal one and replays exactly. Durability is `Sync`, so a power loss
 //! keeps every acknowledged commit.
 //!
+//! The second property runs the same histories with the condition-1 levers
+//! at their most aggressive (`aggressive`), so that a wrong L0 subset or a
+//! wrong cut shows up as a stale read.
+//!
 //! Cases: `PROPTEST_CASES`, else `SPIKE_SEEDS` (like the harness suites),
 //! else 256.
 
@@ -15,7 +19,7 @@ use std::path::Path;
 
 use kerno_core::WriteBatch;
 use kerno_core::contract::{Engine, Snapshot};
-use kerno_storage::{Background, Config, KernoDb, KernoSnapshot, TestConfig};
+use kerno_storage::{Background, CloseBudget, CompactionConfig, Config, KernoDb, KernoSnapshot, L0Metric, TestConfig};
 use kerno_testkit::harness::{Model, apply, diff, read_all};
 use kerno_testkit::vfs::{CrashKind, SimVfs};
 use proptest::prelude::*;
@@ -70,17 +74,46 @@ fn value(n: u64, len: u16) -> Vec<u8> {
     v
 }
 
-fn config() -> Config {
-    Config {
+/// The levers the second property test pushes hard: small L0 limits, tiny
+/// compaction inputs and outputs, a grandparent cut at nearly every file, the
+/// heap merge from two children up, and closes that leave debt behind.
+fn aggressive() -> (CompactionConfig, CloseBudget) {
+    let compaction = CompactionConfig {
+        l0_trigger: 2,
+        l0_slowdown: 4,
+        l0_stop: 8,
+        level_base_bytes: Some(6 << 10),
+        level_multiplier: 3,
+        target_file_size: Some(2 << 10),
+        l0_metric: L0Metric::Depth,
+        l0_priority: true,
+        l0_partial: true,
+        max_compaction_bytes: Some(3 << 10),
+        grandparent_overlap_bytes: Some(2 << 10),
+        l0_trivial_move: true,
+        flush_split: true,
+        heap_merge_threshold: 1,
+        max_subcompactions: 3,
+        ..CompactionConfig::default()
+    };
+    (compaction, CloseBudget::Bounded { max_bytes: 4 << 10, max_duration: None })
+}
+
+fn config(levers: bool) -> Config {
+    let mut cfg = Config {
         cache_bytes: 64 << 10,
         write_buffer_bytes: 4 << 10,
         test: TestConfig { background: Background::Inline, db_id: None },
         ..Config::default()
+    };
+    if levers {
+        (cfg.compaction, cfg.close_budget) = aggressive();
     }
+    cfg
 }
 
-fn open(disk: &SimVfs) -> KernoDb {
-    KernoDb::open(disk.as_vfs(), Path::new(DIR), &config()).unwrap_or_else(|e| panic!("open failed: {e}"))
+fn open(disk: &SimVfs, levers: bool) -> KernoDb {
+    KernoDb::open(disk.as_vfs(), Path::new(DIR), &config(levers)).unwrap_or_else(|e| panic!("open failed: {e}"))
 }
 
 /// Full scan and a point read of every key of the alphabet.
@@ -102,13 +135,13 @@ struct LiveSnapshot {
     taken_at: usize,
 }
 
-fn run(seed: u64, ops: &[Op]) {
+fn run(seed: u64, ops: &[Op], levers: bool) {
     let mut disk = SimVfs::new(seed);
     // Tearing at any byte on odd seeds, as in the harness sweeps.
     if seed % 2 == 1 {
         disk.set_tear_unit(1);
     }
-    let mut db = Some(open(&disk));
+    let mut db = Some(open(&disk, levers));
     let mut model = Model::new();
     let mut seq = 0u64;
     let mut puts = 0u64;
@@ -140,11 +173,11 @@ fn run(seed: u64, ops: &[Op]) {
             }
             Op::CleanReopen => {
                 db.take().unwrap().close().unwrap_or_else(|e| panic!("{ctx}: close failed: {e}"));
-                db = Some(open(&disk));
+                db = Some(open(&disk, levers));
             }
             Op::DropReopen => {
                 drop(db.take());
-                db = Some(open(&disk));
+                db = Some(open(&disk, levers));
             }
             Op::PowerLoss => {
                 let image = disk.crash_now(CrashKind::PowerLoss);
@@ -153,7 +186,7 @@ fn run(seed: u64, ops: &[Op]) {
                 drop(db.take());
                 snaps.clear();
                 disk = image;
-                db = Some(open(&disk));
+                db = Some(open(&disk, levers));
             }
         }
         // The current state, and every snapshot still alive (also those
@@ -193,6 +226,16 @@ proptest! {
 
     #[test]
     fn prop_model_put_delete_snapshot_reopen(seed in any::<u64>(), ops in prop::collection::vec(op(), 1..300)) {
-        run(seed, &ops);
+        run(seed, &ops, false);
+    }
+
+    /// The same histories under partial L0 compactions, flush split, trivial
+    /// moves, the grandparent cut, heap merges and budgeted closes.
+    #[test]
+    fn prop_partial_l0_and_flush_split_preserve_model(
+        seed in any::<u64>(),
+        ops in prop::collection::vec(op(), 1..300),
+    ) {
+        run(seed, &ops, true);
     }
 }

@@ -46,10 +46,10 @@ fn dir_size(vfs: &dyn Vfs) -> u64 {
 }
 
 /// Waits until background work has caught up (no immutable memtables, L0
-/// below the compaction trigger).
+/// depth below the compaction trigger).
 fn settle(db: &KernoDb) {
     let deadline = Instant::now() + Duration::from_secs(20);
-    while stat(db, "immutable_memtables") > 0 || stat(db, "l0_files") >= 4 {
+    while stat(db, "immutable_memtables") > 0 || stat(db, "l0_depth") >= 4 {
         assert!(Instant::now() < deadline, "background work did not settle");
         std::thread::sleep(Duration::from_millis(2));
     }

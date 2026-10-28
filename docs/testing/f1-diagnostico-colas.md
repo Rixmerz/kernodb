@@ -166,3 +166,94 @@ Ningún commit de la cola de las ejecuciones con traza poco cargadas cambió de 
 - **`wal_sync_busy`** marca una sincronización como concurrente con escritura de fondo si había un flush o una compactación en curso al empezar o al terminar; una escritura de fondo que empieza y termina dentro de la sincronización no se ve. La escritura que el núcleo hace por su cuenta (`writeback`) tampoco.
 - **Histogramas aproximados.** Los percentiles del motor tienen un error < 25 %; la atribución usa sumas exactas (al microsegundo) por commit.
 - **La traza** añade dos llamadas a `stats()` por paso de `agent_memory` (fuera de la medición) y por eso no se usa para comparar motores.
+
+## 7. Resultados de WP05
+
+| Campo | Valor |
+|---|---|
+| Estado | **Provisional.** La máquina se compartía con otros paquetes (carga de 1 minuto entre 0,7 y 7,4 durante las ejecuciones; cada fila de `results.jsonl` lleva `load1`/`load5`/`load15` y `env.json` la carga inicial). La medición de referencia es la de WP14, con la máquina en reposo |
+| Fecha | 2026-10-28 |
+| Código medido | `kerno-storage` con las palancas de la condición 1 (§5.4 del diseño) sobre `8f720db`; `results.jsonl`, `report.md`, `large.jsonl`, `env.json` y los archivos `round2-*` son de la versión final, con las palancas del cierre (§7.4) |
+| Datos | [`spikes/storage/results/2026-10-28-f1-wp05/`](../../spikes/storage/results/2026-10-28-f1-wp05): `results.jsonl` y [`report.md`](../../spikes/storage/results/2026-10-28-f1-wp05/report.md) (las seis cargas, escala `medium`, 3 repeticiones, `--durability sync`, `lsm`, `kerno`, `btree` y `fjall` intercalados en la misma sesión), `large.jsonl` (`bulk_load`, escala `large`, 1 repetición), `rerun-agent_memory.jsonl` (repetición de `agent_memory` con 5 repeticiones, una vez más con la máquina menos cargada), `ab.jsonl` (palanca a palanca), `cond.jsonl` y `cond-final.jsonl` (paso condicional), `cauce-ab.jsonl`, `round2-close.jsonl` (cierre de `bulk_load`, `medium` con 10 repeticiones y `large` con 3), `round2-cauce-attribution.jsonl` y `round2-compaction-syncs.jsonl` (atribución de T2 de Cauce), `round2-agent_memory.jsonl` (`bytes_per_sync` frente a T1), `env.json` |
+
+### 7.1 Valores por defecto finales
+
+El diagnóstico (§4) no rechazó ninguna palanca por completo, así que todas están encendidas por defecto salvo dos:
+
+- `l0_priority = false`: H2 no mostró el efecto «L0 sin prioridad» (§4). Encenderla no cambió el p99 (2,73 ms con la palanca frente a 2,55 ms sin ella, mediana de 5 y 35 ejecuciones respectivamente, dentro del ruido).
+- `max_subcompactions = 1` y `max_background_compactions = 1`: el paso condicional (§7.3) está implementado y probado, pero no demostró una mejora fuera del ruido.
+
+El resto: `flush_split`, `l0_metric = Depth`, `l0_partial`, `l0_trivial_move`, `slowdown = Rate { 16 MiB/s }`, `bytes_per_sync = 1 MiB`, `heap_merge_threshold = 8`, `close_subcompactions = 8` (solo para las compactaciones del cierre, que además no sincronizan por tramos; §7.4), `max_compaction_bytes` 25 × y `grandparent_overlap_bytes` 10 × el tamaño objetivo; cierre `Bounded { 256 MiB, 200 ms }`. El perfil `M0` las apaga todas.
+
+### 7.2 Efecto de cada palanca en T1 (`ab.jsonl`, `agent_memory`, `medium`)
+
+`memory_write_p99_us`, mediana de las ejecuciones (cada variante con 5; los valores por defecto con 35 repartidas en la sesión; carga de 1 minuto 0,7–2,0):
+
+| Variante | p99 (µs) | Frente al valor por defecto |
+|---|---:|---:|
+| valores por defecto | 2 554 | — |
+| perfil `m0` (todas las palancas apagadas) | 5 087 | 2,0× peor |
+| `bytes_per_sync = none` | 3 822 | 1,5× peor |
+| `slowdown = sleep:1000` | 2 806 | +10 % (ruido) |
+| `flush_split = false` | 2 718 | +6 % (ruido) |
+| `l0_priority = true` | 2 728 | +7 % (ruido) |
+| `l0_partial = false` | 2 570 | 0 % |
+| `l0_metric = files` | 2 257 | −12 % (ruido) |
+
+Las palancas juntas reducen a la mitad el p99 del M0. De ellas, solo `bytes_per_sync` se distingue del ruido por sí sola (coherente con H3, §4); el resto actúa en conjunto o por debajo de la resolución de estas medidas, y la dispersión entre ejecuciones del valor por defecto (2,0–3,8 ms) es mayor que la diferencia entre ellas.
+
+### 7.3 T1 y la regla de decisión
+
+Objetivo T1: `memory_write_p99_us` ≤ 2,0× fjall **y** ≤ 1,5× spike-btree, en la misma sesión.
+
+| Medición | `kerno` | fjall | btree | `kerno` / fjall | `kerno` / btree | Carga (1 min) |
+|---|---:|---:|---:|---:|---:|---|
+| `results.jsonl`, 3 repeticiones (versión final) | 2 480 | 795 | 1 342 | 3,12× | 1,85× | 1,1–1,2 |
+| `rerun-agent_memory.jsonl`, 5 repeticiones (repetición con menos carga) | 2 748 | 1 059 | 1 376 | 2,60× | 2,00× | 1,3–1,7 |
+| `cond-final.jsonl`, 15 repeticiones | 2 585 | 974 | 1 340 | 2,65× | 1,93× | 0,9–1,7 |
+| `cond-final.jsonl`, `max_subcompactions=4,max_background_compactions=2` | 2 372 | 974 | 1 340 | 2,43× | 1,77× | 1,2–1,7 |
+
+(El p99 de M0 en la misma sesión: `lsm` 5 472 µs, es decir 6,0× fjall y 4,3× btree.)
+
+1. Con los valores por defecto, T1 **no se cumple** y el desvío es > 25 % (2,65× frente a 2,0× es +33 %; 1,93× frente a 1,5× es +29 %). Se repitió esta carga una vez con la máquina menos cargada (`rerun-agent_memory.jsonl`): mismo resultado (+30 % y +33 %), así que no se debe al ruido de esa sesión.
+2. Según la regla, se implementó dentro de WP05 el paso condicional: subcompactaciones (la compactación de L0 se divide en límites de archivos de L1, `std::thread::scope`, salidas instaladas en **una** edición del MANIFEST) y `max_background_compactions = 2` (conjunto `being_compacted` bajo el cerrojo del MANIFEST, `pick` excluye esas entradas, exclusión de rangos de salida en el mismo nivel, `compaction::apply` lo vuelve a comprobar), con las pruebas `subcompactions_install_single_manifest_write` y `concurrent_compactions_preserve_model`.
+3. Se volvió a medir (`cond.jsonl` con cada mitad por separado y las dos juntas, `cond-final.jsonl` con las dos juntas y 15 repeticiones intercaladas con los demás motores): el p99 baja a 2 372 µs (−8 %, 2,43× fjall y 1,77× btree). Esa mejora cae dentro de la dispersión (en `cond.jsonl` las medianas de las tres variantes son 2 211–3 035 µs frente a 2 560 sin ellas, sin orden estable), de modo que **T1 sigue sin cumplirse** y el paso condicional no demuestra efecto.
+4. **Decisión: GO no concedido; candidato a NO-GO, provisional hasta WP14.** Se escribe [f1-decision-cond1.md](f1-decision-cond1.md) y se señala al propietario. La ejecución secuencial continúa y el formato v1 no depende de esta decisión.
+
+### 7.4 T2–T5 (`report.md`, `large.jsonl`; mediana de 3 repeticiones)
+
+| Objetivo | Medida | `kerno` | Referencia | Proporción | Objetivo | |
+|---|---|---:|---|---:|---|---|
+| T2 | LiveSpec `changeset_commit_p99_us` | 3 021 | `lsm` 4 362 | 0,69× | ≤ 1,2× | cumple |
+| T2 | `append_seq` inserción `append_commit100_p99_us` | 1 888 | `lsm` 4 313 | 0,44× | ≤ 1,2× | cumple |
+| T2 | `append_seq` actualización `update_commit100_p99_us` | 3 774 | `lsm` 6 070 / fjall 1 425 | 0,62× / 2,65× | ≤ 1,2× `lsm`, ≤ 2× fjall | `lsm` sí, fjall **no** |
+| T2 | `history_sim` `rev_commit100_p99_us` | 5 239 | `lsm` 8 196 | 0,64× | ≤ 1,2× | cumple |
+| T2 | Cauce `step_commit_p99_us` | 1 117 | `lsm` 484 | 2,31× | ≤ 1,2× | **no cumple** (atribuido a `bytes_per_sync`; conflicto con T1) |
+| T3 | LiveSpec `symbol_get_p99_us` | 31,6 | `lsm` 29,6 | 1,07× | ≤ 1,2× | cumple |
+| T3 | LiveSpec `module_scan_p99_us` | 617 | `lsm` 666 / btree 306 | 0,93× / 2,02× | ≤ 1,2× `lsm`, ≤ 1,5× btree | `lsm` sí, btree **no** (el M0 tampoco: `lsm` 2,18× btree) |
+| T3 | Cauce `step_read_p99_us` | 77,6 | `lsm` 73,5 | 1,06× | ≤ 1,2× | cumple |
+| T3 | `recall_p99_us` / `recent_scan_p99_us` | 55,4 / 65,1 | `lsm` 56,8 / 68,5 | 0,98× / 0,95× | ≤ 1,2× | cumple |
+| T4 | `bulk_load` `close_ms`, `medium` | 204 (192–222) | `lsm` 726, fjall 70 | — | ≤ 250 ms | cumple |
+| T4 | `bulk_load` `close_ms`, `large` (1 repetición) | 376 | `lsm` 3 401, fjall 970 | — | ≤ 1 000 ms | cumple |
+| T5 | rendimiento: LiveSpec / Cauce / `append_seq` / `agent_memory` / `history_sim` / `bulk_load` | 791 / 4 202 / 183 / 1 368 / 78,7 / 209 | `lsm` 774 / 4 485 / 174 / 1 276 / 81,9 / 187 | 1,02× / 0,94× / 1,05× / 1,07× / 0,96× / 1,12× | ≥ 0,9× | cumple |
+
+Carga de 1 minuto de `results.jsonl`: 1,1–1,5; de `large.jsonl`: 1,2–1,6.
+
+Lectura:
+
+- **T4: se cumple con las palancas del cierre.** La primera medición (587 ms `medium`, 1 270 ms `large`) se quedaba en el tramo **obligatorio** del cierre: `bulk_load` carga en orden aleatorio, así que cada archivo de L0 abarca todas las claves y cada uno que baja reescribe todo L1. Desglose de un cierre `medium` antes de los cambios de abajo (ms, carga ~1): ~25 esperar al flush en curso del hilo de fondo, ~10 volcar la memtable, ~135 compactar ~108 MB de entrada (6 archivos de L0 y 8 de L1) y ~50 borrar esas entradas (el sistema de archivos tarda ~0,5 ms por MB en liberar archivos recién escritos, también en paralelo: 56 frente a 58 ms para 112 MB en una prueba aparte). Cuatro cambios, todos solo del cierre, sin relajar el suelo obligatorio (la métrica de L0 sigue quedando por debajo de `l0_trigger` tras cada cierre limpio):
+  1. El tramo obligatorio toma, con `l0_partial`, solo los archivos más viejos que hacen falta para dejar la métrica por debajo de `l0_trigger` (3 de 6 en `bulk_load`; ~90 MB de entrada en vez de ~108). Prueba: `close_floor_takes_only_the_oldest_files_it_needs`.
+  2. Las compactaciones del cierre se parten en subintervalos (`close_subcompactions = 8`); las de fondo siguen con `max_subcompactions = 1`, porque en el A/B de `agent_memory` ese valor a 4 subió el p99 de 2 609 a 3 076 µs (`round2-agent_memory.jsonl`). Prueba: `close_compaction_uses_close_subcompactions`.
+  3. Las SST de esas compactaciones no hacen los `sync_data` intermedios de `bytes_per_sync`, que existen para que la escritura de fondo no compita con el `fdatasync` del WAL; al cerrar no hay WAL escribiendo.
+  4. El presupuesto de tiempo ya no deja empezar una compactación que, al ritmo de las anteriores del mismo cierre (borrado incluido), acabaría después de `max_duration`: antes, una compactación empezada a los 198 ms llevó un cierre a 266 ms.
+
+  Resultado: `medium` 204 ms de mediana (192–222, `results.jsonl`) y 210 ms (200–230, 10 repeticiones, `round2-close.jsonl`), frente a 250 ms de objetivo; `large` 376 ms (`large.jsonl`) y 358 ms (353–382, 3 repeticiones). Con la carga de 1,1–1,6 de estas sesiones hay ~40 ms de margen; la medición de referencia sigue siendo la de WP14.
+- **T2 de Cauce: atribuido, y en conflicto con T1.** Con la máquina menos cargada (carga 0,9–1,8; `round2-cauce-attribution.jsonl`, 7 repeticiones por variante, medianas de `step_commit_p99_us`): `lsm` 537 µs, `kerno` 1 124 µs (2,09×), `kerno-tuned[m0]` 540 µs, `bytes_per_sync=none` 529 µs, `slowdown=off` 1 125 µs, `flush_split=false` 1 057 µs. La regresión se debe a `bytes_per_sync`; el frenado por tasa y `flush_split` no influyen. Dentro de `bytes_per_sync`, son los `sync_data` intermedios de las **compactaciones**: quitarlos solo de ellas (`round2-compaction-syncs.jsonl`, 6–7 repeticiones intercaladas, carga 1,3–1,5) deja Cauce en 620 µs frente a 525 de `lsm` (1,18×, dentro del objetivo), pero sube el p99 de `agent_memory` de 2 304 a 3 382 µs (rangos 1 990–2 712 y 2 662–4 223, sin solaparse), es decir, empeora T1, que ya es el incumplimiento principal. Valores mayores del parámetro dan el mismo intercambio (`round2-agent_memory.jsonl`). Por eso se deja `bytes_per_sync = 1 MiB` en las compactaciones de fondo y la elección entre T1 y T2 de Cauce queda para el propietario ([f1-decision-cond1.md](f1-decision-cond1.md)); el interruptor de esa prueba fue temporal y no está en el código.
+- **T3 de `module_scan`.** Frente a `lsm` se cumple (0,93× en `results.jsonl`; 1,10× en `round2-cauce-attribution.jsonl`): el 1,24× de la primera medición era ruido de una sesión con carga 5+. Frente a btree sigue en 2,02×, pero el M0 está igual (`lsm` 2,18× btree en la misma sesión; `kerno-tuned[m0]` 626 µs frente a 684 de `kerno` en `round2-cauce-attribution.jsonl`): es el coste de un recorrido que fusiona varios niveles de un LSM frente a un árbol B, no de una palanca de WP05.
+- **T5.** `kerno` queda en 0,94–1,12× de `lsm`.
+
+### 7.5 Aceptación del paquete
+
+- `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings` y `cargo test --workspace --all-features --release` pasan.
+- Cierre acotado: las pruebas de `tests/close_budget.rs` (`l0_bounded_across_100_short_sessions`: profundidad de L0 < `l0_trigger` y ≤ 2 × `l0_trigger` archivos tras cada cierre; `space_bounded_across_100_short_sessions`; `budgeted_close_crash_at_every_point`).
+- **T1 no cumplido; T4 cumplido** (`medium` 204 ms, `large` 376 ms) tras las palancas del cierre. Siguen sin cumplirse T2 de Cauce (atribuido a `bytes_per_sync`, en conflicto con T1), `module_scan` frente a btree (igual que el M0) y `append_seq` actualización frente a fjall. La decisión de la condición 1 queda en [f1-decision-cond1.md](f1-decision-cond1.md) para el propietario.

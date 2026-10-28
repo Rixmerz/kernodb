@@ -325,6 +325,11 @@ pub struct BackgroundMetrics {
     pub compactions: u64,
     pub compaction_micros_max: u64,
     pub trivial_moves: u64,
+    /// Key ranges merged in parallel by split compactions
+    /// (`max_subcompactions`); 0 when none was split.
+    pub subcompactions: u64,
+    /// The most compactions that ran at once.
+    pub compactions_concurrent_max: u64,
     pub compaction_bytes_read: u64,
     pub compaction_bytes_written: u64,
     pub tombstones_dropped: u64,
@@ -456,6 +461,8 @@ impl Metrics {
         put("compactions", b.compactions);
         put("compaction_micros_max", b.compaction_micros_max);
         put("trivial_moves", b.trivial_moves);
+        put("subcompactions", b.subcompactions);
+        put("compactions_concurrent_max", b.compactions_concurrent_max);
         put("compaction_bytes_read", b.compaction_bytes_read);
         put("compaction_bytes_written", b.compaction_bytes_written);
         put("tombstones_dropped", b.tombstones_dropped);

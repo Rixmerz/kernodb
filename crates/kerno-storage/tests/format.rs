@@ -21,7 +21,7 @@ use kerno_storage::format::limits::MAX_SEQ;
 use kerno_storage::format::manifest::{Edit, Record, encode_manifest, replay_manifest, reseal_record};
 use kerno_storage::format::sst::{FOOTER_LEN, SstExpect, decode_footer, open_sst};
 use kerno_storage::format::wal::{CanonicalCommit, Frame, WalScan, WalScanParams, encode_frame, scan_wal};
-use kerno_storage::{Background, Config, KernoDb, Limits, TestConfig};
+use kerno_storage::{Background, CloseBudget, CompactionConfig, Config, KernoDb, Limits, TestConfig};
 use kerno_testkit::harness::{Model, apply, read_all};
 use kerno_testkit::rng::Rng;
 use kerno_testkit::vfs::assert_dir_unchanged;
@@ -38,6 +38,12 @@ fn config(durability: Durability) -> Config {
         test: TestConfig { background: Background::Inline, db_id: Some(DB_ID) },
         ..Config::default()
     }
+}
+
+/// [`config`] with the M0 compaction and an unbounded close: tests that need
+/// a flush or a close to be followed by a real (non-trivial) compaction.
+fn m0_config(durability: Durability) -> Config {
+    Config { compaction: CompactionConfig::m0(16 << 10), close_budget: CloseBudget::Unbounded, ..config(durability) }
 }
 
 fn open_in(vfs: &Arc<dyn Vfs>, cfg: &Config) -> Result<KernoDb> {
@@ -244,14 +250,14 @@ fn sst_creation_reason_records_why_the_table_was_written() {
     // Flushes and compactions while the database runs; a recovery flush
     // after a crash.
     let disk = SimVfs::new(4);
-    let db = open_in(&disk.as_vfs(), &config(Durability::Sync)).unwrap();
+    let db = open_in(&disk.as_vfs(), &m0_config(Durability::Sync)).unwrap();
     let mut model = Model::new();
     fill(&db, &mut model, 0, 700);
     drop(db);
     let crashed = disk.dump();
     let before: Vec<PathBuf> = files_with(&crashed, "sst");
     let recovered = SimVfs::restore(&crashed);
-    drop(open_in(&recovered.as_vfs(), &config(Durability::Sync)).unwrap());
+    drop(open_in(&recovered.as_vfs(), &m0_config(Durability::Sync)).unwrap());
     let after = recovered.dump();
     let reason = |image: &DirImage, file: &Path| {
         let bytes = &image.files[file];
@@ -321,7 +327,7 @@ fn foreign_directories_refused_untouched() {
     image.files.insert(path("LOCK"), Vec::new());
     image.files.insert(path("MANIFEST.tmp"), b"half a manifest".to_vec());
     let disk = SimVfs::restore(&image);
-    let db = open_in(&disk.as_vfs(), &config(Durability::Sync)).unwrap();
+    let db = open_in(&disk.as_vfs(), &m0_config(Durability::Sync)).unwrap();
     assert_eq!(db.snapshot().unwrap().seq(), 0);
     drop(db);
     assert!(!disk.as_vfs().exists(&path("MANIFEST.tmp")).unwrap());
@@ -639,7 +645,7 @@ fn foreign_db_id_sst_is_corruption() {
 fn sst_block_moved_within_file_is_corruption() {
     // Equal-sized entries make equal-sized blocks.
     let disk = SimVfs::new(6);
-    let db = open_in(&disk.as_vfs(), &config(Durability::Sync)).unwrap();
+    let db = open_in(&disk.as_vfs(), &m0_config(Durability::Sync)).unwrap();
     let mut model = Model::new();
     for i in 0..300 {
         put(&db, &mut model, &format!("k{i:05}"), &[b'v'; 100]);
@@ -663,7 +669,7 @@ fn sst_block_moved_within_file_is_corruption() {
     // The tables' meta blocks are intact: the open succeeds, the read of the
     // moved block does not (its CRC covers the offset it was written at).
     let disk = SimVfs::restore(&image);
-    let db = open_in(&disk.as_vfs(), &config(Durability::Sync)).unwrap();
+    let db = open_in(&disk.as_vfs(), &m0_config(Durability::Sync)).unwrap();
     let e = read_all(&db.snapshot().unwrap()).expect_err("reading the moved block must fail");
     assert_corruption(&e, "SST-R1");
 }
@@ -778,7 +784,7 @@ fn exhausted_seq_is_error_not_wrap() {
     for last_seq in [MAX_SEQ - 1, MAX_SEQ] {
         let disk = SimVfs::restore(&image_at(last_seq));
         let vfs = disk.as_vfs();
-        let db = open_in(&vfs, &config(Durability::Sync)).unwrap();
+        let db = open_in(&vfs, &m0_config(Durability::Sync)).unwrap();
         let mut model = Model::new();
         let mut last = last_seq;
         if last_seq < MAX_SEQ {
@@ -802,14 +808,14 @@ fn exhausted_seq_is_error_not_wrap() {
         // The sequence does not wrap after a restart either, with the last
         // commit replayed from the log or read from a table.
         drop(db);
-        let db = open_in(&vfs, &config(Durability::Sync)).unwrap();
+        let db = open_in(&vfs, &m0_config(Durability::Sync)).unwrap();
         assert!(model_of(&db) == model);
         assert_eq!(db.snapshot().unwrap().seq(), last);
         let mut b = WriteBatch::new();
         b.put("more", "x");
         assert!(matches!(db.commit(&b), Err(Error::InvalidArgument(_))));
         db.close().unwrap();
-        let db = open_in(&vfs, &config(Durability::Sync)).unwrap();
+        let db = open_in(&vfs, &m0_config(Durability::Sync)).unwrap();
         assert_eq!(db.snapshot().unwrap().seq(), last);
         db.close().unwrap();
     }
@@ -869,7 +875,7 @@ fn platform_gate_matches_target() {
 #[test]
 fn sync_commit_costs_one_fsync() {
     let (vfs, io) = CountingVfs::wrap(SimVfs::new(10).as_vfs());
-    let db = open_in(&vfs, &config(Durability::Sync)).unwrap();
+    let db = open_in(&vfs, &m0_config(Durability::Sync)).unwrap();
     let mut model = Model::new();
     for i in 0..5u32 {
         let before = io.snapshot();
@@ -990,7 +996,7 @@ fn close_writes_the_clean_snapshot_after_the_last_compaction() {
     let mut compacted_in_close = 0;
     for n in (30..300).step_by(7) {
         let disk = SimVfs::new(20);
-        let db = open_in(&disk.as_vfs(), &config(Durability::Sync)).unwrap();
+        let db = open_in(&disk.as_vfs(), &m0_config(Durability::Sync)).unwrap();
         let mut model = Model::new();
         fill(&db, &mut model, 0, n);
         // Open and not closed: the MANIFEST says "not clean".

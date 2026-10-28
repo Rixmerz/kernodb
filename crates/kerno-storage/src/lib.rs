@@ -31,6 +31,7 @@ mod compaction;
 mod config;
 mod db;
 mod files;
+mod flush;
 mod iter;
 mod manifest;
 mod memtable;
@@ -47,8 +48,10 @@ pub mod format;
 #[doc(hidden)]
 pub mod testing;
 
-pub use config::{AccessMode, CompactionConfig, Config, Limits, SlowdownPolicy};
+pub use config::{AccessMode, CloseBudget, CompactionConfig, Config, L0Metric, Limits, SlowdownPolicy};
 #[doc(hidden)]
 pub use config::{Background, TestConfig};
-pub use db::{KernoDb, KernoSnapshot};
+#[doc(hidden)]
+pub use db::TableInfo;
+pub use db::{CloseReport, KernoDb, KernoSnapshot};
 pub use metrics::Metrics;

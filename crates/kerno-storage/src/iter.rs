@@ -22,22 +22,50 @@ pub trait InternalIterator {
     fn value(&self) -> Option<&[u8]>;
 }
 
+/// Merges of more than this many children use a binary heap (see
+/// [`MergeIter::with_heap_threshold`]).
+pub const DEFAULT_HEAP_THRESHOLD: usize = 8;
+
 /// Merges several sources and yields exactly one entry per user key: the
 /// newest one (highest sequence; ties go to the earlier child, so children
 /// must be ordered newest source first). Tombstones are yielded too; the
 /// caller decides whether to skip or keep them.
+///
+/// With few children the next entry is found by scanning all of them; with
+/// more than the heap threshold, by a binary heap of the valid children.
+/// Both give the same results.
 pub struct MergeIter<'a> {
     children: Vec<Box<dyn InternalIterator + 'a>>,
     current: Option<usize>,
     scratch: Vec<u8>,
+    /// Indexes of the valid children as a binary min-heap by
+    /// [`MergeIter::before`]; `Some` in heap mode only.
+    heap: Option<Vec<usize>>,
 }
 
 impl<'a> MergeIter<'a> {
     pub fn new(children: Vec<Box<dyn InternalIterator + 'a>>) -> Self {
-        MergeIter { children, current: None, scratch: Vec::new() }
+        Self::with_heap_threshold(children, DEFAULT_HEAP_THRESHOLD)
+    }
+
+    /// A merge that uses a heap when it has more than `threshold` children.
+    pub fn with_heap_threshold(children: Vec<Box<dyn InternalIterator + 'a>>, threshold: usize) -> Self {
+        let heap = (children.len() > threshold).then(Vec::new);
+        MergeIter { children, current: None, scratch: Vec::new(), heap }
+    }
+
+    /// Whether child `a` comes before child `b`: smaller key, then higher
+    /// sequence, then earlier child. Both must be valid.
+    fn before(&self, a: usize, b: usize) -> bool {
+        let (ca, cb) = (&self.children[a], &self.children[b]);
+        ca.key().cmp(cb.key()).then_with(|| cb.seq().cmp(&ca.seq())).then_with(|| a.cmp(&b)) == Ordering::Less
     }
 
     fn pick(&mut self) {
+        if let Some(heap) = &self.heap {
+            self.current = heap.first().copied();
+            return;
+        }
         let mut best: Option<usize> = None;
         for (i, c) in self.children.iter().enumerate() {
             if !c.valid() {
@@ -57,8 +85,57 @@ impl<'a> MergeIter<'a> {
         self.current = best;
     }
 
+    /// Rebuilds the heap from the valid children (after a seek).
+    fn build_heap(&mut self) {
+        let Some(mut heap) = self.heap.take() else { return };
+        heap.clear();
+        heap.extend((0..self.children.len()).filter(|&i| self.children[i].valid()));
+        self.heap = Some(heap);
+        for i in (0..self.heap.as_ref().map_or(0, Vec::len) / 2).rev() {
+            self.sift_down(i);
+        }
+    }
+
+    /// Restores the heap property below position `i`.
+    fn sift_down(&mut self, mut i: usize) {
+        let Some(mut heap) = self.heap.take() else { return };
+        loop {
+            let (l, r) = (2 * i + 1, 2 * i + 2);
+            let mut first = i;
+            if l < heap.len() && self.before(heap[l], heap[first]) {
+                first = l;
+            }
+            if r < heap.len() && self.before(heap[r], heap[first]) {
+                first = r;
+            }
+            if first == i {
+                break;
+            }
+            heap.swap(i, first);
+            i = first;
+        }
+        self.heap = Some(heap);
+    }
+
     fn cur(&self) -> &dyn InternalIterator {
         &*self.children[self.current.expect("iterator is not valid")]
+    }
+
+    /// Heap mode: advances every child positioned at `key`.
+    fn skip_heap(&mut self, key: &[u8]) -> Result<()> {
+        while let Some(&top) = self.heap.as_ref().and_then(|h| h.first()) {
+            if self.children[top].key() != key {
+                break;
+            }
+            self.children[top].next()?;
+            if !self.children[top].valid()
+                && let Some(heap) = self.heap.as_mut()
+            {
+                heap.swap_remove(0);
+            }
+            self.sift_down(0);
+        }
+        Ok(())
     }
 }
 
@@ -71,6 +148,7 @@ impl InternalIterator for MergeIter<'_> {
         for c in &mut self.children {
             c.seek_to_first()?;
         }
+        self.build_heap();
         self.pick();
         Ok(())
     }
@@ -79,21 +157,27 @@ impl InternalIterator for MergeIter<'_> {
         for c in &mut self.children {
             c.seek(target)?;
         }
+        self.build_heap();
         self.pick();
         Ok(())
     }
 
     /// Advances past every remaining version of the current user key.
     fn next(&mut self) -> Result<()> {
-        let MergeIter { children, current, scratch } = self;
-        let cur = current.expect("iterator is not valid");
+        let cur = self.current.expect("iterator is not valid");
+        let mut scratch = std::mem::take(&mut self.scratch);
         scratch.clear();
-        scratch.extend_from_slice(children[cur].key());
-        for c in children.iter_mut() {
-            while c.valid() && c.key() == scratch.as_slice() {
-                c.next()?;
+        scratch.extend_from_slice(self.children[cur].key());
+        if self.heap.is_some() {
+            self.skip_heap(&scratch)?;
+        } else {
+            for c in &mut self.children {
+                while c.valid() && c.key() == scratch.as_slice() {
+                    c.next()?;
+                }
             }
         }
+        self.scratch = scratch;
         self.pick();
         Ok(())
     }
@@ -268,6 +352,55 @@ pub mod tests {
         assert_eq!(collect(&mut m), vec![s("e", 3, Some("e3"))]);
         m.seek(b"f").unwrap();
         assert!(!m.valid());
+    }
+
+    /// Deterministic pseudo-random sources with repeated keys and sequences.
+    fn sources(seed: u64, n: usize) -> Vec<Vec<(String, u64, Option<String>)>> {
+        let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let mut next = move |m: u64| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x % m
+        };
+        (0..n)
+            .map(|c| {
+                (0..next(40))
+                    .map(|_| {
+                        let v = (next(4) > 0).then(|| format!("v{c}"));
+                        (format!("k{:02}", next(30)), next(6) + 1, v)
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn merged(sources: &[Vec<(String, u64, Option<String>)>], threshold: usize) -> Vec<(String, u64, Option<String>)> {
+        let children = sources
+            .iter()
+            .map(|e| {
+                let entries = e.iter().map(|(k, s, v)| (k.as_str(), *s, v.as_deref())).collect();
+                Box::new(VecIter::new(entries)) as Box<dyn InternalIterator>
+            })
+            .collect();
+        let mut m = MergeIter::with_heap_threshold(children, threshold);
+        m.seek_to_first().unwrap();
+        let mut all = collect(&mut m);
+        // A seek into the middle must agree too.
+        m.seek(b"k15").unwrap();
+        all.extend(collect(&mut m));
+        all
+    }
+
+    #[test]
+    fn heap_and_linear_merges_agree() {
+        for seed in 0..200 {
+            let n = 1 + (seed as usize % 20);
+            let src = sources(seed, n);
+            let linear = merged(&src, usize::MAX);
+            assert_eq!(merged(&src, 0), linear, "seed {seed}, {n} children, heap from the start");
+            assert_eq!(merged(&src, 8), linear, "seed {seed}, {n} children");
+        }
     }
 
     #[test]

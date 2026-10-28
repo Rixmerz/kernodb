@@ -9,7 +9,7 @@ use std::path::Path;
 use kerno_core::WriteBatch;
 use kerno_core::contract::{Engine, Options};
 use kerno_storage::testing::{Inline, Profiled};
-use kerno_storage::{Background, Config, KernoDb};
+use kerno_storage::{Background, CompactionConfig, Config, KernoDb};
 use kerno_testkit::harness::crash::{commits, run_scenario, scenario};
 use kerno_testkit::vfs::{OpKind, SimVfs, TraceEntry};
 
@@ -124,8 +124,14 @@ mod hooks {
     use kerno_storage::TestConfig;
 
     fn open(disk: &SimVfs, background: Background) -> KernoDb {
-        let cfg =
-            Config { write_buffer_bytes: 16 << 10, test: TestConfig { background, db_id: None }, ..Config::default() };
+        // The M0 compaction policy: four L0 files make a compaction due,
+        // whatever their key ranges.
+        let cfg = Config {
+            write_buffer_bytes: 16 << 10,
+            test: TestConfig { background, db_id: None },
+            compaction: CompactionConfig::m0(16 << 10),
+            ..Config::default()
+        };
         KernoDb::open(disk.as_vfs(), Path::new("/db"), &cfg).unwrap()
     }
 
@@ -230,6 +236,7 @@ mod hooks {
         let cfg = Config {
             write_buffer_bytes: 16 << 10,
             test: TestConfig { background: Background::Threads, db_id: None },
+            compaction: CompactionConfig::m0(16 << 10),
             ..Config::default()
         };
         let db = KernoDb::open(vfs, Path::new("/db"), &cfg).unwrap();
