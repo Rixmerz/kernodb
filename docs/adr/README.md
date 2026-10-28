@@ -23,3 +23,4 @@ Reglas:
 | [0010](0010-api-publica-y-crates.md) | API pública y límites de crates | Pendiente |
 | [0011](0011-vectores-y-recuperacion-hibrida.md) | Perfil de vector y recuperación híbrida | Pendiente |
 | [0012](0012-metodologia-de-benchmarks.md) | Metodología de benchmarks y umbrales de salida | Propuesto (aplicada en M0) |
+| [0013](0013-formato-v1-y-protocolo-del-motor.md) | Formato v1 y protocolo del motor | Propuesto (WP06; se acepta antes de congelar v1 en WP14) |

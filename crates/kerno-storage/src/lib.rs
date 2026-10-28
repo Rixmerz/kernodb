@@ -39,6 +39,10 @@ mod stats;
 mod version;
 mod wal;
 
+/// On-disk format v1 as pure code (codecs, validation rules, vector
+/// helpers); not a public API.
+#[doc(hidden)]
+pub mod format;
 #[doc(hidden)]
 pub mod testing;
 
