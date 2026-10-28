@@ -8,7 +8,7 @@ Las garantías de Kerno solo existen si una prueba automatizada las demuestra. C
 
 ## 2. Infraestructura de M0
 
-Todo vive en [`spikes/storage/spike-core`](../../spikes/storage/spike-core):
+El contrato, los errores y `Vfs`/`StdVfs` viven en [`crates/kerno-core`](../../crates/kerno-core); los simuladores, las suites compartidas y `LogEngine`, en [`crates/kerno-testkit`](../../crates/kerno-testkit). [`spikes/storage/spike-core`](../../spikes/storage/spike-core) solo los re-exporta con las rutas que usan los spikes:
 
 | Pieza | Qué hace |
 |---|---|
@@ -52,7 +52,7 @@ Además de las suites compartidas, cada candidato pasó por una revisión advers
 ### 3.1 Cómo ejecutarlas
 
 ```bash
-cargo test -p spike-core                    # harness + LogEngine
+cargo test -p kerno-testkit                 # harness + LogEngine
 cargo test -p spike-btree                   # candidato CoW B+ tree
 cargo test -p spike-lsm                     # candidato LSM
 cargo test -p spike-bench --features candidates --release   # prueba diferencial

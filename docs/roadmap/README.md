@@ -39,7 +39,7 @@ El plan completo, con objetivos y salidas por fase, está en [SAD §16](../archi
 ## Fase 1: plan de trabajo
 
 1. Especificar el formato v1 del motor LSM según ADR-0003 (cabeceras versionadas, bits de características, espacio reservado para AEAD) con vectores de prueba.
-2. Crear los primeros crates del producto (`kerno-core`, `kerno-storage`) a partir de `spike-lsm`, conservando el harness de `spike-core` como suite obligatoria.
+2. Crear los primeros crates del producto (`kerno-core`, `kerno-storage`) a partir de `spike-lsm`, conservando el harness del M0 (ahora en `kerno-testkit`) como suite obligatoria.
 3. Condiciones de ADR-0001: colas de latencia acotadas (compactación y cierre con presupuesto), *range tombstones* y compactación dirigida, MANIFEST como log de ediciones, group commit.
 4. Transacciones read-modify-write, `sync()` explícito y métricas de snapshots (ADR-0002).
 5. Repetir los benchmarks de M0 en el hardware objetivo.

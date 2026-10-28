@@ -29,8 +29,11 @@ No crees bases de datos reales con el código de `spikes/`: los formatos de los 
 
 ```text
 docs/                    arquitectura, ADR, formato, seguridad, pruebas, roadmap
+crates/                  crates del producto (Fase 1)
+  kerno-core/            contrato común, errores, lotes de escritura y abstracción Vfs
+  kerno-testkit/         VFS con simulación de fallos, suites de pruebas compartidas y LogEngine
 spikes/storage/          spike de M0 (no es el motor de Kerno)
-  spike-core/            contrato común, VFS con simulación de fallos, suites de pruebas compartidas
+  spike-core/            shim: re-exporta kerno-core y kerno-testkit con las rutas de M0
   spike-btree/           prototipo copy-on-write B+ tree
   spike-lsm/             prototipo LSM tree
   spike-bench/           benchmarks M0 (+ redb, fjall y SQLite como referencia)

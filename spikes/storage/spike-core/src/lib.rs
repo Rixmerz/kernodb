@@ -1,22 +1,31 @@
-//! Shared pieces of the Kerno Phase 0 storage spike.
+//! Compatibility shim for the frozen Kerno Phase 0 storage spikes.
 //!
-//! The spike compares two candidate storage architectures (copy-on-write
-//! B+ tree and LSM tree) behind one contract, so that both are exercised by
-//! exactly the same functional, crash and corruption tests and by the same
-//! benchmark workloads. Nothing in this crate is the final Kerno format.
-//!
-//! * [`engine`] — the contract every candidate implements.
-//! * [`vfs`] — file-system abstraction, including [`vfs::SimVfs`], an
-//!   in-memory file system that can simulate power loss and torn writes.
-//! * [`harness`] — reusable test suites (see [`engine_test_suite!`]).
+//! The contract, error model, write batches and VFS now live in `kerno-core`;
+//! the shared test suites, the simulated VFS, the reference `LogEngine` and
+//! the PRNG live in `kerno-testkit`. This crate only re-exports them under the
+//! paths `spike-btree`, `spike-lsm` and `spike-bench` have always used, so the
+//! M0 evidence keeps compiling and running unchanged. It contains no code of
+//! its own.
 
-pub mod engine;
-pub mod error;
-pub mod harness;
-pub mod reference;
-pub mod rng;
-pub mod vfs;
+pub use kerno_core::contract::{Engine, Options, Snapshot};
+pub use kerno_core::vfs::{File, OpenMode, Vfs};
+pub use kerno_core::{Durability, Error, MAX_KEY_LEN, MAX_VALUE_LEN, Op, Result, WriteBatch};
+pub use kerno_testkit::{engine_test_suite, harness, reference, rng};
 
-pub use engine::{Durability, Engine, MAX_KEY_LEN, MAX_VALUE_LEN, Op, Options, Snapshot, WriteBatch};
-pub use error::{Error, Result};
-pub use vfs::{File, OpenMode, Vfs};
+/// File-system abstraction ([`kerno_core::vfs`]) plus the simulated and
+/// counting file systems from `kerno-testkit`.
+pub mod vfs {
+    pub use kerno_core::vfs::*;
+    pub use kerno_testkit::vfs::{CountingVfs, CrashKind, IoCounters, IoSnapshot, SimVfs};
+}
+
+/// The harness contract and write batches (formerly `spike_core::engine`).
+pub mod engine {
+    pub use kerno_core::contract::*;
+    pub use kerno_core::{MAX_KEY_LEN, MAX_VALUE_LEN, Op, WriteBatch};
+}
+
+/// The error model (formerly `spike_core::error`).
+pub mod error {
+    pub use kerno_core::{Error, Result};
+}

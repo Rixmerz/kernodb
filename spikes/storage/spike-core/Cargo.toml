@@ -1,6 +1,6 @@
 [package]
 name = "spike-core"
-description = "Shared contract, VFS and test harness for the Kerno storage-engine spike (Phase 0)"
+description = "Re-exports of kerno-core and kerno-testkit under the paths the frozen Kerno Phase 0 spikes use"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,5 +9,5 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-crc32c.workspace = true
-parking_lot.workspace = true
+kerno-core.workspace = true
+kerno-testkit.workspace = true

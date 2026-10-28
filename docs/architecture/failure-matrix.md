@@ -8,7 +8,7 @@ Para cada punto de interrupción del protocolo de cada candidato, este documento
 - `N+1`: commit en curso cuando ocurrió el fallo (no confirmado).
 - «`N` o `N+1`»: ambos son correctos; nunca un estado intermedio, nunca `< N`.
 
-Tipos de fallo (modelados por [`SimVfs`](../../spikes/storage/spike-core/src/vfs/sim.rs)):
+Tipos de fallo (modelados por [`SimVfs`](../../crates/kerno-testkit/src/vfs/sim.rs)):
 
 | Fallo | Qué sobrevive |
 |---|---|

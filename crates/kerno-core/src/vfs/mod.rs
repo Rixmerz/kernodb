@@ -2,8 +2,8 @@
 //!
 //! Engines never touch `std::fs` directly. This lets the same engine code run
 //! on the real file system ([`StdVfs`]), on a simulated one that models power
-//! loss and torn writes ([`SimVfs`]), and under an I/O accounting wrapper
-//! ([`CountingVfs`]).
+//! loss and torn writes (`kerno_testkit::vfs::SimVfs`), and under an I/O
+//! accounting wrapper (`kerno_testkit::vfs::CountingVfs`).
 //!
 //! # Durability model (what engines may rely on)
 //!
@@ -16,8 +16,6 @@
 //!   sector boundaries.
 //! * `rename` atomically replaces the destination (POSIX semantics).
 
-mod counting;
-mod sim;
 mod std_fs;
 
 use std::any::Any;
@@ -25,8 +23,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub use counting::{CountingVfs, IoCounters, IoSnapshot};
-pub use sim::{CrashKind, SimVfs};
 pub use std_fs::StdVfs;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

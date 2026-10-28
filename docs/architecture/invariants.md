@@ -8,7 +8,7 @@ Los identificadores son estables: los ADR, las pruebas y los PR deben citarlos (
 
 ## 1. Invariantes del motor de almacenamiento
 
-Las pruebas citadas viven en [`spikes/storage/spike-core/src/harness/`](../../spikes/storage/spike-core/src/harness) y `engine_test_suite!` genera la misma batería para cada candidato. Solo cambia lo que cada motor declara de sí mismo: `buffered_power_loss_prefix` (si se exige un prefijo consistente en `Buffered` ante corte de energía; el B+ tree no lo declara y no ejecuta esa variante) y `detects_truncation`. Las pruebas de regresión de cada motor (`tests/regressions.rs`) son propias. La columna «M0» indica el estado al cerrar el spike.
+Las pruebas citadas viven en [`crates/kerno-testkit/src/harness/`](../../crates/kerno-testkit/src/harness) y `engine_test_suite!` genera la misma batería para cada candidato. Solo cambia lo que cada motor declara de sí mismo: `buffered_power_loss_prefix` (si se exige un prefijo consistente en `Buffered` ante corte de energía; el B+ tree no lo declara y no ejecuta esa variante) y `detects_truncation`. Las pruebas de regresión de cada motor (`tests/regressions.rs`) son propias. La columna «M0» indica el estado al cerrar el spike.
 
 | ID | Invariante | Verificación automatizada | M0 |
 |---|---|---|---|

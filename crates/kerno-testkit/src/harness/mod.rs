@@ -15,8 +15,9 @@ use std::ops::{Bound, Range};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::engine::{Engine, MAX_KEY_LEN, Op, Options, Snapshot, WriteBatch};
-use crate::error::Result;
+use kerno_core::contract::{Engine, Options, Snapshot};
+use kerno_core::{MAX_KEY_LEN, Op, Result, WriteBatch};
+
 use crate::rng::Rng;
 use crate::vfs::Vfs;
 
@@ -215,7 +216,7 @@ pub fn for_each_seed(name: &str, seeds: Range<u64>, f: impl Fn(u64)) {
 /// Generates the shared test suite for an engine type.
 ///
 /// ```ignore
-/// spike_core::engine_test_suite!(MyEngine, buffered_power_loss_prefix = true);
+/// kerno_testkit::engine_test_suite!(MyEngine, buffered_power_loss_prefix = true);
 /// ```
 ///
 /// `buffered_power_loss_prefix` declares whether the engine guarantees that,

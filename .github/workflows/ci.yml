@@ -24,6 +24,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: kerno-core has no dependencies
+        run: test "$(cargo tree -p kerno-core -e normal --prefix none | wc -l)" -eq 1
 
   test:
     name: shared suites, regressions and differential test

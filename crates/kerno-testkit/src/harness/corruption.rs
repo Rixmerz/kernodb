@@ -6,9 +6,10 @@
 
 use std::path::PathBuf;
 
+use kerno_core::Error;
+use kerno_core::contract::{Engine, Options, Snapshot};
+
 use super::{Model, Workload, apply, for_each_seed, open, read_all, seeds};
-use crate::engine::{Engine, Options, Snapshot};
-use crate::error::Error;
 use crate::rng::Rng;
 use crate::vfs::{OpenMode, SimVfs};
 

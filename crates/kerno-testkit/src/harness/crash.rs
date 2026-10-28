@@ -12,8 +12,10 @@
 //! | Buffered + kill   | last acknowledged, or the one in flight          |
 //! | Buffered + power  | anything from the round's starting point upward  |
 
+use kerno_core::contract::{Engine, Options, Snapshot};
+use kerno_core::{Durability, WriteBatch};
+
 use super::{Model, Workload, apply, assert_snapshot_matches, for_each_seed, open, read_all, seeds};
-use crate::engine::{Durability, Engine, Options, Snapshot, WriteBatch};
 use crate::rng::Rng;
 use crate::vfs::{CrashKind, SimVfs};
 

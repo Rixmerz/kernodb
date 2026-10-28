@@ -11,10 +11,10 @@ use std::ops::Bound;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use kerno_core::contract::{Engine, Options, Snapshot};
+use kerno_core::{Durability, Error, Op, Result, WriteBatch};
 use parking_lot::Mutex;
 
-use crate::engine::{Durability, Engine, Op, Options, Snapshot, WriteBatch};
-use crate::error::{Error, Result};
 use crate::vfs::{File, OpenMode, Vfs};
 
 type Map = BTreeMap<Vec<u8>, Vec<u8>>;

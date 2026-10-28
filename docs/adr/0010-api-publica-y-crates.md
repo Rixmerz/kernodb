@@ -28,7 +28,7 @@ Ejemplo de aplicación externa que compila; guía de errores; política de depre
 
 ## Lo que aportó M0
 
-El trait `Engine` del spike (`spikes/storage/spike-core/src/engine.rs`) es un contrato **interno** de comparación, no la API pública: carece de transacciones read-modify-write, cursores, cancelación y errores por categoría. Sí aporta una taxonomía inicial de errores (`Io`, `Corruption`, `Locked`, `InvalidArgument`, `Poisoned`) que conviene conservar.
+El trait `Engine` del spike (hoy en `crates/kerno-core/src/contract.rs`) es un contrato **interno** de comparación, no la API pública: carece de transacciones read-modify-write, cursores, cancelación y errores por categoría. Sí aporta una taxonomía inicial de errores (`Io`, `Corruption`, `Locked`, `InvalidArgument`, `Poisoned`) que conviene conservar.
 
 ## Dependencias
 

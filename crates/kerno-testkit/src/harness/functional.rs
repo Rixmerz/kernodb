@@ -5,11 +5,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use kerno_core::contract::{Engine, Options, Snapshot};
+use kerno_core::vfs::StdVfs;
+use kerno_core::{Durability, Error, MAX_KEY_LEN, MAX_VALUE_LEN, WriteBatch};
+
 use super::{Model, Workload, apply, assert_snapshot_matches, db_dir, for_each_seed, open, read_all, seeds};
-use crate::engine::{Durability, Engine, MAX_KEY_LEN, MAX_VALUE_LEN, Options, Snapshot, WriteBatch};
-use crate::error::Error;
 use crate::rng::Rng;
-use crate::vfs::{SimVfs, StdVfs, Vfs, dir_size};
+use crate::vfs::{SimVfs, Vfs, dir_size};
 
 fn sim() -> Arc<dyn Vfs> {
     SimVfs::new(7).as_vfs()

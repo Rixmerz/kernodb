@@ -20,10 +20,11 @@
 //! deleting an obsolete file) may go unreported, as long as every
 //! guarantee above still holds.
 
+use kerno_core::contract::{Engine, Options, Snapshot};
+use kerno_core::{Error, WriteBatch};
+
 use super::crash::{Step, scenario};
 use super::{Model, apply, assert_snapshot_matches, open};
-use crate::engine::{Engine, Options, Snapshot, WriteBatch};
-use crate::error::Error;
 use crate::rng::Rng;
 use crate::vfs::{CrashKind, SimVfs};
 
