@@ -38,6 +38,19 @@ pub mod wal;
 
 pub use header::new_db_id;
 
+/// Applies `patch` to the common header at the start of `file` and recomputes
+/// the header CRC, so that a vector can violate one header rule at a time
+/// without tripping HDR-3 (v1.md §13.1, §13.2).
+///
+/// # Panics
+///
+/// If `file` is shorter than the 96-byte header.
+pub fn patch_header(file: &mut [u8], patch: impl FnOnce(&mut [u8])) {
+    let header = &mut file[..header::HEADER_LEN];
+    patch(header);
+    assert!(header::reseal_header(header), "a patched header keeps a header_len that fits");
+}
+
 use std::convert::Infallible;
 use std::fmt;
 

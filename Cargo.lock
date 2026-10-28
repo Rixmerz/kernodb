@@ -435,6 +435,8 @@ dependencies = [
  "parking_lot",
  "proptest",
  "quick_cache",
+ "spike-btree",
+ "spike-lsm",
 ]
 
 [[package]]

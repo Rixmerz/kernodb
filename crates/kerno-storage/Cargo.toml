@@ -23,6 +23,10 @@ deadlock_detection = ["parking_lot/deadlock_detection"]
 [dev-dependencies]
 kerno-testkit.workspace = true
 proptest.workspace = true
+# Only to generate the M0 directory vectors (tests/dir_vectors.rs); the
+# normal-dependency guard of CONTRIBUTING.md does not see dev-dependencies.
+spike-lsm.workspace = true
+spike-btree.workspace = true
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kerno_loom)'] }
