@@ -5,6 +5,12 @@
 //! validate the test harness itself (if this engine fails a shared test, the
 //! test is wrong) and as a "no indexing on disk" baseline. It is not a
 //! candidate: memory use and recovery time grow with the whole data set.
+//!
+//! It implements `sync()` ([`SyncEngine`](kerno_core::contract::SyncEngine))
+//! natively, as one `fsync` of the log, so that the `sync()` and
+//! multi-writer suites are validated here before any engine runs them.
+//! Commits are serialized by one lock (no group commit) and, in `Sync` mode,
+//! published only after their `fsync`.
 
 use std::collections::BTreeMap;
 use std::ops::Bound;
@@ -303,6 +309,27 @@ impl Engine for LogEngine {
         w.file.write_at(&clean_marker(w.end), w.end)?;
         w.file.sync_data()?;
         Ok(())
+    }
+}
+
+/// Native `sync()`: one `fsync` of the log. Commits are serialized by the
+/// writer lock and every acknowledged one was written to the log before it
+/// was published, so that one `fsync` covers all of them.
+impl kerno_core::contract::SyncEngine for LogEngine {
+    fn sync(&self) -> Result<u64> {
+        let mut w = self.writer.lock();
+        if w.poisoned {
+            return Err(Error::Poisoned("earlier I/O failure".into()));
+        }
+        // Always sync, even when nothing was written since the last sync:
+        // the simplest behaviour that is obviously right. After a failure
+        // nothing is retried (Linux may have dropped the pages for good, and
+        // a second `fsync` would succeed without persisting them).
+        if let Err(e) = w.file.sync_data() {
+            w.poisoned = true;
+            return Err(Error::Io(e));
+        }
+        Ok(w.seq)
     }
 }
 

@@ -6,12 +6,20 @@
 //! Randomized tests are reproducible: they print the failing seed, and the
 //! `SPIKE_SEED=<n>` environment variable re-runs only that seed.
 //! `SPIKE_SEEDS=<n>` changes how many seeds the randomized suites run.
+//!
+//! Engines with `sync()` also run
+//! [`sync_test_suite!`](crate::sync_test_suite), and every engine that takes
+//! commits from several threads runs
+//! [`group_commit_test_suite!`](crate::group_commit_test_suite) (multiple
+//! writers, scenario C).
 
+pub mod concurrency;
 pub mod corruption;
 pub mod crash;
 pub mod ext;
 pub mod faults;
 pub mod functional;
+pub mod sync;
 
 use std::collections::BTreeMap;
 use std::ops::{Bound, Range};

@@ -117,6 +117,37 @@ pub trait Snapshot: Send + 'static {
     fn scan(&self, start: Bound<&[u8]>, end: Bound<&[u8]>, limit: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>>;
 }
 
+/// An engine with an explicit durability barrier: `sync()` (ADR-0002,
+/// invariant I-17).
+///
+/// A separate trait, so that engines without it (the frozen spikes) need no
+/// change. The shared suite `sync_test_suite!` of `kerno-testkit` checks
+/// these semantics.
+///
+/// # Semantics
+///
+/// * `sync` returns `Ok(s)`, the *durable sequence*: every commit with a
+///   sequence `<= s` survives a power loss from then on, and `s` is at least
+///   the sequence of every commit acknowledged before `sync` was called.
+///   With no concurrent commits, `s` is exactly the last acknowledged
+///   sequence (right after `open`, the recovered one).
+/// * With [`Durability::Sync`] every acknowledged commit is durable already,
+///   so `sync` may return without any I/O.
+/// * A failed `sync` returns the error (an [`Error::Io`](crate::Error::Io))
+///   and poisons the handle like a failed commit: until the database is
+///   reopened, `commit` and `sync` return
+///   [`Error::Poisoned`](crate::Error::Poisoned). Nothing written since the
+///   last successful `sync` may be assumed durable (Linux drops the pages of
+///   a failed `fsync`): a power loss then recovers a prefix of the commits
+///   that reaches at least the last successful `sync`.
+/// * On a poisoned handle `sync` returns `Poisoned` without any I/O. An
+///   engine with read-only handles refuses `sync` on them.
+pub trait SyncEngine: Engine {
+    /// Makes every commit acknowledged so far durable and returns the
+    /// durable sequence (see the [trait documentation](SyncEngine)).
+    fn sync(&self) -> Result<u64>;
+}
+
 /// Test-only control over an engine's background work, so that suites can
 /// put the engine into a known state (everything flushed, compaction run)
 /// instead of waiting on timing.

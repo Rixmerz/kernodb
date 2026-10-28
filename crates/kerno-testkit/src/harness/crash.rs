@@ -11,16 +11,26 @@
 //! | Sync (any crash)  | last acknowledged, or the one in flight          |
 //! | Buffered + kill   | last acknowledged, or the one in flight          |
 //! | Buffered + power  | anything from the round's starting point upward  |
+//!
+//! The deterministic scenarios swept over every mutating operation live here
+//! too: scenario A ([`scenario`], one thread) and scenario C
+//! ([`run_scenario_c`]: [`SCENARIO_C_WRITERS`] writers ×
+//! [`SCENARIO_C_COMMITS`] commits at once, with a slow `sync_data`), swept
+//! with [`every_point_c`] (crashes) and [`failure_sweep_c`] (one I/O error).
 
 use std::fmt;
 use std::sync::Arc;
 
 use kerno_core::contract::{Engine, Options, Snapshot};
-use kerno_core::{Durability, Result, WriteBatch};
+use kerno_core::{Durability, Error, Result, WriteBatch};
 
+use super::concurrency::{
+    Floor, SyncFn, WriterLog, call_with_timeout, check_recovered, run_writers, writer_batches, writers_disk,
+};
+use super::faults::After;
 use super::{Model, Workload, apply, assert_snapshot_matches, for_each_seed, open, read_all, seeds};
 use crate::rng::Rng;
-use crate::vfs::{CrashKind, SimVfs};
+use crate::vfs::{CrashKind, FsyncFailure, SimVfs};
 
 const ROUNDS: usize = 5;
 const COMMITS_PER_ROUND: u64 = 80;
@@ -357,6 +367,296 @@ pub fn every_point_with<E: Engine>(kind: CrashKind, durability: Durability, conf
             eprintln!("\n*** {ctx}; reproduce with SPIKE_POINT={point}\n");
             std::panic::resume_unwind(e);
         }
+    }
+}
+
+/// The end of a sweep point: one more commit on the recovered handle, a
+/// clean close and a power loss; everything must survive.
+pub fn keeps_working<E: Engine>(
+    db: E,
+    disk: &SimVfs,
+    opts: &Options,
+    mut model: Model,
+    s: u64,
+    rng: &mut Rng,
+    ctx: &str,
+) {
+    let mut b = WriteBatch::new();
+    b.put("after-recovery", "x");
+    let seq = db.commit(&b).unwrap_or_else(|e| panic!("{ctx}: commit after recovery: {e}"));
+    assert_eq!(seq, s + 1, "{ctx}: commit after recovery");
+    apply(&mut model, &b);
+    db.close().unwrap_or_else(|e| panic!("{ctx}: close after recovery: {e}"));
+    let image = disk.crash_now(CrashKind::PowerLoss);
+    let db: E = open(&image.as_vfs(), opts).unwrap_or_else(|e| panic!("{ctx}: reopen after power loss: {e}"));
+    assert_snapshot_matches(
+        &db.snapshot().unwrap(),
+        &model,
+        rng,
+        &format!("{ctx}, then power loss after a clean close"),
+    );
+}
+
+/// Writer threads of scenario C.
+pub const SCENARIO_C_WRITERS: usize = 4;
+/// Commits per writer in scenario C.
+pub const SCENARIO_C_COMMITS: u64 = 10;
+
+/// Where the failures of a scenario C run may come from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Failures {
+    /// A crash ([`SimVfs::crash_after`]): every error needs the device to
+    /// be gone.
+    Crash,
+    /// One injected I/O error ([`SimVfs::fail_after`]): every error needs
+    /// the fault to have fired and is `Io` or `Poisoned`; a failed open is
+    /// retried once (the fault is one-shot), and after a failed commit or
+    /// `sync` the handle must be poisoned.
+    Fault,
+}
+
+/// What a run of scenario C did.
+#[derive(Debug, Default)]
+pub struct ScenarioCRun {
+    /// Whether the database opened (and the writers ran).
+    pub opened: bool,
+    /// What each writer did (empty if the open failed).
+    pub logs: Vec<WriterLog>,
+    /// Whether the final clean close succeeded.
+    pub closed: bool,
+}
+
+impl ScenarioCRun {
+    /// What the recovered state must contain: every acknowledged commit,
+    /// except after a power loss in `Buffered` mode before the clean close,
+    /// where only what a successful `sync` made durable must survive.
+    pub fn floor(&self, durability: Durability, power_loss: bool) -> Floor {
+        let acked = durability == Durability::Sync || !power_loss || self.closed;
+        let seq = self.logs.iter().map(WriterLog::synced_max).max().unwrap_or(0);
+        Floor { acked, seq }
+    }
+}
+
+/// The device scenario C runs on at a sweep point: seeded by the point,
+/// byte-granular tearing on odd points, and `sync_data` slowed down by
+/// [`SYNC_LATENCY`](super::concurrency::SYNC_LATENCY) so that commits queue
+/// up behind each other.
+pub fn scenario_c_disk(point: u64) -> SimVfs {
+    writers_disk(point)
+}
+
+/// Scenario C ("group", phase1-design.md §6.4): open,
+/// [`SCENARIO_C_WRITERS`] writers make [`SCENARIO_C_COMMITS`] commits each
+/// at once ([`writer_batch`](super::concurrency::writer_batch); with `sync`,
+/// the writers also call it after the commits that
+/// [`syncs_after`](super::concurrency::syncs_after) picks), then a clean
+/// close. The run stops at the first failure, which must come from
+/// `failures`. Threads make the interleaving, and so which commit a given
+/// operation belongs to, vary between runs; the checks hold for any of them.
+/// The probe commit on the handle after an injected failure runs under
+/// [`call_with_timeout`]: it must return `Poisoned`, not hang.
+pub fn run_scenario_c<E: Engine>(
+    disk: &SimVfs,
+    opts: &Options,
+    sync: Option<&SyncFn<E>>,
+    failures: Failures,
+    ctx: &str,
+) -> ScenarioCRun {
+    let vfs = disk.as_vfs();
+    let mut run = ScenarioCRun::default();
+    let allowed = |what: &str, e: &Error| match failures {
+        Failures::Crash => assert!(disk.has_crashed(), "{ctx}: {what} failed without a crash: {e}"),
+        Failures::Fault => {
+            assert!(disk.fault_injected(), "{ctx}: {what} failed without a fault: {e}");
+            assert!(
+                matches!(e, Error::Io(_) | Error::Poisoned(_)),
+                "{ctx}: {what} failed with an unexpected error kind: {e}"
+            );
+        }
+    };
+    let db: E = match open::<E>(&vfs, opts) {
+        Ok(db) => db,
+        Err(e) => {
+            allowed("open", &e);
+            if failures == Failures::Crash || disk.has_crashed() {
+                return run;
+            }
+            match open::<E>(&vfs, opts) {
+                Ok(db) => db,
+                Err(_) if disk.has_crashed() => return run,
+                Err(e) => panic!("{ctx}: second open failed: {e}"),
+            }
+        }
+    };
+    run.opened = true;
+    let db = Arc::new(db);
+    run.logs = run_writers(&db, SCENARIO_C_WRITERS, SCENARIO_C_COMMITS, &writer_batches(), sync, ctx);
+    let mut failed = false;
+    for (i, log) in run.logs.iter().enumerate() {
+        if let Some(e) = &log.error {
+            allowed(&format!("writer {i}"), e);
+            failed = true;
+        }
+    }
+    if failed && failures == Failures::Fault && !disk.has_crashed() {
+        let r = call_with_timeout(&db, "the probe commit after a failure", ctx, |db: &E| {
+            let mut probe = WriteBatch::new();
+            probe.put("probe-after-failure", "x");
+            db.commit(&probe)
+        });
+        assert!(
+            matches!(r, Err(Error::Poisoned(_))),
+            "{ctx}: after a failed commit or sync the handle must be poisoned, got {r:?}"
+        );
+    }
+    let db = Arc::try_unwrap(db).unwrap_or_else(|_| panic!("{ctx}: a writer still holds the handle"));
+    if failed {
+        return run;
+    }
+    match db.close() {
+        Ok(()) => run.closed = true,
+        Err(e) => allowed("close", &e),
+    }
+    run
+}
+
+/// Runs `body(point, ctx)` for every point `1..=total` (or only
+/// `SPIKE_POINT`), reporting the point on failure.
+fn for_each_point(total: u64, describe: impl Fn(u64) -> String, body: impl Fn(u64, &str)) {
+    let only: Option<u64> = std::env::var("SPIKE_POINT").ok().and_then(|s| s.parse().ok());
+    for point in 1..=total {
+        if only.is_some_and(|p| p != point) {
+            continue;
+        }
+        let ctx = describe(point);
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(point, &ctx)));
+        if let Err(e) = r {
+            eprintln!("\n*** {ctx}; reproduce with SPIKE_POINT={point} (the interleaving of the writers varies)\n");
+            std::panic::resume_unwind(e);
+        }
+    }
+}
+
+/// Mutating operations of a complete scenario C run on an undisturbed
+/// device, plus a margin: grouping makes the count vary between runs.
+fn scenario_c_points<E: Engine>(opts: &Options, sync: Option<&SyncFn<E>>, failures: Failures) -> u64 {
+    let dry = scenario_c_disk(0);
+    let run = run_scenario_c::<E>(&dry, opts, sync, failures, "dry run");
+    assert!(run.closed, "the dry run of scenario C must complete");
+    dry.mutating_ops() + 20
+}
+
+/// Crash of `kind` at every mutating operation of scenario C, then
+/// recovery, checked with [`check_recovered`] against
+/// [`ScenarioCRun::floor`]. With [`CrashKind::ProcessKillKeepPending`] the
+/// recovered state must also survive a power loss right after recovery
+/// (recovery made it durable). Every point ends with one more commit, a
+/// clean close and a power loss.
+///
+/// A power loss in `Buffered` mode is only meaningful with `sync`: what a
+/// successful `sync` returned is then the floor.
+pub fn every_point_c<E: Engine>(kind: CrashKind, durability: Durability, sync: Option<&SyncFn<E>>) {
+    assert!(
+        durability == Durability::Sync || kind != CrashKind::PowerLoss || sync.is_some(),
+        "without sync, Buffered commits only promise to survive process kills"
+    );
+    let mut opts = Options::small_for_tests();
+    opts.durability = durability;
+    let total = scenario_c_points::<E>(&opts, sync, Failures::Crash);
+    let with_sync = if sync.is_some() { " with sync" } else { "" };
+    let describe =
+        |point| format!("scenario C{with_sync}: {kind:?} ({durability:?}) before mutating op #{point} of {total}");
+    for_each_point(total, describe, |point, ctx| {
+        let disk = scenario_c_disk(point);
+        disk.crash_after(point, kind);
+        let run = run_scenario_c::<E>(&disk, &opts, sync, Failures::Crash, ctx);
+        let image = match disk.take_crash_image() {
+            Some(image) => image,
+            None => disk.crash_now(kind),
+        };
+        let floor = run.floor(durability, kind == CrashKind::PowerLoss);
+        let db: E = open(&image.as_vfs(), &opts).unwrap_or_else(|e| panic!("{ctx}: recovery failed: {e}"));
+        let snap = db.snapshot().unwrap();
+        let mut rng = Rng::new(point);
+        let rec = check_recovered(&snap, &Model::new(), 0, &run.logs, floor, &mut rng, ctx);
+        drop(snap);
+        let (db, image) = if kind == CrashKind::ProcessKillKeepPending {
+            let after = image.crash_now(CrashKind::PowerLoss);
+            drop(db);
+            let db: E = open(&after.as_vfs(), &opts)
+                .unwrap_or_else(|e| panic!("{ctx}: reopen after the power loss that followed recovery: {e}"));
+            let snap = db.snapshot().unwrap();
+            assert_eq!(snap.seq(), rec.seq, "{ctx}: recovery did not make the state it recovered durable");
+            assert_snapshot_matches(
+                &snap,
+                &rec.model,
+                &mut rng,
+                &format!("{ctx}, then power loss right after recovery"),
+            );
+            drop(snap);
+            (db, after)
+        } else {
+            (db, image)
+        };
+        keeps_working(db, &image, &opts, rec.model, rec.seq, &mut rng, ctx);
+    });
+}
+
+/// One injected I/O error at every mutating operation of scenario C, with
+/// failed syncs behaving as `fsync`, followed by each of `afters` (see
+/// [`failure_sweep`](super::faults::failure_sweep)): the writers' errors are
+/// `Io` or `Poisoned` and leave the handle poisoned, and the recovered state
+/// passes [`check_recovered`] against [`ScenarioCRun::floor`] (after a
+/// restart, every acknowledged commit; after a power loss in `Buffered`
+/// mode, what a successful `sync` returned).
+pub fn failure_sweep_c<E: Engine>(
+    durability: Durability,
+    fsync: FsyncFailure,
+    afters: &[After],
+    sync: Option<&SyncFn<E>>,
+) {
+    let mut opts = Options::small_for_tests();
+    opts.durability = durability;
+    let total = scenario_c_points::<E>(&opts, sync, Failures::Fault);
+    let with_sync = if sync.is_some() { " with sync" } else { "" };
+    for &after in afters {
+        let describe = |point| {
+            format!(
+                "scenario C{with_sync}: I/O error at mutating op #{point} of {total} ({durability:?}, failed fsync \
+                 {fsync:?}), then {after:?}"
+            )
+        };
+        for_each_point(total, describe, |point, ctx| {
+            let disk = scenario_c_disk(point);
+            if fsync != FsyncFailure::KeepPending {
+                disk.set_fsync_failure(fsync);
+            }
+            let then = match after {
+                After::Restart => None,
+                After::PowerLoss => Some(CrashKind::PowerLoss),
+            };
+            disk.fail_after(point, then);
+            let run = run_scenario_c::<E>(&disk, &opts, sync, Failures::Fault, ctx);
+            let disk = match after {
+                After::Restart => {
+                    // A fault point past the end must not fire during
+                    // verification.
+                    disk.disarm();
+                    disk
+                }
+                After::PowerLoss => match disk.take_crash_image() {
+                    Some(image) => image,
+                    None => disk.crash_now(CrashKind::PowerLoss),
+                },
+            };
+            let floor = run.floor(durability, after == After::PowerLoss);
+            let db: E = open(&disk.as_vfs(), &opts).unwrap_or_else(|e| panic!("{ctx}: recovery failed: {e}"));
+            let snap = db.snapshot().unwrap();
+            let mut rng = Rng::new(point);
+            let rec = check_recovered(&snap, &Model::new(), 0, &run.logs, floor, &mut rng, ctx);
+            drop(snap);
+            keeps_working(db, &disk, &opts, rec.model, rec.seq, &mut rng, ctx);
+        });
     }
 }
 
