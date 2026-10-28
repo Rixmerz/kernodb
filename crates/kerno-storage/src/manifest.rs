@@ -11,6 +11,7 @@
 //! Generations increase by one each time and `edit_seq` continues across
 //! them.
 
+use std::io;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -18,10 +19,10 @@ use kerno_core::vfs::{File, OpenMode, Vfs};
 use kerno_core::{Error, Result};
 
 use crate::files::{FileSource, read_error};
-use crate::format::End;
 use crate::format::header::{HEADER_LEN, Header};
 use crate::format::limits::{MAX_FILE_NUMBER, MAX_SEQ};
 use crate::format::manifest::{Edit, ManifestReplay, Record, encode_manifest, replay_manifest};
+use crate::format::{End, ReadError};
 
 pub use crate::format::manifest::FileMeta;
 
@@ -45,8 +46,14 @@ pub struct Loaded {
 /// tail after the last valid record is accepted as the format says (MAN-R3);
 /// the writer then starts a new generation instead of appending (W-7).
 pub fn read(vfs: &dyn Vfs, dir: &Path) -> Result<Loaded> {
-    let file = vfs.open(&dir.join(MANIFEST), OpenMode::Existing)?;
-    let mut src = FileSource::new(&*file)?;
+    read_structured(vfs, dir).map_err(|e| read_error(MANIFEST, e))
+}
+
+/// [`read`] with the rule a damaged MANIFEST violated kept apart from the
+/// message, for `verify()`.
+pub fn read_structured(vfs: &dyn Vfs, dir: &Path) -> std::result::Result<Loaded, ReadError<io::Error>> {
+    let file = vfs.open(&dir.join(MANIFEST), OpenMode::Existing).map_err(ReadError::Source)?;
+    let mut src = FileSource::new(&*file).map_err(ReadError::Source)?;
     let (mut seen, mut second) = (0u64, None);
     let replay = replay_manifest(&mut src, |at, _| {
         if seen == 1 {
@@ -54,8 +61,7 @@ pub fn read(vfs: &dyn Vfs, dir: &Path) -> Result<Loaded> {
         }
         seen += 1;
         Ok(())
-    })
-    .map_err(|e| read_error(MANIFEST, e))?;
+    })?;
     let record0_len = second.unwrap_or(replay.valid_len) - u64::from(replay.header.header_len);
     Ok(Loaded { replay, record0_len, file })
 }

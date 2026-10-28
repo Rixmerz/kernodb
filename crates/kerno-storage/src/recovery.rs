@@ -142,6 +142,33 @@ pub fn refuse_without_manifest(l: &Listing) -> Option<Error> {
     (!l.unknown.is_empty()).then(|| Error::InvalidArgument("not a Kerno database".into()))
 }
 
+/// A rule of the decision table (REC-5..REC-10) that a directory violates.
+/// It converts to `Corruption` for the opens; `verify()` reports it as an
+/// issue with the rule id as it is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuleViolation {
+    /// The file the rule names; empty for an internal inconsistency.
+    pub file: String,
+    pub rule: &'static str,
+    pub detail: String,
+}
+
+impl RuleViolation {
+    fn new(file: impl Into<String>, rule: &'static str, detail: impl Into<String>) -> Self {
+        RuleViolation { file: file.into(), rule, detail: detail.into() }
+    }
+}
+
+impl From<RuleViolation> for Error {
+    fn from(v: RuleViolation) -> Error {
+        if v.file.is_empty() {
+            Error::Corruption(format!("{}: {}", v.rule, v.detail))
+        } else {
+            Error::Corruption(format!("{}: {}: {}", v.file, v.rule, v.detail))
+        }
+    }
+}
+
 /// What the scan of one WAL found.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WalFacts {
@@ -153,13 +180,18 @@ pub struct WalFacts {
 /// the ones that cannot belong to it (numbered `next_file` or more, REC-7);
 /// otherwise the live ones, from `log_number` (REC-10). A missing required
 /// WAL is REC-9.
-pub fn wals_to_scan(listing: &Listing, state: &ManifestState, clean: bool) -> Result<Vec<u64>> {
+pub fn wals_to_scan(
+    listing: &Listing,
+    state: &ManifestState,
+    clean: bool,
+) -> std::result::Result<Vec<u64>, RuleViolation> {
     let from = if clean { state.next_file } else { state.log_number };
     if !clean && !listing.wals.contains(&state.log_number) {
-        return Err(Error::Corruption(format!(
-            "{}: REC-9: required WAL missing (the MANIFEST says it is the oldest live log)",
-            wal_name(state.log_number)
-        )));
+        return Err(RuleViolation::new(
+            wal_name(state.log_number),
+            "REC-9",
+            "required WAL missing (the MANIFEST says it is the oldest live log)",
+        ));
     }
     Ok(listing.wals.iter().copied().filter(|&n| n >= from).collect())
 }
@@ -197,18 +229,22 @@ fn orphan_wal(n: u64) -> String {
 /// REC-4..REC-13 over a MANIFEST that was read without error. `scans` hold
 /// the WALs [`wals_to_scan`] named, in order, each scanned against the
 /// sequence its predecessor ended at.
-pub fn classify(listing: &Listing, manifest: &ManifestReplay, scans: &[WalFacts]) -> Result<Plan> {
+pub fn classify(
+    listing: &Listing,
+    manifest: &ManifestReplay,
+    scans: &[WalFacts],
+) -> std::result::Result<Plan, RuleViolation> {
     let state = &manifest.state;
     let clean = manifest.clean;
     let referenced: HashSet<u64> = state.levels.iter().flatten().map(|f| f.number).collect();
     let present: HashSet<u64> = listing.ssts.iter().copied().collect();
     // REC-5, the part that needs only the listing.
     if let Some(n) = referenced.iter().filter(|n| !present.contains(n)).min() {
-        return Err(Error::Corruption(format!("{}: REC-5: referenced by the MANIFEST but missing", sst_name(*n))));
+        return Err(RuleViolation::new(sst_name(*n), "REC-5", "referenced by the MANIFEST but missing"));
     }
     let expected_scans = wals_to_scan(listing, state, clean)?;
     if scans.iter().map(|s| s.number).ne(expected_scans.iter().copied()) {
-        return Err(Error::Corruption("internal: the scanned WALs are not the ones to classify".into()));
+        return Err(RuleViolation::new("", "internal", "the scanned WALs are not the ones to classify"));
     }
     let mut unknown_ro_compat = None;
     let mut note_ro_compat = |file: &str, bits: u64| {
@@ -225,20 +261,20 @@ pub fn classify(listing: &Listing, manifest: &ManifestReplay, scans: &[WalFacts]
         // REC-6: an SST numbered `next_file` or more was written by a session
         // whose SESSION_OPEN is lost (W-8).
         if let Some(n) = listing.ssts.iter().find(|&&n| n >= state.next_file) {
-            return Err(Error::Corruption(format!(
-                "{}: REC-6: after a clean close, a table numbered {} or more exists (lost SESSION_OPEN)",
+            return Err(RuleViolation::new(
                 sst_name(*n),
-                state.next_file
-            )));
+                "REC-6",
+                format!("after a clean close, a table numbered {} or more exists (lost SESSION_OPEN)", state.next_file),
+            ));
         }
         // REC-7: such a WAL is an orphan unless it holds a frame.
         for w in scans {
             if w.scan.frames > 0 {
-                return Err(Error::Corruption(format!(
-                    "{}: REC-7: after a clean close, a log numbered {} or more holds commits",
+                return Err(RuleViolation::new(
                     wal_name(w.number),
-                    state.next_file
-                )));
+                    "REC-7",
+                    format!("after a clean close, a log numbered {} or more holds commits", state.next_file),
+                ));
             }
         }
         // REC-8: everything else that is canonical and unreferenced.
@@ -252,9 +288,11 @@ pub fn classify(listing: &Listing, manifest: &ManifestReplay, scans: &[WalFacts]
             let name = wal_name(w.number);
             let intact_required = newest_with_frames.is_some_and(|k| i < k);
             if intact_required && (!matches!(w.scan.header, WalHeaderState::Valid(_)) || w.scan.end == End::Torn) {
-                return Err(Error::Corruption(format!(
-                    "{name}: REC-10a: broken header or torn tail in a log that is followed by one with commits"
-                )));
+                return Err(RuleViolation::new(
+                    name,
+                    "REC-10a",
+                    "broken header or torn tail in a log that is followed by one with commits",
+                ));
             }
             if let WalHeaderState::Valid(h) = &w.scan.header {
                 note_ro_compat(&name, h.unknown_ro_compat());

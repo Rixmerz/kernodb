@@ -5,6 +5,8 @@
 //! Every target includes this module whole, and none uses all of it.
 #![allow(dead_code)]
 
+pub mod craft;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 

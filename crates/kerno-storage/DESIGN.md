@@ -2,7 +2,7 @@
 
 > **Procedencia.** Derivado de `spike-lsm@0cba925`; formato v1 en borrador, nunca para datos de usuario (SAD §20.6).
 >
-> Este crate nació como copia de `spikes/storage/spike-lsm` con solo renombres ([diseño de la Fase 1](../../docs/architecture/phase1-design.md) §5.1). Desde WP07 escribe y lee **solo** el formato v1 ([`docs/file-format/v1.md`](../../docs/file-format/v1.md)), todavía en borrador: todo archivo lleva el bit `DRAFT`, de modo que ninguna base creada ahora pueda leerse con el formato congelado (ADR-0003). Los archivos del prototipo M0 se rechazan con `Incompatible`. `spike-lsm` queda congelado como línea base del M0 (ADR-0012); este documento se actualiza con cada paquete de la Fase 1 que cambia el motor. Desde WP08 el MANIFEST es un log de ediciones, la apertura sigue el arranque de sesión S-1..S-6 con la función pura `recovery::classify`, existe la apertura de solo lectura y los archivos obsoletos los borra un hilo dedicado. Los códecs puros (sin E/S) están en `src/format/` (WP06); `wal.rs`, `sst.rs`, `block.rs` y `manifest.rs` los conectan con el `Vfs`.
+> Este crate nació como copia de `spikes/storage/spike-lsm` con solo renombres ([diseño de la Fase 1](../../docs/architecture/phase1-design.md) §5.1). Desde WP07 escribe y lee **solo** el formato v1 ([`docs/file-format/v1.md`](../../docs/file-format/v1.md)), todavía en borrador: todo archivo lleva el bit `DRAFT`, de modo que ninguna base creada ahora pueda leerse con el formato congelado (ADR-0003). Los archivos del prototipo M0 se rechazan con `Incompatible`. `spike-lsm` queda congelado como línea base del M0 (ADR-0012); este documento se actualiza con cada paquete de la Fase 1 que cambia el motor. Desde WP08 el MANIFEST es un log de ediciones, la apertura sigue el arranque de sesión S-1..S-6 con la función pura `recovery::classify`, existe la apertura de solo lectura y los archivos obsoletos los borra un hilo dedicado. Desde WP09, `verify()` comprueba una base entera sin escribir e `inspect()` lee las cabeceras de sus archivos. Los códecs puros (sin E/S) están en `src/format/` (WP06); `wal.rs`, `sst.rs`, `block.rs` y `manifest.rs` los conectan con el `Vfs`.
 
 Un árbol LSM nivelado al estilo de LevelDB/RocksDB que implementa directamente el contrato del harness `kerno_core::contract::Engine` (`KernoDb`, `KernoSnapshot`). Pretende ser correcto ante caídas y daños del medio y razonablemente rápido, no estar afinado. Toda la E/S de archivos pasa por `Arc<dyn Vfs>`.
 
@@ -226,6 +226,23 @@ Tras un cierre limpio el directorio contiene solo `LOCK`, `MANIFEST` (un único 
 - `KernoDb::is_read_only()` devuelve `Requested` o `UnknownRoCompat { file, bits }` (el primer archivo con bits desconocidos). Con ambos motivos, gana `Requested`.
 - El `Writer` interno de un handle de solo lectura lleva un WAL de marcador (`WalWriter::read_only`) cuyas escrituras fallarían sin tocar el disco; ningún punto de entrada llega a usarlo.
 
+## `verify()` e `inspect()`
+
+Son funciones de biblioteca (`kerno_storage::verify`, `kerno_storage::inspect`; la CLI llega en la Fase 2, C-01) y **no escriben**: lo único que pueden crear es `LOCK` (v1.md §9.5, RO-1; invariante I-18). Cada una toma el `LOCK` exclusivo, así que devuelven `Locked` si otro handle o proceso tiene la base (`tests/process_lock.rs`). Un directorio que no es una base (inexistente, vacío o con archivos ajenos) es `InvalidArgument` y no se bloquea ni se crea nada; archivos de datos sin MANIFEST son una base dañada (REC-2) y se informan.
+
+`verify(vfs, dir, &VerifyOptions { deep, check_wal })` sigue estos pasos:
+
+1. Lee el MANIFEST (HDR, MAN-R*, MAN-S1..S5, MAN-A1) con `manifest::read_structured`, que conserva la regla violada en vez de formatear un mensaje.
+2. Escanea los WAL que necesita la tabla de recuperación con `format::wal::scan_wal` y un receptor nulo (la reproducción en seco: valida cada trama y no aplica nada) y clasifica el directorio con `recovery::classify`, la misma función de las aperturas. `classify` devuelve un `RuleViolation { file, rule, detail }`; las aperturas lo convierten en `Corruption` con el mismo mensaje de siempre, `verify` lo copia a un `Issue`. Con `check_wal = false` no se leen los WAL y no se aplican las reglas que dependen de su contenido (REC-7, REC-10).
+3. Abre cada tabla referenciada con las comprobaciones SST-O1..O7 frente al `FileMeta` del MANIFEST y, con `deep`, lee **todos** los bloques de datos (SST-R1..R3) y ejecuta `SstVerifier` (SST-V1..V4: totales de entradas y bytes, extremos de claves, cada clave en el filtro, ningún punto cubierto por un fragmento más nuevo de la misma tabla). Lee directamente del archivo, bloque a bloque, sin pasar por la caché (`fill_cache = false`): la memoria no crece con la base, y ningún búfer es mayor que la tabla porque el índice (SST-O5) acota cada bloque.
+4. Informa de los huérfanos con su tamaño, de `MANIFEST.tmp` y de los desconocidos, sin borrar nada (RO-3). Un huérfano que desaparece mientras se comprueba (lo borró una instantánea de un handle anterior) va a `vanished_orphans` y no es un problema; una tabla **referenciada** que desaparece es `REC-5` en `issues` (RO-4).
+
+El daño se informa en `VerifyReport::issues` (`file`, `offset`, `rule`, `detail`, sin bytes de claves ni valores) y la comprobación sigue con el archivo siguiente; la clasificación se detiene en la primera regla REC violada, igual que la apertura. `Err` se reserva para lo que impide decir nada: `Io`, `Locked`, `Incompatible` (una versión, un bit `incompat`, el cifrado o el formato M0 no son daño) e `InvalidArgument`. Un `Issue` con la misma regla en el mismo archivo se informa una sola vez. Una cola rota del MANIFEST o del último WAL (MAN-R3, WAL-R5) se acepta como en la apertura y solo se anota (`manifest_torn_tail`, `WalReport::torn_tail`).
+
+`inspect(vfs, dir)` lee solo las cabeceras (96 bytes por archivo, o su `header_len` si declara más) del MANIFEST, de los WAL y de las SST canónicos y devuelve `FormatInfo { files }` con, por archivo, el tipo, la longitud y la versión, los bits `compat` / `ro_compat` / `incompat`, el `db_id` y el número de archivo. Una cabecera dañada no es un error: el archivo figura con `header: None` y la regla violada en `problem` (un WAL cuya creación cortó una caída tiene una cabecera inválida legítima, WAL-R6). Una versión o un bit que el motor no puede leer es `Incompatible`, como en la apertura.
+
+Pruebas: `tests/verify.rs` (limpia, solo lectura byte a byte, cada bit invertido, truncamientos, filtro sin una clave, desorden entre bloques, totales que no cuadran, huérfanos, huérfanos desaparecidos, bloqueo, opciones), `tests/crafted.rs` (archivos con CRC válidos que rompen una regla estructural; ninguna operación reserva más que el motor para una base honesta ni el doble del archivo mayor), `tests/damage.rs` (daño durante el uso y tras caídas: error o datos correctos, nunca datos erróneos) y `tests/process_lock.rs` (dos procesos reales).
+
 ## Cobertura de integridad
 
 | Dato | Protección | Se comprueba |
@@ -237,8 +254,9 @@ Tras un cierre limpio el directorio contiene solo `LOCK`, `MANIFEST` (un único 
 | Pie | crc con el número de archivo; *magic*; coherencia de la disposición | apertura |
 | SST frente a MANIFEST | tamaño, entradas, rango de claves y de secuencias, `db_id` | apertura |
 | Registro del MANIFEST | crc con la generación como contexto; invariantes MAN-S1..S5 | apertura |
+| Totales de la tabla, extremos de claves, filtro completo, puntos frente a fragmentos propios (SST-V1..V4) | lectura completa | solo `verify()` |
 
-Cualquier discrepancia devuelve `Error::Corruption`. La corrupción encontrada por una compactación en segundo plano envenena el handle.
+Cualquier discrepancia devuelve `Error::Corruption`, salvo en `verify()`, que la informa como `Issue`. La corrupción encontrada por una compactación en segundo plano envenena el handle.
 
 ## Modos de durabilidad
 

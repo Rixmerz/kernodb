@@ -106,8 +106,8 @@ Protocolo de commit `Sync`: registro `[len|crc|seq|batch]` en el WAL activo (un 
 
 ## 5. Fuera del modelo (pendiente para Fase 1)
 
-- Daño del medio **durante** el uso o combinado con caídas: `SimVfs::corrupt_byte_live` ya puede provocarlo, pero ninguna suite lo aplica todavía.
-- Pruebas con dispositivos reales (kill -9, LazyFS / `dm-log-writes`).
+- Daño del medio **durante** el uso o combinado con caídas en `kerno-storage`: cubierto desde WP09 por `damage_during_use_is_detected_or_harmless` y `damage_after_unclean_crash_never_returns_wrong_data` (error o datos exactos; tras una caída, nunca una secuencia menor que la confirmada salvo que el daño esté en la última trama del WAL más nuevo, indistinguible de una cola rota) y por `verify_detects_every_bit_flip`. Los motores M0 no lo aplican.
+- Pruebas con dispositivos reales: el bloqueo entre procesos reales lo prueba `process_lock.rs` (WP09); `kill -9` de un escritor y LazyFS / `dm-log-writes` siguen pendientes (WP14).
 - Fallos durante migraciones de formato (no existen todavía).
 
 ## 6. LSM v1 (`kerno-storage`)
@@ -129,7 +129,7 @@ Matriz del motor de Fase 1 ([diseño](phase1-design.md), §6.3). Las filas se as
 | CK | checkpoint: `MANIFEST.tmp`, `fsync`, `rename`, `sync_dir` | `N` | `N` | Sobrevive el MANIFEST viejo o el nuevo, ambos con el mismo estado lógico. |
 | CR | creación (DIR-3) | base vacía | base vacía (con o sin archivos) | Toda apertura sincroniza el directorio antes de aceptar commits; un directorio a medio crear se completa o se rechaza sin reinicializar datos. |
 | R0 | reapertura tras `CLEAN`: registro `SESSION_OPEN` | `N` | `N` | Un `SESSION_OPEN` roto es una cola rota del MANIFEST; el estado `CLEAN` anterior sigue siendo el de `N`. |
-| RO | apertura de solo lectura y `verify()` | `N` | `N` | **Cero** operaciones mutantes (I-18); no hay punto de fallo propio. |
+| RO | apertura de solo lectura, `verify()` e `inspect()` | `N` | `N` | **Cero** operaciones mutantes (I-18); no hay punto de fallo propio. Pruebas: `read_only_open_writes_nothing_*`, `verify_is_read_only` (también sobre bases dañadas), `inspect_reports_versions_and_bits`. |
 | FL | `fsync` fallido con semántica de Linux | error; sin commit confirmado | `N` | El handle queda envenenado; las escrituras descartadas nunca se confirman. |
 | NS | disco lleno (ENOSPC) | error `Io` o `Poisoned` | `N` | Sin efecto sobre lo confirmado; la base se recupera al liberar espacio. |
 | KP | muerte del proceso que deja pendiente lo no sincronizado, seguida de corte de energía | `N` o `N+1` | `N` o `N+1` | La recuperación hace durable su estado antes de aceptar commits. |

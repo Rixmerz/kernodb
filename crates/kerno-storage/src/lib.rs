@@ -24,6 +24,9 @@
 //!   deleted only when no MANIFEST and no live `Version` references them.
 //! * Every on-disk byte that influences results is covered by a crc32c.
 //!
+//! * [`verify`] checks a whole database and [`inspect`] reads the headers of
+//!   its files; neither writes (v1.md §9.5).
+//!
 //! See `DESIGN.md` next to this crate for formats, fsync counts, recovery
 //! and limitations.
 
@@ -35,6 +38,7 @@ mod db;
 mod deleter;
 mod files;
 mod flush;
+mod inspect;
 mod iter;
 mod manifest;
 mod memtable;
@@ -43,6 +47,7 @@ mod recovery;
 mod sst;
 mod stats;
 mod sync;
+mod verify;
 mod version;
 mod wal;
 
@@ -62,4 +67,6 @@ pub use config::{Background, TestConfig};
 #[doc(hidden)]
 pub use db::TableInfo;
 pub use db::{CloseReport, KernoDb, KernoSnapshot};
+pub use inspect::{FileInfo, FileType, FormatInfo, HeaderInfo, inspect};
 pub use metrics::Metrics;
+pub use verify::{Issue, LevelReport, Orphan, VerifyOptions, VerifyReport, WalReport, verify};

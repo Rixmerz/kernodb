@@ -147,7 +147,7 @@ pub fn inspect(vfs: Arc<dyn Vfs>, dir: &Path) -> Result<FormatInfo>;            
 | Transacciones | `txns_committed`, `txns_aborted`, `txn_gate_wait_micros` |
 | Lecturas | contadores de bloom y caché (repartidos en 16 ranuras con relleno de línea de caché para eliminar la contención del M0, `stats.rs:44`) |
 
-**`VerifyReport`**: versión y bits por archivo, `clean`, `last_seq`, por nivel archivos/bytes/entradas/fragmentos, WAL (número, tramas, cola rota), huérfanos, desconocidos, «huérfanos desaparecidos» (RO-4) y `issues: Vec<Issue { file, offset: Option<u64>, rule: &'static str, detail: String }>`; `is_ok()`. El daño se informa en `issues`; `Err` queda para `Io`, `Locked` e `Incompatible`.
+**`VerifyReport`** (WP09): `files` (versión y bits por archivo leído), `clean`, `manifest_torn_tail`, `last_seq`, `levels` (por nivel archivos/bytes/entradas/fragmentos), `wals` (número, tramas, commits, cabecera válida, cola rota), `orphans` (nombre y longitud), `unknown`, `manifest_tmp`, «huérfanos desaparecidos» (`vanished_orphans`, RO-4) y `issues: Vec<Issue { file, offset: Option<u64>, rule: &'static str, detail: String }>`; `is_ok()`. `VerifyOptions { deep, check_wal }` (ambas a `true` por defecto). El daño se informa en `issues`; `Err` queda para `Io`, `Locked`, `Incompatible` e `InvalidArgument` (directorio que no es una base). `inspect()` devuelve `FormatInfo { files: Vec<FileInfo> }`.
 
 ## 4. Modelo de errores
 
