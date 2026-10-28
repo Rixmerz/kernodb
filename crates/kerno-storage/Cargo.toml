@@ -1,0 +1,19 @@
+[package]
+name = "kerno-storage"
+description = "Kerno storage engine (Phase 1, M0 development format: never for user data)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+kerno-core.workspace = true
+crc32c.workspace = true
+parking_lot.workspace = true
+quick_cache.workspace = true
+crossbeam-skiplist.workspace = true
+
+[dev-dependencies]
+kerno-testkit.workspace = true

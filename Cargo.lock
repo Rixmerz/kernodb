@@ -316,6 +316,18 @@ name = "kerno-core"
 version = "0.0.0"
 
 [[package]]
+name = "kerno-storage"
+version = "0.0.0"
+dependencies = [
+ "crc32c",
+ "crossbeam-skiplist",
+ "kerno-core",
+ "kerno-testkit",
+ "parking_lot",
+ "quick_cache",
+]
+
+[[package]]
 name = "kerno-testkit"
 version = "0.0.0"
 dependencies = [
@@ -663,6 +675,7 @@ version = "0.0.0"
 dependencies = [
  "fjall",
  "hdrhistogram",
+ "kerno-storage",
  "parking_lot",
  "redb",
  "rusqlite",

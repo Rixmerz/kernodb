@@ -1,7 +1,7 @@
 //! Benchmark driver for the Kerno Phase 0 storage spike (M0).
 //!
 //! ```text
-//! spike-bench suite  [--engines btree,lsm,redb,fjall,sqlite] [--workloads all|a,b]
+//! spike-bench suite  [--engines btree,lsm,kerno,redb,fjall,sqlite] [--workloads all|a,b]
 //!                    [--scales small,medium] [--reps 3] [--durability sync|buffered]
 //!                    [--cold true] [--dir bench-data] [--out results.jsonl]
 //! spike-bench run    --engine E --workload W --n N [--durability sync] [--dir D] [--seed S]
@@ -27,7 +27,7 @@ use spike_bench::adapters;
 use spike_bench::metrics::{self, Report, peak_rss_kib};
 use spike_bench::workloads::{self, Ctx, WORKLOADS};
 
-const ENGINES: &[&str] = &["btree", "lsm", "redb", "fjall", "sqlite"];
+const ENGINES: &[&str] = &["btree", "lsm", "kerno", "redb", "fjall", "sqlite"];
 
 fn scale_n(scale: &str) -> u64 {
     match scale {
@@ -88,6 +88,8 @@ fn dispatch(engine: &str, workload: &str, ctx: &Ctx, rep: &mut Report) {
         "btree" => run_engine::<spike_btree::BTreeEngine>(workload, ctx, rep),
         #[cfg(feature = "candidates")]
         "lsm" => run_engine::<spike_lsm::LsmEngine>(workload, ctx, rep),
+        #[cfg(feature = "kerno")]
+        "kerno" => run_engine::<kerno_storage::KernoDb>(workload, ctx, rep),
         "redb" => run_engine::<adapters::RedbEngine>(workload, ctx, rep),
         "fjall" => run_engine::<adapters::FjallEngine>(workload, ctx, rep),
         "sqlite" => run_engine::<adapters::SqliteEngine>(workload, ctx, rep),

@@ -26,6 +26,16 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: kerno-core has no dependencies
         run: test "$(cargo tree -p kerno-core -e normal --prefix none | wc -l)" -eq 1
+      # Both guards fail closed: an error of cargo tree or grep (renamed
+      # crate, missing directory) fails the step instead of passing it.
+      - name: kerno-storage does not depend on spikes or test crates at run time
+        shell: bash
+        run: |
+          tree=$(cargo tree -p kerno-storage -e normal --prefix none) && grep -q '^kerno-storage ' <<<"$tree" && ! grep -E '^(spike-|kerno-testkit|proptest|loom)' <<<"$tree"
+      - name: kerno-storage never uses std::fs (all file access goes through Vfs)
+        shell: bash
+        run: |
+          if grep -rn 'std::fs' crates/kerno-storage/src; then false; else test $? -eq 1; fi
 
   test:
     name: shared suites, regressions and differential test
@@ -50,9 +60,9 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release -p spike-bench --features candidates
+      - run: cargo build --release -p spike-bench --features candidates,kerno
       - run: |
-          target/release/spike-bench suite --engines btree,lsm,redb,fjall,sqlite --workloads all \
+          target/release/spike-bench suite --engines btree,lsm,kerno,redb,fjall,sqlite --workloads all \
             --scales tiny --reps 1 --dir bench-data --out smoke.jsonl
           target/release/spike-bench report --input smoke.jsonl | tee -a "$GITHUB_STEP_SUMMARY"
           ! grep -q '"error"' smoke.jsonl

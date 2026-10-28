@@ -125,6 +125,8 @@ fn same_history_same_state_in_every_engine() {
         results.insert("btree", sim::<spike_btree::BTreeEngine>(&batches));
         results.insert("lsm", sim::<spike_lsm::LsmEngine>(&batches));
     }
+    #[cfg(feature = "kerno")]
+    results.insert("kerno", sim::<kerno_storage::KernoDb>(&batches));
     results.insert("redb", real::<spike_bench::adapters::RedbEngine>(&batches));
     results.insert("fjall", real::<spike_bench::adapters::FjallEngine>(&batches));
     results.insert("sqlite", real::<spike_bench::adapters::SqliteEngine>(&batches));

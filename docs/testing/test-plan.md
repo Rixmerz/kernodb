@@ -55,7 +55,7 @@ Además de las suites compartidas, cada candidato pasó por una revisión advers
 cargo test -p kerno-testkit                 # harness + LogEngine
 cargo test -p spike-btree                   # candidato CoW B+ tree
 cargo test -p spike-lsm                     # candidato LSM
-cargo test -p spike-bench --features candidates --release   # prueba diferencial
+cargo test -p spike-bench --all-features --release           # prueba diferencial (con kerno)
 cargo test --workspace --all-features --release              # todo (lo que ejecuta la CI)
 
 # Más semillas (las suites aleatorias usan entre 4 y 150 por defecto):

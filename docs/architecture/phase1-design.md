@@ -70,8 +70,9 @@ Reglas y guardias de CI:
 
 - `kerno-testkit` nunca depende de `kerno-storage` (evita el ciclo y la doble compilación en pruebas unitarias).
 - El producto no depende en tiempo de ejecución de crates de prueba ni de spikes:
-  `! cargo tree -p kerno-storage -e normal --prefix none | grep -Eq '^(spike-|kerno-testkit|proptest|loom)'` y `test "$(cargo tree -p kerno-core -e normal --prefix none | wc -l)" -eq 1`.
-- Todo acceso a archivos pasa por `Vfs` (CONTRIBUTING): `! grep -rn 'std::fs' crates/kerno-storage/src`.
+  `tree=$(cargo tree -p kerno-storage -e normal --prefix none) && grep -q '^kerno-storage ' <<<"$tree" && ! grep -E '^(spike-|kerno-testkit|proptest|loom)' <<<"$tree"` y `test "$(cargo tree -p kerno-core -e normal --prefix none | wc -l)" -eq 1`.
+- Todo acceso a archivos pasa por `Vfs` (CONTRIBUTING): `if grep -rn 'std::fs' crates/kerno-storage/src; then false; else test $? -eq 1; fi`.
+- Las guardias fallan cerradas: un error de `cargo tree` o de `grep` (crate renombrado, directorio inexistente) hace fallar la guardia. La forma `! orden | grep -q …` pasaba en ese caso, porque `!` invierte también el fallo de la orden.
 - El contrato del harness vive en `kerno_core::contract` (`#[doc(hidden)]`): `kerno-storage` lo implementa directamente, así que el harness prueba el tipo del producto sin adaptadores, y `spike-bench` y la prueba diferencial añaden `kerno` sin envoltorios. La futura fachada pública `kerno` (ADR-0010, pendiente) no lo re-exporta.
 - `Op` no se marca `#[non_exhaustive]` (obligaría a brazos comodín en los spikes); `Error` sí (fuera de su crate solo se usa con `matches!`). `Options` no (dos sitios usan sintaxis de actualización funcional).
 

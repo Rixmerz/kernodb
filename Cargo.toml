@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/kerno-core",
     "crates/kerno-testkit",
+    "crates/kerno-storage",
     "spikes/storage/spike-core",
     "spikes/storage/spike-btree",
     "spikes/storage/spike-lsm",
@@ -20,6 +21,7 @@ repository = "https://github.com/Rixmerz/kernodb"
 [workspace.dependencies]
 kerno-core = { path = "crates/kerno-core" }
 kerno-testkit = { path = "crates/kerno-testkit" }
+kerno-storage = { path = "crates/kerno-storage" }
 spike-core = { path = "spikes/storage/spike-core" }
 spike-btree = { path = "spikes/storage/spike-btree" }
 spike-lsm = { path = "spikes/storage/spike-lsm" }
