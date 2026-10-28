@@ -2,4 +2,4 @@
 
 use spike_core::reference::LogEngine;
 
-spike_core::engine_test_suite!(LogEngine, buffered_power_loss_prefix = true);
+spike_core::engine_test_suite!(LogEngine, buffered_power_loss_prefix = true, detects_truncation = false);

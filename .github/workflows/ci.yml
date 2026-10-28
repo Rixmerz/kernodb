@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Weekly long run with many more seeds for the randomized suites.
+    - cron: "17 3 * * 1"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  checks:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  test:
+    name: shared suites, regressions and differential test
+    runs-on: ubuntu-latest
+    env:
+      # Empty means "each suite's default"; the weekly run uses 1000 seeds.
+      SPIKE_SEEDS: ${{ github.event_name == 'schedule' && '1000' || '' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --all-features --release -- --nocapture 2>&1 | tee test.log
+        shell: bash
+      - name: Corruption outcomes
+        if: always()
+        run: grep -h "Outcomes" test.log >> "$GITHUB_STEP_SUMMARY" || true
+
+  bench-smoke:
+    name: benchmark smoke run (tiny scale)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p spike-bench --features candidates
+      - run: |
+          target/release/spike-bench suite --engines btree,lsm,redb,fjall,sqlite --workloads all \
+            --scales tiny --reps 1 --dir bench-data --out smoke.jsonl
+          target/release/spike-bench report --input smoke.jsonl | tee -a "$GITHUB_STEP_SUMMARY"
+          ! grep -q '"error"' smoke.jsonl
+        shell: bash

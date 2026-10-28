@@ -35,6 +35,10 @@ fn one_seed<E: Engine>(seed: u64, kind: CrashKind, durability: Durability) {
     opts.durability = durability;
 
     let mut disk = SimVfs::new(seed);
+    if seed % 2 == 1 {
+        // Odd seeds: writes can tear at any byte, not only at sectors.
+        disk.set_tear_unit(1);
+    }
     // History of every batch ever attempted, indexed by sequence - 1.
     let mut history: Vec<WriteBatch> = Vec::new();
     // State known to be recovered at the start of the round, and its seq.
@@ -60,6 +64,12 @@ fn one_seed<E: Engine>(seed: u64, kind: CrashKind, durability: Durability) {
                 continue;
             }
         };
+        // Recovery finished before the trigger fired: cancel it, so that
+        // background work started by `open` cannot pull the device away in
+        // the middle of verification. (If it already fired in that window,
+        // the `has_crashed` branch below handles it.) The workload trigger
+        // armed further down still covers crashes during that background work.
+        disk.disarm();
         let snap = match db.snapshot() {
             Ok(s) => s,
             Err(e) => {
@@ -138,5 +148,155 @@ fn one_seed<E: Engine>(seed: u64, kind: CrashKind, durability: Durability) {
             _ => acked,
         };
         max_seq = attempted;
+    }
+}
+
+/// One step of the deterministic scenario used by [`every_point`].
+pub(super) enum Step {
+    Open,
+    Commit(WriteBatch),
+    Close,
+    /// Drop the handle without `close` (process exit without shutdown).
+    Drop,
+}
+
+/// Fixed scenario touching every phase of an engine's life: creation,
+/// commits (small, large values, deletes), clean close, reopen, unclean
+/// drop, recovery and more commits. Deterministic for a given seed.
+pub(super) fn scenario(seed: u64) -> Vec<Step> {
+    let mut w = Workload::new(seed);
+    w.key_space = 120;
+    w.large_per_mille = 100;
+    let mut model = Model::new();
+    let mut steps = vec![Step::Open];
+    let mut commits = |n: usize, steps: &mut Vec<Step>| {
+        for _ in 0..n {
+            let b = w.batch(&model);
+            apply(&mut model, &b);
+            steps.push(Step::Commit(b));
+        }
+    };
+    commits(25, &mut steps);
+    steps.push(Step::Close);
+    steps.push(Step::Open);
+    commits(20, &mut steps);
+    steps.push(Step::Drop);
+    steps.push(Step::Open);
+    commits(10, &mut steps);
+    steps.push(Step::Close);
+    steps
+}
+
+/// Runs the scenario until the device fails. Returns (acked, attempted)
+/// commit counts.
+fn run_scenario<E: Engine>(disk: &SimVfs, steps: &[Step], opts: &Options) -> (u64, u64) {
+    let vfs = disk.as_vfs();
+    let mut db: Option<E> = None;
+    let (mut acked, mut attempted) = (0u64, 0u64);
+    for step in steps {
+        match step {
+            Step::Open => match open::<E>(&vfs, opts) {
+                Ok(d) => db = Some(d),
+                Err(e) => {
+                    assert!(disk.has_crashed(), "open failed without a crash: {e}");
+                    break;
+                }
+            },
+            Step::Commit(b) => {
+                attempted += 1;
+                match db.as_ref().unwrap().commit(b) {
+                    Ok(seq) => {
+                        assert_eq!(seq, attempted, "unexpected commit sequence");
+                        acked = seq;
+                    }
+                    Err(e) => {
+                        assert!(disk.has_crashed(), "commit failed without a crash: {e}");
+                        break;
+                    }
+                }
+            }
+            Step::Close => {
+                if let Err(e) = db.take().unwrap().close() {
+                    assert!(disk.has_crashed(), "close failed without a crash: {e}");
+                    break;
+                }
+            }
+            Step::Drop => drop(db.take()),
+        }
+    }
+    drop(db);
+    (acked, attempted)
+}
+
+/// Crash at *every* mutating I/O operation of a fixed scenario (the
+/// predefined failure points of the failure matrix), for both crash kinds,
+/// and check the recovered state each time. The expected outcome is the
+/// same at every point: the state after commit `s`, with
+/// `acked <= s <= attempted`, followed by a working database.
+///
+/// `durability` must be `Sync` for power loss; `Buffered` is meaningful with
+/// [`CrashKind::ProcessKill`] (whatever was acknowledged was handed to the
+/// OS and survives a process crash).
+pub fn every_point<E: Engine>(kind: CrashKind, durability: Durability) {
+    assert!(
+        durability == Durability::Sync || kind == CrashKind::ProcessKill,
+        "Buffered commits only promise to survive process kills at every point"
+    );
+    let mut opts = Options::small_for_tests();
+    opts.durability = durability;
+    let steps = scenario(7);
+    let batches: Vec<&WriteBatch> =
+        steps.iter().filter_map(|s| if let Step::Commit(b) = s { Some(b) } else { None }).collect();
+    let dry = SimVfs::new(0);
+    let (acked, _) = run_scenario::<E>(&dry, &steps, &opts);
+    assert_eq!(acked as usize, batches.len(), "dry run must complete");
+    // Background work makes the exact count vary a little; go past it.
+    let total = dry.mutating_ops() + 20;
+    let only: Option<u64> = std::env::var("SPIKE_POINT").ok().and_then(|s| s.parse().ok());
+    for point in 1..=total {
+        if only.is_some_and(|p| p != point) {
+            continue;
+        }
+        let ctx = format!("{kind:?} ({durability:?}) crash before mutating op #{point} of {total}");
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let disk = SimVfs::new(point);
+            if point % 2 == 1 {
+                disk.set_tear_unit(1);
+            }
+            disk.crash_after(point, kind);
+            let (acked, attempted) = run_scenario::<E>(&disk, &steps, &opts);
+            let image = if disk.has_crashed() { disk.take_crash_image().unwrap() } else { disk.crash_now(kind) };
+            let vfs = image.as_vfs();
+            let db: E = open(&vfs, &opts).unwrap_or_else(|e| panic!("{ctx}: recovery failed: {e}"));
+            let snap = db.snapshot().unwrap();
+            let s = snap.seq();
+            assert!(acked <= s && s <= attempted, "{ctx}: recovered seq {s} outside {acked}..={attempted}");
+            let mut model = Model::new();
+            for b in &batches[..s as usize] {
+                apply(&mut model, b);
+            }
+            let mut rng = Rng::new(point);
+            assert_snapshot_matches(&snap, &model, &mut rng, &ctx);
+            drop(snap);
+            // The recovered database must keep working, and what it commits
+            // and closes afterwards must survive a real power loss.
+            let mut b = WriteBatch::new();
+            b.put("after-recovery", "x");
+            assert_eq!(db.commit(&b).unwrap(), s + 1, "{ctx}: commit after recovery");
+            apply(&mut model, &b);
+            db.close().unwrap();
+            let after = image.crash_now(CrashKind::PowerLoss);
+            let db: E = open(&after.as_vfs(), &opts).unwrap_or_else(|e| panic!("{ctx}: reopen after power loss: {e}"));
+            assert_snapshot_matches(
+                &db.snapshot().unwrap(),
+                &model,
+                &mut rng,
+                &format!("{ctx}, then power loss after a clean close"),
+            );
+        }));
+        if let Err(e) = r {
+            eprintln!("\n*** {ctx}; reproduce with SPIKE_POINT={point}\n");
+            std::panic::resume_unwind(e);
+        }
     }
 }
