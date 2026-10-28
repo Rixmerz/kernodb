@@ -44,6 +44,14 @@ Las pruebas citadas viven en [`crates/kerno-testkit/src/harness/`](../../crates/
 | I-29 | La auditoría y los logs no registran contenido completo de documentos, secretos ni tokens. | SAD §11.4 | Fase 4 |
 | I-30 | La exportación lógica es independiente del formato físico y puede reimportarse en un motor nuevo. | D-10, SAD §13 | Fase 4 |
 | I-31 | Ninguna funcionalidad del núcleo requiere red, proveedor de IA o modelo. | SAD §17.5.7 | todas (revisión de dependencias) |
+| I-32 | El plan elegido (planificado o aprendido) devuelve los mismos resultados que la ruta de referencia sobre la misma instantánea. | spec v0.2.0 §9, §15.4; [ejecución adaptativa](adaptive-execution.md) | Etapa 5 |
+| I-33 | Si una precondición falla o la optimización está invalidada o desactivada, se usa un plan válido y el fallback queda registrado. | spec v0.2.0 §9; ADR-0016 | Etapa 6 |
+| I-34 | Activar, desactivar, invalidar o borrar optimizaciones y observaciones no altera datos confirmados ni la secuencia de commit. | spec v0.2.0 §15.5; ADR-0016 | Etapa 6 |
+| I-35 | Un cambio de esquema, índice o estadísticas relevantes invalida o revalida las optimizaciones dependientes antes de su siguiente uso. | spec v0.2.0 §9; ADR-0016 | Etapa 6 |
+| I-36 | Con la adaptación desactivada (global o por consulta), ninguna optimización aprendida participa. | spec v0.2.0 §9; ADR-0016 | Etapa 6 |
+| I-37 | Observaciones, métricas y explicaciones de plan no contienen literales de consulta ni contenido fuera del nivel `diagnostic`. | spec v0.2.0 §6.5; ADR-0015 | Etapa 5 |
+| I-38 | Todo artefacto derivado referencia sus fuentes exactas (unidad y revisión), su método y versión; cambiar una fuente lo marca obsoleto o crea una versión nueva. | spec v0.2.0 §10, §15.7; ADR-0018 | Etapa 8 |
+| I-39 | Una relación inferida nunca se presenta como declarada y conserva origen y confianza. | spec v0.2.0 §10, §12; ADR-0014, ADR-0017 | Etapa 4 (declaradas), Etapa 7 (inferidas) |
 
 ## 3. Riesgos
 

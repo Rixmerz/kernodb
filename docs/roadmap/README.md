@@ -43,3 +43,62 @@ El plan completo, con objetivos y salidas por fase, está en [SAD §16](../archi
 3. Condiciones de ADR-0001: colas de latencia acotadas (compactación y cierre con presupuesto), *range tombstones* y compactación dirigida, MANIFEST como log de ediciones, group commit.
 4. Transacciones read-modify-write, `sync()` explícito y métricas de snapshots (ADR-0002).
 5. Repetir los benchmarks de M0 en el hardware objetivo.
+
+### Benchmarks de cierre de la Fase 1 y SQLite como baseline
+
+La tarea de cierre de la Fase 1 (revisión adversarial, benchmarks, documentación) mide `kerno` con `ENGINES=btree,lsm,kerno,redb,fjall,sqlite` ([objetivos T1–T10](../testing/f1-objetivos-rendimiento.md)). A petición de la [especificación v0.2.0](../spec/README.md) §15, el informe presentará además **SQLite como baseline explícito**: una tabla `kerno` / SQLite por workload, con durabilidad equivalente declarada (`Sync` frente a `journal_mode=WAL` + `synchronous=FULL`; `Buffered` frente a `synchronous=NORMAL`, cuya garantía ante corte de energía no es idéntica y se anota). Esto **no** añade umbrales nuevos a T1–T10 ni reemplaza los resultados de M0 (B+ tree, LSM, redb, fjall y SQLite del 2026-10-27), que se conservan en [`spikes/storage/results/`](../../spikes/storage/results/) y en el [informe M0](../testing/m0-report.md). Los umbrales frente a SQLite, si se quieren, los fija el propietario antes de medir (ADR-0012).
+
+## Etapas 3–9 (especificación v0.2.0)
+
+Después de la Fase 1 el trabajo se organiza por las etapas de la [especificación v0.2.0](../spec/especificacion-arquitectonica-v0.2.0.md) §16; la [correspondencia con las fases del SAD](../spec/README.md) está en `docs/spec/`. Ninguna etapa ha empezado. Una etapa ya implementada y probada se salta (spec §16).
+
+| Etapa | Depende de | Condición de inicio | ADR que se deciden |
+|---|---|---|---|
+| 3 Unidades, revisiones y procedencia | Etapa 2 (Fase 1) | Fase 1 cerrada: WP14 integrado, formato v1 congelado con ADR-0013 aceptado | 0004, 0008, 0010, 0017 |
+| 4 Relaciones e índices | 3 | API de unidades estable (ADR-0010 aceptado) | 0007, 0014 |
+| 5 Planificador y observabilidad | 4 | Consultas por filtro y relación con ruta de referencia probada | 0015 |
+| 6 Primera plasticidad operacional | 5 | Planificador determinista con prueba diferencial en CI | 0016 |
+| 7 Memoria asociativa | 4, 5 | Recorridos de relaciones y explicación de planes disponibles | 0011 |
+| 8 Consolidación y embeddings | 7, 6 | ADR-0018 aceptado; supresión de derivados definida (ADR-0009) | 0009, 0018 |
+| 9 Endurecimiento | todas las anteriores (las partes de seguridad pueden adelantarse) | Ver decisión pendiente sobre el orden | 0005, 0006, 0012 |
+
+### Etapa 3 — Unidades, revisiones y procedencia
+
+- **Entregables:** tipos `Unit`, `Revision` y `ChangeSet` (spec §6.1–6.3) sobre `kerno-storage`; CRUD transaccional y archivado; listar, comparar y restaurar revisiones; políticas de historial `none`/`audit`/`versioned` (SAD §8); serialización y hashes (ADR-0008); primera API pública tipada (ADR-0010).
+- **Aceptación:** se reconstruye la evolución de una unidad y se restaura sin destruir revisiones posteriores (I-22); el historial no depende del WAL (I-20); contenido y revisión se confirman en la misma frontera atómica (I-21), también en la matriz de fallos.
+
+### Etapa 4 — Relaciones e índices
+
+- **Entregables:** relaciones tipadas declaradas (ADR-0014); índice primario y filtros básicos; índices secundarios solo con un workload que los justifique; ruta de referencia para todas las consultas.
+- **Aceptación:** los resultados por índice coinciden con la ruta de referencia (I-32 aplicado a índices); índices reconstruidos equivalentes a nuevos (I-24); estado de frescura expuesto (I-23); una relación declarada nunca se confunde con una inferida (I-39).
+
+### Etapa 5 — Planificador y observabilidad
+
+- **Entregables:** planificador determinista (spec §9: validar, generar candidatos, estimar coste, elegir, ejecutar, registrar, validar invariantes); explicación del plan; `ExecutionObservation` con niveles de detalle ([ejecución adaptativa](../architecture/adaptive-execution.md), ADR-0015).
+- **Aceptación:** el plan puede inspeccionarse; prueba diferencial planificador frente a ruta de referencia en CI (I-32); prueba de centinelas sin literales ni contenido en observaciones (I-37).
+
+### Etapa 6 — Primera plasticidad operacional
+
+- **Entregables:** una única optimización reversible (plan reutilizable o caché invalidada por secuencia), con los metadatos de spec §9 y desactivación global y por consulta (ADR-0016).
+- **Aceptación:** mejora neta medida frente al modo desactivado con umbrales fijados antes de medir; equivalencia de resultados (I-32, I-33); invalidación probada por dependencia (I-35); invalidar no altera datos (I-34); desactivación verificada (I-36).
+
+### Etapa 7 — Memoria asociativa
+
+- **Entregables:** recuperación por relaciones, contexto temporal y procedencia; búsqueda vectorial **exacta** como baseline si hay un caso de uso (ADR-0011); ranking con modo diagnóstico que explica sus señales.
+- **Aceptación:** calidad de recuperación evaluable con un conjunto de consultas y respuestas esperadas fijado antes de medir; toda respuesta rastreable a sus fuentes; sin ANN antes de un benchmark que lo justifique.
+
+### Etapa 8 — Consolidación y embeddings
+
+- **Entregables:** registro común de derivados (ADR-0018); adaptadores o jobs externos para embeddings y resúmenes, fuera del núcleo (I-31); obsolescencia y reconstrucción.
+- **Aceptación:** cada derivado se vincula a sus fuentes y se invalida o reconstruye al cambiarlas (I-25, I-38); suprimir una fuente afecta a sus derivados según ADR-0009; un resumen nunca reemplaza el original auditable.
+
+### Etapa 9 — Endurecimiento
+
+- **Entregables:** IDs públicos (ADR-0005), cifrado y claves (ADR-0006), auditoría minimizada, exportación/importación y migraciones con fixtures de versiones previas, fuzzing de entradas externas, pruebas de estrés, benchmarks comparativos con SQLite y motores de referencia (SAD Fases 4 y 6).
+- **Aceptación:** límites y garantías documentados; fallos críticos resueltos o marcados como bloqueantes; I-27…I-30 verificados.
+
+### Decisiones pendientes del propietario para estas etapas
+
+1. **Orden de seguridad frente a IA:** el SAD hace la seguridad (Fase 4) antes que búsqueda e IA (Fase 5); la especificación la deja en la Etapa 9. Propuesta: adelantar a antes de la Etapa 8 lo que afecta a derivados (supresión, ADR-0009; redacción de logs, I-29) y dejar el resto en la Etapa 9.
+2. Aceptar o modificar ADR-0014…0018 en las etapas indicadas.
+3. Umbrales de benchmark frente a SQLite, si se quieren como criterio y no solo como informe.
