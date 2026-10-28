@@ -979,7 +979,14 @@ mod mutants {
 
         fn begin_write(&self) -> Result<NaiveTxn<'_, T, B>> {
             let gate = T.then(|| self.gate.lock());
-            Ok(NaiveTxn { db: self, snap: self.inner.snapshot()?, batch: WriteBatch::new(), _gate: gate })
+            let snap = self.inner.snapshot()?;
+            if !T {
+                // Widen the read-to-commit window so concurrent writers
+                // overlap on every run and the suite reliably sees the
+                // lost update this mutant allows.
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Ok(NaiveTxn { db: self, snap, batch: WriteBatch::new(), _gate: gate })
         }
     }
 
