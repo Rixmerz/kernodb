@@ -37,6 +37,7 @@ pub(crate) fn dedupe(batch: &WriteBatch) -> Vec<(&[u8], Option<&[u8]>)> {
         match op {
             Op::Put { key, value } => map.insert(key.as_slice(), Some(value.as_slice())),
             Op::Delete { key } => map.insert(key.as_slice(), None),
+            Op::DeleteRange { .. } => unreachable!("delete_range is rejected at the entry of commit"),
         };
     }
     map.into_iter().collect()

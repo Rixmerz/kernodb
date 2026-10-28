@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use kerno_core::Error;
 use kerno_core::contract::{Engine, Options, Snapshot};
 
-use super::{Model, Workload, apply, for_each_seed, open, read_all, seeds};
+use super::{Model, SuiteConfig, Workload, apply, for_each_seed, open, read_all, seeds};
 use crate::rng::Rng;
 use crate::vfs::{OpenMode, SimVfs};
 
@@ -37,7 +37,12 @@ enum Damage {
 }
 
 pub fn bit_flips<E: Engine>() {
-    damage_suite::<E>(Damage::BitFlip);
+    bit_flips_with_config::<E>(&SuiteConfig::default());
+}
+
+/// [`bit_flips`] on databases written with the workload of `cfg`.
+pub fn bit_flips_with_config<E: Engine>(cfg: &SuiteConfig) {
+    damage_suite::<E>(Damage::BitFlip, cfg);
 }
 
 /// Truncation to a random shorter length (a quarter of the time, to zero):
@@ -45,17 +50,22 @@ pub fn bit_flips<E: Engine>() {
 /// Files must be created atomically (e.g. temp file + rename) so that an
 /// empty or short file is never mistaken for "no database yet".
 pub fn truncations<E: Engine>() {
-    damage_suite::<E>(Damage::Truncate);
+    truncations_with_config::<E>(&SuiteConfig::default());
 }
 
-fn damage_suite<E: Engine>(damage: Damage) {
+/// [`truncations`] on databases written with the workload of `cfg`.
+pub fn truncations_with_config<E: Engine>(cfg: &SuiteConfig) {
+    damage_suite::<E>(Damage::Truncate, cfg);
+}
+
+fn damage_suite<E: Engine>(damage: Damage, cfg: &SuiteConfig) {
     let outcomes = std::sync::Mutex::new(Outcomes::default());
     for_each_seed(&format!("{damage:?}"), seeds(150), |seed| {
         let mut rng = Rng::new(seed);
         let disk = SimVfs::new(seed);
         let vfs = disk.as_vfs();
         let opts = Options::small_for_tests();
-        let mut w = Workload::new(seed);
+        let mut w = Workload::with_config(seed, cfg.workload);
         w.key_space = 800;
         let mut model = Model::new();
         let db: E = open(&vfs, &opts).unwrap();

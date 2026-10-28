@@ -9,12 +9,16 @@
 //!   opt-in, Linux `fsync` semantics, per-directory durability, a full disk,
 //!   filtered triggers and traces), [`vfs::CountingVfs`], an I/O accounting
 //!   wrapper, and [`vfs::HookVfs`], a fault-injecting wrapper.
-//! * [`harness`] — reusable test suites (see [`engine_test_suite!`]).
+//! * [`harness`] — reusable test suites (see [`engine_test_suite!`] and
+//!   [`range_delete_test_suite!`]).
 //! * [`reference`](mod@reference) — `LogEngine`, the trivially correct engine
-//!   that validates the harness itself.
+//!   that validates the harness itself (range deletions included).
+//! * [`emulated`] — `Emulated<E>`, which gives any engine range deletions by
+//!   rewriting them into point deletions.
 //! * [`rng`] — the deterministic PRNG every randomized test is seeded with.
 //! * [`process`] — re-executes the test binary as a child process.
 
+pub mod emulated;
 pub mod harness;
 pub mod process;
 pub mod reference;
@@ -34,5 +38,5 @@ pub mod vfs {
     pub use sim::*;
 }
 
-pub use kerno_core::contract::{Engine, Options, Snapshot};
+pub use kerno_core::contract::{Engine, Options, RangeDeleteEngine, Snapshot};
 pub use kerno_core::{Durability, Error, MAX_KEY_LEN, MAX_VALUE_LEN, Op, Result, WriteBatch};

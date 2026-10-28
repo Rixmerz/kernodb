@@ -676,6 +676,7 @@ dependencies = [
  "fjall",
  "hdrhistogram",
  "kerno-storage",
+ "kerno-testkit",
  "parking_lot",
  "redb",
  "rusqlite",

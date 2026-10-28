@@ -18,9 +18,11 @@ El contrato, los errores y `Vfs`/`StdVfs` viven en [`crates/kerno-core`](../../c
 | `HookVfs` | Envuelve otro `Vfs` y llama a un *hook* antes y después de cada operación, que decide si sigue, falla, entra en pánico o se retrasa. |
 | `process` | Relanza el binario de pruebas como proceso hijo con un rol (`spawn_child`, `child_role`), para pruebas entre procesos. |
 | `CountingVfs` | Cuenta bytes, operaciones y `fsync` para medir amplificación. |
-| `engine_test_suite!` | Genera la misma batería de pruebas para cada motor. |
+| `engine_test_suite!` | Genera la misma batería de pruebas para cada motor. Con `config = SuiteConfig::with_range_deletes(n)`, la misma batería con `n` milésimas de las operaciones aleatorias convertidas en borrados de rango (también el escenario de los barridos `every_point`); sin `config` es exactamente la del M0 (`WorkloadCfg` por defecto no consume ningún número aleatorio adicional). |
+| `range_delete_test_suite!` | Genera el módulo `shared_range` para motores que implementan `RangeDeleteEngine`: límites `[start, end)` y rangos vacíos, orden dentro del lote (SEM-3), lecturas y escaneos paginados a través de lápidas de varias generaciones, aislamiento de instantáneas, modelo aleatorio con rangos, persistencia tras cierre, caída y corte de energía, y espacio. Validada sobre `LogEngine` y `Emulated<LogEngine>` (ver §2.3). |
+| `Emulated<E>` | Da borrados de rango a cualquier motor: bajo un mutex de commit, cada rango se convierte, en su posición del lote, en borrados de punto de las claves que existen en ese punto (instantánea más claves del propio lote). La reescritura nunca introduce la clave vacía, que algunos motores rechazan (fjall aborta con un pánico): solo la borra cuando ya la contienen las operaciones del propio lote o el estado guardado, cosa imposible en un motor que la rechaza. Es un oráculo de pruebas, no una implementación. |
 | `extended_failure_suite!` | Genera el módulo `shared_ext_failure`: los modelos opcionales de `SimVfs` en cada operación de E/S del escenario A (ver §2.2). |
-| `LogEngine` | Motor trivialmente correcto que valida el propio harness (si falla una prueba compartida, la prueba está mal). |
+| `LogEngine` | Motor trivialmente correcto que valida el propio harness (si falla una prueba compartida, la prueba está mal). Implementa los borrados de rango de forma nativa (operación 3 del log). |
 
 ### 2.1 Validación del harness (mutation testing manual)
 
@@ -49,11 +51,36 @@ Antes de confiar en el harness se le inyectaron fallos conocidos (en `LogEngine`
 
 La revisión de la suite corrigió además dos defectos del propio modelo, cada uno con su autoprueba de `SimVfs`: un `fsync` fallido con semántica de Linux descartaba también los `set_len` pendientes, de modo que un truncamiento cuyo `fsync` fallaba nunca llegaba al disco (`linux_drop_pages_keeps_length_changes`; `recovery_truncation_survives_a_failed_sync` muestra el efecto sobre `LogEngine`: un registro obsoleto reaparecía tras un commit confirmado), y con durabilidad por directorio un `rename` entre directorios podía resucitar el nombre de origen (`per_dir_cross_dir_rename_does_not_resurrect_source`). También endureció el modelo de disco lleno: un archivo borrado o reemplazado conserva su espacio mientras siga abierto, como en Linux (`space_limit_freed_by_remove`).
 
+### 2.3 Borrados de rango (Fase 1, WP10a)
+
+`range_delete_test_suite!` ([`harness/range.rs`](../../crates/kerno-testkit/src/harness/range.rs)) se valida primero sobre `LogEngine` (nativo) y `Emulated<LogEngine>` en `kerno-testkit/tests/reference_engine.rs`; `engine_test_suite!` con `config = SuiteConfig::with_range_deletes(20)`, sobre los mismos dos motores en `kerno-testkit/tests/reference_ranges.rs` (un objetivo aparte para que la huella FP de `reference_engine` solo imprima la suite por defecto). Los spikes, los adaptadores del benchmark y, hasta WP10b, `kerno-storage` rechazan los rangos con `InvalidArgument` antes de escribir nada (`engines_without_range_deletes_reject_them`, `range_delete_is_rejected_without_consuming_a_sequence`).
+
+Para comprobar que la suite detecta errores se le inyectaron once mutaciones, una cada vez, y se ejecutó `shared_range` sobre los dos motores de referencia; la duodécima, propia de un LSM, se modela con un motor de prueba (última fila). Todas se detectaron:
+
+| Mutación | Detectada por (`shared_range::`) |
+|---|---|
+| `LogEngine`: el extremo final del rango incluido | todas salvo `space_is_reclaimed_after_range_deletes` |
+| `LogEngine`: los rangos se aplican después de los puntos de su lote | `order_within_batch_range_then_put`, `scan_across_tombstones_in_all_sources`, `range_survives_reopen`, modelo aleatorio, aislamiento |
+| `LogEngine`: los rangos se aplican antes de los puntos de su lote | `order_within_batch_put_then_range`, modelo aleatorio, aislamiento |
+| `LogEngine`: la recuperación ignora los rangos del log | `range_survives_reopen` y las demás pruebas que reabren |
+| `LogEngine`: un lote de rangos vacíos no consume secuencia | `delete_range_bounds_and_degenerate`, aislamiento |
+| `LogEngine`: nunca reescribe su log (no recupera espacio) | `space_is_reclaimed_after_range_deletes` (nativo, en el ciclo 6, y `Emulated`) |
+| `Emulated`: el rango ignora las claves escritas antes en su lote | `order_within_batch_put_then_range`, modelo aleatorio, aislamiento |
+| `Emulated`: el lote reescrito puede quedar vacío (sin secuencia) | `delete_range_bounds_and_degenerate`, `scan_across_tombstones_in_all_sources`, aislamiento |
+| `Emulated`: solo se borra la primera página de un rango | `space_is_reclaimed_after_range_deletes` |
+| `Emulated`: el extremo final del rango incluido | todas salvo `space_is_reclaimed_after_range_deletes` |
+| `WriteBatch::validate` acepta `start > end` | `delete_range_bounds_and_degenerate` (ambos motores) |
+| Nunca descarta los puntos cubiertos solo por un rango (las sobrescrituras sí se recuperan) | `space_is_reclaimed_after_range_deletes`, en el ciclo 6 (autoprueba `space_check_fails_for_an_engine_that_keeps_range_deleted_points`) |
+
+`space_is_reclaimed_after_range_deletes` escribe en cada ciclo claves que ningún ciclo anterior escribió (todas dentro de `["c", "d")`): ningún valor se sobrescribe ni se borra con una operación de punto, así que solo los borrados de rango convierten en basura los valores antiguos. Una primera versión rellenaba siempre las mismas claves; cada relleno ocultaba los valores borrados por rango con un punto más nuevo de la misma clave, y un motor que recupera las versiones sobrescritas pero conserva los puntos cubiertos solo por un rango (el error de compactación que WP10b debe excluir) pasaba la prueba y la suite entera. `space_check_fails_for_an_engine_that_keeps_range_deleted_points` lo comprueba con un motor así: `LogEngine` más un archivo que conserva los bytes de valor de cada punto cubierto por un rango hasta que esa clave se vuelve a escribir; falla en el ciclo 6, y pasaba la versión anterior. La prueba no tiene un número fijo de ciclos: un borrado de rango ocupa pocos bytes, así que un motor que no recupera nada conserva al menos todos los bytes de valor escritos (aleatorios, incompresibles), y la prueba sigue (mínimo seis ciclos, máximo 64) hasta que esos bytes por sí solos superan la cota `4 × primer llenado + 1 MiB` en dos ciclos. Con seis ciclos fijos, el `LogEngine` nativo que nunca reescribe su log pasaba (crece un llenado por ciclo y queda bajo la cota); ahora falla en el ciclo 6. `space_check_fails_for_an_engine_that_reclaims_nothing` lo comprueba con un motor que guarda en su directorio, para siempre, las claves y valores de cada lote.
+
+La revisión del paquete añadió tres regresiones. `Emulated<E>` convertía un lote formado solo por rangos vacíos en el borrado de la clave vacía, y fjall aborta con un pánico ante una clave vacía; la semilla 2027 no tiene un lote así, la 1 sí (commit 162). Ahora la reescritura nunca introduce la clave vacía (`the_rewrite_never_introduces_the_empty_key`, con un motor que aborta ante ella; `an_existing_empty_key_is_deleted_like_any_other` fija que solo la borra cuando ya está guardada o la pone el propio lote; `emulated_engines_commit_empty_ranges_and_ranges_from_the_empty_key`, sobre todos los motores del diferencial) y `differential_range_deletes` recorre las historias de las semillas 2027 y 1. La prueba de rechazo de `kerno-storage` llena antes el búfer de escritura, de modo que un lote que pasara la comprobación de la entrada de `commit` cambiaría de memtable antes de llegar al rechazo del WAL: sin esa comprobación, la prueba falla (el disco registra operaciones), y antes pasaba igual.
+
 ## 3. Pruebas compartidas (SAD §17.6)
 
 | Requisito de SAD §17.6 | Prueba |
 |---|---|
-| La misma secuencia de operaciones produce el mismo estado lógico en cada candidato | `spike-bench/tests/differential.rs` (prototipos, `LogEngine`, redb, fjall y SQLite) |
+| La misma secuencia de operaciones produce el mismo estado lógico en cada candidato | `spike-bench/tests/differential.rs` (prototipos, `LogEngine`, redb, fjall y SQLite); con borrados de rango, `differential_range_deletes` (historias de las semillas 2027 y 1; `LogEngine` nativo como oráculo; prototipos, redb, fjall y SQLite a través de `Emulated<E>`; también instantáneas tomadas a mitad de cada tramo) |
 | Insert/update/delete/reopen recupera el estado esperado | `functional::*` (reapertura limpia y sucia, modelo aleatorio de 1200 commits, aislamiento, concurrencia, espacio) |
 | Detecta o rechaza archivos truncados | `corruption::truncations`, `corruption::bit_flips` |
 | Fallos en puntos predefinidos comparados con la matriz esperada | `crash::every_point` (caída antes de **cada** operación de E/S de un escenario fijo, para corte de energía y muerte de proceso), `faults::single_failure_at_every_point` (un EIO aislado en cada punto) y `crash::run` (puntos aleatorios en historias largas, incluso durante la recuperación) |

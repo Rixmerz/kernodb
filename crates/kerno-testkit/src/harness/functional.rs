@@ -9,7 +9,9 @@ use kerno_core::contract::{Engine, Options, Snapshot};
 use kerno_core::vfs::StdVfs;
 use kerno_core::{Durability, Error, MAX_KEY_LEN, MAX_VALUE_LEN, WriteBatch};
 
-use super::{Model, Workload, apply, assert_snapshot_matches, db_dir, for_each_seed, open, read_all, seeds};
+use super::{
+    Model, SuiteConfig, Workload, apply, assert_snapshot_matches, db_dir, for_each_seed, open, read_all, seeds,
+};
 use crate::rng::Rng;
 use crate::vfs::{SimVfs, Vfs, dir_size};
 
@@ -145,9 +147,14 @@ fn random_history<E: Engine>(db: &E, model: &mut Model, w: &mut Workload, commit
 }
 
 pub fn reopen_after_clean_close<E: Engine>() {
+    reopen_after_clean_close_with_config::<E>(&SuiteConfig::default());
+}
+
+/// [`reopen_after_clean_close`] with the workload of `cfg`.
+pub fn reopen_after_clean_close_with_config<E: Engine>(cfg: &SuiteConfig) {
     let vfs = sim();
     let mut model = Model::new();
-    let mut w = Workload::new(11);
+    let mut w = Workload::with_config(11, cfg.workload);
     let mut rng = Rng::new(11);
     for round in 0..4 {
         let db: E = open(&vfs, &Options::small_for_tests()).unwrap();
@@ -158,9 +165,14 @@ pub fn reopen_after_clean_close<E: Engine>() {
 }
 
 pub fn reopen_after_drop_without_close<E: Engine>() {
+    reopen_after_drop_without_close_with_config::<E>(&SuiteConfig::default());
+}
+
+/// [`reopen_after_drop_without_close`] with the workload of `cfg`.
+pub fn reopen_after_drop_without_close_with_config<E: Engine>(cfg: &SuiteConfig) {
     let vfs = sim();
     let mut model = Model::new();
-    let mut w = Workload::new(12);
+    let mut w = Workload::with_config(12, cfg.workload);
     let mut rng = Rng::new(12);
     for round in 0..4 {
         let db: E = open(&vfs, &Options::small_for_tests()).unwrap();
@@ -200,11 +212,16 @@ pub fn exclusive_open<E: Engine>() {
 /// Many snapshots at different sequence numbers stay valid while the
 /// writer churns (page reuse, flushes, compactions).
 pub fn snapshot_isolation_under_churn<E: Engine>() {
+    snapshot_isolation_under_churn_with_config::<E>(&SuiteConfig::default());
+}
+
+/// [`snapshot_isolation_under_churn`] with the workload of `cfg`.
+pub fn snapshot_isolation_under_churn_with_config<E: Engine>(cfg: &SuiteConfig) {
     for_each_seed("snapshot_isolation_under_churn", seeds(4), |seed| {
         let vfs = sim();
         let db: E = open(&vfs, &Options::small_for_tests()).unwrap();
         let mut model = Model::new();
-        let mut w = Workload::new(seed);
+        let mut w = Workload::with_config(seed, cfg.workload);
         w.key_space = 600;
         let mut rng = Rng::new(seed);
         let mut live: Vec<(E::Snapshot, Model)> = Vec::new();
@@ -235,6 +252,11 @@ pub fn snapshot_isolation_under_churn<E: Engine>() {
 /// Readers must never see half of a batch: the writer moves "money" between
 /// accounts and readers check that the total is constant.
 pub fn concurrent_readers<E: Engine>() {
+    concurrent_readers_with_config::<E>(&SuiteConfig::default());
+}
+
+/// [`concurrent_readers`] with the workload of `cfg`.
+pub fn concurrent_readers_with_config<E: Engine>(cfg: &SuiteConfig) {
     const ACCOUNTS: u64 = 16;
     const TOTAL: u64 = 1_000_000;
     let vfs = sim();
@@ -276,7 +298,7 @@ pub fn concurrent_readers<E: Engine>() {
     let mut rng = Rng::new(99);
     let mut balances = vec![0u64; ACCOUNTS as usize];
     balances[0] = TOTAL;
-    let mut w = Workload::new(5);
+    let mut w = Workload::with_config(5, cfg.workload);
     let mut noise_model = Model::new();
     for _ in 0..1500 {
         let from = rng.below(ACCOUNTS) as usize;
@@ -300,10 +322,15 @@ pub fn concurrent_readers<E: Engine>() {
 /// Long random history checked against an in-memory model, with clean and
 /// unclean reopens in between.
 pub fn randomized_model_check<E: Engine>() {
+    randomized_model_check_with_config::<E>(&SuiteConfig::default());
+}
+
+/// [`randomized_model_check`] with the workload of `cfg`.
+pub fn randomized_model_check_with_config<E: Engine>(cfg: &SuiteConfig) {
     for_each_seed("randomized_model_check", seeds(6), |seed| {
         let vfs = sim();
         let mut rng = Rng::new(seed);
-        let mut w = Workload::new(seed);
+        let mut w = Workload::with_config(seed, cfg.workload);
         let mut model = Model::new();
         let mut opts = Options::small_for_tests();
         if seed % 2 == 1 {
@@ -379,11 +406,16 @@ fn temp_dir(tag: &str) -> PathBuf {
 /// Same engine code on the real file system: basic durability and the
 /// cross-handle lock.
 pub fn real_filesystem_smoke<E: Engine>() {
+    real_filesystem_smoke_with_config::<E>(&SuiteConfig::default());
+}
+
+/// [`real_filesystem_smoke`] with the workload of `cfg`.
+pub fn real_filesystem_smoke_with_config<E: Engine>(cfg: &SuiteConfig) {
     let dir = temp_dir(E::name());
     let vfs = StdVfs::shared();
     let opts = Options::small_for_tests();
     let mut model = Model::new();
-    let mut w = Workload::new(77);
+    let mut w = Workload::with_config(77, cfg.workload);
     let mut rng = Rng::new(77);
     {
         let db = E::open(vfs.clone(), &dir, &opts).unwrap();

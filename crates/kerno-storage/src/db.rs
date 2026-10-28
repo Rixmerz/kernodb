@@ -690,6 +690,11 @@ impl Engine for KernoDb {
     }
 
     fn commit(&self, batch: &WriteBatch) -> Result<u64> {
+        // Range deletions are not implemented yet (WP10b replaces this):
+        // reject them before anything is written or a sequence is assigned.
+        if batch.has_range_deletes() {
+            return Err(Error::InvalidArgument("delete_range not yet supported".into()));
+        }
         self.inner.commit(batch)
     }
 
@@ -726,5 +731,62 @@ impl Engine for KernoDb {
         out.push(("block_cache_bytes".into(), self.inner.ctx.cache.weight()));
         out.extend(self.inner.stats.report());
         out
+    }
+}
+
+/// Range deletions are rejected until WP10b implements them.
+#[cfg(test)]
+mod range_delete_rejection {
+    use kerno_core::contract::{Engine, Options, Snapshot};
+    use kerno_testkit::vfs::SimVfs;
+
+    use super::*;
+
+    fn stat(db: &KernoDb, name: &str) -> u64 {
+        db.stats().into_iter().find(|(n, _)| n == name).map(|(_, v)| v).unwrap()
+    }
+
+    #[test]
+    fn range_delete_is_rejected_without_consuming_a_sequence() {
+        let disk = SimVfs::new(1);
+        let opts = Options::small_for_tests();
+        let db = <KernoDb as Engine>::open(disk.as_vfs(), Path::new("/db"), &opts).unwrap();
+        let mut b = WriteBatch::new();
+        b.put("a", "1").put("b", "2");
+        assert_eq!(db.commit(&b).unwrap(), 1);
+        // A full write buffer: the next commit that gets past the entry check
+        // switches memtables (and WAL) before it encodes anything.
+        let mut b = WriteBatch::new();
+        b.put("big", vec![b'x'; opts.write_buffer_bytes]);
+        assert_eq!(db.commit(&b).unwrap(), 2);
+        let counters = ["wal_bytes", "commits", "memtable_rotations", "flushes"];
+        let before: Vec<u64> = counters.iter().map(|c| stat(&db, c)).collect();
+        let ops = disk.mutating_ops();
+
+        let mut ranges = vec![WriteBatch::new(), WriteBatch::new(), WriteBatch::new()];
+        ranges[0].delete_range("a", "z");
+        ranges[1].put("c", "3").delete_range("a", "b").put("d", "4");
+        ranges[2].delete_range("same", "same");
+        for b in &ranges {
+            let r = db.commit(b);
+            assert!(matches!(&r, Err(Error::InvalidArgument(m)) if m == "delete_range not yet supported"), "got {r:?}");
+        }
+        // Nothing was written, switched, applied or numbered, and the handle
+        // is healthy.
+        assert_eq!(disk.mutating_ops(), ops, "a rejected batch touched the disk");
+        assert_eq!(counters.iter().map(|c| stat(&db, c)).collect::<Vec<_>>(), before, "{counters:?}");
+        let s = db.snapshot().unwrap();
+        assert_eq!(s.seq(), 2);
+        assert_eq!(s.scan(Bound::Unbounded, Bound::Unbounded, 10).unwrap().len(), 3);
+        assert_eq!(s.get(b"c").unwrap(), None);
+        let mut b = WriteBatch::new();
+        b.put("e", "5");
+        assert_eq!(db.commit(&b).unwrap(), 3, "the next commit gets the next sequence");
+        assert_eq!(stat(&db, "memtable_rotations"), before[2] + 1, "the setup must make this commit switch");
+        db.close().unwrap();
+        let db = <KernoDb as Engine>::open(disk.as_vfs(), Path::new("/db"), &opts).unwrap();
+        let s = db.snapshot().unwrap();
+        assert_eq!(s.seq(), 3);
+        assert_eq!(s.scan(Bound::Unbounded, Bound::Unbounded, 10).unwrap().len(), 4);
     }
 }

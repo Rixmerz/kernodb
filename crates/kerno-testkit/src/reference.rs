@@ -11,13 +11,18 @@
 //! multi-writer suites are validated here before any engine runs them.
 //! Commits are serialized by one lock (no group commit) and, in `Sync` mode,
 //! published only after their `fsync`.
+//!
+//! It implements range deletions natively ([`RangeDeleteEngine`]): a batch
+//! is logged as written (op tag 3 for `DeleteRange`) and applied in order,
+//! so it is the oracle of the range deletion suite and of the differential
+//! test.
 
 use std::collections::BTreeMap;
 use std::ops::Bound;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use kerno_core::contract::{Engine, Options, Snapshot};
+use kerno_core::contract::{Engine, Options, RangeDeleteEngine, Snapshot};
 use kerno_core::{Durability, Error, Op, Result, WriteBatch};
 use parking_lot::Mutex;
 
@@ -76,6 +81,13 @@ fn encode_batch(ops: &[Op], out: &mut Vec<u8>) {
                 out.extend_from_slice(&(key.len() as u32).to_le_bytes());
                 out.extend_from_slice(key);
             }
+            Op::DeleteRange { start, end } => {
+                out.push(3);
+                out.extend_from_slice(&(start.len() as u32).to_le_bytes());
+                out.extend_from_slice(&(end.len() as u32).to_le_bytes());
+                out.extend_from_slice(start);
+                out.extend_from_slice(end);
+            }
         }
     }
 }
@@ -104,6 +116,23 @@ fn apply_encoded(map: &mut Map, mut body: &[u8]) -> Option<()> {
             2 => {
                 let kl = u32_(&mut body)?;
                 map.remove(take(&mut body, kl)?);
+            }
+            3 => {
+                let sl = u32_(&mut body)?;
+                let el = u32_(&mut body)?;
+                let start = take(&mut body, sl)?;
+                let end = take(&mut body, el)?;
+                // `validate` rejects `start > end` before anything is logged.
+                if start > end {
+                    return None;
+                }
+                let doomed: Vec<Vec<u8>> = map
+                    .range::<[u8], _>((Bound::Included(start), Bound::Excluded(end)))
+                    .map(|(k, _)| k.clone())
+                    .collect();
+                for k in doomed {
+                    map.remove(&k);
+                }
             }
             _ => return None,
         }
@@ -332,6 +361,8 @@ impl kerno_core::contract::SyncEngine for LogEngine {
         Ok(w.seq)
     }
 }
+
+impl RangeDeleteEngine for LogEngine {}
 
 pub struct LogSnapshot {
     seq: u64,

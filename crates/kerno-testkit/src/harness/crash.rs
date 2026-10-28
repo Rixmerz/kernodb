@@ -28,7 +28,7 @@ use super::concurrency::{
     Floor, SyncFn, WriterLog, call_with_timeout, check_recovered, run_writers, writer_batches, writers_disk,
 };
 use super::faults::After;
-use super::{Model, Workload, apply, assert_snapshot_matches, for_each_seed, open, read_all, seeds};
+use super::{Model, SuiteConfig, Workload, apply, assert_snapshot_matches, for_each_seed, open, read_all, seeds};
 use crate::rng::Rng;
 use crate::vfs::{CrashKind, FsyncFailure, SimVfs};
 
@@ -36,13 +36,18 @@ const ROUNDS: usize = 5;
 const COMMITS_PER_ROUND: u64 = 80;
 
 pub fn run<E: Engine>(kind: CrashKind, durability: Durability) {
-    let name = format!("crash {kind:?} {durability:?}");
-    for_each_seed(&name, seeds(60), |seed| one_seed::<E>(seed, kind, durability));
+    run_with_config::<E>(kind, durability, &SuiteConfig::default());
 }
 
-fn one_seed<E: Engine>(seed: u64, kind: CrashKind, durability: Durability) {
+/// [`run`] with the workload of `cfg`.
+pub fn run_with_config<E: Engine>(kind: CrashKind, durability: Durability, cfg: &SuiteConfig) {
+    let name = format!("crash {kind:?} {durability:?}");
+    for_each_seed(&name, seeds(60), |seed| one_seed::<E>(seed, kind, durability, cfg));
+}
+
+fn one_seed<E: Engine>(seed: u64, kind: CrashKind, durability: Durability, cfg: &SuiteConfig) {
     let mut rng = Rng::new(seed);
-    let mut w = Workload::new(seed ^ 0xC0FFEE);
+    let mut w = Workload::with_config(seed ^ 0xC0FFEE, cfg.workload);
     // Small key spaces mean heavy overwrite churn, which is what drives
     // page reuse, flushes, compactions and log rewrites.
     w.key_space = rng.range(40, 800);
@@ -218,7 +223,13 @@ pub fn commits<E>(steps: &[Step<E>]) -> Vec<&WriteBatch> {
 /// unclean drop, recovery and more commits. Deterministic for a given seed;
 /// the sweeps use seed 7.
 pub fn scenario<E>(seed: u64) -> Vec<Step<E>> {
-    let mut w = Workload::new(seed);
+    scenario_with_config(seed, &SuiteConfig::default())
+}
+
+/// [`scenario`] with the workload of `cfg` (the same steps; with the default
+/// configuration, exactly scenario A).
+pub fn scenario_with_config<E>(seed: u64, cfg: &SuiteConfig) -> Vec<Step<E>> {
+    let mut w = Workload::with_config(seed, cfg.workload);
     w.key_space = 120;
     w.large_per_mille = 100;
     let mut model = Model::new();
@@ -306,17 +317,31 @@ pub fn every_point<E: Engine>(kind: CrashKind, durability: Durability) {
 /// opt-in failure model such as per-directory durability). The crash images
 /// inherit that configuration, so the final power loss uses it too.
 pub fn every_point_with<E: Engine>(kind: CrashKind, durability: Durability, configure: &dyn Fn(&SimVfs)) {
+    every_point_steps::<E>(kind, durability, configure, &scenario::<E>(7));
+}
+
+/// [`every_point`] over the scenario built with the workload of `cfg`.
+pub fn every_point_with_config<E: Engine>(kind: CrashKind, durability: Durability, cfg: &SuiteConfig) {
+    every_point_steps::<E>(kind, durability, &|_| {}, &scenario_with_config::<E>(7, cfg));
+}
+
+/// [`every_point_with`] over any scenario `steps` (see [`run_scenario`]).
+pub fn every_point_steps<E: Engine>(
+    kind: CrashKind,
+    durability: Durability,
+    configure: &dyn Fn(&SimVfs),
+    steps: &[Step<E>],
+) {
     assert!(
         durability == Durability::Sync || kind != CrashKind::PowerLoss,
         "Buffered commits only promise to survive process kills at every point"
     );
     let mut opts = Options::small_for_tests();
     opts.durability = durability;
-    let steps = scenario::<E>(7);
-    let batches = commits(&steps);
+    let batches = commits(steps);
     let dry = SimVfs::new(0);
     configure(&dry);
-    let (acked, _) = run_scenario::<E>(&dry, &steps, &opts);
+    let (acked, _) = run_scenario::<E>(&dry, steps, &opts);
     assert_eq!(acked as usize, batches.len(), "dry run must complete");
     // Background work makes the exact count vary a little; go past it.
     let total = dry.mutating_ops() + 20;
@@ -333,7 +358,7 @@ pub fn every_point_with<E: Engine>(kind: CrashKind, durability: Durability, conf
             }
             configure(&disk);
             disk.crash_after(point, kind);
-            let (acked, attempted) = run_scenario::<E>(&disk, &steps, &opts);
+            let (acked, attempted) = run_scenario::<E>(&disk, steps, &opts);
             let image = if disk.has_crashed() { disk.take_crash_image().unwrap() } else { disk.crash_now(kind) };
             let vfs = image.as_vfs();
             let db: E = open(&vfs, &opts).unwrap_or_else(|e| panic!("{ctx}: recovery failed: {e}"));
@@ -692,6 +717,13 @@ mod tests {
                         crc = crc32c::crc32c_append(crc, &(key.len() as u64).to_le_bytes());
                         crc = crc32c::crc32c_append(crc, key);
                     }
+                    Op::DeleteRange { start, end } => {
+                        crc = crc32c::crc32c_append(crc, &[3]);
+                        for bound in [start, end] {
+                            crc = crc32c::crc32c_append(crc, &(bound.len() as u64).to_le_bytes());
+                            crc = crc32c::crc32c_append(crc, bound);
+                        }
+                    }
                 }
             }
         }
@@ -707,6 +739,21 @@ mod tests {
         assert_eq!(steps.len(), 61);
         assert_eq!(commits(&steps).len(), 55);
         assert_eq!(digest(&steps), 3342322216);
+    }
+
+    /// The default configuration is scenario A; with range deletions the
+    /// scenario keeps its steps and gains ranges.
+    #[test]
+    fn scenario_with_config_keeps_scenario_a_and_adds_ranges() {
+        let default = scenario_with_config::<()>(7, &SuiteConfig::default());
+        assert_eq!(digest(&default), 3342322216);
+        let ranged = scenario_with_config::<()>(7, &SuiteConfig::with_range_deletes(100));
+        assert_eq!(ranged.len(), 61);
+        let batches = commits(&ranged);
+        assert_eq!(batches.len(), 55);
+        let ranges = batches.iter().flat_map(|b| b.ops()).filter(|op| matches!(op, Op::DeleteRange { .. })).count();
+        assert!(ranges >= 10, "only {ranges} range deletions");
+        assert!(batches.iter().all(|b| b.validate().is_ok()));
     }
 
     #[test]

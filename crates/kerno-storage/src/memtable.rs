@@ -90,6 +90,7 @@ impl Memtable {
         let (key, value) = match op {
             Op::Put { key, value } => (key, Some(value.clone())),
             Op::Delete { key } => (key, None),
+            Op::DeleteRange { .. } => unreachable!("delete_range is rejected at the entry of commit"),
         };
         let size = key.len() + value.as_ref().map_or(0, Vec::len) + ENTRY_OVERHEAD;
         self.bytes.fetch_add(size, Relaxed);

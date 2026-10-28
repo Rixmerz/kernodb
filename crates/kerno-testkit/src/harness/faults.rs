@@ -30,8 +30,8 @@
 use kerno_core::contract::{Engine, Options, Snapshot};
 use kerno_core::{Durability, Error, WriteBatch};
 
-use super::crash::{Step, commits, scenario};
-use super::{Model, apply, assert_snapshot_matches, open};
+use super::crash::{Step, commits, scenario, scenario_with_config};
+use super::{Model, SuiteConfig, apply, assert_snapshot_matches, open};
 use crate::rng::Rng;
 use crate::vfs::{CrashKind, FsyncFailure, SimVfs};
 
@@ -134,6 +134,13 @@ pub fn single_failure_at_every_point<E: Engine>() {
     failure_sweep::<E>(Durability::Sync, FsyncFailure::KeepPending, &[After::Restart, After::PowerLoss]);
 }
 
+/// [`single_failure_at_every_point`] over the scenario built with the
+/// workload of `cfg`.
+pub fn single_failure_at_every_point_with_config<E: Engine>(cfg: &SuiteConfig) {
+    let steps = scenario_with_config::<E>(7, cfg);
+    failure_sweep_steps::<E>(Durability::Sync, FsyncFailure::KeepPending, &[After::Restart, After::PowerLoss], &steps);
+}
+
 /// One injected I/O failure at every mutating operation of scenario A, in
 /// `durability` mode, with failed syncs behaving as `fsync`, followed by
 /// each of `afters`. The recovered sequence `s` must satisfy
@@ -141,12 +148,21 @@ pub fn single_failure_at_every_point<E: Engine>() {
 /// except for a power loss in `Buffered` mode, where it is the state the last
 /// successful open recovered.
 pub fn failure_sweep<E: Engine>(durability: Durability, fsync: FsyncFailure, afters: &[After]) {
+    failure_sweep_steps::<E>(durability, fsync, afters, &scenario::<E>(7));
+}
+
+/// [`failure_sweep`] over any scenario `steps`.
+pub fn failure_sweep_steps<E: Engine>(
+    durability: Durability,
+    fsync: FsyncFailure,
+    afters: &[After],
+    steps: &[Step<E>],
+) {
     let mut opts = Options::small_for_tests();
     opts.durability = durability;
-    let steps = scenario::<E>(7);
-    let batches = commits(&steps);
+    let batches = commits(steps);
     let dry = SimVfs::new(0);
-    let out = run_with_fault::<E>(&dry, &steps, &opts, "dry run");
+    let out = run_with_fault::<E>(&dry, steps, &opts, "dry run");
     assert_eq!(out.acked as usize, batches.len(), "dry run must complete");
     let total = dry.mutating_ops() + 20;
     let only: Option<u64> = std::env::var("SPIKE_POINT").ok().and_then(|s| s.parse().ok());
@@ -173,7 +189,7 @@ pub fn failure_sweep<E: Engine>(durability: Durability, fsync: FsyncFailure, aft
                     After::PowerLoss => Some(CrashKind::PowerLoss),
                 };
                 disk.fail_after(point, then);
-                let out = run_with_fault::<E>(&disk, &steps, &opts, &ctx);
+                let out = run_with_fault::<E>(&disk, steps, &opts, &ctx);
                 let disk = match after {
                     After::Restart => {
                         // A fault point past the end of the scenario must not

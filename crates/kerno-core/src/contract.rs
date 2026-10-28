@@ -11,6 +11,13 @@
 //! * **Atomicity** — a [`WriteBatch`] is applied entirely or not at all,
 //!   including after a crash at any point.
 //! * **Ordering** — within a batch, later operations on the same key win.
+//! * **Range deletions** — [`Op::DeleteRange`] deletes `[start, end)` and
+//!   follows the same ordering: it deletes the keys put earlier in its
+//!   batch, and a key put later in the batch survives it. An engine either
+//!   implements it ([`RangeDeleteEngine`]) or rejects a batch that contains
+//!   one with [`Error::InvalidArgument`] before writing anything; it never
+//!   ignores it. A batch whose only operations are empty ranges
+//!   (`start == end`) is still a non-empty commit.
 //! * **Commit sequence** — every non-empty commit gets the next sequence
 //!   number (starting at 1). The sequence is persisted: after reopening,
 //!   [`Snapshot::seq`] of a fresh snapshot equals the last recovered commit.
@@ -38,6 +45,8 @@
 //! [`Error::Locked`]: crate::Error::Locked
 //! [`Error::Corruption`]: crate::Error::Corruption
 //! [`Error::Poisoned`]: crate::Error::Poisoned
+//! [`Error::InvalidArgument`]: crate::Error::InvalidArgument
+//! [`Op::DeleteRange`]: crate::Op::DeleteRange
 
 use std::ops::Bound;
 use std::path::Path;
@@ -105,6 +114,15 @@ pub trait Engine: Sized + Send + Sync + 'static {
         Vec::new()
     }
 }
+
+/// Marker for engines that implement [`Op::DeleteRange`](crate::Op::DeleteRange)
+/// themselves, with the semantics in the [module documentation](crate::contract):
+/// `[start, end)`, applied in batch order, visible exactly from the commit
+/// that contains it. The range deletion suite
+/// (`kerno_testkit::range_delete_test_suite!`) requires it; an engine
+/// without native support runs that suite through `kerno_testkit`'s
+/// `Emulated<E>`, which turns each range into point deletions.
+pub trait RangeDeleteEngine: Engine {}
 
 pub trait Snapshot: Send + 'static {
     /// Commit sequence this snapshot observes.
@@ -176,6 +194,16 @@ pub trait TestHooks {
     fn compact_once(&self) -> Result<bool> {
         Err(unsupported())
     }
+
+    /// Writes what the active write buffer holds and compacts every file
+    /// that overlaps `(start, end)` level by level until no deeper level
+    /// overlaps it, so that the data and the range deletions in it leave the
+    /// live files (directed compaction, ADR-0001 condition 2). Returns when
+    /// that is done.
+    fn compact_range(&self, start: Bound<&[u8]>, end: Bound<&[u8]>) -> Result<()> {
+        let _ = (start, end);
+        Err(unsupported())
+    }
 }
 
 fn unsupported() -> crate::Error {
@@ -207,8 +235,11 @@ mod tests {
         assert!(is_unsupported(hooks.wait_idle()));
         assert!(is_unsupported(hooks.flush()));
         assert!(is_unsupported(hooks.compact_once()));
+        assert!(is_unsupported(hooks.compact_range(Bound::Included(b"a"), Bound::Excluded(b"b"))));
+        assert!(is_unsupported(hooks.compact_range(Bound::Unbounded, Bound::Unbounded)));
         let idle: &dyn TestHooks = &Idle;
         assert!(idle.wait_idle().is_ok());
         assert!(is_unsupported(idle.compact_once()));
+        assert!(is_unsupported(idle.compact_range(Bound::Unbounded, Bound::Unbounded)));
     }
 }
