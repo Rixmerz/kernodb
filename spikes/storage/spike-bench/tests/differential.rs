@@ -6,10 +6,10 @@
 //! `differential_range_deletes` does the same with range deletions in the
 //! histories of two seeds, and also observes snapshots taken halfway between
 //! checkpoints.
-//! `LogEngine` implements them natively and is the oracle; the engines that
-//! reject them (the spikes and the production engines) run through
-//! `kerno_testkit::emulated::Emulated`, which turns each range into point
-//! deletions under a commit mutex. `kerno` joins when it implements them.
+//! `LogEngine` implements them natively and is the oracle, and so does
+//! `kerno`; the engines that reject them (the spikes and the production
+//! engines) run through `kerno_testkit::emulated::Emulated`, which turns each
+//! range into point deletions under a commit mutex.
 //!
 //! `differential_rmw` does it with read-modify-write transactions (what a
 //! transaction writes depends on what it read) against a model oracle; the
@@ -298,6 +298,16 @@ fn differential_range_deletes_for(seed: u64, batches: &[WriteBatch]) {
     let mut results: BTreeMap<&str, Observed> = BTreeMap::new();
     // The oracle: native range deletions.
     results.insert("log", sim_old::<spike_core::reference::LogEngine>(batches));
+    // Native range tombstones: through the memtable, flushes (the tiny test
+    // buffer makes many) and compactions, across the reopens.
+    #[cfg(feature = "kerno")]
+    {
+        results.insert("kerno", sim_old::<kerno_storage::KernoDb>(batches));
+        results.insert(
+            "kerno-inline",
+            sim_old::<kerno_storage::testing::Profiled<kerno_storage::testing::Inline>>(batches),
+        );
+    }
     #[cfg(feature = "candidates")]
     {
         results.insert("btree", sim_old::<Emulated<spike_btree::BTreeEngine>>(batches));

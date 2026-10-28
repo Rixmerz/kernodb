@@ -17,8 +17,16 @@
 //!   need older versions keep reading the input files through their own
 //!   `Version`. A tombstone is dropped when no level below the output level
 //!   has a file whose key range contains the key.
+//! * Range tombstones travel as fragments. The merge drops a point that a
+//!   fragment of its inputs covers with a higher sequence, cuts the fragments
+//!   it keeps at every output boundary (size, grandparents, subcompaction
+//!   ranges), and drops a fragment when no file below the output level
+//!   overlaps it (phase1-design.md §5.5). A table with fragments is never
+//!   moved down without being rewritten: the rewrite is where they go away.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
+use std::ops::Bound;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -26,11 +34,13 @@ use std::time::Duration;
 use kerno_core::{Error, Result};
 
 use crate::config::{Background, Config, L0Metric, MIN_WRITE_BUFFER, SlowdownPolicy};
-use crate::format::props::REASON_COMPACTION;
+use crate::format::props::{REASON_COMPACTION, REASON_DIRECTED};
+use crate::format::rangedel::Fragment;
 use crate::iter::{InternalIterator, LevelIter, MergeIter};
+use crate::rangedel::{self, CoverCursor, FragmentSplitter};
 use crate::sst::{Table, TableBuilder, TableCtx};
 use crate::stats::{Stats, bump};
-use crate::version::Levels;
+use crate::version::{Levels, table_in_range};
 
 pub const NUM_LEVELS: usize = 7;
 pub const L0_COMPACTION_TRIGGER: usize = 4;
@@ -174,6 +184,8 @@ pub struct Plan {
     pub deeper: Levels,
     /// The single input moves to the next level without being rewritten.
     trivial: bool,
+    /// Chosen by `compact_range`, not by the score of a level.
+    directed: bool,
 }
 
 impl Plan {
@@ -210,7 +222,7 @@ fn level_bytes(level: &[Arc<Table>]) -> u64 {
 /// The files of `level` (sorted, non-overlapping) whose key range
 /// intersects `[lo, hi]`.
 fn overlapping<'a>(level: &'a [Arc<Table>], lo: &[u8], hi: &[u8]) -> &'a [Arc<Table>] {
-    let start = level.partition_point(|t| t.largest.as_slice() < lo);
+    let start = level.partition_point(|t| t.ends_before(lo));
     let end = level.partition_point(|t| t.smallest.as_slice() <= hi);
     &level[start..end.max(start)]
 }
@@ -310,8 +322,15 @@ fn pick_level(levels: &Levels, tuning: &Tuning, pointers: &[Vec<u8>], busy: &Bus
     (0..files.len()).find_map(|k| {
         let input = files[(after + k) % files.len()].clone();
         let next_inputs = overlapping(&levels[level + 1], &input.smallest, &input.largest).to_vec();
-        let trivial = next_inputs.is_empty();
-        let plan = Plan { level, inputs: vec![input], next_inputs, deeper: levels[level + 2..].to_vec(), trivial };
+        let trivial = next_inputs.is_empty() && !input.has_fragments();
+        let plan = Plan {
+            level,
+            inputs: vec![input],
+            next_inputs,
+            deeper: levels[level + 2..].to_vec(),
+            trivial,
+            directed: false,
+        };
         (!busy.conflicts(&plan)).then_some(plan)
     })
 }
@@ -339,8 +358,11 @@ fn pick_l0_files(levels: &Levels, tuning: &Tuning, busy: &Busy, floor: bool) -> 
     let l0 = &levels[0];
     let oldest = l0.last()?;
     let deeper = levels[2..].to_vec();
-    let plan = if tuning.l0_trivial_move && overlapping(&levels[1], &oldest.smallest, &oldest.largest).is_empty() {
-        Plan { level: 0, inputs: vec![oldest.clone()], next_inputs: Vec::new(), deeper, trivial: true }
+    let plan = if tuning.l0_trivial_move
+        && !oldest.has_fragments()
+        && overlapping(&levels[1], &oldest.smallest, &oldest.largest).is_empty()
+    {
+        Plan { level: 0, inputs: vec![oldest.clone()], next_inputs: Vec::new(), deeper, trivial: true, directed: false }
     } else {
         let mut take = l0.len();
         if tuning.l0_partial {
@@ -362,9 +384,55 @@ fn pick_l0_files(levels: &Levels, tuning: &Tuning, busy: &Busy, floor: bool) -> 
         let lo = inputs.iter().map(|t| t.smallest.as_slice()).min()?;
         let hi = inputs.iter().map(|t| t.largest.as_slice()).max()?;
         let next_inputs = overlapping(&levels[1], lo, hi).to_vec();
-        Plan { level: 0, inputs, next_inputs, deeper, trivial: false }
+        Plan { level: 0, inputs, next_inputs, deeper, trivial: false, directed: false }
     };
     (!busy.conflicts(&plan)).then_some(plan)
+}
+
+/// What [`pick_range`] found.
+pub enum RangeStep {
+    /// No file above the last level overlaps the range: it is at the bottom.
+    Done,
+    /// The next step conflicts with a compaction in flight; try again when
+    /// it ends.
+    Blocked,
+    Plan(Plan),
+}
+
+/// The next step of a directed compaction (`compact_range`) of the keys
+/// between the bounds: the shallowest level above the last that has files
+/// overlapping the range, compacted into the next level. Repeating it
+/// pushes everything that overlaps the range to the last level, and the
+/// tombstones, which the merges drop when nothing deeper overlaps them, out
+/// of the files.
+///
+/// From L0 it takes the oldest suffix that holds every overlapping file, as
+/// every L0 compaction must (what stays is newer than what moves down). A
+/// file that overlaps nothing below it moves down without being rewritten
+/// only if it holds no tombstone at all: the rewrite is what drops them.
+pub fn pick_range(levels: &Levels, busy: &Busy, start: Bound<&[u8]>, end: Bound<&[u8]>) -> RangeStep {
+    for level in 0..NUM_LEVELS - 1 {
+        let files = &levels[level];
+        let inputs: Vec<Arc<Table>> = if level == 0 {
+            match files.iter().position(|t| table_in_range(t, start, end)) {
+                Some(newest) => files[newest..].to_vec(),
+                None => continue,
+            }
+        } else {
+            files.iter().filter(|t| table_in_range(t, start, end)).cloned().collect()
+        };
+        let (Some(lo), Some(hi)) =
+            (inputs.iter().map(|t| t.smallest.as_slice()).min(), inputs.iter().map(|t| t.largest.as_slice()).max())
+        else {
+            continue;
+        };
+        let next_inputs = overlapping(&levels[level + 1], lo, hi).to_vec();
+        let trivial =
+            next_inputs.is_empty() && inputs.len() == 1 && !inputs[0].has_fragments() && inputs[0].point_deletes() == 0;
+        let plan = Plan { level, inputs, next_inputs, deeper: levels[level + 2..].to_vec(), trivial, directed: true };
+        return if busy.conflicts(&plan) { RangeStep::Blocked } else { RangeStep::Plan(plan) };
+    }
+    RangeStep::Done
 }
 
 /// Bytes that leveled compaction still has to move: for every level from L1
@@ -383,20 +451,25 @@ pub fn pending_bytes(levels: &Levels, tuning: &Tuning) -> u64 {
 
 /// The largest number of L0 files whose key ranges contain one same key.
 pub fn l0_depth(files: &[Arc<Table>]) -> usize {
-    // Closed ranges: at equal keys, starts are counted before ends.
-    let mut events: Vec<(&[u8], bool)> = Vec::with_capacity(files.len() * 2);
+    // Closed ranges, so at equal keys the starts are counted before the
+    // ends; but a range that ends exclusively does not hold its last key, so
+    // its end comes first.
+    const END_EXCLUSIVE: u8 = 0;
+    const START: u8 = 1;
+    const END: u8 = 2;
+    let mut events: Vec<(&[u8], u8)> = Vec::with_capacity(files.len() * 2);
     for t in files {
-        events.push((t.smallest.as_slice(), false));
-        events.push((t.largest.as_slice(), true));
+        events.push((t.smallest.as_slice(), START));
+        events.push((t.largest.as_slice(), if t.largest_exclusive { END_EXCLUSIVE } else { END }));
     }
     events.sort_unstable();
     let (mut open, mut depth) = (0usize, 0usize);
-    for (_, is_end) in events {
-        if is_end {
-            open -= 1;
-        } else {
+    for (_, kind) in events {
+        if kind == START {
             open += 1;
             depth = depth.max(open);
+        } else {
+            open -= 1;
         }
     }
     depth
@@ -416,10 +489,25 @@ impl<'a> DeeperLevels<'a> {
 
     fn may_contain(&mut self, key: &[u8]) -> bool {
         for (files, cur) in self.levels.iter().zip(&mut self.cursors) {
-            while *cur < files.len() && files[*cur].largest.as_slice() < key {
+            while *cur < files.len() && files[*cur].ends_before(key) {
                 *cur += 1;
             }
             if *cur < files.len() && files[*cur].smallest.as_slice() <= key {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Whether a file below the output level overlaps `[start, end)`, so that
+    /// something there may still need the range tombstone. Ranges must be
+    /// presented in increasing order of `start`.
+    fn range_may_overlap(&mut self, start: &[u8], end: &[u8]) -> bool {
+        for (files, cur) in self.levels.iter().zip(&mut self.cursors) {
+            while *cur < files.len() && files[*cur].ends_before(start) {
+                *cur += 1;
+            }
+            if *cur < files.len() && files[*cur].smallest.as_slice() < end {
                 return true;
             }
         }
@@ -448,7 +536,7 @@ impl<'a> GrandparentCut<'a> {
 
     /// Whether the output being written must end before `key`.
     fn cut_before(&mut self, key: &[u8]) -> bool {
-        while self.next < self.files.len() && self.files[self.next].largest.as_slice() < key {
+        while self.next < self.files.len() && self.files[self.next].ends_before(key) {
             if self.started {
                 self.overlapped = self.overlapped.saturating_add(self.files[self.next].size);
             }
@@ -612,41 +700,83 @@ fn merge_into(
     let mut deeper = DeeperLevels::new(&plan.deeper);
     let mut grandparents =
         GrandparentCut::new(plan.deeper.first().map_or(&[], Vec::as_slice), tuning.grandparent_overlap_bytes);
+    // The range tombstones of the inputs, the highest sequence over each
+    // part: they decide which points go, and which fragments the outputs keep.
+    let all = rangedel::aggregate(plan.all_inputs().map(|t| t.fragments()));
+    let mut cover = CoverCursor::new(vec![Cow::Borrowed(&all[..])]);
+    let kept = keep_fragments(&all, plan, lo, hi, stats);
+    let mut splitter = FragmentSplitter::new(kept);
     match lo {
-        Some(lo) => it.seek(lo)?,
-        None => it.seek_to_first()?,
+        Some(lo) => {
+            it.seek(lo)?;
+            cover.seek(lo);
+        }
+        None => {
+            it.seek_to_first()?;
+            cover.seek(&[]);
+        }
     }
     let mut n = 0u64;
+    // The output being written has reached its target size: it ends before
+    // the next key, so that the fragments can be cut there.
+    let mut size_reached = false;
     while it.valid() && hi.is_none_or(|hi| it.key() < hi) {
         n += 1;
         if n.is_multiple_of(512) && abort.load(Ordering::Relaxed) {
             return Ok(false);
+        }
+        if cover.covering(it.key()) > it.seq() {
+            // Hidden by a newer tombstone: the point is garbage now, and the
+            // fragment (if kept) still hides what is older, below.
+            bump(&stats.covered_points_dropped, 1);
+            it.next()?;
+            continue;
         }
         if it.value().is_none() && !deeper.may_contain(it.key()) {
             bump(&stats.tombstones_dropped, 1);
             it.next()?;
             continue;
         }
-        if grandparents.cut_before(it.key())
-            && let Some(b) = builder.take()
-        {
-            outputs.push(b.finish()?);
+        let cut = grandparents.cut_before(it.key()) || size_reached;
+        if cut && let Some(b) = builder.take() {
+            outputs.push(b.finish_with(&splitter.take_below(Some(it.key())))?);
         }
         if builder.is_none() {
-            let b = TableBuilder::create(ctx, next_file.fetch_add(1, Ordering::SeqCst), REASON_COMPACTION)?;
+            let b = TableBuilder::create(ctx, next_file.fetch_add(1, Ordering::SeqCst), output_reason(plan))?;
             *builder = Some(if tuning.intermediate_syncs { b } else { b.without_intermediate_syncs() });
         }
         let b = builder.as_mut().expect("just created");
         b.add(it.key(), it.seq(), it.value())?;
-        if b.estimated_size() >= tuning.target_file_size {
-            outputs.push(builder.take().expect("just used").finish()?);
-        }
+        size_reached = b.estimated_size() >= tuning.target_file_size;
         it.next()?;
     }
+    let rest = splitter.take_below(None);
+    if builder.is_none() && !rest.is_empty() {
+        // Nothing but tombstones left in this part: a table of only those.
+        let b = TableBuilder::create(ctx, next_file.fetch_add(1, Ordering::SeqCst), output_reason(plan))?;
+        *builder = Some(if tuning.intermediate_syncs { b } else { b.without_intermediate_syncs() });
+    }
     if let Some(b) = builder.take() {
-        outputs.push(b.finish()?);
+        outputs.push(b.finish_with(&rest)?);
     }
     Ok(true)
+}
+
+/// The `creation_reason` of the tables a plan writes.
+fn output_reason(plan: &Plan) -> u8 {
+    if plan.directed { REASON_DIRECTED } else { REASON_COMPACTION }
+}
+
+/// The fragments of `all` (sorted, disjoint) that a merge of the keys in
+/// `[lo, hi)` writes: those inside the part, minus the ones no file below the
+/// output level overlaps, which have nothing left to hide (SEM-7).
+fn keep_fragments(all: &[Fragment], plan: &Plan, lo: Option<&[u8]>, hi: Option<&[u8]>, stats: &Stats) -> Vec<Fragment> {
+    let part = rangedel::clip(all.to_vec(), lo, hi);
+    let total = part.len();
+    let mut deeper = DeeperLevels::new(&plan.deeper);
+    let kept: Vec<Fragment> = part.into_iter().filter(|f| deeper.range_may_overlap(&f.start, &f.end)).collect();
+    bump(&stats.range_tombstones_dropped, (total - kept.len()) as u64);
+    kept
 }
 
 /// The levels after replacing the plan's inputs with `outputs` in
@@ -664,7 +794,7 @@ pub fn apply(levels: &Levels, plan: &Plan, outputs: &[Arc<Table>]) -> Result<Lev
     let out = &mut new[plan.level + 1];
     out.extend(outputs.iter().cloned());
     out.sort_by(|a, b| a.smallest.cmp(&b.smallest));
-    if out.windows(2).any(|w| w[0].largest >= w[1].smallest) {
+    if out.windows(2).any(|w| !w[0].ends_before(&w[1].smallest)) {
         return Err(Error::Corruption(format!(
             "internal: compaction produced overlapping files in L{}",
             plan.level + 1

@@ -462,7 +462,7 @@ pub fn apply(
     for &n in &plan.live_wals {
         let scan = wal::replay(vfs, dir, n, db_id, expected, |seq, commit| {
             mem.apply_commit(seq, commit);
-            if mem.approx_bytes() >= chunks.write_buffer { chunks.flush(&mut mem) } else { Ok(()) }
+            if mem.is_full(chunks.write_buffer) { chunks.flush(&mut mem) } else { Ok(()) }
         })?;
         record_replay(ctx, &scan);
         expected = scan.next_seq;

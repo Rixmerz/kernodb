@@ -246,7 +246,7 @@ impl InternalIterator for LevelIter<'_> {
     }
 
     fn seek(&mut self, target: &[u8]) -> Result<()> {
-        self.idx = self.tables.partition_point(|t| t.largest.as_slice() < target);
+        self.idx = self.tables.partition_point(|t| t.ends_before(target));
         self.cur = None;
         if let Some(t) = self.tables.get(self.idx) {
             let mut it = t.iter(self.fill_cache);

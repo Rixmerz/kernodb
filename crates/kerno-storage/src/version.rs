@@ -3,15 +3,18 @@
 //! `Arc<Version>` plus a sequence number; everything it references stays
 //! alive (and on disk) for as long as the snapshot does.
 
+use std::borrow::Cow;
 use std::ops::Bound;
 use std::sync::Arc;
 
 use kerno_core::Result;
 
 use crate::format::bloom;
+use crate::format::rangedel::Fragment;
 use crate::iter::{InternalIterator, LevelIter, MergeIter};
 use crate::manifest::FileMeta;
 use crate::memtable::{InternalKey, Memtable};
+use crate::rangedel::CoverCursor;
 use crate::sst::Table;
 
 pub struct Version {
@@ -25,6 +28,23 @@ pub struct Version {
 
 pub type Levels = Vec<Vec<Arc<Table>>>;
 
+/// What looking `key` up in `t` decides: `Some(answer)` ends the search,
+/// `None` goes on to the next source. `max_tomb` is the highest range
+/// tombstone sequence seen so far, raised by this table's fragments.
+fn lookup(t: &Table, key: &[u8], hash: u64, max_tomb: &mut u64) -> Result<Option<Option<Vec<u8>>>> {
+    // Without a range tombstone seen, which is nearly always, this is the
+    // point lookup of a table alone.
+    if *max_tomb > 0 && t.largest_seq() < *max_tomb && key >= t.smallest.as_slice() && !t.ends_before(key) {
+        return Ok(Some(None));
+    }
+    if t.has_fragments()
+        && let Some(u) = t.covering_seq(key)
+    {
+        *max_tomb = (*max_tomb).max(u);
+    }
+    Ok(t.get(key, hash)?.map(|(s, v)| if s >= *max_tomb { v } else { None }))
+}
+
 /// The files of `levels` as the MANIFEST records them.
 pub fn level_metas(levels: &Levels) -> Vec<Vec<FileMeta>> {
     levels.iter().enumerate().map(|(l, files)| files.iter().map(|t| t.meta(l as u8)).collect()).collect()
@@ -32,25 +52,34 @@ pub fn level_metas(levels: &Levels) -> Vec<Vec<FileMeta>> {
 
 impl Version {
     /// Newest value of `key` visible at `seq`.
+    ///
+    /// Sources are consulted from the newest to the oldest, keeping
+    /// `max_tomb`, the highest sequence (`<= seq`) of the range tombstones
+    /// seen so far that cover `key`. A source's fragments count before its
+    /// points (and before its bloom filter, which says nothing about ranges):
+    /// the first point found hides behind a tombstone newer than it
+    /// (`s < max_tomb`) and is otherwise the answer (SEM-3, SEM-4). A table
+    /// whose newest entry is older than `max_tomb` ends the search: nothing
+    /// at or below it can be visible.
     pub fn get(&self, key: &[u8], seq: u64) -> Result<Option<Vec<u8>>> {
         let probe = InternalKey { user_key: key.to_vec(), seq };
+        let mut max_tomb = 0;
         for mem in std::iter::once(&self.mem).chain(&self.imms) {
-            if let Some(v) = mem.get(&probe) {
-                return Ok(v);
+            max_tomb = max_tomb.max(mem.covering_seq(key, seq));
+            if let Some((s, v)) = mem.get(&probe) {
+                return Ok(if s >= max_tomb { v } else { None });
             }
         }
         let hash = bloom::hash(key);
         for t in &self.levels[0] {
-            if let Some((_, v)) = t.get(key, hash)? {
-                return Ok(v);
+            if let Some(found) = lookup(t, key, hash, &mut max_tomb)? {
+                return Ok(found);
             }
         }
         for level in &self.levels[1..] {
-            let i = level.partition_point(|t| t.largest.as_slice() < key);
-            if let Some(t) = level.get(i)
-                && let Some((_, v)) = t.get(key, hash)?
-            {
-                return Ok(v);
+            let i = level.partition_point(|t| t.ends_before(key));
+            if let Some(found) = level.get(i).map(|t| lookup(t, key, hash, &mut max_tomb)).transpose()?.flatten() {
+                return Ok(found);
             }
         }
         Ok(None)
@@ -68,23 +97,46 @@ impl Version {
             return Ok(Vec::new());
         }
         let mut children: Vec<Box<dyn InternalIterator + '_>> = Vec::new();
+        // The fragments of every source the scan may meet; none at all is
+        // the common case and costs nothing per key.
+        let mut fragments: Vec<Cow<'_, [Fragment]>> = Vec::new();
         for mem in std::iter::once(&self.mem).chain(&self.imms) {
             children.push(Box::new(mem.iter(seq)));
+            let list = mem.fragments(seq);
+            if !list.is_empty() {
+                fragments.push(Cow::Owned(list));
+            }
         }
         for t in &self.levels[0] {
             if table_in_range(t, start, end) {
                 children.push(Box::new(t.iter(true)));
+                if t.has_fragments() {
+                    fragments.push(Cow::Borrowed(t.fragments()));
+                }
             }
         }
         for level in &self.levels[1..] {
             if !level.is_empty() {
                 children.push(Box::new(LevelIter::new(level, true)));
+                fragments.extend(
+                    tables_in_range(level, start, end)
+                        .iter()
+                        .filter(|t| t.has_fragments())
+                        .map(|t| Cow::Borrowed(t.fragments())),
+                );
             }
         }
+        let mut cover = CoverCursor::new(fragments);
         let mut it = MergeIter::new(children);
         match start {
-            Bound::Unbounded => it.seek_to_first()?,
-            Bound::Included(k) | Bound::Excluded(k) => it.seek(k)?,
+            Bound::Unbounded => {
+                it.seek_to_first()?;
+                cover.seek(&[]);
+            }
+            Bound::Included(k) | Bound::Excluded(k) => {
+                it.seek(k)?;
+                cover.seek(k);
+            }
         }
         let mut out = Vec::new();
         while it.valid() && out.len() < limit {
@@ -98,7 +150,12 @@ impl Version {
                 break;
             }
             let skip = matches!(start, Bound::Excluded(s) if k == s);
-            if !skip && let Some(v) = it.value() {
+            // The newest version of the key is hidden by a tombstone newer
+            // than it; the older ones then are too (SEM-4).
+            if !skip
+                && let Some(v) = it.value()
+                && cover.covering(k) <= it.seq()
+            {
                 out.push((k.to_vec(), v.to_vec()));
             }
             it.next()?;
@@ -115,13 +172,30 @@ fn range_is_empty(start: Bound<&[u8]>, end: Bound<&[u8]>) -> bool {
     }
 }
 
-fn table_in_range(t: &Table, start: Bound<&[u8]>, end: Bound<&[u8]>) -> bool {
+/// The tables of a sorted level whose extent may intersect the bounds.
+fn tables_in_range<'a>(level: &'a [Arc<Table>], start: Bound<&[u8]>, end: Bound<&[u8]>) -> &'a [Arc<Table>] {
+    let from = match start {
+        Bound::Included(s) | Bound::Excluded(s) => level.partition_point(|t| t.ends_before(s)),
+        Bound::Unbounded => 0,
+    };
+    let to = match end {
+        Bound::Included(e) => level.partition_point(|t| t.smallest.as_slice() <= e),
+        Bound::Excluded(e) => level.partition_point(|t| t.smallest.as_slice() < e),
+        Bound::Unbounded => level.len(),
+    };
+    &level[from..to.max(from)]
+}
+
+/// Whether the extent of `t` may intersect the bounds (it may, where a bound
+/// is excluded and the table touches it).
+pub fn table_in_range(t: &Table, start: Bound<&[u8]>, end: Bound<&[u8]>) -> bool {
     let after_start = match start {
-        Bound::Included(s) | Bound::Excluded(s) => t.largest.as_slice() >= s,
+        Bound::Included(s) | Bound::Excluded(s) => !t.ends_before(s),
         Bound::Unbounded => true,
     };
     let before_end = match end {
-        Bound::Included(e) | Bound::Excluded(e) => t.smallest.as_slice() <= e,
+        Bound::Included(e) => t.smallest.as_slice() <= e,
+        Bound::Excluded(e) => t.smallest.as_slice() < e,
         Bound::Unbounded => true,
     };
     after_start && before_end

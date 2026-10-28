@@ -43,6 +43,7 @@ mod iter;
 mod manifest;
 mod memtable;
 pub mod metrics;
+mod rangedel;
 mod recovery;
 mod sst;
 mod stats;
@@ -66,7 +67,7 @@ pub use config::{
 pub use config::{Background, TestConfig};
 #[doc(hidden)]
 pub use db::TableInfo;
-pub use db::{CloseReport, KernoDb, KernoSnapshot};
+pub use db::{CloseReport, CompactRangeReport, KernoDb, KernoSnapshot};
 pub use inspect::{FileInfo, FileType, FormatInfo, HeaderInfo, inspect};
 pub use metrics::Metrics;
 pub use verify::{Issue, LevelReport, Orphan, VerifyOptions, VerifyReport, WalReport, verify};

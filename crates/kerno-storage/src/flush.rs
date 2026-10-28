@@ -8,13 +8,20 @@
 //! between two consecutive keys: the pieces of one flush are key-disjoint, each
 //! overlaps only the L1 files it really intersects, and the L0 depth metric
 //! counts them once.
+//!
+//! The range tombstones of the memtable go to the tables as fragments. A
+//! point a fragment of the same memtable covers with a higher sequence is not
+//! written (SST-F2, SST-V4); the fragments are cut where the output is, so
+//! each table holds the pieces that lie within the keys it stands for.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use kerno_core::{Error, Result};
 
 use crate::iter::{InternalIterator, MergeIter};
 use crate::memtable::Memtable;
+use crate::rangedel::{CoverCursor, FragmentSplitter};
 use crate::sst::{Table, TableBuilder, TableCtx};
 
 /// Finds the cuts of a flush: keys are presented in increasing order.
@@ -36,7 +43,7 @@ impl<'a> SplitPoints<'a> {
         while self.next < self.l1.len() && self.l1[self.next].smallest.as_slice() <= prev {
             self.next += 1;
         }
-        self.l1.get(self.next).is_some_and(|t| t.largest.as_slice() < key)
+        self.l1.get(self.next).is_some_and(|t| t.ends_before(key))
     }
 }
 
@@ -79,13 +86,24 @@ fn fill(
     tables: &mut Vec<Table>,
     builder: &mut Option<TableBuilder>,
 ) -> Result<()> {
+    let fragments = mem.fragments(u64::MAX);
+    let mut cover = CoverCursor::new(vec![Cow::Borrowed(&fragments[..])]);
+    cover.seek(&[]);
+    let mut splitter = FragmentSplitter::new(fragments.clone());
     let mut it = MergeIter::new(vec![Box::new(mem.iter(u64::MAX))]);
     let mut split = SplitPoints::new(l1);
     let mut prev: Vec<u8> = Vec::new();
     it.seek_to_first()?;
     while it.valid() {
+        // Covered by a newer tombstone of this memtable: the fragment, which
+        // the table keeps, hides it (and whatever is older, below).
+        if cover.covering(it.key()) > it.seq() {
+            it.next()?;
+            continue;
+        }
         if builder.is_some() && split.cut_between(&prev, it.key()) {
-            tables.push(builder.take().expect("checked above").finish()?);
+            let pieces = splitter.take_below(Some(it.key()));
+            tables.push(builder.take().expect("checked above").finish_with(&pieces)?);
         }
         if builder.is_none() {
             *builder = Some(TableBuilder::create(ctx, next_number(), reason)?);
@@ -95,8 +113,13 @@ fn fill(
         prev.extend_from_slice(it.key());
         it.next()?;
     }
+    let rest = splitter.take_below(None);
+    if builder.is_none() && !rest.is_empty() {
+        // Only tombstones left.
+        *builder = Some(TableBuilder::create(ctx, next_number(), reason)?);
+    }
     if let Some(b) = builder.take() {
-        tables.push(b.finish()?);
+        tables.push(b.finish_with(&rest)?);
     }
     Ok::<(), Error>(())
 }

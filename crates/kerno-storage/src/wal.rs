@@ -37,8 +37,8 @@ use std::io;
 use std::path::Path;
 use std::sync::Arc;
 
+use kerno_core::Result;
 use kerno_core::vfs::{File, OpenMode, Vfs};
-use kerno_core::{Error, Result};
 
 use crate::files::{FileSource, read_error};
 use crate::format::features::{SLOT_LEN, WRITE_INCOMPAT, frame_has_slot};
@@ -282,15 +282,9 @@ pub fn replay(
     let file = vfs.open(&dir.join(&name), OpenMode::Existing)?;
     let mut src = FileSource::new(&*file)?;
     let params = WalScanParams { file_number: number, db_id, expected_seq };
-    let mut has_ranges = false;
     let mut failed = None;
     let scanned = scan_wal(&mut src, &params, |_, frame| {
         for (i, commit) in frame.commits.iter().enumerate() {
-            if !commit.ranges.is_empty() {
-                // The caller's apply may not accept ranges; the log is refused below.
-                has_ranges = true;
-                continue;
-            }
             if let Err(e) = apply(frame.first_seq + i as u64, commit) {
                 failed = Some(e);
                 return Err(io::Error::other("replay stopped by its caller"));
@@ -302,11 +296,6 @@ pub fn replay(
         return Err(e);
     }
     let scan = scanned.map_err(|e| read_error(&name, e))?;
-    if has_ranges {
-        // Applying such a log without its ranges would bring deleted keys
-        // back: refuse it instead.
-        return Err(Error::Incompatible(format!("{name}: range deletions are not supported yet")));
-    }
     Ok(scan)
 }
 
@@ -315,6 +304,7 @@ mod tests {
     use super::*;
     use crate::format::End;
     use crate::format::wal::{CommitOp, WalHeaderState, canonicalize, seal_frame};
+    use kerno_core::Error;
     use kerno_core::WriteBatch;
     use kerno_testkit::vfs::{CrashKind, SimVfs};
 
@@ -553,19 +543,18 @@ mod tests {
     }
 
     #[test]
-    fn range_deletions_are_refused_not_dropped() {
+    fn range_deletions_are_replayed_with_their_commit() {
         let sim = SimVfs::new(1);
         let (vfs, mut w) = setup(&sim, 1);
         let mut b = WriteBatch::new();
-        b.put("a", "1").delete_range("b", "c");
+        b.put("a", "1").delete_range("b", "c").put("b2", "2");
         w.append_group(1, &[&canonical(&b)]).unwrap();
-        assert!(matches!(collect(&*vfs, 1), Err(Error::Incompatible(m)) if m.contains("range deletions")));
-        // The callback never sees a commit with ranges.
-        let r = replay(&*vfs, Path::new("/w"), 1, DB, 1, |_, c| {
-            assert!(c.ranges.is_empty());
-            Ok(())
-        });
-        assert!(matches!(r, Err(Error::Incompatible(_))));
+        let (scan, got) = collect(&*vfs, 1).unwrap();
+        assert_eq!((scan.commits, scan.next_seq), (1, 2));
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0, 1);
+        assert_eq!(got[0].1.ranges, vec![(b"b".to_vec(), b"c".to_vec())]);
+        assert_eq!(got[0].1.points.len(), 2, "the points of the commit follow its ranges");
     }
 
     // ---- preallocated and recycled logs ----

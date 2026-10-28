@@ -11,20 +11,20 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use kerno_core::contract::{Engine, Options, Snapshot, SyncEngine, TestHooks};
+use kerno_core::contract::{Engine, Options, RangeDeleteEngine, Snapshot, SyncEngine, TestHooks};
 use kerno_core::probe;
 use kerno_core::vfs::Vfs;
 use kerno_core::{Durability, Error, Op, Result, WriteBatch};
 use parking_lot::{Condvar, Mutex};
 
 use crate::commit_queue::{CommitQueue, Request, Wake, replicate};
-use crate::compaction::{self, BLOCK_SIZE, Busy, Claim, NUM_LEVELS, Plan, RateController, Tuning};
+use crate::compaction::{self, BLOCK_SIZE, Busy, Claim, NUM_LEVELS, Plan, RangeStep, RateController, Tuning};
 use crate::config::{AccessMode, Background, CloseBudget, Config, Limits, ReadOnlyReason, SlowdownPolicy};
 use crate::deleter::Deleter;
 use crate::flush;
 use crate::format::header::new_db_id;
 use crate::format::limits::MAX_SEQ;
-use crate::format::manifest::{Edit, FileMeta, REASON_BACKGROUND, REASON_CLOSE, REASON_TRIVIAL_MOVE};
+use crate::format::manifest::{Edit, FileMeta, REASON_BACKGROUND, REASON_CLOSE, REASON_DIRECTED, REASON_TRIVIAL_MOVE};
 use crate::format::props::REASON_FLUSH;
 use crate::format::wal::{CanonicalCommit, CommitOp, canonicalize};
 use crate::manifest::{self, CHECKPOINT_FLOOR, MANIFEST, ManifestWriter, Snapshot as ManifestSnapshot};
@@ -201,6 +201,41 @@ pub struct CloseReport {
     pub l0_files: u64,
     /// L0 depth left (see [`L0Metric::Depth`](crate::config::L0Metric::Depth)).
     pub l0_depth: u64,
+}
+
+/// What [`KernoDb::compact_range`] did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CompactRangeReport {
+    /// Files read and replaced by the compactions (files that only moved to
+    /// the next level are not counted).
+    pub files_rewritten: u64,
+    pub bytes_read: u64,
+    pub bytes_written: u64,
+    /// Replaced files that are still on disk because a snapshot (or a
+    /// version a snapshot holds) refers to them, and their size. They go
+    /// when the last of those goes: until then they may hold what the range
+    /// deletions covered.
+    pub pinned_files: u64,
+    pub pinned_bytes: u64,
+}
+
+/// What a compaction was chosen for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Purpose {
+    /// The score of a level.
+    Background,
+    /// The close of the handle: its settings (`close_subcompactions`, no
+    /// intermediate syncs).
+    Close,
+    /// `compact_range`.
+    Directed,
+}
+
+/// The bytes a compaction read and wrote.
+#[derive(Clone, Copy, Default)]
+struct Compacted {
+    read: u64,
+    written: u64,
 }
 
 impl Snapshot for KernoSnapshot {
@@ -646,7 +681,7 @@ impl Inner {
                 stall.exclude(slept);
                 continue;
             }
-            if w.mem.approx_bytes() < self.tuning.write_buffer {
+            if !w.mem.is_full(self.tuning.write_buffer) {
                 if self.spare_due(w.mem.approx_bytes()) {
                     st.spare_wanted = true;
                     drop(st);
@@ -684,7 +719,7 @@ impl Inner {
     /// rotated, flushed and followed by every due compaction, all in the
     /// calling thread, before the commit writes its own record.
     fn make_room_inline(&self, w: &mut Writer) -> Result<()> {
-        if w.mem.approx_bytes() < self.tuning.write_buffer {
+        if !w.mem.is_full(self.tuning.write_buffer) {
             if self.spare_due(w.mem.approx_bytes()) {
                 let _phase = probe::phase("wal_spare");
                 self.prepare_spare_if_absent();
@@ -957,7 +992,15 @@ impl Inner {
     /// compaction of a `closing` session runs with the close-time settings
     /// (`close_subcompactions`, no intermediate syncs).
     fn compact(&self, plan: &Plan, pointers: &mut [Vec<u8>], closing: bool) -> Result<bool> {
-        let _phase = probe::phase("compact");
+        let purpose = if closing { Purpose::Close } else { Purpose::Background };
+        Ok(self.compact_for(plan, pointers, purpose)?.is_some())
+    }
+
+    /// [`compact`](Self::compact) for any purpose; `None` if the compaction
+    /// was abandoned for shutdown.
+    fn compact_for(&self, plan: &Plan, pointers: &mut [Vec<u8>], purpose: Purpose) -> Result<Option<Compacted>> {
+        let _phase = probe::phase(if purpose == Purpose::Directed { "compact_range" } else { "compact" });
+        let closing = purpose == Purpose::Close;
         pointers[plan.level] = plan.largest_input_key().to_vec();
         if plan.is_trivial_move() {
             let mut ms = self.manifest.lock();
@@ -978,7 +1021,7 @@ impl Inner {
             ms.levels = levels.clone();
             self.install(levels, None);
             bump(&self.stats.trivial_moves, 1);
-            return Ok(true);
+            return Ok(Some(Compacted::default()));
         }
         let _io = BackgroundIo::start(&self.stats);
         let start = Instant::now();
@@ -996,7 +1039,7 @@ impl Inner {
         let Some(outputs) =
             compaction::run(&self.ctx, plan, tuning, &self.next_file, &self.shutting_down, &self.stats)?
         else {
-            return Ok(false);
+            return Ok(None);
         };
         // On failure the outputs are left on disk: once the MANIFEST write
         // has started, a new MANIFEST that references them may survive (a
@@ -1012,7 +1055,11 @@ impl Inner {
         let (last_seq, log_number) = (ms.last_seq, ms.log_number);
         let out_level = plan.level as u8 + 1;
         let edit = Edit::Compaction {
-            reason: if closing { REASON_CLOSE } else { REASON_BACKGROUND },
+            reason: match purpose {
+                Purpose::Background => REASON_BACKGROUND,
+                Purpose::Close => REASON_CLOSE,
+                Purpose::Directed => REASON_DIRECTED,
+            },
             next_file: Some(self.next_file.load(Ordering::SeqCst)),
             add: outputs.iter().map(|t| t.meta(out_level)).collect(),
             delete: plan
@@ -1030,10 +1077,11 @@ impl Inner {
         self.install(levels, None);
         drop(ms);
         let read: u64 = plan.all_inputs().map(|t| t.size).sum();
+        let written: u64 = outputs.iter().map(|t| t.size).sum();
         let s = &*self.stats;
         bump(&s.compactions, 1);
         bump(&s.compaction_bytes_read, read);
-        bump(&s.compaction_bytes_written, outputs.iter().map(|t| t.size).sum());
+        bump(&s.compaction_bytes_written, written);
         bump_max(&s.compaction_nanos_max, nanos(start, Instant::now()));
         if plan.level == 0 {
             let l1_files = plan.next_inputs.len() as u64;
@@ -1044,7 +1092,77 @@ impl Inner {
             bump_max(&s.l0_compaction_l1_files_max, l1_files);
             bump(&s.l0_compaction_l1_files_present, next_level_files);
         }
-        Ok(true)
+        Ok(Some(Compacted { read, written }))
+    }
+
+    // ---- directed compaction ----
+
+    /// Takes the next step of the directed compaction of the range, claiming
+    /// what it touches, waiting while it conflicts with a compaction in
+    /// flight. `None` once no file above the last level overlaps the range.
+    fn claim_directed(&self, start: Bound<&[u8]>, end: Bound<&[u8]>) -> Result<Option<(Plan, Running<'_>)>> {
+        let mut st = self.state.lock();
+        loop {
+            if let Some(msg) = &st.poisoned {
+                return Err(Error::Poisoned(msg.clone()));
+            }
+            match compaction::pick_range(&st.version.levels, &st.busy, start, end) {
+                RangeStep::Done => return Ok(None),
+                RangeStep::Blocked => self.cv.wait(&mut st),
+                RangeStep::Plan(plan) => {
+                    let claim = st.busy.claim(&plan);
+                    st.compactions_running += 1;
+                    bump_max(&self.stats.compactions_concurrent_max, st.compactions_running as u64);
+                    return Ok(Some((plan, Running { inner: self, job: Job::Compaction, claim: Some(claim) })));
+                }
+            }
+        }
+    }
+
+    /// [`KernoDb::compact_range`]: (1) the active memtable, if it holds
+    /// anything, is rotated and every memtable written out, so that the range
+    /// tombstones and the data they cover are in files; (2) the files that
+    /// overlap the range are compacted level by level, each step in the
+    /// calling thread, claiming its files like a background compaction, until
+    /// no level above the last overlaps it; (3) a checkpoint replaces the
+    /// MANIFEST, whose old generation still names the keys of the files that
+    /// went; (4) the cache forgets their blocks; (5) the report counts the
+    /// replaced files that a snapshot keeps on disk.
+    fn compact_range(&self, start: Bound<&[u8]>, end: Bound<&[u8]>) -> Result<CompactRangeReport> {
+        self.check_writable()?;
+        let _phase = probe::phase("compact_range");
+        self.flush_all()?;
+        let mut report = CompactRangeReport::default();
+        let mut replaced: Vec<Arc<Table>> = Vec::new();
+        let mut pointers = vec![Vec::new(); NUM_LEVELS];
+        while let Some((plan, running)) = self.claim_directed(start, end)? {
+            let r =
+                self.or_poison("compaction failed", || self.compact_for(&plan, &mut pointers, Purpose::Directed))?;
+            let Some(done) = r else {
+                return Err(Error::Io(io::Error::other("compaction abandoned: the handle is closing")));
+            };
+            if !plan.is_trivial_move() {
+                report.bytes_read += done.read;
+                report.bytes_written += done.written;
+                let Plan { inputs, next_inputs, .. } = plan;
+                replaced.extend(inputs.into_iter().chain(next_inputs));
+            }
+            drop(running);
+        }
+        report.files_rewritten = replaced.len() as u64;
+        self.checkpoint_now()?;
+        for t in &replaced {
+            t.purge_cache();
+            // The table is dropped below (and its file deleted) unless
+            // something else still holds it.
+            if Arc::strong_count(t) > 1 {
+                report.pinned_files += 1;
+                report.pinned_bytes += t.size;
+            }
+        }
+        drop(replaced);
+        self.ctx.deleter.settle();
+        Ok(report)
     }
 
     // ---- shutdown ----
@@ -1294,8 +1412,11 @@ pub struct TableInfo {
     pub number: u64,
     pub size: u64,
     pub entries: u64,
+    /// `(start, end, seq)` of the range tombstone fragments.
+    pub fragments: Vec<(Vec<u8>, Vec<u8>, u64)>,
     pub smallest: Vec<u8>,
     pub largest: Vec<u8>,
+    pub largest_exclusive: bool,
 }
 
 impl KernoDb {
@@ -1311,8 +1432,10 @@ impl KernoDb {
                         number: t.number,
                         size: t.size,
                         entries: t.entries(),
+                        fragments: t.fragments().iter().map(|f| (f.start.clone(), f.end.clone(), f.seq)).collect(),
                         smallest: t.smallest.clone(),
                         largest: t.largest.clone(),
+                        largest_exclusive: t.largest_exclusive,
                     })
                     .collect()
             })
@@ -1331,6 +1454,10 @@ impl TestHooks for KernoDb {
 
     fn compact_once(&self) -> Result<bool> {
         self.inner.compact_once()
+    }
+
+    fn compact_range(&self, start: Bound<&[u8]>, end: Bound<&[u8]>) -> Result<()> {
+        KernoDb::compact_range(self, start, end).map(drop)
     }
 
     fn checkpoint(&self) -> Result<()> {
@@ -1623,6 +1750,7 @@ impl KernoDb {
                 .map(|l| LevelMetrics { files: l.len() as u64, bytes: l.iter().map(|t| t.size).sum() })
                 .collect(),
             l0_depth: compaction::l0_depth(&v.levels[0]) as u64,
+            range_fragments: v.levels.iter().flatten().map(|t| t.fragments().len() as u64).sum(),
             l0_files_max: 0,
             memtable_bytes: v.mem.approx_bytes() as u64,
             immutable_memtables: v.imms.len() as u64,
@@ -1641,6 +1769,24 @@ impl KernoDb {
     /// it is served by the leader of the group it joins.
     pub fn sync(&self) -> Result<u64> {
         self.inner.sync()
+    }
+
+    /// Pushes the data and the range deletions between the bounds `start` and
+    /// `end` to the last level and out of the files: the active write
+    /// buffer is written out, then the files that overlap the range are
+    /// compacted level by level until none above the last does, and the
+    /// compactions drop every tombstone, point or range, that has nothing
+    /// deeper to hide, and the points a range tombstone covers. The MANIFEST
+    /// is checkpointed, so that its history no longer names the keys of the
+    /// files that went. Returns when that is done.
+    ///
+    /// This is a mechanism, not a guarantee of erasure: a snapshot keeps the
+    /// files of the version it holds (the report counts them), WAL files, free
+    /// space in the file system and the memory of the OS and the block cache
+    /// are not scrubbed, and a table that background compactions moved to
+    /// the last level with a point tombstone in it keeps it (`DESIGN.md`).
+    pub fn compact_range(&self, start: Bound<&[u8]>, end: Bound<&[u8]>) -> Result<CompactRangeReport> {
+        self.inner.compact_range(start, end)
     }
 
     /// Closes the handle like `Engine::close` and returns its metrics after
@@ -1711,12 +1857,6 @@ impl Engine for KernoDb {
     }
 
     fn commit(&self, batch: &WriteBatch) -> Result<u64> {
-        self.inner.check_writable()?;
-        // Range deletions are not implemented yet (WP10b replaces this):
-        // reject them before anything is written or a sequence is assigned.
-        if batch.has_range_deletes() {
-            return Err(Error::InvalidArgument("delete_range not yet supported".into()));
-        }
         self.inner.commit(batch)
     }
 
@@ -1744,59 +1884,4 @@ impl SyncEngine for KernoDb {
     }
 }
 
-/// Range deletions are rejected until WP10b implements them.
-#[cfg(test)]
-mod range_delete_rejection {
-    use kerno_core::contract::{Engine, Options, Snapshot};
-    use kerno_testkit::vfs::SimVfs;
-
-    use super::*;
-
-    fn stat(db: &KernoDb, name: &str) -> u64 {
-        db.stats().into_iter().find(|(n, _)| n == name).map(|(_, v)| v).unwrap()
-    }
-
-    #[test]
-    fn range_delete_is_rejected_without_consuming_a_sequence() {
-        let disk = SimVfs::new(1);
-        let opts = Options::small_for_tests();
-        let db = <KernoDb as Engine>::open(disk.as_vfs(), Path::new("/db"), &opts).unwrap();
-        let mut b = WriteBatch::new();
-        b.put("a", "1").put("b", "2");
-        assert_eq!(db.commit(&b).unwrap(), 1);
-        // A full write buffer: the next commit that gets past the entry check
-        // switches memtables (and WAL) before it encodes anything.
-        let mut b = WriteBatch::new();
-        b.put("big", vec![b'x'; opts.write_buffer_bytes]);
-        assert_eq!(db.commit(&b).unwrap(), 2);
-        let counters = ["wal_bytes", "commits", "memtable_rotations", "flushes"];
-        let before: Vec<u64> = counters.iter().map(|c| stat(&db, c)).collect();
-        let ops = disk.mutating_ops();
-
-        let mut ranges = vec![WriteBatch::new(), WriteBatch::new(), WriteBatch::new()];
-        ranges[0].delete_range("a", "z");
-        ranges[1].put("c", "3").delete_range("a", "b").put("d", "4");
-        ranges[2].delete_range("same", "same");
-        for b in &ranges {
-            let r = db.commit(b);
-            assert!(matches!(&r, Err(Error::InvalidArgument(m)) if m == "delete_range not yet supported"), "got {r:?}");
-        }
-        // Nothing was written, switched, applied or numbered, and the handle
-        // is healthy.
-        assert_eq!(disk.mutating_ops(), ops, "a rejected batch touched the disk");
-        assert_eq!(counters.iter().map(|c| stat(&db, c)).collect::<Vec<_>>(), before, "{counters:?}");
-        let s = db.snapshot().unwrap();
-        assert_eq!(s.seq(), 2);
-        assert_eq!(s.scan(Bound::Unbounded, Bound::Unbounded, 10).unwrap().len(), 3);
-        assert_eq!(s.get(b"c").unwrap(), None);
-        let mut b = WriteBatch::new();
-        b.put("e", "5");
-        assert_eq!(db.commit(&b).unwrap(), 3, "the next commit gets the next sequence");
-        assert_eq!(stat(&db, "memtable_rotations"), before[2] + 1, "the setup must make this commit switch");
-        db.close().unwrap();
-        let db = <KernoDb as Engine>::open(disk.as_vfs(), Path::new("/db"), &opts).unwrap();
-        let s = db.snapshot().unwrap();
-        assert_eq!(s.seq(), 3);
-        assert_eq!(s.scan(Bound::Unbounded, Bound::Unbounded, 10).unwrap().len(), 4);
-    }
-}
+impl RangeDeleteEngine for KernoDb {}

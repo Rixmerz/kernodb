@@ -12,9 +12,20 @@
 //! at their most aggressive (`aggressive`), so that a wrong L0 subset or a
 //! wrong cut shows up as a stale read.
 //!
+//! The `prop_mvcc_model_*` properties add what ADR-0001 condition 2 needs:
+//! range deletions, flushes, single compactions and directed compactions
+//! (`compact_range`) anywhere in the history, with snapshots taken and dropped
+//! throughout. The model of every live snapshot is a copy of the model at the
+//! moment it was taken, and each step checks all of them (their scan and a
+//! `get` of every key), the current state, and the sequence numbers, so a
+//! range tombstone that hides a point it should not, or fails to hide one it
+//! should, in any source (memtable, L0, deeper levels, a file written by a
+//! compaction that cut or dropped it), shows up as a minimal history.
+//!
 //! Cases: `PROPTEST_CASES`, else `SPIKE_SEEDS` (like the harness suites),
 //! else 256.
 
+use std::ops::Bound;
 use std::path::Path;
 
 use kerno_core::WriteBatch;
@@ -40,6 +51,24 @@ enum Op {
         k: u8,
     },
     TakeSnapshot,
+    /// Commits a range deletion of `[key(a), key(b))` (`a` and `b` count the
+    /// alphabet and one key past its end; `a > b` is swapped, `a == b` is the
+    /// empty range, which still is a commit).
+    DeleteRange {
+        a: u8,
+        b: u8,
+    },
+    /// Writes the memtable to a file.
+    Flush,
+    /// Runs one compaction, if one is due.
+    CompactOnce,
+    /// Pushes the keys between the bounds to the bottom level
+    /// (`compact_range`); `kind` picks which bounds are open.
+    CompactRange {
+        a: u8,
+        b: u8,
+        kind: u8,
+    },
     /// Drops one live snapshot, if any.
     DropSnapshot(Index),
     /// `close`, then open again.
@@ -55,6 +84,24 @@ fn op() -> impl Strategy<Value = Op> {
         12 => (0..KEYS, 0..3000u16).prop_map(|(k, len)| Op::Put { k, len }),
         4 => (0..KEYS).prop_map(|k| Op::Delete { k }),
         2 => Just(Op::TakeSnapshot),
+        1 => any::<Index>().prop_map(Op::DropSnapshot),
+        1 => Just(Op::CleanReopen),
+        1 => Just(Op::DropReopen),
+        1 => Just(Op::PowerLoss),
+    ]
+}
+
+/// The histories of the `prop_mvcc_model_*` properties: puts, deletes, range
+/// deletions, flushes and compactions of both kinds, snapshots, reopens.
+fn mvcc_op() -> impl Strategy<Value = Op> {
+    prop_oneof![
+        10 => (0..KEYS, 0..3000u16).prop_map(|(k, len)| Op::Put { k, len }),
+        3 => (0..KEYS).prop_map(|k| Op::Delete { k }),
+        5 => (0..=KEYS, 0..=KEYS).prop_map(|(a, b)| Op::DeleteRange { a, b }),
+        2 => Just(Op::Flush),
+        2 => Just(Op::CompactOnce),
+        2 => (0..=KEYS, 0..=KEYS, any::<u8>()).prop_map(|(a, b, kind)| Op::CompactRange { a, b, kind }),
+        3 => Just(Op::TakeSnapshot),
         1 => any::<Index>().prop_map(Op::DropSnapshot),
         1 => Just(Op::CleanReopen),
         1 => Just(Op::DropReopen),
@@ -162,6 +209,30 @@ fn run(seed: u64, ops: &[Op], levers: bool) {
                 seq = commit(db.as_ref().unwrap(), &b, seq, &ctx);
                 apply(&mut model, &b);
             }
+            Op::DeleteRange { a, b } => {
+                let (a, b) = (*a.min(b), *a.max(b));
+                let mut batch = WriteBatch::new();
+                batch.delete_range(key(a), key(b));
+                seq = commit(db.as_ref().unwrap(), &batch, seq, &ctx);
+                apply(&mut model, &batch);
+            }
+            Op::Flush => db.as_ref().unwrap().hooks().flush().unwrap_or_else(|e| panic!("{ctx}: flush failed: {e}")),
+            Op::CompactOnce => {
+                db.as_ref().unwrap().hooks().compact_once().unwrap_or_else(|e| panic!("{ctx}: compaction failed: {e}"));
+            }
+            Op::CompactRange { a, b, kind } => {
+                let (lo, hi) = (key(*a.min(b)), key(*a.max(b)));
+                let (start, end) = match kind % 4 {
+                    0 => (Bound::Included(&lo[..]), Bound::Excluded(&hi[..])),
+                    1 => (Bound::Unbounded, Bound::Included(&hi[..])),
+                    2 => (Bound::Excluded(&lo[..]), Bound::Unbounded),
+                    _ => (Bound::Unbounded, Bound::Unbounded),
+                };
+                db.as_ref()
+                    .unwrap()
+                    .compact_range(start, end)
+                    .unwrap_or_else(|e| panic!("{ctx}: compact_range failed: {e}"));
+            }
             Op::TakeSnapshot => {
                 let snap = db.as_ref().unwrap().snapshot().unwrap_or_else(|e| panic!("{ctx}: {e}"));
                 snaps.push(LiveSnapshot { snap, model: model.clone(), seq, taken_at: step });
@@ -235,6 +306,27 @@ proptest! {
     fn prop_partial_l0_and_flush_split_preserve_model(
         seed in any::<u64>(),
         ops in prop::collection::vec(op(), 1..300),
+    ) {
+        run(seed, &ops, true);
+    }
+
+    /// Range deletions, flushes, compactions and `compact_range` against the
+    /// MVCC model, with the default configuration.
+    #[test]
+    fn prop_mvcc_model_snapshots_flush_compaction_ranges(
+        seed in any::<u64>(),
+        ops in prop::collection::vec(mvcc_op(), 1..300),
+    ) {
+        run(seed, &ops, false);
+    }
+
+    /// The same under the aggressive levers: partial L0 compactions cut
+    /// through range tombstones, grandparent cuts, subcompactions that split
+    /// a fragment between threads' key ranges.
+    #[test]
+    fn prop_mvcc_model_ranges_under_aggressive_levers(
+        seed in any::<u64>(),
+        ops in prop::collection::vec(mvcc_op(), 1..300),
     ) {
         run(seed, &ops, true);
     }

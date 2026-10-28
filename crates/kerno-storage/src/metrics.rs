@@ -242,6 +242,8 @@ pub struct ShapeMetrics {
     /// Maximum number of L0 files whose key ranges contain one same key
     /// (at most `levels[0].files`).
     pub l0_depth: u64,
+    /// Range tombstone fragments in the files of the current version.
+    pub range_fragments: u64,
     /// Largest number of L0 files this handle has seen.
     pub l0_files_max: u64,
     pub memtable_bytes: u64,
@@ -346,6 +348,12 @@ pub struct BackgroundMetrics {
     pub compaction_bytes_read: u64,
     pub compaction_bytes_written: u64,
     pub tombstones_dropped: u64,
+    /// Range tombstone fragments left out of a compaction's output because
+    /// no deeper file overlaps them.
+    pub range_tombstones_dropped: u64,
+    /// Points left out of a compaction's output because a newer range
+    /// tombstone covers them.
+    pub covered_points_dropped: u64,
     /// Compactions from L0 into L1, with their input bytes (L0 and L1
     /// files) and the number of L1 files they rewrote (H1): totals and
     /// largest.
@@ -434,6 +442,7 @@ impl Metrics {
             put(&format!("l{i}_bytes"), l.bytes);
         }
         put("l0_depth", s.l0_depth);
+        put("range_fragments", s.range_fragments);
         put("l0_files_max", s.l0_files_max);
         put("memtable_bytes", s.memtable_bytes);
         put("immutable_memtables", s.immutable_memtables);
@@ -496,6 +505,8 @@ impl Metrics {
         put("compaction_bytes_read", b.compaction_bytes_read);
         put("compaction_bytes_written", b.compaction_bytes_written);
         put("tombstones_dropped", b.tombstones_dropped);
+        put("range_tombstones_dropped", b.range_tombstones_dropped);
+        put("covered_points_dropped", b.covered_points_dropped);
         put("l0_compactions", b.l0_compactions);
         put("l0_compaction_input_bytes", b.l0_compaction_input_bytes);
         put("l0_compaction_input_bytes_max", b.l0_compaction_input_bytes_max);

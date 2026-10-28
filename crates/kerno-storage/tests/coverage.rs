@@ -6,6 +6,8 @@
 //! a mode of the device or the handle (`RO`, `FL`, `NS`, `KP`) are run in their
 //! mode and recorded when it fired.
 
+mod common;
+
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -14,15 +16,17 @@ use kerno_core::{Durability, Error, WriteBatch};
 use kerno_storage::testing::{Inline, Profiled};
 use kerno_storage::{AccessMode, Config, KernoDb};
 use kerno_testkit::harness::crash::{Step, commits, run_scenario, scenario_b};
-use kerno_testkit::harness::matrix::{PROTOCOL_ROWS, first_unclassified, rows_covered};
+use kerno_testkit::harness::matrix::{PROTOCOL_ROWS, RANGE_ROWS, first_unclassified, rows_covered};
 use kerno_testkit::harness::{Model, apply, assert_snapshot_matches, open};
 use kerno_testkit::rng::Rng;
 use kerno_testkit::vfs::{CrashKind, FsyncFailure, OpKind, SimVfs};
 
+use common::ranged_scenario;
+
 type Db = Profiled<Inline>;
 
-/// The rows of this work package: the protocol rows scenario B reaches and
-/// the mode rows.
+/// The rows of the metadata log work package: the protocol rows scenario B
+/// reaches and the mode rows.
 const WP08_ROWS: &[&str] =
     &["L1-L4", "L5'", "L6", "L7'", "L8", "L9", "L10'", "L11", "L12'", "L13'", "CK", "CR", "R0", "RO", "FL", "NS", "KP"];
 
@@ -210,4 +214,42 @@ fn threads_mode_rows_superset_of_inline() {
     let (threads, _) = protocol_rows::<KernoDb>();
     let missing: Vec<_> = inline.difference(&threads).collect();
     assert!(missing.is_empty(), "rows only the inline mode reaches: {missing:?} (threads: {threads:?})");
+}
+
+/// RT and DC: scenario B with range deletions and directed compactions runs
+/// to its end; the operations of the directed compactions belong to DC, none
+/// belongs to no row, and some table written while it ran held range tombstone
+/// fragments (RT; the sweeps over these points are `range_delete.rs` and
+/// `compact_range.rs`).
+#[test]
+fn range_rows_are_covered() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let saw_fragments = Arc::new(AtomicBool::new(false));
+    let seen = saw_fragments.clone();
+    let steps: Vec<Step<Db>> = ranged_scenario::<Db>(
+        7,
+        Arc::new(move |db: &Db| {
+            // Before the compaction: the files the scenario has written so
+            // far, at least one with fragments.
+            db.hooks().flush()?;
+            let held = db.db().level_tables().iter().flatten().any(|t| !t.fragments.is_empty());
+            seen.fetch_or(held, Ordering::SeqCst);
+            db.hooks().compact_range(std::ops::Bound::Unbounded, std::ops::Bound::Unbounded)
+        }),
+        Arc::new(|db: &Db| db.hooks().checkpoint()),
+    );
+    assert!(commits(&steps).iter().any(|b| b.has_range_deletes()));
+    let disk = SimVfs::new(7);
+    disk.start_trace();
+    let (acked, attempted) = run_scenario::<Db>(&disk, &steps, &opts(Durability::Sync));
+    assert_eq!((acked, attempted), (commits(&steps).len() as u64, commits(&steps).len() as u64));
+    let trace = disk.trace();
+    assert_eq!(first_unclassified(&trace), None, "an operation that belongs to no row of the matrix");
+    let mut rows = rows_covered(&trace);
+    if saw_fragments.load(Ordering::SeqCst) {
+        rows.insert("RT");
+    }
+    for row in RANGE_ROWS {
+        assert!(rows.contains(row), "row {row} is not covered; covered: {rows:?}");
+    }
 }

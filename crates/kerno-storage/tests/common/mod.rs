@@ -17,7 +17,8 @@ use kerno_storage::format::header::{FileKind, HEADER_LEN, reseal_header};
 use kerno_storage::format::manifest::{ManifestReplay, Record, replay_manifest};
 use kerno_storage::format::wal::{CommitOp, Frame, canonicalize, encode_frame};
 use kerno_storage::{Background, Config, KernoDb, TestConfig};
-use kerno_testkit::harness::{Model, apply, read_all};
+use kerno_testkit::harness::crash::{ExtFn, Step};
+use kerno_testkit::harness::{Model, SuiteConfig, Workload, apply, read_all};
 use kerno_testkit::vfs::{DirImage, SimVfs};
 
 pub const DIR: &str = "/db";
@@ -175,4 +176,38 @@ pub fn open_copy(image: &DirImage, cfg: &Config) -> (SimVfs, Result<KernoDb>) {
     let disk = SimVfs::restore(image);
     let r = open_in(&disk.as_vfs(), cfg);
     (disk, r)
+}
+
+/// Scenario B (creation, commits, clean close, reopen, more commits, a
+/// dropped handle, recovery, a forced checkpoint, a clean close) with a tenth
+/// of the operations range deletions, and a directed compaction (`compact`)
+/// in the middle and another after the first reopen.
+pub fn ranged_scenario<E: Engine>(seed: u64, compact: ExtFn<E>, checkpoint: ExtFn<E>) -> Vec<Step<E>> {
+    let mut w = Workload::with_config(seed, SuiteConfig::with_range_deletes(100).workload);
+    w.key_space = 120;
+    w.large_per_mille = 100;
+    let mut model = Model::new();
+    let mut steps = vec![Step::Open];
+    let mut commits = |n: usize, steps: &mut Vec<Step<E>>| {
+        for _ in 0..n {
+            let b = w.batch(&model);
+            apply(&mut model, &b);
+            steps.push(Step::Commit(b));
+        }
+    };
+    commits(30, &mut steps);
+    steps.push(Step::Ext("compact_range", compact.clone()));
+    commits(10, &mut steps);
+    steps.push(Step::Close);
+    steps.push(Step::Open);
+    commits(15, &mut steps);
+    steps.push(Step::Ext("compact_range", compact));
+    commits(5, &mut steps);
+    steps.push(Step::Drop);
+    steps.push(Step::Open);
+    commits(10, &mut steps);
+    steps.push(Step::Ext("checkpoint", checkpoint));
+    commits(5, &mut steps);
+    steps.push(Step::Close);
+    steps
 }

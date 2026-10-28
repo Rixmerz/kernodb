@@ -60,6 +60,11 @@ pub struct Stats {
     pub compaction_bytes_read: AtomicU64,
     pub compaction_bytes_written: AtomicU64,
     pub tombstones_dropped: AtomicU64,
+    /// Range tombstone fragments a compaction did not write because no file
+    /// below its output overlapped them.
+    pub range_tombstones_dropped: AtomicU64,
+    /// Points a compaction did not write because a newer fragment covers them.
+    pub covered_points_dropped: AtomicU64,
     pub l0_compactions: AtomicU64,
     pub l0_compaction_input_bytes: AtomicU64,
     pub l0_compaction_input_bytes_max: AtomicU64,
@@ -276,6 +281,8 @@ impl Stats {
                 compaction_bytes_read: load(&self.compaction_bytes_read),
                 compaction_bytes_written: load(&self.compaction_bytes_written),
                 tombstones_dropped: load(&self.tombstones_dropped),
+                range_tombstones_dropped: load(&self.range_tombstones_dropped),
+                covered_points_dropped: load(&self.covered_points_dropped),
                 l0_compactions: load(&self.l0_compactions),
                 l0_compaction_input_bytes: load(&self.l0_compaction_input_bytes),
                 l0_compaction_input_bytes_max: load(&self.l0_compaction_input_bytes_max),

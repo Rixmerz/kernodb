@@ -27,7 +27,7 @@ use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::Arc;
 
-use kerno_core::contract::{Engine, Options, SyncEngine, TestHooks};
+use kerno_core::contract::{Engine, Options, RangeDeleteEngine, SyncEngine, TestHooks};
 use kerno_core::vfs::Vfs;
 use kerno_core::{Result, WriteBatch};
 
@@ -134,6 +134,8 @@ impl<P: Profile> SyncEngine for Profiled<P> {
         self.0.sync()
     }
 }
+
+impl<P: Profile> RangeDeleteEngine for Profiled<P> {}
 
 /// The environment variable read by [`Tuned`].
 pub const TUNING_ENV: &str = "KERNO_TUNING";

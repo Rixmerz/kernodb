@@ -4,6 +4,7 @@
 //! ```text
 //! header        common header (KRNO_SST, file number, block size)
 //! data block*   ~4 KiB each, context CRC over (file number, offset)
+//! range block   range tombstone fragments (only if the table has any)
 //! filter block  bloom filter
 //! props block   TLV properties (entry counts, sequence and key ranges, ...)
 //! index block   last key, offset and length of every data block
@@ -197,12 +198,21 @@ impl TableBuilder {
 
     /// Writes filter, properties, index and footer, syncs the file and
     /// returns the opened table. Must not be called on an empty builder.
+    #[cfg(test)]
     pub fn finish(self) -> Result<Table> {
+        self.finish_with(&[])
+    }
+
+    /// [`finish`](Self::finish) for a table that also holds the range
+    /// tombstone `fragments` (sorted, disjoint, within the keys the table
+    /// stands for). A table of fragments only is fine; a table of nothing is
+    /// not.
+    pub fn finish_with(self, fragments: &[Fragment]) -> Result<Table> {
         let TableBuilder { ctx, number, reason, mut sink, inner, entries } = self;
-        if entries == 0 {
+        if entries == 0 && fragments.is_empty() {
             return Err(Error::Io(io::Error::other("refusing to write an empty SST")));
         }
-        let (rest, props, len) = inner.finish(&[] as &[Fragment], reason);
+        let (rest, props, len) = inner.finish(fragments, reason);
         sink.push(rest)?;
         sink.write_pending()?;
         sink.file.sync_data()?;
@@ -224,14 +234,22 @@ impl TableBuilder {
 pub struct Table {
     pub number: u64,
     pub size: u64,
-    /// Smallest and largest user key (inclusive: the engine writes no range
-    /// fragments yet).
+    /// The first key the table stands for: its first point or fragment
+    /// start. Always inclusive.
     pub smallest: Vec<u8>,
+    /// The last one: its last point, or the end of its last fragment if that
+    /// is beyond the last point, in which case `largest_exclusive` is set.
     pub largest: Vec<u8>,
+    /// `largest` is the end of a range tombstone fragment, not a key the
+    /// table may hold.
+    pub largest_exclusive: bool,
     file: Arc<dyn File>,
     index: Vec<IndexEntry>,
     props: Props,
     filter: Filter,
+    /// The range tombstones of the table, sorted and disjoint, resident like
+    /// the index (SST-F1).
+    fragments: Vec<Fragment>,
     ctx: Arc<TableCtx>,
     obsolete: AtomicBool,
     /// `ro_compat` bits of the header this engine does not know (HDR-7):
@@ -269,18 +287,17 @@ impl Table {
             let size = src.len();
             (open_sst_from(&mut src, &ex).map_err(|e| read_error(&name, e))?, size)
         };
-        if opened.props.range_fragments > 0 {
-            return Err(Error::Incompatible(format!("{name}: range deletions are not supported yet")));
-        }
         Ok(Table {
             number: meta.number,
             size,
             smallest: opened.props.smallest_key.clone(),
             largest: opened.props.largest_key.clone(),
+            largest_exclusive: opened.props.largest_exclusive,
             file,
             index: opened.index,
             props: opened.props,
             filter: opened.filter,
+            fragments: opened.fragments,
             ctx: ctx.clone(),
             obsolete: AtomicBool::new(false),
             unknown_ro_compat: opened.header.unknown_ro_compat(),
@@ -294,6 +311,43 @@ impl Table {
 
     pub fn mark_obsolete(&self) {
         self.obsolete.store(true, Ordering::Release);
+    }
+
+    /// Whether no key `>= key` can be in the table (the same rule as
+    /// `FileMeta::ends_before`, MAN-S3): its last key is below `key`, or its
+    /// extent ends exactly at `key` without including it.
+    pub fn ends_before(&self, key: &[u8]) -> bool {
+        if self.largest_exclusive { self.largest.as_slice() <= key } else { self.largest.as_slice() < key }
+    }
+
+    /// The highest sequence in the table, points and fragments.
+    pub fn largest_seq(&self) -> u64 {
+        self.props.largest_seq
+    }
+
+    pub fn point_deletes(&self) -> u64 {
+        self.props.point_deletes
+    }
+
+    pub fn has_fragments(&self) -> bool {
+        !self.fragments.is_empty()
+    }
+
+    pub fn fragments(&self) -> &[Fragment] {
+        &self.fragments
+    }
+
+    /// The sequence of the fragment covering `key`, if one does. Every
+    /// fragment of a table is visible to whoever sees the table (SEM-5).
+    pub fn covering_seq(&self, key: &[u8]) -> Option<u64> {
+        crate::format::rangedel::covering_seq(&self.fragments, key)
+    }
+
+    /// Removes the blocks of this table from the block cache.
+    pub fn purge_cache(&self) {
+        for e in &self.index {
+            self.ctx.cache.remove(&(self.number, e.handle.offset));
+        }
     }
 
     fn corrupt(&self, msg: String) -> Error {
@@ -329,7 +383,11 @@ impl Table {
     /// `Some((seq, Some(v)))` value, `Some((seq, None))` tombstone, `None`
     /// not in this table.
     pub fn get(&self, key: &[u8], hash: u64) -> Result<Option<(u64, Option<Vec<u8>>)>> {
-        if key < self.smallest.as_slice() || key > self.largest.as_slice() {
+        // A key at the exclusive end of the table is not one it holds.
+        if key < self.smallest.as_slice()
+            || key > self.largest.as_slice()
+            || (self.largest_exclusive && key == self.largest.as_slice())
+        {
             return Ok(None);
         }
         let stats = &self.ctx.stats;

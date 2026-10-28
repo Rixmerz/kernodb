@@ -62,6 +62,13 @@ pub const PROTOCOL_ROWS: &[&str] =
 /// own tests.
 pub const MODE_ROWS: &[&str] = &["RO", "FL", "NS", "KP"];
 
+/// The rows of directed compaction and range tombstones: `DC` is derived
+/// from operations (everything a `compact_range` does itself, in its probe
+/// phase `compact_range`); `RT` is not a place in the protocol but a property
+/// of the files, so a coverage test records it when the scenario wrote
+/// fragments to an SST.
+pub const RANGE_ROWS: &[&str] = &["RT", "DC"];
+
 /// The rows of `op`: the table of phase1-design.md §6.3 keyed on (probe
 /// phase, file kind, operation). Empty if the matrix has no row for it.
 pub fn classify(op: &OpInfo) -> &'static [&'static str] {
@@ -84,6 +91,9 @@ pub fn classify(op: &OpInfo) -> &'static [&'static str] {
         ("session", Manifest, OpKind::WriteAt | OpKind::SyncData) => &["L12'", "R0"],
         ("session", _, _) => &["L12'"],
         ("close", _, _) => &["L13'"],
+        // The compactions of `compact_range` and the deletion of their inputs:
+        // the directed compaction has its own row, whatever file it touches.
+        ("compact_range", _, _) => &["DC"],
         ("checkpoint", ManifestTmp | Manifest | Dir, _) => &["CK"],
         ("create", _, _) => &["CR"],
         _ => &[],
@@ -136,6 +146,9 @@ mod tests {
         assert_eq!(rows(op(OpKind::Create, "/db/000011.wal", "session")), ["L12'"]);
         assert_eq!(rows(op(OpKind::Remove, "/db/000011.wal", "close")), ["L13'"]);
         assert_eq!(rows(op(OpKind::Rename, "/db/MANIFEST.tmp", "checkpoint")), ["CK"]);
+        assert_eq!(rows(op(OpKind::SyncData, "/db/000012.sst", "compact_range")), ["DC"]);
+        assert_eq!(rows(op(OpKind::WriteAt, "/db/MANIFEST", "compact_range")), ["DC"]);
+        assert_eq!(rows(op(OpKind::Remove, "/db/000004.sst", "compact_range")), ["DC"]);
         assert_eq!(rows(op(OpKind::Create, "/db/MANIFEST.tmp", "create")), ["CR"]);
         // A WAL write outside a commit has no row.
         assert!(classify(&op(OpKind::WriteAt, "/db/000007.wal", "flush")).is_empty());
