@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use kerno_core::{Error, Result};
 
 use crate::config::{Config, MIN_WRITE_BUFFER, SlowdownPolicy};
+use crate::format::props::REASON_COMPACTION;
 use crate::iter::{InternalIterator, LevelIter, MergeIter};
 use crate::sst::{Table, TableBuilder, TableCtx};
 use crate::stats::{Stats, bump};
@@ -255,7 +256,7 @@ fn merge_into(
             continue;
         }
         if builder.is_none() {
-            *builder = Some(TableBuilder::create(ctx, next_file.fetch_add(1, Ordering::SeqCst))?);
+            *builder = Some(TableBuilder::create(ctx, next_file.fetch_add(1, Ordering::SeqCst), REASON_COMPACTION)?);
         }
         let b = builder.as_mut().expect("just created");
         b.add(it.key(), it.seq(), it.value())?;
@@ -297,6 +298,7 @@ pub fn apply(levels: &Levels, plan: &Plan, outputs: &[Arc<Table>]) -> Result<Lev
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::format::props::REASON_FLUSH;
     use kerno_core::contract::Options;
 
     #[test]
@@ -336,7 +338,7 @@ mod tests {
     }
 
     fn table(ctx: &Arc<TableCtx>, number: u64, lo: &str, hi: &str) -> Arc<Table> {
-        let mut b = TableBuilder::create(ctx, number).unwrap();
+        let mut b = TableBuilder::create(ctx, number, REASON_FLUSH).unwrap();
         b.add(lo.as_bytes(), 1, Some(&[0u8; 100])).unwrap();
         if hi != lo {
             b.add(hi.as_bytes(), 1, Some(&[0u8; 100])).unwrap();

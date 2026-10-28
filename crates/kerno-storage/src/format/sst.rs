@@ -502,6 +502,13 @@ impl SstBuilder {
         self.len() == 0
     }
 
+    /// Payload bytes of the data block that is still open: not yet part of
+    /// [`SstBuilder::len`]. Lets a caller that cuts files at a target size
+    /// count the entries it has added.
+    pub fn open_block_len(&self) -> usize {
+        if self.block.is_empty() { 0 } else { self.block.payload_len() }
+    }
+
     /// Adds a point entry; `value: None` is a point tombstone.
     pub fn add(&mut self, key: &[u8], seq: u64, value: Option<&[u8]>) {
         debug_assert!(self.first_key.is_none() || key > &self.last_key[..], "keys must increase strictly");

@@ -13,6 +13,7 @@ use std::sync::Arc;
 use kerno_core::contract::{Engine, Snapshot};
 use kerno_core::vfs::{OpenMode, Vfs};
 use kerno_core::{Error, WriteBatch};
+use kerno_storage::format::header::HEADER_LEN;
 use kerno_storage::{Background, Config, KernoDb, TestConfig};
 use kerno_testkit::harness::{Model, apply, assert_snapshot_matches};
 use kerno_testkit::rng::Rng;
@@ -122,10 +123,10 @@ fn enospc_during_flush_poisons_handle() {
         let mut model = Model::new();
         commit_range(&db, &mut model, 0, 12);
 
-        // Rotating the memtable needs no space (an empty WAL); writing the
-        // SST does.
+        // Rotating the memtable needs only room for the header of the new
+        // WAL; writing the SST needs more.
         disk.start_trace();
-        disk.set_space_limit(Some(disk.space_used()));
+        disk.set_space_limit(Some(disk.space_used() + HEADER_LEN as u64));
         let err = db.hooks().flush().unwrap_err();
         match mode {
             // The flush ran in this thread and returns the I/O error.
@@ -184,9 +185,18 @@ fn enospc_during_open_fails_and_retry_succeeds() {
                     assert!(is_disk_full(&e), "{ctx}: open must fail with the disk-full error, got {e}");
                     failed += 1;
                     // A failed open changes no existing file (it may leave
-                    // an unreferenced, incomplete new one).
+                    // an unreferenced, incomplete new one), until the new
+                    // MANIFEST replaces the old one: from then on the old
+                    // logs may be gone, and the directory is a consistent
+                    // database that needs no log (the header of the new log
+                    // is written last and can hit the full disk).
                     let after = disk.dump();
+                    let manifest = Path::new(DIR).join("MANIFEST");
+                    let replaced = after.files.get(&manifest) != base.files.get(&manifest);
                     for (path, bytes) in &base.files {
+                        if replaced && (*path == manifest || path.extension().is_some_and(|e| e == "wal")) {
+                            continue;
+                        }
                         assert!(after.files.get(path) == Some(bytes), "{ctx}: {} changed", path.display());
                     }
                     // Still full: a retry fails the same way.

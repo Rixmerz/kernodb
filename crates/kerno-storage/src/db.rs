@@ -14,13 +14,19 @@ use std::time::{Duration, Instant};
 use kerno_core::contract::{Engine, Options, Snapshot, TestHooks};
 use kerno_core::probe;
 use kerno_core::vfs::Vfs;
-use kerno_core::{Durability, Error, Result, WriteBatch};
+use kerno_core::{Durability, Error, Op, Result, WriteBatch};
 use parking_lot::{Condvar, Mutex};
 
 use crate::compaction::{self, BLOCK_SIZE, NUM_LEVELS, Plan, Tuning};
-use crate::config::{AccessMode, Background, Config, SlowdownPolicy};
+use crate::config::{AccessMode, Background, Config, Limits, SlowdownPolicy};
+use crate::format::header::{HEADER_LEN, new_db_id};
+use crate::format::limits::{MAX_FILE_NUMBER, MAX_SEQ};
+use crate::format::manifest::ManifestState as RecoveredState;
+use crate::format::props::{REASON_FLUSH, REASON_RECOVERY};
+use crate::format::wal::{CanonicalCommit, CommitOp, canonicalize};
+use crate::format::{End, wal::WalHeaderState};
 use crate::iter::{InternalIterator, MergeIter};
-use crate::manifest::{self, MANIFEST, MANIFEST_TMP, ManifestData};
+use crate::manifest::{self, MANIFEST, MANIFEST_TMP, ManifestWriter, Snapshot as ManifestSnapshot};
 use crate::memtable::Memtable;
 use crate::metrics::{LevelMetrics, Metrics, ShapeMetrics};
 use crate::sst::{Table, TableBuilder, TableCtx};
@@ -31,22 +37,28 @@ use crate::wal::{self, WalWriter, wal_name};
 enum FileKind {
     Manifest,
     ManifestTmp,
+    Lock,
     Wal(u64),
     Sst(u64),
     Other,
 }
 
+/// Classifies a directory entry (DIR-1, §2). Only canonical names
+/// (`{n:06}.wal` / `{n:06}.sst` with `1 <= n <= 2^48-1`, as produced by
+/// `wal_name` / `sst_name`) are engine files: a stray `1.wal` would
+/// otherwise be opened and deleted as `000001.wal`. Everything else is
+/// unknown: ignored and never deleted.
 fn parse_name(name: &str) -> FileKind {
-    // Only canonical names (as produced by `wal_name` / `sst_name`) count:
-    // a stray "1.wal" would otherwise be opened and deleted as "000001.wal".
     let number = |s: &str| {
         let n: u64 = s.bytes().all(|b| b.is_ascii_digit()).then(|| s.parse().ok()).flatten()?;
-        (format!("{n:06}") == s).then_some(n)
+        ((1..=MAX_FILE_NUMBER).contains(&n) && format!("{n:06}") == s).then_some(n)
     };
     if name == MANIFEST {
         FileKind::Manifest
     } else if name == MANIFEST_TMP {
         FileKind::ManifestTmp
+    } else if name == "LOCK" {
+        FileKind::Lock
     } else if let Some(n) = name.strip_suffix(".wal").and_then(number) {
         FileKind::Wal(n)
     } else if let Some(n) = name.strip_suffix(".sst").and_then(number) {
@@ -54,6 +66,51 @@ fn parse_name(name: &str) -> FileKind {
     } else {
         FileKind::Other
     }
+}
+
+/// What a directory holds, by kind.
+#[derive(Default)]
+struct Listing {
+    has_manifest: bool,
+    /// Canonical WAL numbers, ascending.
+    wals: Vec<u64>,
+    /// Canonical SST numbers, ascending.
+    ssts: Vec<u64>,
+    /// Entries that are not engine files (`LOCK` and `MANIFEST.tmp` aside).
+    foreign: bool,
+}
+
+/// Lists `dir`; a directory that does not exist is empty.
+fn list_dir(vfs: &dyn Vfs, dir: &Path) -> Result<Listing> {
+    let names = match vfs.list(dir) {
+        Ok(names) => names,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(Error::Io(e)),
+    };
+    let mut l = Listing::default();
+    for name in names {
+        match parse_name(&name) {
+            FileKind::Manifest => l.has_manifest = true,
+            FileKind::Wal(n) => l.wals.push(n),
+            FileKind::Sst(n) => l.ssts.push(n),
+            FileKind::ManifestTmp | FileKind::Lock => {}
+            FileKind::Other => l.foreign = true,
+        }
+    }
+    l.wals.sort_unstable();
+    l.ssts.sort_unstable();
+    Ok(l)
+}
+
+/// Why a directory without a MANIFEST cannot become a database (REC-2,
+/// REC-3, DIR-2); `None` if it is empty or holds only `LOCK` and
+/// `MANIFEST.tmp`, which a crash during creation leaves. WAL or SST files
+/// without a MANIFEST are a damaged database. Anything else is not ours.
+fn refuse_without_manifest(l: &Listing) -> Option<Error> {
+    if !l.wals.is_empty() || !l.ssts.is_empty() {
+        return Some(Error::Corruption("data files exist but the MANIFEST is missing".into()));
+    }
+    l.foreign.then(|| Error::InvalidArgument("not a Kerno database".into()))
 }
 
 /// Owned by the (single) writer: the active WAL and memtable.
@@ -116,6 +173,8 @@ struct ManifestState {
     levels: Levels,
     last_seq: u64,
     log_number: u64,
+    /// Which MANIFEST generation is on disk.
+    writer: ManifestWriter,
 }
 
 struct Inner {
@@ -125,6 +184,7 @@ struct Inner {
     tuning: Tuning,
     /// Writers wait while this many memtables are waiting to be flushed.
     max_immutable: usize,
+    limits: Limits,
     /// Background threads, or flushes and compactions inline.
     background: Background,
     ctx: Arc<TableCtx>,
@@ -167,8 +227,8 @@ impl Snapshot for KernoSnapshot {
 }
 
 /// Writes the newest version of every key in `mem` to a new synced table.
-fn write_memtable(ctx: &Arc<TableCtx>, mem: &Memtable, number: u64) -> Result<Table> {
-    let mut b = TableBuilder::create(ctx, number)?;
+fn write_memtable(ctx: &Arc<TableCtx>, mem: &Memtable, number: u64, reason: u8) -> Result<Table> {
+    let mut b = TableBuilder::create(ctx, number, reason)?;
     let fill = (|| {
         let mut it = MergeIter::new(vec![Box::new(mem.iter(u64::MAX))]);
         it.seek_to_first()?;
@@ -187,13 +247,9 @@ fn write_memtable(ctx: &Arc<TableCtx>, mem: &Memtable, number: u64) -> Result<Ta
     }
 }
 
-fn manifest_data(levels: &Levels, last_seq: u64, log_number: u64, next_file: u64) -> ManifestData {
-    ManifestData {
-        last_seq,
-        log_number,
-        next_file,
-        levels: levels.iter().map(|l| l.iter().map(|t| t.meta()).collect()).collect(),
-    }
+/// The files of `levels` as the MANIFEST records them.
+fn level_metas(levels: &Levels) -> Vec<Vec<manifest::FileMeta>> {
+    levels.iter().enumerate().map(|(l, files)| files.iter().map(|t| t.meta(l as u8)).collect()).collect()
 }
 
 struct Recovered {
@@ -202,72 +258,83 @@ struct Recovered {
     log_number: u64,
     next_file: u64,
     wal: WalWriter,
+    manifest: ManifestWriter,
 }
 
-/// Crash recovery (also run for a clean or brand-new database):
+/// Replays the live WALs (those numbered `>= log_number`, in order) into a
+/// memtable. Returns it with the last sequence replayed.
 ///
-/// 1. read and verify the MANIFEST and every SST it references;
-/// 2. replay WALs numbered `>= log_number` in order (only the newest may
-///    end in a torn record);
-/// 3. write the replayed commits to a new L0 table;
-/// 4. write a MANIFEST pointing at a fresh WAL number, so every old WAL is
-///    obsolete, then delete obsolete WALs and unreferenced SSTs;
-/// 5. create the new WAL.
-///
-/// When this returns, the recovered state is durable on its own.
-fn recover(ctx: &Arc<TableCtx>) -> Result<Recovered> {
-    let vfs = &*ctx.vfs;
-    let dir = ctx.dir.as_path();
-    let mut has_manifest = false;
-    let (mut wals, mut ssts) = (Vec::new(), Vec::new());
-    for name in vfs.list(dir)? {
-        match parse_name(&name) {
-            FileKind::Manifest => has_manifest = true,
-            FileKind::Wal(n) => wals.push(n),
-            FileKind::Sst(n) => ssts.push(n),
-            FileKind::ManifestTmp | FileKind::Other => {}
+/// Each log must start at the sequence after the previous one (WAL-R1), and
+/// REC-10 decides which may end torn: every log before the newest one with
+/// commits is intact; that one may end in a torn tail; the logs after it hold
+/// no commits and have a broken header or a valid one that continues the
+/// chain (a log created by a session that crashed before its first commit).
+fn replay_live_wals(
+    ctx: &TableCtx,
+    listing: &Listing,
+    db_id: [u8; 16],
+    state: &RecoveredState,
+) -> Result<(Memtable, u64)> {
+    let mem = Memtable::new(0);
+    // MAN-S1 keeps `last_seq` within 2^63-1: this cannot overflow.
+    let mut expected = state.last_seq + 1;
+    let mut scans = Vec::new();
+    for &n in listing.wals.iter().filter(|&&n| n >= state.log_number) {
+        let scan = wal::replay(&*ctx.vfs, &ctx.dir, n, db_id, expected, |seq, commit| mem.apply_commit(seq, commit))?;
+        expected = scan.next_seq;
+        scans.push((n, scan));
+    }
+    if let Some(newest_with_commits) = scans.iter().rposition(|(_, scan)| scan.frames > 0) {
+        for (n, scan) in &scans[..newest_with_commits] {
+            if !matches!(scan.header, WalHeaderState::Valid(_)) || scan.end == End::Torn {
+                return Err(Error::Corruption(format!(
+                    "{}: REC-10a: broken header or torn tail in a log that is followed by one with commits",
+                    wal_name(*n)
+                )));
+            }
         }
     }
-    wals.sort_unstable();
-    let m = if has_manifest {
-        manifest::read(vfs, dir, NUM_LEVELS)?
-    } else if !wals.is_empty() || !ssts.is_empty() {
-        return Err(Error::Corruption("data files exist but the MANIFEST is missing".into()));
-    } else {
-        ManifestData::empty(NUM_LEVELS)
-    };
-    let mut next_file = wals.iter().chain(&ssts).map(|n| n + 1).fold(m.next_file.max(1), u64::max);
+    for (_, scan) in &scans {
+        bump(&ctx.stats.last_open_replayed_records, scan.commits);
+        bump(&ctx.stats.last_open_replayed_bytes, scan.valid_len.saturating_sub(HEADER_LEN as u64));
+    }
+    Ok((mem, expected - 1))
+}
 
-    let present: HashSet<u64> = ssts.iter().copied().collect();
+/// Crash recovery (also run for a clean or brand-new database), on format
+/// v1 files:
+///
+/// 1. open every SST the MANIFEST references (SST-O1..O7);
+/// 2. replay the live WALs (see [`replay_live_wals`]);
+/// 3. write the replayed commits to a new L0 table;
+/// 4. write the next MANIFEST generation, pointing at a fresh WAL number,
+///    so every old WAL is obsolete, then delete obsolete WALs and
+///    unreferenced SSTs;
+/// 5. create the new WAL.
+///
+/// Every file is read and validated before anything is written, so a
+/// rejected directory is left as it was. When this returns, the recovered
+/// state is durable on its own.
+fn recover(ctx: &Arc<TableCtx>, listing: &Listing, loaded: manifest::Loaded) -> Result<Recovered> {
+    let vfs = &*ctx.vfs;
+    let dir = ctx.dir.as_path();
+    let manifest::Loaded { db_id, state, mut writer } = loaded;
+    let mut next_file = listing.wals.iter().chain(&listing.ssts).map(|n| n + 1).fold(state.next_file.max(1), u64::max);
+
+    let present: HashSet<u64> = listing.ssts.iter().copied().collect();
     let mut levels: Levels = vec![Vec::new(); NUM_LEVELS];
-    for (l, files) in m.levels.iter().enumerate() {
+    for (l, files) in state.levels.iter().enumerate() {
         for f in files {
             if !present.contains(&f.number) {
                 return Err(Error::Corruption(format!("{}: referenced but missing", crate::sst::sst_name(f.number))));
             }
-            levels[l].push(Arc::new(Table::open(ctx, f)?));
+            levels[l].push(Arc::new(Table::open(ctx, f, state.last_seq)?));
         }
     }
 
-    let mem = Memtable::new(0);
-    let mut last_seq = m.last_seq;
-    let live_wals: Vec<u64> = wals.iter().copied().filter(|&n| n >= m.log_number).collect();
-    for (i, &n) in live_wals.iter().enumerate() {
-        let name = wal_name(n);
-        let file = vfs.open(&dir.join(&name), kerno_core::vfs::OpenMode::Existing)?;
-        let r = wal::replay(&*file, &name, last_seq + 1, |seq, ops| mem.apply(seq, ops))?;
-        bump(&ctx.stats.last_open_replayed_records, r.records);
-        bump(&ctx.stats.last_open_replayed_bytes, r.valid_len);
-        if r.torn && i + 1 < live_wals.len() {
-            return Err(Error::Corruption(format!(
-                "{name}: invalid record at offset {} in a log that is not the newest",
-                r.valid_len
-            )));
-        }
-        last_seq = r.last_seq;
-    }
+    let (mem, last_seq) = replay_live_wals(ctx, listing, db_id, &state)?;
     if !mem.is_empty() {
-        let table = write_memtable(ctx, &mem, next_file)?;
+        let table = write_memtable(ctx, &mem, next_file, REASON_RECOVERY)?;
         next_file += 1;
         vfs.sync_dir(dir)?;
         bump(&ctx.stats.flushes, 1);
@@ -277,7 +344,12 @@ fn recover(ctx: &Arc<TableCtx>) -> Result<Recovered> {
 
     let wal_number = next_file;
     next_file += 1;
-    manifest::write(vfs, dir, &manifest_data(&levels, last_seq, wal_number, next_file))?;
+    let metas = level_metas(&levels);
+    writer.checkpoint(
+        vfs,
+        dir,
+        &ManifestSnapshot { next_file, last_seq, log_number: wal_number, clean: false, levels: &metas },
+    )?;
     let live: HashSet<u64> = levels.iter().flatten().map(|t| t.number).collect();
     // A snapshot that outlived the previous handle may delete one of these
     // obsolete files concurrently; a file that is already gone is fine.
@@ -287,16 +359,78 @@ fn recover(ctx: &Arc<TableCtx>) -> Result<Recovered> {
     };
     {
         let _phase = probe::phase("delete");
-        for &n in &wals {
+        for &n in &listing.wals {
             remove(&dir.join(wal_name(n)))?;
         }
-        for &n in ssts.iter().filter(|n| !live.contains(n)) {
+        for &n in listing.ssts.iter().filter(|n| !live.contains(n)) {
             remove(&ctx.path(n))?;
         }
     }
-    let wal = WalWriter::create(vfs, dir, wal_number)?;
-    vfs.sync_dir(dir)?;
-    Ok(Recovered { levels, last_seq, log_number: wal_number, next_file, wal })
+    // The MANIFEST names the new log before it exists, as in M0: its
+    // `base_seq` is the `last_seq` that MANIFEST already holds durably, so a
+    // crash can never leave a log that starts after commits the recovered
+    // state does not have. A crash before this point leaves no live log at
+    // all, which recovery accepts.
+    let wal = WalWriter::create(vfs, dir, wal_number, db_id, last_seq + 1)?;
+    Ok(Recovered { levels, last_seq, log_number: wal_number, next_file, wal, manifest: writer })
+}
+
+/// The format-level form of one operation of a batch.
+fn commit_op(op: &Op) -> CommitOp<'_> {
+    match op {
+        Op::Put { key, value } => CommitOp::Put { key, value },
+        Op::Delete { key } => CommitOp::Delete { key },
+        Op::DeleteRange { start, end } => CommitOp::DeleteRange { start, end },
+    }
+}
+
+/// The canonical form of `batch` (WAL-C1).
+fn canonical(batch: &WriteBatch) -> CanonicalCommit<&[u8]> {
+    // The common commit, a single point operation, needs no sorting.
+    match batch.ops() {
+        [Op::Put { key, value }] => CanonicalCommit { ranges: Vec::new(), points: vec![(key, Some(value))] },
+        [Op::Delete { key }] => CanonicalCommit { ranges: Vec::new(), points: vec![(key, None)] },
+        ops => canonicalize(ops.iter().map(commit_op)),
+    }
+}
+
+/// Checks a batch against the configured limits before anything is written
+/// (`WriteBatch::validate` checks the fixed limits of the spikes, which the
+/// engine's limits replace).
+fn validate_batch(batch: &WriteBatch, limits: &Limits) -> Result<()> {
+    let over = |what: &str, got: usize, max: usize| {
+        Err(Error::InvalidArgument(format!("{what} of {got} exceeds the limit of {max}")))
+    };
+    if batch.len() > limits.max_batch_ops {
+        return over("batch with operations", batch.len(), limits.max_batch_ops);
+    }
+    let key = |what: &str, k: &[u8]| {
+        if k.len() > limits.max_key_len { over(what, k.len(), limits.max_key_len) } else { Ok(()) }
+    };
+    for op in batch.ops() {
+        match op {
+            Op::Put { key: k, value } => {
+                key("key", k)?;
+                if value.len() > limits.max_value_len {
+                    return over("value", value.len(), limits.max_value_len);
+                }
+            }
+            Op::Delete { key: k } => key("key", k)?,
+            Op::DeleteRange { start, end } => {
+                key("range start", start)?;
+                key("range end", end)?;
+                if start > end {
+                    return Err(Error::InvalidArgument("delete_range with start > end".into()));
+                }
+            }
+        }
+    }
+    // The keys and values alone are a lower bound of the encoding: reject
+    // early what cannot fit before canonicalizing it.
+    if batch.payload_bytes() > limits.max_batch_bytes {
+        return over("batch of payload bytes", batch.payload_bytes(), limits.max_batch_bytes);
+    }
+    Ok(())
 }
 
 impl Inner {
@@ -327,9 +461,25 @@ impl Inner {
         f().inspect_err(|e| self.poison(format!("{what}: {e}")))
     }
 
-    fn write_manifest(&self, levels: &Levels, last_seq: u64, log_number: u64) -> Result<()> {
-        let data = manifest_data(levels, last_seq, log_number, self.next_file.load(Ordering::SeqCst));
-        manifest::write(&*self.vfs, &self.dir, &data)?;
+    /// Writes the next MANIFEST generation (the manifest lock is held by the
+    /// caller, who owns `ms`).
+    fn write_manifest(
+        &self,
+        ms: &mut ManifestState,
+        levels: &Levels,
+        last_seq: u64,
+        log_number: u64,
+        clean: bool,
+    ) -> Result<()> {
+        let metas = level_metas(levels);
+        let snapshot = ManifestSnapshot {
+            next_file: self.next_file.load(Ordering::SeqCst),
+            last_seq,
+            log_number,
+            clean,
+            levels: &metas,
+        };
+        ms.writer.checkpoint(&*self.vfs, &self.dir, &snapshot)?;
         bump(&self.stats.manifest_writes, 1);
         Ok(())
     }
@@ -357,38 +507,52 @@ impl Inner {
 
     fn commit(&self, batch: &WriteBatch) -> Result<u64> {
         let start = Instant::now();
-        batch.validate()?;
+        validate_batch(batch, &self.limits)?;
+        let commit = canonical(batch);
+        if commit.encoded_len() > self.limits.max_batch_bytes {
+            return Err(Error::InvalidArgument(format!(
+                "batch encodes to {} bytes, over the limit of {}",
+                commit.encoded_len(),
+                self.limits.max_batch_bytes
+            )));
+        }
         let _phase = probe::phase("commit");
         let mut w = self.writer.lock();
         self.check_poisoned()?;
         if batch.is_empty() {
             return Ok(w.last_seq);
         }
+        if w.last_seq >= MAX_SEQ {
+            // Nothing is written and nothing is poisoned: reads still work.
+            return Err(Error::InvalidArgument("commit sequence exhausted".into()));
+        }
         let room_start = Instant::now();
         self.make_room(&mut w)?;
         let write_start = Instant::now();
-        let seq = w.last_seq.checked_add(1).ok_or_else(|| Error::Corruption("commit sequence exhausted".into()))?;
+        let seq = w.last_seq + 1;
         let sync = self.durability == Durability::Sync;
-        let record = wal::encode_record(seq, batch.ops(), sync)?;
-        let io = w.wal.append(&record);
+        let io = w.wal.append(seq, &commit);
         let sync_start = Instant::now();
         // Whether a flush or compaction was writing during the sync (H3).
         let background = || self.stats.background_active.load(Ordering::Relaxed) > 0;
         let busy = sync && background();
-        let io = io.and_then(|()| if sync { w.wal.sync() } else { Ok(()) });
-        if let Err(e) = io {
-            self.poison(format!("WAL write failed: {e}"));
-            return Err(e.into());
-        }
+        let io = io.and_then(|len| if sync { w.wal.sync().map(|()| len) } else { Ok(len) });
+        let frame_len = match io {
+            Ok(len) => len,
+            Err(e) => {
+                self.poison(format!("WAL write failed: {e}"));
+                return Err(e.into());
+            }
+        };
         let apply_start = Instant::now();
         let busy = busy || (sync && background());
-        w.mem.apply(seq, batch.ops());
+        w.mem.apply_commit(seq, &commit);
         w.last_seq = seq;
         self.state.lock().last_seq = seq;
         let end = Instant::now();
         let s = &*self.stats;
         bump(&s.commits, 1);
-        bump(&s.wal_bytes, record.len() as u64);
+        bump(&s.wal_bytes, frame_len as u64);
         s.commit_make_room.record_single_writer(nanos(room_start, write_start));
         s.commit_wal_write.record_single_writer(nanos(write_start, sync_start));
         if sync {
@@ -480,8 +644,7 @@ impl Inner {
             w.wal.sync()?;
         }
         let number = self.next_file.fetch_add(1, Ordering::SeqCst);
-        let wal = WalWriter::create(&*self.vfs, &self.dir, number)?;
-        self.vfs.sync_dir(&self.dir)?;
+        let wal = WalWriter::create(&*self.vfs, &self.dir, number, self.ctx.db_id, w.last_seq + 1)?;
         let mem = Arc::new(Memtable::new(number));
         let old = {
             let mut st = self.state.lock();
@@ -548,7 +711,8 @@ impl Inner {
         let table = if mem.is_empty() {
             None
         } else {
-            let table = write_memtable(&self.ctx, mem, self.next_file.fetch_add(1, Ordering::SeqCst))?;
+            let number = self.next_file.fetch_add(1, Ordering::SeqCst);
+            let table = write_memtable(&self.ctx, mem, number, REASON_FLUSH)?;
             self.vfs.sync_dir(&self.dir)?;
             bump(&self.stats.flush_bytes_written, table.size);
             Some(Arc::new(table))
@@ -560,7 +724,7 @@ impl Inner {
         }
         let last_seq = ms.last_seq.max(mem.max_seq());
         let log_number = ms.log_number.max(mem.wal_number() + 1);
-        self.write_manifest(&levels, last_seq, log_number)?;
+        self.write_manifest(&mut ms, &levels, last_seq, log_number, false)?;
         ms.levels = levels.clone();
         ms.last_seq = last_seq;
         ms.log_number = log_number;
@@ -630,7 +794,8 @@ impl Inner {
             let next = &mut levels[plan.level + 1];
             let at = next.partition_point(|x| x.smallest < t.smallest);
             next.insert(at, t.clone());
-            self.write_manifest(&levels, ms.last_seq, ms.log_number)?;
+            let (last_seq, log_number) = (ms.last_seq, ms.log_number);
+            self.write_manifest(&mut ms, &levels, last_seq, log_number, false)?;
             ms.levels = levels.clone();
             self.install(levels, None);
             bump(&self.stats.trivial_moves, 1);
@@ -654,7 +819,8 @@ impl Inner {
         // `pick` saw.
         let next_level_files = ms.levels[plan.level + 1].len() as u64;
         let levels = compaction::apply(&ms.levels, plan, &outputs)?;
-        self.write_manifest(&levels, ms.last_seq, ms.log_number)?;
+        let (last_seq, log_number) = (ms.last_seq, ms.log_number);
+        self.write_manifest(&mut ms, &levels, last_seq, log_number, false)?;
         ms.levels = levels.clone();
         for t in plan.all_inputs() {
             t.mark_obsolete();
@@ -686,11 +852,14 @@ impl Inner {
     /// the final flush), so that a database is never left with a growing
     /// L0 backlog: before, close abandoned the running compaction and then
     /// added one more L0 file, so many short sessions grew L0 without bound.
+    /// If any compaction ran, the clean MANIFEST that `close` could not write
+    /// before it (W-9) is written after it.
     fn compact_until_settled(&self) -> Result<()> {
         // The background threads are joined; compaction must not see the
         // shutdown flag and abandon its work.
         self.shutting_down.store(false, Ordering::SeqCst);
         let mut pointers = vec![Vec::new(); NUM_LEVELS];
+        let mut compacted = false;
         loop {
             let plan = {
                 let st = self.state.lock();
@@ -701,10 +870,20 @@ impl Inner {
                     if !self.compact(&plan, &mut pointers)? {
                         return Ok(());
                     }
+                    compacted = true;
                 }
-                None => return Ok(()),
+                None => break,
             }
         }
+        if compacted {
+            let _checkpoint = probe::phase("checkpoint");
+            let mut ms = self.manifest.lock();
+            let log_number = self.next_file.load(Ordering::SeqCst);
+            let (levels, last_seq) = (ms.levels.clone(), ms.last_seq);
+            self.write_manifest(&mut ms, &levels, last_seq, log_number, true)?;
+            ms.log_number = log_number;
+        }
+        Ok(())
     }
 
     /// Flushes every memtable, writes a MANIFEST that needs no WAL, removes
@@ -716,8 +895,8 @@ impl Inner {
         let mut tables = Vec::new();
         for mem in v.imms.iter().rev().chain(std::iter::once(&v.mem)) {
             if !mem.is_empty() {
-                let t = write_memtable(&self.ctx, mem, self.next_file.fetch_add(1, Ordering::SeqCst))?;
-                tables.push(Arc::new(t));
+                let number = self.next_file.fetch_add(1, Ordering::SeqCst);
+                tables.push(Arc::new(write_memtable(&self.ctx, mem, number, REASON_FLUSH)?));
             }
         }
         if !tables.is_empty() {
@@ -730,12 +909,16 @@ impl Inner {
         for t in tables {
             levels[0].insert(0, t);
         }
-        let log_number = self.next_file.fetch_add(1, Ordering::SeqCst);
+        // W-9: a compaction that is due runs before the CLEAN checkpoint, so
+        // this MANIFEST is the clean one only when none is (the pick is the
+        // one `compact_until_settled` starts with); otherwise it only needs
+        // no WAL, and `compact_until_settled` writes the clean one.
+        let clean = !self.compaction_due(&levels);
+        let log_number =
+            if clean { self.next_file.load(Ordering::SeqCst) } else { self.next_file.fetch_add(1, Ordering::SeqCst) };
         {
-            // The M0 counterpart of the clean checkpoint: a MANIFEST that
-            // needs no WAL.
             let _checkpoint = probe::phase("checkpoint");
-            self.write_manifest(&levels, w.last_seq, log_number)?;
+            self.write_manifest(&mut ms, &levels, w.last_seq, log_number, clean)?;
         }
         ms.levels = levels.clone();
         ms.last_seq = w.last_seq;
@@ -891,20 +1074,7 @@ impl KernoDb {
     }
 }
 
-/// The error of opening `dir`, which has no MANIFEST, when the database may
-/// not be created. WAL or SST files without a MANIFEST are a damaged
-/// database, not a missing one: the same `Corruption` as in [`recover`].
-/// Anything else (no directory, an empty one, only other files) is
-/// `InvalidArgument`. Only reads `dir`.
-fn missing_manifest(vfs: &dyn Vfs, dir: &Path) -> Error {
-    let names = match vfs.list(dir) {
-        Ok(names) => names,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
-        Err(e) => return Error::Io(e),
-    };
-    if names.iter().any(|n| matches!(parse_name(n), FileKind::Wal(_) | FileKind::Sst(_))) {
-        return Error::Corruption("data files exist but the MANIFEST is missing".into());
-    }
+fn no_database(dir: &Path) -> Error {
     Error::InvalidArgument(format!("{}: no database (no {MANIFEST}) and create_if_missing is false", dir.display()))
 }
 
@@ -945,8 +1115,8 @@ fn missing_dirs(vfs: &dyn Vfs, dir: &Path) -> io::Result<Vec<PathBuf>> {
 ///
 /// On file systems without a single metadata journal, an entry is durable
 /// only once the directory that holds it is synced. So this syncs the
-/// directory that holds `dir` (on every open, as in M0) and the one that
-/// holds each directory created now: entries this open made, so failing to
+/// directory that holds `dir` and the one that holds each directory created
+/// now (DIR-3: only when a database is created, never when one is opened): entries this open made, so failing to
 /// sync them fails the open. Directories above those are not touched in
 /// general: their entries did not change, and syncing them can fail for
 /// reasons that do not concern the database (an ancestor that may only be
@@ -994,34 +1164,61 @@ fn not_ours(e: &io::Error) -> bool {
 }
 
 impl KernoDb {
-    /// Opens the database stored in `dir` (creating it if it does not exist
+    /// Opens the database stored in `dir` (creating it if `dir` holds none
     /// and `cfg.create_if_missing` is set), running crash recovery if the
     /// previous handle was not closed cleanly.
+    ///
+    /// Everything that can reject the directory (a foreign one, an unknown
+    /// version or feature, damage) is checked before the first write. Only
+    /// creating the database directory and its `LOCK` come before the lock.
     pub fn open(vfs: Arc<dyn Vfs>, dir: &Path, cfg: &Config) -> Result<KernoDb> {
         cfg.validate()?;
         if cfg.access == AccessMode::ReadOnly {
             return Err(Error::InvalidArgument("read-only mode not implemented yet".into()));
         }
-        // Checked before anything is created: without a MANIFEST there is no
-        // database to open, and the directory must stay untouched.
-        let exists = vfs.exists(&dir.join(MANIFEST))?;
-        if !cfg.create_if_missing && !exists {
-            return Err(missing_manifest(&*vfs, dir));
+        // Without a MANIFEST there is no database to open: nothing is
+        // created, locked or changed unless this open may create one (DIR-2).
+        let first = list_dir(&*vfs, dir)?;
+        let creating = !first.has_manifest;
+        if creating {
+            if let Some(e) = refuse_without_manifest(&first) {
+                return Err(e);
+            }
+            if !cfg.create_if_missing {
+                return Err(no_database(dir));
+            }
         }
-        let _phase = probe::phase(if exists { "session" } else { "create" });
-        let created = if exists { Vec::new() } else { missing_dirs(&*vfs, dir)? };
-        vfs.create_dir_all(dir)?;
-        sync_dir_entries(&*vfs, dir, &created, !exists)?;
+        let _phase = probe::phase(if creating { "create" } else { "session" });
+        if creating {
+            let created = missing_dirs(&*vfs, dir)?;
+            vfs.create_dir_all(dir)?;
+            sync_dir_entries(&*vfs, dir, &created, true)?;
+        }
         let lock = vfs.lock(&dir.join("LOCK")).map_err(|e| match e.kind() {
             io::ErrorKind::WouldBlock => Error::Locked,
             _ => Error::Io(e),
         })?;
+        // Under the lock the directory cannot change: this listing is the
+        // one recovery works from.
+        let mut listing = list_dir(&*vfs, dir)?;
+        if !listing.has_manifest {
+            if let Some(e) = refuse_without_manifest(&listing) {
+                return Err(e);
+            }
+            if !cfg.create_if_missing {
+                return Err(no_database(dir));
+            }
+            manifest::create(&*vfs, dir, cfg.test.db_id.unwrap_or_else(new_db_id))?;
+            listing.has_manifest = true;
+        }
+        let loaded = manifest::read(&*vfs, dir)?;
         let stats = Arc::new(Stats::default());
         let ctx = Arc::new(
             TableCtx::new(vfs.clone(), dir.to_path_buf(), cfg.cache_bytes, stats.clone(), BLOCK_SIZE)
-                .with_bytes_per_sync(cfg.compaction.bytes_per_sync),
+                .with_bytes_per_sync(cfg.compaction.bytes_per_sync)
+                .with_db_id(loaded.db_id),
         );
-        let r = recover(&ctx)?;
+        let r = recover(&ctx, &listing, loaded)?;
         // The L0 found at open counts as seen by this handle.
         bump_max(&stats.l0_files_max, r.levels[0].len() as u64);
         let mem = Arc::new(Memtable::new(r.wal.number()));
@@ -1032,6 +1229,7 @@ impl KernoDb {
             durability: cfg.durability,
             tuning: Tuning::new(cfg),
             max_immutable: cfg.max_immutable_memtables,
+            limits: cfg.limits,
             background: cfg.test.background,
             ctx,
             stats,
@@ -1042,7 +1240,12 @@ impl KernoDb {
                 last_seq: r.last_seq,
                 pointers: vec![Vec::new(); NUM_LEVELS],
             }),
-            manifest: Mutex::new(ManifestState { levels: r.levels, last_seq: r.last_seq, log_number: r.log_number }),
+            manifest: Mutex::new(ManifestState {
+                levels: r.levels,
+                last_seq: r.last_seq,
+                log_number: r.log_number,
+                writer: r.manifest,
+            }),
             state: Mutex::new(State {
                 version,
                 last_seq: r.last_seq,

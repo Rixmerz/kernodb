@@ -1,6 +1,6 @@
 [package]
 name = "kerno-storage"
-description = "Kerno storage engine (Phase 1, M0 development format: never for user data)"
+description = "Kerno storage engine (Phase 1, draft format v1: never for user data)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

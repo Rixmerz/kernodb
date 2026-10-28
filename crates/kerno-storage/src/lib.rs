@@ -1,12 +1,12 @@
 //! Kerno storage engine: a leveled LSM tree implementing the harness
 //! contract (`kerno_core::contract::Engine`) directly.
 //!
-//! **Development format, never for user data.** This crate starts as a
-//! copy of the M0 prototype `spike-lsm` (phase1-design.md §5.1) and still
-//! writes the M0 development format, not the on-disk format v1
-//! (`docs/file-format/v1.md`). That format carries no compatibility promise:
-//! no user database may be created with it (SAD §20.6, ADR-0003). The API is
-//! explicitly unstable.
+//! **Draft format, never for user data.** This crate started as a copy of
+//! the M0 prototype `spike-lsm` (phase1-design.md §5.1) and writes and reads
+//! only the on-disk format v1 of `docs/file-format/v1.md`, which stays a
+//! draft until the end of Phase 1: every file carries the `DRAFT` feature
+//! bit, so no database created now can be read by the frozen format
+//! (SAD §20.6, ADR-0003). The API is explicitly unstable.
 //!
 //! * Commits go to a checksummed write-ahead log (one file per memtable)
 //!   and then into a lock-free skip-list memtable keyed by
@@ -17,7 +17,8 @@
 //!   ratio 10). Writers are slowed down or stalled when flushes or L0
 //!   compactions fall behind.
 //! * The LSM shape (levels, last flushed sequence, live WAL range) lives in
-//!   a single checksummed MANIFEST that is replaced atomically.
+//!   a single checksummed MANIFEST that is replaced atomically; each
+//!   replacement is a new generation holding one snapshot record.
 //! * A snapshot is an `Arc<Version>` plus a sequence number; SST files are
 //!   deleted only when no MANIFEST and no live `Version` references them.
 //! * Every on-disk byte that influences results is covered by a crc32c.
@@ -26,11 +27,10 @@
 //! and limitations.
 
 mod block;
-mod bloom;
-mod coding;
 mod compaction;
 mod config;
 mod db;
+mod files;
 mod iter;
 mod manifest;
 mod memtable;
@@ -47,7 +47,7 @@ pub mod format;
 #[doc(hidden)]
 pub mod testing;
 
-pub use config::{AccessMode, CompactionConfig, Config, SlowdownPolicy};
+pub use config::{AccessMode, CompactionConfig, Config, Limits, SlowdownPolicy};
 #[doc(hidden)]
 pub use config::{Background, TestConfig};
 pub use db::{KernoDb, KernoSnapshot};

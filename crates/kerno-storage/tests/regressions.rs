@@ -11,11 +11,25 @@ mod wal_damage {
     use kerno_core::vfs::Vfs;
     use kerno_core::{Durability, WriteBatch};
     use kerno_storage::KernoDb;
+    use kerno_storage::format::header::HEADER_LEN;
+    use kerno_storage::format::wal::{CanonicalCommit, FRAME_HEADER_LEN, frame_len};
     use kerno_testkit::vfs::{CrashKind, SimVfs};
 
     const DIR: &str = "/db";
-    // Record layout for put("k<i>", [i;100]): header 16 + body (1 count + 1 tag + 1 klen + 2 key + 1 vlen + 100) = 122.
-    const REC: u64 = 122;
+
+    /// Bytes of the frame of `put("k<i>", [i; 100])`: the 32-byte head and
+    /// the payload (1 op count + 1 op + 1 key length + 2 key + 1 value
+    /// length + 100 value), from the format's own length functions.
+    fn frame_bytes() -> u64 {
+        let commit = CanonicalCommit { ranges: vec![], points: vec![(b"k0".to_vec(), Some(vec![0u8; 100]))] };
+        frame_len(commit.encoded_len() as u32, false)
+    }
+
+    /// Offset of the value inside a frame: past the head, the op count, the
+    /// op, the key length, the key and the value length.
+    const VALUE_AT: u64 = FRAME_HEADER_LEN as u64 + 6;
+    /// Offset of the second byte of `payload_len`, the first field of a frame.
+    const LEN_FIELD_AT: u64 = 1;
 
     fn open(vfs: &Arc<dyn Vfs>, opts: &Options) -> kerno_core::Result<KernoDb> {
         <KernoDb as Engine>::open(vfs.clone(), Path::new(DIR), opts)
@@ -42,7 +56,7 @@ mod wal_damage {
     fn check(label: &str, disk: &SimVfs, opts: &Options, corrupt_off: Option<(u64, u8)>) {
         let wal = wal_path(disk);
         let len = disk.files().into_iter().find(|(p, _)| *p == wal).unwrap().1;
-        assert_eq!(len, 10 * REC, "{label}: unexpected WAL length");
+        assert_eq!(len, HEADER_LEN as u64 + 10 * frame_bytes(), "{label}: unexpected WAL length");
         if let Some((off, mask)) = corrupt_off {
             disk.corrupt_byte(&wal, off, mask);
         }
@@ -93,13 +107,14 @@ mod wal_damage {
         }
 
         let mut failures = Vec::new();
-        // Case A: power loss, then one bit flips in the value of record 3 (seq 3).
+        // Case A: power loss, then one bit flips in the value of frame 3 (seq 3).
         // Case B: process kill (drop without close), same damage.
-        // Case C: power loss, damage in record 3's len field.
+        // Case C: power loss, damage in frame 3's len field.
+        let frame3 = HEADER_LEN as u64 + 2 * frame_bytes();
         for (label, kill, off) in [
-            ("A powerloss+value-bitflip", CrashKind::PowerLoss, 2 * REC + 16 + 50),
-            ("B processkill+value-bitflip", CrashKind::ProcessKill, 2 * REC + 16 + 50),
-            ("C powerloss+len-bitflip", CrashKind::PowerLoss, 2 * REC + 1),
+            ("A powerloss+value-bitflip", CrashKind::PowerLoss, frame3 + VALUE_AT + 50),
+            ("B processkill+value-bitflip", CrashKind::ProcessKill, frame3 + VALUE_AT + 50),
+            ("C powerloss+len-bitflip", CrashKind::PowerLoss, frame3 + LEN_FIELD_AT),
         ] {
             let sim = SimVfs::new(11);
             let db = write_ten(&sim, &opts);
@@ -406,7 +421,8 @@ mod directory {
 }
 
 // I-15: a checksum-valid MANIFEST of an unknown format version is rejected
-// and nothing in the directory is modified.
+// as incompatible, not as damage, and the directory is left byte for byte as
+// it was (the LOCK file aside).
 mod format_version {
     use std::path::Path;
 
@@ -414,7 +430,8 @@ mod format_version {
     use kerno_core::vfs::OpenMode;
     use kerno_core::{Error, WriteBatch};
     use kerno_storage::KernoDb;
-    use kerno_testkit::vfs::SimVfs;
+    use kerno_storage::format::header::{FORMAT_VERSION, HEADER_LEN, reseal_header};
+    use kerno_testkit::vfs::{SimVfs, assert_dir_unchanged};
 
     #[test]
     fn unknown_manifest_version_is_rejected_without_touching_files() {
@@ -427,19 +444,19 @@ mod format_version {
         b.put("k", "v");
         db.commit(&b).unwrap();
         db.close().unwrap();
-        // MANIFEST = magic(8) | body_len u32 | crc u32 | body, body = format u32 | ...
+        // The header: format_version u32 at 8, covered by the CRC in its
+        // last four bytes.
         let f = vfs.open(&dir.join("MANIFEST"), OpenMode::Existing).unwrap();
-        let mut buf = vec![0u8; f.len().unwrap() as usize];
-        f.read_at(&mut buf, 0).unwrap();
-        buf[16..20].copy_from_slice(&2u32.to_le_bytes());
-        let crc = crc32c::crc32c(&buf[16..]);
-        buf[12..16].copy_from_slice(&crc.to_le_bytes());
-        f.write_at(&buf, 0).unwrap();
+        let mut header = vec![0u8; HEADER_LEN];
+        f.read_at(&mut header, 0).unwrap();
+        header[8..12].copy_from_slice(&(FORMAT_VERSION + 1).to_le_bytes());
+        assert!(reseal_header(&mut header));
+        f.write_at(&header, 0).unwrap();
         f.sync_data().unwrap();
-        let before = disk.files();
+        let before = disk.dump();
         let r = <KernoDb as Engine>::open(vfs.clone(), dir, &opts);
-        assert!(matches!(r, Err(Error::Corruption(_))), "expected Corruption");
-        assert_eq!(disk.files(), before, "a rejected open must not create, delete or resize files");
+        assert!(matches!(r, Err(Error::Incompatible(_))), "expected Incompatible, got {:?}", r.err());
+        assert_dir_unchanged(&before, &disk.dump(), &["LOCK"]);
     }
 }
 

@@ -1,13 +1,14 @@
 //! Configuration of a [`KernoDb`](crate::KernoDb) handle.
 //!
-//! Phase 1 API, explicitly unstable (phase1-design.md §3). The fields are the
-//! ones the M0 engine already has; later work packages add the rest. The
-//! default configuration reproduces the M0 engine exactly.
+//! Phase 1 API, explicitly unstable (phase1-design.md §3). Later work
+//! packages add the fields that are still missing. The default configuration
+//! keeps the M0 engine's tuning.
 
 use kerno_core::contract::Options;
 use kerno_core::{Durability, Error, Result};
 
 use crate::compaction::{L0_COMPACTION_TRIGGER, L0_SLOWDOWN, L0_STOP, LEVEL_SIZE_RATIO, MAX_IMMUTABLE};
+use crate::format::limits;
 
 /// The smallest write buffer the engine uses (smaller values are raised).
 pub(crate) const MIN_WRITE_BUFFER: usize = 4 << 10;
@@ -49,9 +50,47 @@ pub struct TestConfig {
     /// Background threads (default) or inline flushes and compactions.
     pub background: Background,
     /// Fixed database id for a new database, so that test vectors are
-    /// reproducible. The M0 development format has no database id: it is
-    /// ignored until the engine writes format v1.
+    /// reproducible (default: a random one).
     pub db_id: Option<[u8; 16]>,
+}
+
+/// Sizes the engine accepts in a commit (`docs/file-format/v1.md` §1.4).
+/// They are API limits, tighter than the ones the format allows, and are
+/// checked before anything is written: a commit over a limit fails with
+/// [`Error::InvalidArgument`] and leaves the handle as it was.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Limits {
+    /// Longest key, and longest bound of a range (default 512 B; format
+    /// limit 16 KiB).
+    pub max_key_len: usize,
+    /// Longest value (default 1 MiB; format limit 64 MiB).
+    pub max_value_len: usize,
+    /// Most bytes a commit encodes to, in its WAL form (default 64 MiB; a
+    /// frame holds up to 1 GiB).
+    pub max_batch_bytes: usize,
+    /// Most operations in one batch (default 2^20; format limit 2^24).
+    pub max_batch_ops: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Limits { max_key_len: 512, max_value_len: 1 << 20, max_batch_bytes: 64 << 20, max_batch_ops: 1 << 20 }
+    }
+}
+
+impl Limits {
+    fn validate(&self) -> Result<()> {
+        let check = |name: &str, value: usize, max: u64| {
+            if value == 0 || value as u64 > max {
+                return Err(Error::InvalidArgument(format!("limits: {name} must be in 1..={max}, got {value}")));
+            }
+            Ok(())
+        };
+        check("max_key_len", self.max_key_len, limits::MAX_KEY_LEN as u64)?;
+        check("max_value_len", self.max_value_len, limits::MAX_VALUE_LEN as u64)?;
+        check("max_batch_bytes", self.max_batch_bytes, u64::from(limits::MAX_FRAME_PAYLOAD))?;
+        check("max_batch_ops", self.max_batch_ops, limits::MAX_COMMIT_OPS)
+    }
 }
 
 /// Options of [`KernoDb::open`](crate::KernoDb::open).
@@ -79,6 +118,13 @@ pub struct Config {
     /// Writers wait while this many memtables are waiting to be flushed
     /// (default 4, the M0 value; at least 1).
     pub max_immutable_memtables: usize,
+    /// Size limits of a commit (default [`Limits::default`]).
+    pub limits: Limits,
+    /// Open with [`Durability::Sync`] on a platform where its guarantees
+    /// have not been verified (default `false`). Only Linux (ext4, xfs) is
+    /// verified; elsewhere such an open fails with
+    /// [`Error::InvalidArgument`] unless this is set.
+    pub allow_unverified_platform: bool,
     /// Test-only settings (default: background threads).
     #[doc(hidden)]
     pub test: TestConfig,
@@ -186,6 +232,8 @@ impl Default for Config {
             cache_bytes: 64 << 20,
             write_buffer_bytes: 8 << 20,
             max_immutable_memtables: MAX_IMMUTABLE,
+            limits: Limits::default(),
+            allow_unverified_platform: false,
             test: TestConfig::default(),
             compaction: CompactionConfig::default(),
         }
@@ -212,6 +260,10 @@ impl Config {
         if self.max_immutable_memtables == 0 {
             return Err(Error::InvalidArgument("max_immutable_memtables must be at least 1".into()));
         }
+        if self.durability == Durability::Sync && !cfg!(target_os = "linux") && !self.allow_unverified_platform {
+            return Err(Error::InvalidArgument("durability not verified on this platform".into()));
+        }
+        self.limits.validate()?;
         self.compaction.validate()
     }
 }

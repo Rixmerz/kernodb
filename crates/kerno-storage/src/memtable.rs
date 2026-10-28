@@ -6,14 +6,14 @@
 //! writer never has to copy or lock the table.
 
 use std::cmp::Ordering;
-use std::collections::HashSet;
 use std::ops::Bound;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed};
 
 use crossbeam_skiplist::SkipMap;
 use crossbeam_skiplist::map::Entry;
-use kerno_core::{Op, Result};
+use kerno_core::Result;
 
+use crate::format::wal::CanonicalCommit;
 use crate::iter::InternalIterator;
 
 /// Rough per-entry bookkeeping cost (skip-list node, key struct, vectors).
@@ -70,31 +70,23 @@ impl Memtable {
         self.map.is_empty()
     }
 
-    /// Applies one batch under sequence `seq`. Later operations on the same
-    /// key win, so only the last operation per key is inserted.
-    pub fn apply(&self, seq: u64, ops: &[Op]) {
-        if ops.len() == 1 {
-            self.insert(seq, &ops[0]);
-        } else {
-            let mut seen: HashSet<&[u8]> = HashSet::with_capacity(ops.len());
-            for op in ops.iter().rev() {
-                if seen.insert(op.key()) {
-                    self.insert(seq, op);
-                }
-            }
+    /// Applies a commit, in canonical form (WAL-C1), under sequence `seq`:
+    /// the memtable holds exactly what the WAL replays, so a commit has the
+    /// same effect before and after a restart.
+    ///
+    /// # Panics
+    ///
+    /// If the commit has range deletions, which the engine rejects before it
+    /// writes anything and refuses to replay.
+    pub fn apply_commit<B: AsRef<[u8]>>(&self, seq: u64, commit: &CanonicalCommit<B>) {
+        assert!(commit.ranges.is_empty(), "range deletions are rejected before they reach the memtable");
+        for (key, value) in &commit.points {
+            let (key, value) = (key.as_ref(), value.as_ref().map(|v| v.as_ref().to_vec()));
+            let size = key.len() + value.as_ref().map_or(0, Vec::len) + ENTRY_OVERHEAD;
+            self.bytes.fetch_add(size, Relaxed);
+            self.map.insert(InternalKey { user_key: key.to_vec(), seq }, value);
         }
         self.max_seq.fetch_max(seq, Relaxed);
-    }
-
-    fn insert(&self, seq: u64, op: &Op) {
-        let (key, value) = match op {
-            Op::Put { key, value } => (key, Some(value.clone())),
-            Op::Delete { key } => (key, None),
-            Op::DeleteRange { .. } => unreachable!("delete_range is rejected at the entry of commit"),
-        };
-        let size = key.len() + value.as_ref().map_or(0, Vec::len) + ENTRY_OVERHEAD;
-        self.bytes.fetch_add(size, Relaxed);
-        self.map.insert(InternalKey { user_key: key.clone(), seq }, value);
     }
 
     /// Newest version of `probe.user_key` with sequence `<= probe.seq`:
@@ -174,13 +166,16 @@ impl InternalIterator for MemIter<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::format::wal::{CommitOp, canonicalize};
 
-    fn put(k: &str, v: &str) -> Op {
-        Op::Put { key: k.into(), value: v.into() }
-    }
-
-    fn del(k: &str) -> Op {
-        Op::Delete { key: k.into() }
+    /// A batch of `(key, value)` pairs, `None` being a delete, applied in
+    /// its canonical form.
+    fn apply(m: &Memtable, seq: u64, ops: &[(&str, Option<&str>)]) {
+        let commit = canonicalize(ops.iter().map(|(k, v)| match v {
+            Some(v) => CommitOp::Put { key: k.as_bytes(), value: v.as_bytes() },
+            None => CommitOp::Delete { key: k.as_bytes() },
+        }));
+        m.apply_commit(seq, &commit);
     }
 
     fn probe(k: &str, seq: u64) -> InternalKey {
@@ -190,9 +185,9 @@ mod tests {
     #[test]
     fn versions_are_filtered_by_sequence() {
         let m = Memtable::new(1);
-        m.apply(1, &[put("a", "1"), put("b", "1")]);
-        m.apply(2, &[put("a", "2"), del("b")]);
-        m.apply(3, &[put("a", "x"), del("a"), put("a", "3")]);
+        apply(&m, 1, &[("a", Some("1")), ("b", Some("1"))]);
+        apply(&m, 2, &[("a", Some("2")), ("b", None)]);
+        apply(&m, 3, &[("a", Some("x")), ("a", None), ("a", Some("3"))]);
         assert_eq!(m.get(&probe("a", 0)), None);
         assert_eq!(m.get(&probe("a", 1)), Some(Some(b"1".to_vec())));
         assert_eq!(m.get(&probe("a", 2)), Some(Some(b"2".to_vec())));

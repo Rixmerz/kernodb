@@ -3,7 +3,10 @@ use std::io;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Errors are matched with `matches!` outside this crate: new variants are
+/// not a breaking change.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Error {
     /// Underlying I/O failure.
     Io(io::Error),
@@ -19,6 +22,13 @@ pub enum Error {
     /// in an unknown state. The database must be reopened, which runs
     /// recovery from what is actually on disk.
     Poisoned(String),
+    /// The files were written by a version or with a feature this engine does
+    /// not support (a newer `format_version`, an unknown incompatible feature
+    /// bit, encryption, the M0 prototype format). It is not damage: nothing
+    /// was modified, and a newer engine may read them.
+    Incompatible(String),
+    /// A write was attempted through a handle that only reads.
+    ReadOnly(String),
 }
 
 impl Error {
@@ -35,6 +45,8 @@ impl fmt::Display for Error {
             Error::Locked => write!(f, "database is locked by another handle"),
             Error::InvalidArgument(m) => write!(f, "invalid argument: {m}"),
             Error::Poisoned(m) => write!(f, "handle poisoned by an earlier fatal error: {m}"),
+            Error::Incompatible(m) => write!(f, "incompatible format: {m}"),
+            Error::ReadOnly(m) => write!(f, "read-only: {m}"),
         }
     }
 }
@@ -51,5 +63,20 @@ impl std::error::Error for Error {
 impl From<io::Error> for Error {
     fn from(e: io::Error) -> Self {
         Error::Io(e)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_variants_display_their_message() {
+        assert_eq!(
+            Error::Incompatible("M0 prototype format".into()).to_string(),
+            "incompatible format: M0 prototype format"
+        );
+        assert_eq!(Error::ReadOnly("no writes".into()).to_string(), "read-only: no writes");
+        assert!(std::error::Error::source(&Error::Incompatible("x".into())).is_none());
     }
 }

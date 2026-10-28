@@ -1,16 +1,21 @@
-//! Sorted string tables (immutable, one version per user key).
+//! Sorted string tables, format v1 (`docs/file-format/v1.md` §7): immutable,
+//! one version per user key.
 //!
 //! ```text
-//! data block*   see block.rs (~4 KiB each, own crc32c)
-//! filter block  bloom bits | k u8 | crc u32
-//! index block   smallest_key bytes | count varint | (last_key bytes | offset varint | len varint)* | crc u32
-//! footer        filter_off u64 | filter_len u64 | index_off u64 | index_len u64 | entries u64 | magic u64 | crc u32
+//! header        common header (KRNO_SST, file number, block size)
+//! data block*   ~4 KiB each, context CRC over (file number, offset)
+//! filter block  bloom filter
+//! props block   TLV properties (entry counts, sequence and key ranges, ...)
+//! index block   last key, offset and length of every data block
+//! footer        80 bytes: handles of the meta blocks, magic, CRC
 //! ```
 //!
-//! Every byte is covered by a checksum. Opening a table verifies footer,
-//! index and filter, plus the layout (blocks are contiguous, they end where
-//! the filter starts, the footer ends the file) and cross-checks size,
-//! entry count and key range against the MANIFEST. Data blocks are verified
+//! The bytes are produced and checked by [`crate::format::sst`]; this module
+//! streams them to a file, keeps the resident part of an open table (index,
+//! filter, properties) and reads data blocks through the block cache. Every
+//! byte is covered by a checksum, and the CRC of a block depends on the file
+//! number and the offset it is read at. Opening a table runs SST-O1..O7
+//! against the MANIFEST's `FileMeta`; data blocks are verified (SST-R1..R3)
 //! when read.
 
 use std::io;
@@ -22,15 +27,18 @@ use kerno_core::vfs::{File, OpenMode, Vfs};
 use kerno_core::{Error, Result};
 use quick_cache::Weighter;
 
-use crate::block::{Block, BlockBuilder, EntryPos};
-use crate::bloom::{self, Bloom};
-use crate::coding::{Reader, put_bytes, put_u32, put_u64, put_varint, u64_at, verify_crc_trailer};
+use crate::block::{Block, EntryPos};
+use crate::files::{FileSource, format_error, read_error, require_read_write};
+use crate::format::ByteSource;
+use crate::format::filter::Filter;
+use crate::format::limits::{MAX_BLOCK_SIZE, MAX_SEQ, MIN_BLOCK_SIZE};
+use crate::format::manifest::FileMeta;
+use crate::format::props::Props;
+use crate::format::rangedel::Fragment;
+use crate::format::sst::{IndexEntry, SstBuilder, SstExpect, file_meta, open_sst_from, read_data_block};
 use crate::iter::InternalIterator;
-use crate::manifest::FileMeta;
 use crate::stats::{Stats, bump};
 
-pub const FOOTER_LEN: usize = 52;
-const MAGIC: u64 = u64::from_le_bytes(*b"KRNOSST1");
 /// Output is handed to the file system in chunks of about this size.
 const WRITE_CHUNK: usize = 256 << 10;
 
@@ -56,20 +64,29 @@ pub struct TableCtx {
     pub dir: PathBuf,
     pub cache: BlockCache,
     pub stats: Arc<Stats>,
+    /// Target size of a data block (written to the SST header; clamped to the
+    /// 512 B..1 MiB the format accepts).
     pub block_size: usize,
     /// New tables call `sync_data` every this many bytes written, besides
     /// the final one (`CompactionConfig::bytes_per_sync`).
     pub bytes_per_sync: Option<u64>,
+    /// The database id every table of this engine carries (HDR-10).
+    pub db_id: [u8; 16],
 }
 
 impl TableCtx {
     pub fn new(vfs: Arc<dyn Vfs>, dir: PathBuf, cache_bytes: usize, stats: Arc<Stats>, block_size: usize) -> Self {
         let cache = BlockCache::with_weighter((cache_bytes / block_size).max(1), cache_bytes as u64, BlockWeighter);
-        TableCtx { vfs, dir, cache, stats, block_size, bytes_per_sync: None }
+        TableCtx { vfs, dir, cache, stats, block_size, bytes_per_sync: None, db_id: [0; 16] }
     }
 
     pub fn with_bytes_per_sync(mut self, bytes_per_sync: Option<u64>) -> Self {
         self.bytes_per_sync = bytes_per_sync;
+        self
+    }
+
+    pub fn with_db_id(mut self, db_id: [u8; 16]) -> Self {
+        self.db_id = db_id;
         self
     }
 
@@ -78,148 +95,23 @@ impl TableCtx {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct IndexEntry {
-    pub last_key: Vec<u8>,
-    pub offset: u64,
-    /// Including the block's crc trailer.
-    pub len: u64,
-}
-
-struct Footer {
-    filter_off: u64,
-    filter_len: u64,
-    index_off: u64,
-    index_len: u64,
-    entries: u64,
-}
-
-impl Footer {
-    fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(FOOTER_LEN);
-        for v in [self.filter_off, self.filter_len, self.index_off, self.index_len, self.entries, MAGIC] {
-            put_u64(&mut out, v);
-        }
-        let crc = crc32c::crc32c(&out);
-        put_u32(&mut out, crc);
-        out
-    }
-
-    fn decode(buf: &[u8]) -> Option<Footer> {
-        let payload = verify_crc_trailer(buf)?;
-        if payload.len() != FOOTER_LEN - 4 || u64_at(payload, 40)? != MAGIC {
-            return None;
-        }
-        Some(Footer {
-            filter_off: u64_at(payload, 0)?,
-            filter_len: u64_at(payload, 8)?,
-            index_off: u64_at(payload, 16)?,
-            index_len: u64_at(payload, 24)?,
-            entries: u64_at(payload, 32)?,
-        })
-    }
-}
-
-fn encode_index(smallest: &[u8], index: &[IndexEntry]) -> Vec<u8> {
-    let mut out = Vec::new();
-    put_bytes(&mut out, smallest);
-    put_varint(&mut out, index.len() as u64);
-    for e in index {
-        put_bytes(&mut out, &e.last_key);
-        put_varint(&mut out, e.offset);
-        put_varint(&mut out, e.len);
-    }
-    let crc = crc32c::crc32c(&out);
-    put_u32(&mut out, crc);
-    out
-}
-
-fn decode_index(payload: &[u8]) -> Option<(Vec<u8>, Vec<IndexEntry>)> {
-    let mut r = Reader::new(payload);
-    let smallest = r.bytes()?.to_vec();
-    let n = r.varint_usize()?;
-    let mut index = Vec::with_capacity(n.min(payload.len()));
-    for _ in 0..n {
-        let last_key = r.bytes()?.to_vec();
-        let offset = r.varint()?;
-        let len = r.varint()?;
-        index.push(IndexEntry { last_key, offset, len });
-    }
-    r.is_empty().then_some((smallest, index))
-}
-
-/// Reads `len` bytes at `off` and verifies their crc32c trailer.
-/// `Ok(None)` means checksum mismatch.
-fn read_checked(file: &dyn File, off: u64, len: u64) -> Result<Option<Vec<u8>>> {
-    let mut buf = vec![0u8; len as usize];
-    file.read_at(&mut buf, off)?;
-    Ok(verify_crc_trailer(&buf).map(<[u8]>::to_vec))
-}
-
-/// Streams a new table to disk. Keys must be added in strictly increasing
-/// order. `finish` syncs the file; the caller makes its directory entry
-/// durable (`sync_dir`) before referencing it from the MANIFEST.
-pub struct TableBuilder {
-    ctx: Arc<TableCtx>,
-    number: u64,
+/// Buffers the bytes of a table and writes them in chunks.
+struct Sink {
     file: Arc<dyn File>,
     written: u64,
     /// `written` at the last intermediate `sync_data`.
     synced: u64,
     pending: Vec<u8>,
-    block: BlockBuilder,
-    index: Vec<IndexEntry>,
-    hashes: Vec<u64>,
-    smallest: Option<Vec<u8>>,
-    last_key: Vec<u8>,
-    entries: u64,
+    bytes_per_sync: Option<u64>,
 }
 
-impl TableBuilder {
-    pub fn create(ctx: &Arc<TableCtx>, number: u64) -> Result<Self> {
-        let file = ctx.vfs.open(&ctx.path(number), OpenMode::CreateNew)?;
-        Ok(TableBuilder {
-            ctx: ctx.clone(),
-            number,
-            file,
-            written: 0,
-            synced: 0,
-            pending: Vec::new(),
-            block: BlockBuilder::default(),
-            index: Vec::new(),
-            hashes: Vec::new(),
-            smallest: None,
-            last_key: Vec::new(),
-            entries: 0,
-        })
-    }
-
-    pub fn add(&mut self, key: &[u8], seq: u64, value: Option<&[u8]>) -> Result<()> {
-        debug_assert!(self.entries == 0 || key > self.last_key.as_slice(), "keys must be strictly increasing");
-        if self.smallest.is_none() {
-            self.smallest = Some(key.to_vec());
+impl Sink {
+    fn push(&mut self, bytes: Vec<u8>) -> Result<()> {
+        if self.pending.is_empty() {
+            self.pending = bytes;
+        } else {
+            self.pending.extend_from_slice(&bytes);
         }
-        self.hashes.push(bloom::hash(key));
-        self.block.add(key, seq, value);
-        self.last_key.clear();
-        self.last_key.extend_from_slice(key);
-        self.entries += 1;
-        if self.block.size_estimate() >= self.ctx.block_size {
-            self.finish_block()?;
-        }
-        Ok(())
-    }
-
-    /// Bytes the table would have if finished now (excluding filter/index).
-    pub fn estimated_size(&self) -> u64 {
-        self.written + self.pending.len() as u64 + self.block.size_estimate() as u64
-    }
-
-    fn finish_block(&mut self) -> Result<()> {
-        let raw = self.block.finish();
-        let offset = self.written + self.pending.len() as u64;
-        self.index.push(IndexEntry { last_key: self.last_key.clone(), offset, len: raw.len() as u64 });
-        self.pending.extend_from_slice(&raw);
         if self.pending.len() >= WRITE_CHUNK {
             self.write_pending()?;
         }
@@ -231,7 +123,7 @@ impl TableBuilder {
             self.file.write_at(&self.pending, self.written)?;
             self.written += self.pending.len() as u64;
             self.pending.clear();
-            if let Some(every) = self.ctx.bytes_per_sync
+            if let Some(every) = self.bytes_per_sync
                 && self.written - self.synced >= every
             {
                 // Bounds the dirty data the final sync has to write back at
@@ -242,48 +134,65 @@ impl TableBuilder {
         }
         Ok(())
     }
+}
 
-    /// Writes filter, index and footer, syncs the file and returns the
-    /// opened table. Must not be called on an empty builder.
-    pub fn finish(mut self) -> Result<Table> {
-        if self.entries == 0 {
+/// Streams a new table to disk. Keys must be added in strictly increasing
+/// order. `finish` syncs the file; the caller makes its directory entry
+/// durable (`sync_dir`) before referencing it from the MANIFEST.
+pub struct TableBuilder {
+    ctx: Arc<TableCtx>,
+    number: u64,
+    /// Why the table is written (`creation_reason` property, §7.6).
+    reason: u8,
+    sink: Sink,
+    inner: SstBuilder,
+    entries: u64,
+}
+
+impl TableBuilder {
+    pub fn create(ctx: &Arc<TableCtx>, number: u64, reason: u8) -> Result<Self> {
+        let file = ctx.vfs.open(&ctx.path(number), OpenMode::CreateNew)?;
+        let block_size = u32::try_from(ctx.block_size).unwrap_or(MAX_BLOCK_SIZE).clamp(MIN_BLOCK_SIZE, MAX_BLOCK_SIZE);
+        Ok(TableBuilder {
+            ctx: ctx.clone(),
+            number,
+            reason,
+            sink: Sink { file, written: 0, synced: 0, pending: Vec::new(), bytes_per_sync: ctx.bytes_per_sync },
+            inner: SstBuilder::new(ctx.db_id, number, block_size),
+            entries: 0,
+        })
+    }
+
+    pub fn add(&mut self, key: &[u8], seq: u64, value: Option<&[u8]>) -> Result<()> {
+        self.inner.add(key, seq, value);
+        self.entries += 1;
+        let ready = self.inner.take_ready();
+        if !ready.is_empty() {
+            self.sink.push(ready)?;
+        }
+        Ok(())
+    }
+
+    /// Bytes the table would have if finished now (excluding filter, index
+    /// and footer).
+    pub fn estimated_size(&self) -> u64 {
+        self.inner.len() + self.inner.open_block_len() as u64
+    }
+
+    /// Writes filter, properties, index and footer, syncs the file and
+    /// returns the opened table. Must not be called on an empty builder.
+    pub fn finish(self) -> Result<Table> {
+        let TableBuilder { ctx, number, reason, mut sink, inner, entries } = self;
+        if entries == 0 {
             return Err(Error::Io(io::Error::other("refusing to write an empty SST")));
         }
-        if !self.block.is_empty() {
-            self.finish_block()?;
-        }
-        let filter = bloom::build(&self.hashes);
-        let filter_off = self.written + self.pending.len() as u64;
-        self.pending.extend_from_slice(&filter);
-        let crc = crc32c::crc32c(&filter);
-        put_u32(&mut self.pending, crc);
-        let index_off = self.written + self.pending.len() as u64;
-        let smallest = self.smallest.take().unwrap_or_default();
-        self.pending.extend_from_slice(&encode_index(&smallest, &self.index));
-        let footer_off = self.written + self.pending.len() as u64;
-        let footer = Footer {
-            filter_off,
-            filter_len: index_off - filter_off,
-            index_off,
-            index_len: footer_off - index_off,
-            entries: self.entries,
-        };
-        self.pending.extend_from_slice(&footer.encode());
-        self.write_pending()?;
-        self.file.sync_data()?;
-        let largest = std::mem::take(&mut self.last_key);
-        Ok(Table {
-            number: self.number,
-            size: self.written,
-            entries: self.entries,
-            smallest,
-            largest,
-            file: self.file.clone(),
-            index: std::mem::take(&mut self.index),
-            bloom: Bloom::parse(filter).expect("freshly built filter"),
-            ctx: self.ctx.clone(),
-            obsolete: AtomicBool::new(false),
-        })
+        let (rest, props, len) = inner.finish(&[] as &[Fragment], reason);
+        sink.push(rest)?;
+        sink.write_pending()?;
+        sink.file.sync_data()?;
+        debug_assert_eq!(sink.written, len);
+        // Opening what was just written also checks it (SST-O1..O7).
+        Table::open_file(&ctx, sink.file, &file_meta(0, number, len, &props), MAX_SEQ)
     }
 
     /// Gives up on the table and removes its file (best effort).
@@ -299,81 +208,64 @@ impl TableBuilder {
 pub struct Table {
     pub number: u64,
     pub size: u64,
-    pub entries: u64,
+    /// Smallest and largest user key (inclusive: the engine writes no range
+    /// fragments yet).
     pub smallest: Vec<u8>,
     pub largest: Vec<u8>,
     file: Arc<dyn File>,
     index: Vec<IndexEntry>,
-    bloom: Bloom,
+    props: Props,
+    filter: Filter,
     ctx: Arc<TableCtx>,
     obsolete: AtomicBool,
 }
 
 impl Table {
-    pub fn open(ctx: &Arc<TableCtx>, meta: &FileMeta) -> Result<Table> {
-        let name = sst_name(meta.number);
-        let corrupt = |m: &str| Error::Corruption(format!("{name}: {m}"));
+    /// Opens the table `meta` describes, against the MANIFEST that has it at
+    /// `last_seq` (SST-O1..O7).
+    pub fn open(ctx: &Arc<TableCtx>, meta: &FileMeta, last_seq: u64) -> Result<Table> {
         let file = match ctx.vfs.open(&ctx.path(meta.number), OpenMode::Existing) {
             Ok(f) => f,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                return Err(corrupt("referenced by the MANIFEST but missing"));
+                return Err(Error::Corruption(format!(
+                    "{}: referenced by the MANIFEST but missing",
+                    sst_name(meta.number)
+                )));
             }
             Err(e) => return Err(e.into()),
         };
-        let size = file.len()?;
-        if size != meta.size {
-            return Err(corrupt(&format!("file is {size} bytes, MANIFEST says {}", meta.size)));
-        }
-        let footer_off = size.checked_sub(FOOTER_LEN as u64).ok_or_else(|| corrupt("shorter than its footer"))?;
-        let mut buf = [0u8; FOOTER_LEN];
-        file.read_at(&mut buf, footer_off)?;
-        let f = Footer::decode(&buf).ok_or_else(|| corrupt("bad footer"))?;
-        if f.index_off.checked_add(f.index_len) != Some(footer_off)
-            || f.filter_off.checked_add(f.filter_len) != Some(f.index_off)
-        {
-            return Err(corrupt("inconsistent layout"));
-        }
-        let filter = read_checked(&*file, f.filter_off, f.filter_len)?.ok_or_else(|| corrupt("filter checksum"))?;
-        let bloom = Bloom::parse(filter).ok_or_else(|| corrupt("malformed filter"))?;
-        let index = read_checked(&*file, f.index_off, f.index_len)?.ok_or_else(|| corrupt("index checksum"))?;
-        let (smallest, index) = decode_index(&index).ok_or_else(|| corrupt("malformed index"))?;
-        // Blocks must tile [0, filter_off) exactly, with increasing keys.
-        let mut expected = 0u64;
-        for (i, e) in index.iter().enumerate() {
-            if e.offset != expected || e.len < 8 || (i > 0 && index[i - 1].last_key >= e.last_key) {
-                return Err(corrupt("malformed index entry"));
-            }
-            expected = e.offset.checked_add(e.len).ok_or_else(|| corrupt("malformed index entry"))?;
-        }
-        let largest = index.last().map(|e| e.last_key.clone()).ok_or_else(|| corrupt("empty index"))?;
-        if expected != f.filter_off || smallest > index[0].last_key {
-            return Err(corrupt("malformed index"));
-        }
-        if f.entries != meta.entries || smallest != meta.smallest || largest != meta.largest {
-            return Err(corrupt("entry count or key range differs from the MANIFEST"));
+        Table::open_file(ctx, file, meta, last_seq)
+    }
+
+    fn open_file(ctx: &Arc<TableCtx>, file: Arc<dyn File>, meta: &FileMeta, last_seq: u64) -> Result<Table> {
+        let name = sst_name(meta.number);
+        let (opened, size) = {
+            let mut src = FileSource::new(&*file)?;
+            let ex = SstExpect { file_number: meta.number, db_id: ctx.db_id, meta: Some(meta), last_seq };
+            let size = src.len();
+            (open_sst_from(&mut src, &ex).map_err(|e| read_error(&name, e))?, size)
+        };
+        require_read_write(&name, &opened.header)?;
+        if opened.props.range_fragments > 0 {
+            return Err(Error::Incompatible(format!("{name}: range deletions are not supported yet")));
         }
         Ok(Table {
             number: meta.number,
             size,
-            entries: f.entries,
-            smallest,
-            largest,
+            smallest: opened.props.smallest_key.clone(),
+            largest: opened.props.largest_key.clone(),
             file,
-            index,
-            bloom,
+            index: opened.index,
+            props: opened.props,
+            filter: opened.filter,
             ctx: ctx.clone(),
             obsolete: AtomicBool::new(false),
         })
     }
 
-    pub fn meta(&self) -> FileMeta {
-        FileMeta {
-            number: self.number,
-            size: self.size,
-            entries: self.entries,
-            smallest: self.smallest.clone(),
-            largest: self.largest.clone(),
-        }
+    /// What the MANIFEST records about this table when it is in `level`.
+    pub fn meta(&self, level: u8) -> FileMeta {
+        file_meta(level, self.number, self.size, &self.props)
     }
 
     pub fn mark_obsolete(&self) {
@@ -390,10 +282,10 @@ impl Table {
     }
 
     /// Reads (through the cache unless `fill_cache` is false and the block
-    /// is not cached) and verifies data block `i`.
+    /// is not cached) and verifies data block `i` (SST-R1..R3).
     pub fn read_block(&self, i: usize, fill_cache: bool) -> Result<Arc<Block>> {
-        let e = &self.index[i];
-        let key = (self.number, e.offset);
+        let handle = self.index[i].handle;
+        let key = (self.number, handle.offset);
         let stats = &self.ctx.stats;
         if let Some(b) = self.ctx.cache.get(&key) {
             if fill_cache {
@@ -404,27 +296,26 @@ impl Table {
         if fill_cache {
             bump(&stats.block_cache_misses, 1);
         }
-        let mut buf = vec![0u8; e.len as usize];
-        self.file.read_at(&mut buf, e.offset)?;
-        let block = Block::parse(buf).map_err(|m| self.corrupt(format!("block at offset {}: {m}", e.offset)))?;
-        if block.last_key() != Some(e.last_key.as_slice()) {
-            return Err(self.corrupt(format!("block at offset {} does not match the index", e.offset)));
-        }
-        let block = Arc::new(block);
+        let mut buf = vec![0u8; handle.len as usize];
+        self.file.read_at(&mut buf, handle.offset)?;
+        read_data_block(&buf, self.number, &self.index, i, &self.props)
+            .map_err(|e| format_error(&sst_name(self.number), e))?;
+        let block = Arc::new(Block::from_validated(buf));
         if fill_cache {
             self.ctx.cache.insert(key, block.clone());
         }
         Ok(block)
     }
 
-    /// `Some(Some(v))` value, `Some(None)` tombstone, `None` not in this table.
-    pub fn get(&self, key: &[u8], hash: u64) -> Result<Option<Option<Vec<u8>>>> {
+    /// `Some((seq, Some(v)))` value, `Some((seq, None))` tombstone, `None`
+    /// not in this table.
+    pub fn get(&self, key: &[u8], hash: u64) -> Result<Option<(u64, Option<Vec<u8>>)>> {
         if key < self.smallest.as_slice() || key > self.largest.as_slice() {
             return Ok(None);
         }
         let stats = &self.ctx.stats;
         bump(&stats.bloom_checks, 1);
-        if !self.bloom.may_contain(hash) {
+        if !self.filter.may_contain(hash) {
             bump(&stats.bloom_negatives, 1);
             return Ok(None);
         }
@@ -437,7 +328,7 @@ impl Table {
         if let Some(e) = block.entry(pos)
             && block.key(&e) == key
         {
-            return Ok(Some(block.value(&e).map(<[u8]>::to_vec)));
+            return Ok(Some((e.seq, block.value(&e).map(<[u8]>::to_vec))));
         }
         bump(&stats.bloom_false_positives, 1);
         Ok(None)
@@ -552,15 +443,20 @@ impl InternalIterator for TableIter<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::format::bloom;
+    use crate::format::props::REASON_FLUSH;
     use kerno_testkit::vfs::SimVfs;
     use std::path::Path;
+
+    const DB: [u8; 16] = [0x5a; 16];
 
     fn ctx(block_size: usize) -> (SimVfs, Arc<TableCtx>) {
         let sim = SimVfs::new(1);
         let vfs = sim.as_vfs();
         vfs.create_dir_all(Path::new("/t")).unwrap();
         let stats = Arc::new(Stats::default());
-        (sim, Arc::new(TableCtx::new(vfs, PathBuf::from("/t"), 1 << 20, stats, block_size)))
+        let ctx = TableCtx::new(vfs, PathBuf::from("/t"), 1 << 20, stats, block_size).with_db_id(DB);
+        (sim, Arc::new(ctx))
     }
 
     fn key(i: usize) -> Vec<u8> {
@@ -577,11 +473,15 @@ mod tests {
     }
 
     fn build(ctx: &Arc<TableCtx>, number: u64, n: usize) -> Table {
-        let mut b = TableBuilder::create(ctx, number).unwrap();
+        let mut b = TableBuilder::create(ctx, number, REASON_FLUSH).unwrap();
         for i in 0..n {
-            b.add(&key(i * 2), i as u64, value(i).as_deref()).unwrap();
+            b.add(&key(i * 2), i as u64 + 1, value(i).as_deref()).unwrap();
         }
         b.finish().unwrap()
+    }
+
+    fn reopen(ctx: &Arc<TableCtx>, t: &Table) -> Result<Table> {
+        Table::open(ctx, &t.meta(0), MAX_SEQ)
     }
 
     #[test]
@@ -590,13 +490,17 @@ mod tests {
         let n = 500;
         let built = build(&ctx, 7, n);
         assert!(built.index.len() > 10, "expected many blocks");
-        let t = Table::open(&ctx, &built.meta()).unwrap();
-        assert_eq!(t.meta(), built.meta());
+        let t = reopen(&ctx, &built).unwrap();
+        assert_eq!(t.meta(0), built.meta(0));
+        assert_eq!(
+            (t.meta(3).level, t.meta(0).point_entries, t.meta(0).smallest_seq, t.meta(0).largest_seq),
+            (3, 500, 1, 500)
+        );
         assert_eq!(t.smallest, key(0));
         assert_eq!(t.largest, key((n - 1) * 2));
         for i in 0..n {
             let got = t.get(&key(i * 2), bloom::hash(&key(i * 2))).unwrap();
-            assert_eq!(got, Some(value(i)), "key {i}");
+            assert_eq!(got, Some((i as u64 + 1, value(i))), "key {i}");
             let absent = key(i * 2 + 1);
             assert_eq!(t.get(&absent, bloom::hash(&absent)).unwrap(), None);
         }
@@ -605,7 +509,7 @@ mod tests {
         it.seek_to_first().unwrap();
         for i in 0..n {
             assert!(it.valid());
-            assert_eq!((it.key(), it.seq(), it.value()), (key(i * 2).as_slice(), i as u64, value(i).as_deref()));
+            assert_eq!((it.key(), it.seq(), it.value()), (key(i * 2).as_slice(), i as u64 + 1, value(i).as_deref()));
             it.next().unwrap();
         }
         assert!(!it.valid());
@@ -627,11 +531,11 @@ mod tests {
 
     #[test]
     fn single_entry_and_exact_block_boundaries() {
-        for block_size in [64, 100, 4096] {
+        for block_size in [64, 512, 4096] {
             let (_sim, ctx) = ctx(block_size);
             for n in [1, 2, 3, 17] {
                 let built = build(&ctx, 100 + n as u64, n);
-                let t = Table::open(&ctx, &built.meta()).unwrap();
+                let t = reopen(&ctx, &built).unwrap();
                 let mut it = t.iter(false);
                 it.seek_to_first().unwrap();
                 let mut count = 0;
@@ -645,6 +549,34 @@ mod tests {
     }
 
     #[test]
+    fn tables_carry_the_creation_reason_and_database_id() {
+        let (_sim, ctx) = ctx(4096);
+        let mut b = TableBuilder::create(&ctx, 3, crate::format::props::REASON_RECOVERY).unwrap();
+        b.add(b"k", 9, Some(b"v")).unwrap();
+        let t = b.finish().unwrap();
+        assert_eq!(t.props.creation_reason, crate::format::props::REASON_RECOVERY);
+        // Another database's table is not this one's (HDR-10).
+        let other = Arc::new(TableCtx::new(ctx.vfs.clone(), ctx.dir.clone(), 1 << 20, ctx.stats.clone(), 4096));
+        let e = Table::open(&other, &t.meta(0), MAX_SEQ).err().unwrap();
+        assert!(matches!(&e, Error::Corruption(m) if m.contains("HDR-10")), "{e:?}");
+    }
+
+    #[test]
+    fn estimated_size_tracks_the_open_block() {
+        let (_sim, ctx) = ctx(4096);
+        let mut b = TableBuilder::create(&ctx, 1, REASON_FLUSH).unwrap();
+        let mut last = b.estimated_size();
+        for i in 0..200 {
+            b.add(&key(i), 1, Some(&[7u8; 100])).unwrap();
+            let now = b.estimated_size();
+            assert!(now > last, "the estimate grows with every entry");
+            last = now;
+        }
+        let t = b.finish().unwrap();
+        assert!(t.size > last, "the finished table adds filter, properties, index and footer");
+    }
+
+    #[test]
     fn bytes_per_sync_syncs_while_writing() {
         use kerno_testkit::vfs::CountingVfs;
         for every in [None, Some(1u64)] {
@@ -652,7 +584,7 @@ mod tests {
             vfs.create_dir_all(Path::new("/t")).unwrap();
             let stats = Arc::new(Stats::default());
             let ctx = Arc::new(TableCtx::new(vfs, PathBuf::from("/t"), 1 << 20, stats, 64).with_bytes_per_sync(every));
-            let mut b = TableBuilder::create(&ctx, 1).unwrap();
+            let mut b = TableBuilder::create(&ctx, 1, REASON_FLUSH).unwrap();
             // About 1 MiB of entries: several 256 KiB chunks.
             for i in 0..1000 {
                 b.add(&key(i), 1, Some(&[7u8; 1000])).unwrap();
@@ -672,9 +604,9 @@ mod tests {
 
     #[test]
     fn damage_is_detected() {
-        let (sim, ctx) = ctx(256);
+        let (sim, ctx) = ctx(512);
         let built = build(&ctx, 3, 60);
-        let meta = built.meta();
+        let meta = built.meta(0);
         drop(built);
         let path = ctx.path(3);
         let size = meta.size;
@@ -682,7 +614,7 @@ mod tests {
         // of the damaged block fails; never wrong data.
         for off in (0..size).step_by(37) {
             sim.corrupt_byte(&path, off, 0x10);
-            match Table::open(&ctx, &meta) {
+            match Table::open(&ctx, &meta, MAX_SEQ) {
                 Err(Error::Corruption(_)) => {}
                 Err(e) => panic!("unexpected error {e}"),
                 Ok(t) => {
@@ -700,12 +632,51 @@ mod tests {
             }
             sim.corrupt_byte(&path, off, 0x10);
         }
-        // Wrong size in the MANIFEST.
+        // Wrong size, key range or sequences in the MANIFEST.
         let mut m = meta.clone();
         m.size -= 1;
-        assert!(matches!(Table::open(&ctx, &m), Err(Error::Corruption(_))));
+        assert!(matches!(Table::open(&ctx, &m, MAX_SEQ), Err(Error::Corruption(_))));
         let mut m = meta.clone();
         m.largest = b"other".to_vec();
-        assert!(matches!(Table::open(&ctx, &m), Err(Error::Corruption(_))));
+        assert!(matches!(Table::open(&ctx, &m, MAX_SEQ), Err(Error::Corruption(_))));
+        let mut m = meta.clone();
+        m.largest_seq += 1;
+        assert!(matches!(Table::open(&ctx, &m, MAX_SEQ), Err(Error::Corruption(_))));
+        // A table with sequences above the MANIFEST's last_seq.
+        assert!(matches!(Table::open(&ctx, &meta, meta.largest_seq - 1), Err(Error::Corruption(_))));
+    }
+
+    #[test]
+    fn a_block_moved_within_the_file_does_not_verify() {
+        let (_sim, ctx) = ctx(512);
+        // Equal entries, so the blocks have the same length.
+        let mut b = TableBuilder::create(&ctx, 4, REASON_FLUSH).unwrap();
+        for i in 0..100 {
+            b.add(&key(i), 1, Some(&[b'v'; 120])).unwrap();
+        }
+        let t = b.finish().unwrap();
+        let (h0, h1) = (t.index[0].handle, t.index[1].handle);
+        assert_eq!(h0.len, h1.len, "test setup: blocks of one length");
+        // Block 0's bytes at block 1's offset.
+        let f = ctx.vfs.open(&ctx.path(4), OpenMode::Existing).unwrap();
+        let mut bytes = vec![0; h0.len as usize];
+        f.read_at(&mut bytes, h0.offset).unwrap();
+        drop(t);
+        f.write_at(&bytes, h1.offset).unwrap();
+        let t = Table::open(&ctx, &written_meta(&ctx, 4), MAX_SEQ).unwrap();
+        let e = t.read_block(1, false).err().expect("a moved block must not verify");
+        assert!(matches!(&e, Error::Corruption(m) if m.contains("SST-R1")), "{e:?}");
+        assert!(t.read_block(0, false).is_ok());
+    }
+
+    /// The `FileMeta` of table `number` as written (read back from its own
+    /// properties, not from the damaged data blocks).
+    fn written_meta(ctx: &Arc<TableCtx>, number: u64) -> FileMeta {
+        let f = ctx.vfs.open(&ctx.path(number), OpenMode::Existing).unwrap();
+        let size = f.len().unwrap();
+        let mut src = FileSource::new(&*f).unwrap();
+        let ex = SstExpect { file_number: number, db_id: DB, meta: None, last_seq: MAX_SEQ };
+        let m = open_sst_from(&mut src, &ex).map_err(|e| read_error("t", e)).unwrap();
+        file_meta(0, number, size, &m.props)
     }
 }

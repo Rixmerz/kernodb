@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use kerno_core::Result;
 
-use crate::bloom;
+use crate::format::bloom;
 use crate::iter::{InternalIterator, LevelIter, MergeIter};
 use crate::memtable::{InternalKey, Memtable};
 use crate::sst::Table;
@@ -35,14 +35,14 @@ impl Version {
         }
         let hash = bloom::hash(key);
         for t in &self.levels[0] {
-            if let Some(v) = t.get(key, hash)? {
+            if let Some((_, v)) = t.get(key, hash)? {
                 return Ok(v);
             }
         }
         for level in &self.levels[1..] {
             let i = level.partition_point(|t| t.largest.as_slice() < key);
             if let Some(t) = level.get(i)
-                && let Some(v) = t.get(key, hash)?
+                && let Some((_, v)) = t.get(key, hash)?
             {
                 return Ok(v);
             }

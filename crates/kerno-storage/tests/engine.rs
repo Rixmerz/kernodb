@@ -11,8 +11,9 @@ use kerno_core::contract::{Engine, Options, Snapshot};
 use kerno_core::vfs::{OpenMode, Vfs};
 use kerno_core::{Durability, Error, WriteBatch};
 use kerno_storage::KernoDb;
+use kerno_storage::format::header::HEADER_LEN;
 use kerno_testkit::harness::{Model, apply, read_all};
-use kerno_testkit::vfs::{CrashKind, SimVfs};
+use kerno_testkit::vfs::{CrashKind, SimVfs, assert_dir_unchanged};
 
 const DIR: &str = "/db";
 
@@ -205,6 +206,9 @@ fn failed_io_poisons_until_reopen() {
     assert!(read_all(&s).unwrap().len() <= model.len() + 1);
 }
 
+/// A MANIFEST that is missing or damaged is `Corruption` (never "start
+/// empty", never `Incompatible`), and the open changes nothing (REC-2, HDR-1,
+/// HDR-3, MAN-R1).
 #[test]
 fn missing_or_damaged_manifest_is_corruption() {
     let disk = SimVfs::new(6);
@@ -214,12 +218,39 @@ fn missing_or_damaged_manifest_is_corruption() {
     fill(&db, &mut Model::new(), 0, 1000);
     db.close().unwrap();
     let manifest = Path::new(DIR).join("MANIFEST");
+    let rejected = |what: &str, rule: &str| {
+        let before = disk.dump();
+        match open(&vfs, &opts) {
+            Err(Error::Corruption(m)) => assert!(m.contains(rule), "{what}: expected {rule}, got {m}"),
+            other => panic!("{what}: expected Corruption, got {:?}", other.err()),
+        }
+        assert_dir_unchanged(&before, &disk.dump(), &["LOCK"]);
+    };
+
     vfs.rename(&manifest, &Path::new(DIR).join("MANIFEST.old")).unwrap();
-    assert!(matches!(open(&vfs, &opts), Err(Error::Corruption(_))), "data files without MANIFEST");
+    rejected("data files without MANIFEST", "the MANIFEST is missing");
     vfs.rename(&Path::new(DIR).join("MANIFEST.old"), &manifest).unwrap();
+
     let f = vfs.open(&manifest, OpenMode::Existing).unwrap();
-    f.set_len(0).unwrap();
-    assert!(matches!(open(&vfs, &opts), Err(Error::Corruption(_))), "empty MANIFEST");
+    let size = f.len().unwrap();
+    let mut intact = vec![0u8; size as usize];
+    f.read_at(&mut intact, 0).unwrap();
+    // Empty, shorter than the header, cut inside the first record.
+    for (len, rule) in [(0, "HDR-1"), (HEADER_LEN as u64 - 1, "HDR-1"), (size - 1, "MAN-R1")] {
+        f.set_len(len).unwrap();
+        rejected(&format!("MANIFEST of {len} bytes"), rule);
+        f.set_len(0).unwrap();
+        f.write_at(&intact, 0).unwrap();
+        f.sync_data().unwrap();
+    }
+    // A flipped bit in the header, and in the record.
+    disk.corrupt_byte(&manifest, 40, 0x01);
+    rejected("bit flip in the header", "HDR-3");
+    disk.corrupt_byte(&manifest, 40, 0x01);
+    disk.corrupt_byte(&manifest, size - 1, 0x01);
+    rejected("bit flip in the record", "MAN-R1");
+    disk.corrupt_byte(&manifest, size - 1, 0x01);
+    assert!(open(&vfs, &opts).is_ok(), "the restored MANIFEST opens");
 }
 
 #[test]
