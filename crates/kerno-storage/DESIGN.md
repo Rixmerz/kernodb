@@ -16,9 +16,10 @@ Un árbol LSM nivelado al estilo de LevelDB/RocksDB que implementa directamente 
 | `create_if_missing` | `true` | con `false`, si `dir` no tiene `MANIFEST`, `open` falla antes de crear o modificar nada (ni el directorio ni `LOCK`): `Corruption` si hay archivos WAL o SST canónicos (una base dañada, igual que con `true`) y `InvalidArgument` en otro caso (no hay base) |
 | `durability` | `Sync` | modo de durabilidad de todos los commits del handle |
 | `cache_bytes` | 64 MiB | capacidad de la caché de bloques |
-| `write_buffer_bytes` | 8 MiB | tamaño de memtable que provoca el cambio y el flush (mínimo efectivo 4 KiB); también el tamaño objetivo de las SST |
+| `write_buffer_bytes` | 8 MiB | tamaño de memtable que provoca el cambio y el flush (mínimo efectivo 4 KiB); de él derivan el tamaño objetivo de las SST y el objetivo de L1 mientras `compaction` no los fije |
 | `max_immutable_memtables` | 4 | los escritores esperan con este número de memtables pendientes de flush (mínimo 1; `0` es `InvalidArgument`) |
 | `test` (oculto, solo pruebas) | `TestConfig::default()` | `background`: `Threads` (hilos de segundo plano, como en el M0) o `Inline` (ver [Modo en línea](#modo-en-línea-backgroundinline)); `db_id`: identificador fijo para bases nuevas, ignorado hasta que el motor escriba el formato v1 (el formato del M0 no tiene `db_id`) |
+| `compaction` | `CompactionConfig::default()` | umbrales de L0 (`l0_trigger` 4, `l0_slowdown` 8, `l0_stop` 12), `level_multiplier` 10, frenado (`Sleep` de hasta 1 ms) y `bytes_per_sync` (`None`); `level_base_bytes` y `target_file_size` son `None` y se derivan del *write buffer* efectivo (4 × y 1 ×, como en el M0), así que una `Config` construida con `..Config::default()` y otro `write_buffer_bytes` conserva la geometría del M0; `CompactionConfig::m0(wb)` fija esos tamaños de forma explícita |
 
 El módulo oculto `testing` define `Profile` y `Profiled<P>`: un tipo de motor distinto por perfil, que abre `KernoDb` con `Config::from(opts)` ajustada por `P::adjust`, para ejecutar las macros del harness en varias configuraciones sin tocar `Options`. Perfiles: `Inline` (`Engine::name()` = `kerno-inline`, `test.background = Inline`).
 
@@ -79,9 +80,10 @@ No hay *group commit*: los escritores concurrentes pagan cada uno su propia sinc
 
 **Contrapresión:**
 
-- Con ≥ 8 archivos en L0, cada commit espera hasta 1 ms a la compactación.
-- Con ≥ `max_immutable_memtables` memtables inmutables (4 por defecto) o ≥ 12 archivos en L0, el commit se bloquea hasta que un hilo de segundo plano avanza.
-- Los bloqueos se cuentan en `stats()`.
+- Con ≥ `l0_slowdown` archivos en L0 (8 por defecto), cada commit espera una vez hasta 1 ms a la compactación (`SlowdownPolicy::Sleep`; `Off` lo desactiva).
+- Con ≥ `max_immutable_memtables` memtables inmutables (4 por defecto) o ≥ `l0_stop` archivos en L0 (12 por defecto), el commit se bloquea hasta que un hilo de segundo plano avanza.
+- Los umbrales están en `Config::compaction` (`CompactionConfig`); `CompactionConfig::m0(write_buffer)`, el valor por defecto, reproduce las constantes del M0.
+- Cada bloqueo es un **episodio**: se cuenta una vez al entrar en la espera, por motivo (memtables o L0), con su duración; los despertares intermedios no cuentan (el M0 contaba despertares).
 
 ## Trabajo en segundo plano
 
@@ -95,10 +97,10 @@ Hay dos hilos: el de **flush** (`kerno-flush`) y el de **compactación** (`kerno
 
 **Compactación** (nivelada, como en LevelDB):
 
-- L0 puntúa `archivos / 4`; Ln (n = 1..5), `bytes / (4 × write_buffer × 10^(n−1))`. Gana la puntuación más alta ≥ 1.
+- L0 puntúa `archivos / l0_trigger`; Ln (n = 1..5), `bytes / (level_base_bytes × level_multiplier^(n−1))`; con los valores por defecto, `archivos / 4` y `bytes / (4 × write_buffer × 10^(n−1))`. Gana la puntuación más alta ≥ 1.
 - La compactación de L0 fusiona todos los archivos de L0 y los de L1 que se solapan en L1.
 - La de Ln toma un archivo, elegido por turno según la clave, más los de Ln+1 que se solapan. Un archivo sin solape se baja de nivel sin reescribirlo.
-- Los archivos de salida se cortan en `target_file_size = write_buffer_bytes`.
+- Los archivos de salida se cortan en `target_file_size` (por defecto, el *write buffer* efectivo).
 - La fusión conserva solo la versión más nueva de cada clave. Las instantáneas más antiguas siguen leyendo los archivos de entrada a través de su propia `Version`.
 - Una lápida se descarta cuando ningún archivo de un nivel inferior al de salida tiene un rango de claves que contenga la clave.
 - Las salidas se sincronizan, después `sync_dir`, después el MANIFEST y después la instalación de la versión. Solo entonces se marcan obsoletas las entradas.
@@ -191,12 +193,16 @@ Cualquier error de E/S en el camino de commit (anexado, sincronización, cambio 
 
 ## Estadísticas (`Engine::stats`)
 
-- **Forma:** `l{0..6}_files` / `l{0..6}_bytes`, `memtable_bytes`, `immutable_memtables`, `last_seq`, `block_cache_bytes`.
-- **Escritura:** commits, bytes y sincronizaciones del WAL, cambios de memtable.
-- **Segundo plano:** flushes y bytes de flush, compactaciones, movimientos triviales, bytes leídos y escritos por la compactación, lápidas descartadas.
-- **Contrapresión:** bloqueos de escritura (número y µs) y ralentizaciones.
-- **Lecturas:** comprobaciones del bloom, negativos y falsos positivos; aciertos y fallos de la caché de bloques.
+`KernoDb::metrics()` devuelve una instantánea tipada (`Metrics`, en `src/metrics.rs`); `stats()` la aplana con nombres estables y conserva todos los del M0 (`write_stalls` cuenta ahora episodios).
+
+- **Forma:** `l{0..6}_files` / `l{0..6}_bytes`, `l0_depth` (máximo de archivos de L0 que se solapan en una clave), `l0_files_max`, `memtable_bytes`, `immutable_memtables`, `last_seq`, `block_cache_bytes`.
+- **Escritura:** commits, bytes y sincronizaciones del WAL, cambios de memtable y su duración dentro del commit (`memtable_rotation_micros`, `_max`).
+- **Fases del commit:** histogramas log2 (cada potencia de dos partida en cuatro: percentiles con error < 25 %) de `make_room`, `wal_write`, `wal_sync`, `apply` y el total, con `commit_<fase>_{count,micros,max_micros,p50_micros,p99_micros}`. `wal_sync` se separa además en `wal_sync_busy` (con un flush o una compactación escribiendo) y `wal_sync_quiet`. `queue` es 0 hasta que exista group commit (WP12). Cada fase cuesta un `Instant::now()` y tres sumas atómicas relajadas.
+- **Bloqueos:** `stall_episodes_{memtable,l0}`, `stall_micros_{memtable,l0}`, `stall_micros_max`, `slowdown_commits`, `slowdown_micros`; los nombres del M0 `write_stalls`, `write_stall_micros` y `write_slowdowns` se derivan de ellos.
+- **Segundo plano:** flushes y bytes de flush (incluidos los del cierre y de la recuperación), `flush_micros_max`, compactaciones, `compaction_micros_max`, movimientos triviales, bytes leídos y escritos por la compactación, lápidas descartadas, compactaciones de L0 con sus bytes de entrada y archivos de L1 reescritos (totales y máximos), `compactions_while_l0_slowdown` (compactaciones de niveles profundos elegidas con L0 en frenado) y `pending_compaction_bytes` (bytes por encima del objetivo de L1 a L5, más todo L0 cuando alcanza `l0_trigger`).
+- **Lecturas:** comprobaciones del bloom, negativos y falsos positivos; aciertos y fallos de la caché de bloques. Cada contador se reparte en 16 ranuras alineadas a 64 bytes (una por hilo, por turno) que se suman al leer, para que los lectores concurrentes no compitan por la misma línea de caché.
 - **Mantenimiento:** escrituras del MANIFEST, archivos obsoletos borrados.
+- **Apertura:** `last_open_clean` (1 si no se reprodujo ningún registro del WAL) y `last_open_replayed_bytes`.
 
 ## Limitaciones conocidas / qué cambiaría para producción
 

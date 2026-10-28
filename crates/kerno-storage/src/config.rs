@@ -7,7 +7,10 @@
 use kerno_core::contract::Options;
 use kerno_core::{Durability, Error, Result};
 
-use crate::compaction::MAX_IMMUTABLE;
+use crate::compaction::{L0_COMPACTION_TRIGGER, L0_SLOWDOWN, L0_STOP, LEVEL_SIZE_RATIO, MAX_IMMUTABLE};
+
+/// The smallest write buffer the engine uses (smaller values are raised).
+pub(crate) const MIN_WRITE_BUFFER: usize = 4 << 10;
 
 /// Whether a handle may write.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -69,7 +72,9 @@ pub struct Config {
     pub cache_bytes: usize,
     /// Size of the active memtable that triggers a switch to a new one and a
     /// flush of the old one to L0 (default 8 MiB; at least 4 KiB is used).
-    /// Also the target size of SST files.
+    /// Unless [`CompactionConfig`] sets them explicitly, the SST target size
+    /// and the L1 target derive from it (the write buffer and 4 x the write
+    /// buffer, as in M0).
     pub write_buffer_bytes: usize,
     /// Writers wait while this many memtables are waiting to be flushed
     /// (default 4, the M0 value; at least 1).
@@ -77,6 +82,99 @@ pub struct Config {
     /// Test-only settings (default: background threads).
     #[doc(hidden)]
     pub test: TestConfig,
+    /// Compaction policy and write throttling (default
+    /// [`CompactionConfig::default`]: the M0 thresholds, with the sizes
+    /// derived from `write_buffer_bytes`, so that a `Config` built by struct
+    /// update from `Config::default()` keeps the M0 geometry).
+    pub compaction: CompactionConfig,
+}
+
+/// How a commit is delayed while L0 has `l0_slowdown` files or more.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SlowdownPolicy {
+    /// No delay: writers only wait at the hard limits (`l0_stop`,
+    /// `max_immutable_memtables`).
+    Off,
+    /// Each commit waits once, up to `micros`, for a compaction to finish
+    /// (M0: 1000).
+    Sleep {
+        /// Longest wait of one commit.
+        micros: u64,
+    },
+}
+
+/// Compaction policy and write throttling (phase1-design.md §5.4).
+/// [`CompactionConfig::m0`] reproduces the M0 engine, whose constants these
+/// fields replace.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompactionConfig {
+    /// L0 is compacted into L1 once it has this many files (M0: 4).
+    pub l0_trigger: usize,
+    /// Commits are delayed by [`slowdown`](Self::slowdown) while L0 has this
+    /// many files (M0: 8).
+    pub l0_slowdown: usize,
+    /// Commits that need a new memtable wait while L0 has this many files
+    /// (M0: 12; at least `l0_trigger`).
+    pub l0_stop: usize,
+    /// Each level below L1 may hold this many times the bytes of the level
+    /// above (M0: 10).
+    pub level_multiplier: u64,
+    /// Target size of L1 in bytes (`None`: 4 x the effective write buffer,
+    /// the M0 value).
+    pub level_base_bytes: Option<u64>,
+    /// Compaction outputs are cut at this size (`None`: the effective write
+    /// buffer, the M0 value).
+    pub target_file_size: Option<u64>,
+    /// Delay of commits while L0 is at or above `l0_slowdown` (M0: sleep up
+    /// to 1 ms).
+    pub slowdown: SlowdownPolicy,
+    /// SST writers call `sync_data` every this many bytes, in addition to the
+    /// final one (M0: `None`, only the final one).
+    pub bytes_per_sync: Option<u64>,
+}
+
+impl CompactionConfig {
+    /// The M0 engine for a write buffer of `write_buffer_bytes` (raised to
+    /// the 4 KiB minimum, as the engine does).
+    pub fn m0(write_buffer_bytes: usize) -> Self {
+        let write_buffer = write_buffer_bytes.max(MIN_WRITE_BUFFER) as u64;
+        CompactionConfig {
+            l0_trigger: L0_COMPACTION_TRIGGER,
+            l0_slowdown: L0_SLOWDOWN,
+            l0_stop: L0_STOP,
+            level_multiplier: LEVEL_SIZE_RATIO,
+            level_base_bytes: Some((L0_COMPACTION_TRIGGER as u64).saturating_mul(write_buffer)),
+            target_file_size: Some(write_buffer),
+            slowdown: SlowdownPolicy::Sleep { micros: 1000 },
+            bytes_per_sync: None,
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        let bad = |m: &str| Err(Error::InvalidArgument(format!("compaction: {m}")));
+        if self.l0_trigger == 0 || self.l0_slowdown == 0 {
+            return bad("l0_trigger and l0_slowdown must be at least 1");
+        }
+        if self.l0_stop < self.l0_trigger {
+            // Writers would wait for a compaction that never starts.
+            return bad("l0_stop must be at least l0_trigger");
+        }
+        if self.level_multiplier == 0 || self.level_base_bytes == Some(0) || self.target_file_size == Some(0) {
+            return bad("level_multiplier, level_base_bytes and target_file_size must be at least 1");
+        }
+        if self.bytes_per_sync == Some(0) {
+            return bad("bytes_per_sync must be at least 1");
+        }
+        Ok(())
+    }
+}
+
+impl Default for CompactionConfig {
+    /// The M0 thresholds, with `level_base_bytes` and `target_file_size`
+    /// left to derive from the write buffer of the `Config` (as in M0).
+    fn default() -> Self {
+        CompactionConfig { level_base_bytes: None, target_file_size: None, ..CompactionConfig::m0(MIN_WRITE_BUFFER) }
+    }
 }
 
 impl Default for Config {
@@ -89,13 +187,15 @@ impl Default for Config {
             write_buffer_bytes: 8 << 20,
             max_immutable_memtables: MAX_IMMUTABLE,
             test: TestConfig::default(),
+            compaction: CompactionConfig::default(),
         }
     }
 }
 
 impl From<&Options> for Config {
-    /// Durability, cache and write buffer come from `opts`; every other field
-    /// keeps its default.
+    /// Durability, cache and write buffer come from `opts`, and the
+    /// compaction sizes derive from that write buffer as in the M0 engine;
+    /// every other field keeps its default.
     fn from(opts: &Options) -> Self {
         Config {
             durability: opts.durability,
@@ -112,7 +212,7 @@ impl Config {
         if self.max_immutable_memtables == 0 {
             return Err(Error::InvalidArgument("max_immutable_memtables must be at least 1".into()));
         }
-        Ok(())
+        self.compaction.validate()
     }
 }
 
@@ -143,6 +243,79 @@ mod tests {
         assert_eq!(c.cache_bytes, o.cache_bytes);
         assert_eq!(c.write_buffer_bytes, o.write_buffer_bytes);
         assert_eq!(c.max_immutable_memtables, 4);
+        assert_eq!(c.compaction, CompactionConfig::default());
+        assert_eq!((c.compaction.level_base_bytes, c.compaction.target_file_size), (None, None));
+    }
+
+    #[test]
+    fn m0_compaction_config_has_the_m0_constants() {
+        let c = CompactionConfig::m0(8 << 20);
+        assert_eq!((c.l0_trigger, c.l0_slowdown, c.l0_stop, c.level_multiplier), (4, 8, 12, 10));
+        assert_eq!((c.level_base_bytes, c.target_file_size), (Some(32 << 20), Some(8 << 20)));
+        assert_eq!(c.slowdown, SlowdownPolicy::Sleep { micros: 1000 });
+        assert_eq!(c.bytes_per_sync, None);
+        // The engine raises tiny write buffers to 4 KiB, and so does m0.
+        assert_eq!(CompactionConfig::m0(100).target_file_size, Some(4 << 10));
+    }
+
+    #[test]
+    fn invalid_compaction_config_is_rejected() {
+        let base = CompactionConfig::m0(8 << 20);
+        for bad in [
+            CompactionConfig { l0_trigger: 0, ..base.clone() },
+            CompactionConfig { l0_slowdown: 0, ..base.clone() },
+            CompactionConfig { l0_stop: 3, ..base.clone() },
+            CompactionConfig { level_multiplier: 0, ..base.clone() },
+            CompactionConfig { level_base_bytes: Some(0), ..base.clone() },
+            CompactionConfig { target_file_size: Some(0), ..base.clone() },
+            CompactionConfig { bytes_per_sync: Some(0), ..base.clone() },
+        ] {
+            let sim = SimVfs::new(1);
+            let cfg = Config { compaction: bad.clone(), ..Config::default() };
+            assert!(
+                matches!(KernoDb::open(sim.as_vfs(), Path::new("/db"), &cfg), Err(Error::InvalidArgument(_))),
+                "{bad:?} was accepted"
+            );
+            assert_eq!(sim.mutating_ops(), 0);
+        }
+    }
+
+    /// The engine's read counters are sharded: lookups from several threads
+    /// land in several slots of every read counter of the real `Stats`.
+    #[test]
+    fn engine_read_counters_use_several_slots() {
+        let sim = SimVfs::new(9);
+        let cfg = Config::from(&Options::small_for_tests());
+        let db = KernoDb::open(sim.as_vfs(), Path::new("/db"), &cfg).unwrap();
+        for chunk in 0..20u32 {
+            let mut b = WriteBatch::new();
+            for i in 0..50 {
+                b.put(format!("key-{:06}", chunk * 50 + i), [5u8; 200]);
+            }
+            db.commit(&b).unwrap();
+        }
+        db.close().unwrap();
+        let db = KernoDb::open(sim.as_vfs(), Path::new("/db"), &Config { cache_bytes: 0, ..cfg }).unwrap();
+        std::thread::scope(|s| {
+            for _ in 0..8 {
+                s.spawn(|| {
+                    let snap = db.snapshot().unwrap();
+                    for i in 0..200u32 {
+                        snap.get(format!("key-{:06}", i * 5).as_bytes()).unwrap();
+                        snap.get(format!("key-{:06}-absent", i * 5).as_bytes()).unwrap();
+                    }
+                });
+            }
+        });
+        let st = db.raw_stats();
+        for (name, c) in [
+            ("bloom_checks", &st.bloom_checks),
+            ("bloom_negatives", &st.bloom_negatives),
+            ("block_cache_misses", &st.block_cache_misses),
+        ] {
+            assert!(c.slots_used() > 1, "{name} uses {} slot(s)", c.slots_used());
+        }
+        db.close().unwrap();
     }
 
     #[test]
@@ -164,6 +337,7 @@ mod tests {
         assert_eq!(c.access, AccessMode::ReadWrite);
         assert!(c.create_if_missing);
         assert_eq!(c.max_immutable_memtables, 4);
+        assert_eq!(c.compaction, CompactionConfig::default());
     }
 
     #[test]
@@ -373,8 +547,8 @@ mod tests {
                 if n == 2 && gate.held() == 1 && stat(&db, "write_stalls") > 0 {
                     break;
                 }
-                // A stall is counted when the writer wakes up: wake it so that
-                // it counts the stall and waits again.
+                // A stall episode is counted when the writer starts waiting;
+                // spurious wake-ups must not end it.
                 db.wake_waiters();
                 assert!(Instant::now() < deadline, "the writer never stalled");
                 std::thread::sleep(Duration::from_millis(1));
@@ -382,6 +556,10 @@ mod tests {
             // Dropping `_release` lets the flush finish and commit 3 return.
         });
         assert_eq!(done.load(Ordering::SeqCst), 3);
+        // One episode, however many times the writer was woken.
+        assert_eq!(stat(&db, "write_stalls"), 1);
+        assert_eq!(stat(&db, "stall_episodes_memtable"), 1);
+        assert_eq!(stat(&db, "stall_episodes_l0"), 0);
         let snap = db.snapshot().unwrap();
         for i in 0..3u8 {
             assert_eq!(snap.get(&[i]).unwrap().as_deref(), Some(value.as_slice()));

@@ -34,6 +34,7 @@ mod db;
 mod iter;
 mod manifest;
 mod memtable;
+pub mod metrics;
 mod sst;
 mod stats;
 mod version;
@@ -46,7 +47,8 @@ pub mod format;
 #[doc(hidden)]
 pub mod testing;
 
-pub use config::{AccessMode, Config};
+pub use config::{AccessMode, CompactionConfig, Config, SlowdownPolicy};
 #[doc(hidden)]
 pub use config::{Background, TestConfig};
 pub use db::{KernoDb, KernoSnapshot};
+pub use metrics::Metrics;

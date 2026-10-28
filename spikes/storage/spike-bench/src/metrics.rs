@@ -23,8 +23,13 @@ impl Lat {
     pub fn time<T>(&mut self, f: impl FnOnce() -> T) -> T {
         let t = Instant::now();
         let out = f();
-        self.h.saturating_record(t.elapsed().as_nanos().max(1) as u64);
+        self.record_nanos(t.elapsed().as_nanos() as u64);
         out
+    }
+
+    /// Records a duration measured by the caller, like [`Lat::time`].
+    pub fn record_nanos(&mut self, nanos: u64) {
+        self.h.saturating_record(nanos.max(1));
     }
 
     pub fn merge(&mut self, other: &Lat) {
@@ -76,6 +81,15 @@ pub fn proc_io() -> (u64, u64) {
         s.lines().find_map(|l| l.strip_prefix(name).and_then(|v| v.trim().parse::<u64>().ok())).unwrap_or(0)
     };
     (field("rchar:"), field("wchar:"))
+}
+
+/// The 1, 5 and 15 minute load averages of the machine (`uptime`), or
+/// zeros where `/proc/loadavg` is missing. Benchmarks record them because
+/// other work on the machine changes absolute latencies.
+pub fn load_average() -> [f64; 3] {
+    let s = std::fs::read_to_string("/proc/loadavg").unwrap_or_default();
+    let mut it = s.split_whitespace().map(|v| v.parse().unwrap_or(0.0));
+    [it.next().unwrap_or(0.0), it.next().unwrap_or(0.0), it.next().unwrap_or(0.0)]
 }
 
 /// Peak resident set size of this process in KiB.

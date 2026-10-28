@@ -3,16 +3,33 @@
 //! ```text
 //! spike-bench suite  [--engines btree,lsm,kerno,redb,fjall,sqlite] [--workloads all|a,b]
 //!                    [--scales small,medium] [--reps 3] [--durability sync|buffered]
-//!                    [--cold true] [--dir bench-data] [--out results.jsonl]
+//!                    [--cold true] [--threads 8] [--trace false] [--dir bench-data]
+//!                    [--out results.jsonl]
 //! spike-bench run    --engine E --workload W --n N [--durability sync] [--dir D] [--seed S]
-//! spike-bench report --input results.jsonl [--env env.json]   (Markdown to stdout)
+//!                    [--threads 8] [--trace false]
+//! spike-bench report --input results.jsonl [--baseline FILE [--baseline-label L]]
+//!                                                              (Markdown to stdout)
 //! spike-bench env    [--dir bench-data]                        (JSON to stdout)
 //! ```
 //!
 //! `suite` runs every (engine, workload, scale) combination `reps` times,
 //! each in a fresh child process (clean peak-RSS and I/O counters) and a
 //! fresh directory, interleaving engines within each repetition so that
-//! slow drifts of the machine do not favour one engine.
+//! slow drifts of the machine do not favour one engine. Every row records
+//! the machine's load average when the run started (`load1`, `load5`,
+//! `load15`) and, at the end of the workload, every engine statistic as
+//! `stat_<name>`.
+//!
+//! * `--threads`: writers of `concurrent_commits`.
+//! * `--trace true`: diagnosis only, attributes the slowest `agent_memory`
+//!   commits to engine phases (`attr_*`, see `workloads::CommitTrace`).
+//! * Engine `kerno-tuned` (hidden, feature `kerno`): `kerno-storage` with the
+//!   configuration changed by `KERNO_TUNING` (A/B experiments,
+//!   `kerno_storage::testing::Tuned`); rows carry it as `tuning` and the
+//!   report names the engine `kerno-tuned[<tuning>]`.
+//! * `report --baseline FILE --baseline-label L` adds the rows of another
+//!   results file as engines `<engine>@<L>` (default label `baseline`),
+//!   never merged with the current rows.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -24,7 +41,7 @@ use serde_json::Value;
 use spike_core::{Durability, Engine, Options};
 
 use spike_bench::adapters;
-use spike_bench::metrics::{self, Report, peak_rss_kib};
+use spike_bench::metrics::{self, Report, load_average, peak_rss_kib};
 use spike_bench::workloads::{self, Ctx, WORKLOADS};
 
 const ENGINES: &[&str] = &["btree", "lsm", "kerno", "redb", "fjall", "sqlite"];
@@ -90,6 +107,10 @@ fn dispatch(engine: &str, workload: &str, ctx: &Ctx, rep: &mut Report) {
         "lsm" => run_engine::<spike_lsm::LsmEngine>(workload, ctx, rep),
         #[cfg(feature = "kerno")]
         "kerno" => run_engine::<kerno_storage::KernoDb>(workload, ctx, rep),
+        #[cfg(feature = "kerno")]
+        "kerno-tuned" => {
+            run_engine::<kerno_storage::testing::Profiled<kerno_storage::testing::Tuned>>(workload, ctx, rep)
+        }
         "redb" => run_engine::<adapters::RedbEngine>(workload, ctx, rep),
         "fjall" => run_engine::<adapters::FjallEngine>(workload, ctx, rep),
         "sqlite" => run_engine::<adapters::SqliteEngine>(workload, ctx, rep),
@@ -113,13 +134,30 @@ fn cmd_run(args: &Args) {
     }
     let opts = Options { durability, cache_bytes: 64 << 20, write_buffer_bytes: 8 << 20 };
     let cold = args.get_or("cold", "false") == "true";
-    let ctx = Ctx { dir: dir.clone(), opts, n, seed: args.get_or("seed", "42").parse().unwrap(), cold };
+    let ctx = Ctx {
+        dir: dir.clone(),
+        opts,
+        n,
+        seed: args.get_or("seed", "42").parse().unwrap(),
+        cold,
+        threads: args.get_or("threads", "8").parse().unwrap(),
+        trace_commits: args.get_or("trace", "false") == "true",
+    };
     let mut rep = Report::default();
     rep.str("engine", &engine);
     rep.str("workload", &workload);
     rep.num("n", n as f64);
     rep.str("durability", &args.get_or("durability", "sync"));
     rep.str("cache", if cold { "cold" } else { "warm" });
+    if engine == "kerno-tuned" {
+        rep.str("tuning", &std::env::var("KERNO_TUNING").unwrap_or_default());
+    }
+    if ctx.trace_commits {
+        rep.str("trace", "commits");
+    }
+    for (name, v) in ["load1", "load5", "load15"].iter().zip(load_average()) {
+        rep.num(name, v);
+    }
     let t = Instant::now();
     dispatch(&engine, &workload, &ctx, &mut rep);
     rep.num("wall_s", t.elapsed().as_secs_f64());
@@ -135,6 +173,8 @@ fn cmd_suite(args: &Args) {
     let reps: u32 = args.get_or("reps", "3").parse().unwrap();
     let durability = args.get_or("durability", "sync");
     let cold = args.get_or("cold", "false");
+    let threads = args.get_or("threads", "8");
+    let trace = args.get_or("trace", "false");
     let dir = args.get_or("dir", "bench-data");
     let out = PathBuf::from(args.get_or("out", "results.jsonl"));
     std::fs::create_dir_all(&dir).unwrap();
@@ -152,7 +192,7 @@ fn cmd_suite(args: &Args) {
                     let output = Command::new(&exe)
                         .args(["run", "--engine", engine, "--workload", workload, "--n", scale])
                         .args(["--durability", &durability, "--dir", &dir, "--seed", &(42 + rep).to_string()])
-                        .args(["--cold", &cold])
+                        .args(["--cold", &cold, "--threads", &threads, "--trace", &trace])
                         .output()
                         .unwrap();
                     let line = String::from_utf8_lossy(&output.stdout).lines().last().unwrap_or("").to_string();
@@ -234,6 +274,9 @@ fn headline(workload: &str) -> &'static [&'static str] {
             "expire_commit_p99_us",
             "space_amp",
         ],
+        "concurrent_commits" => {
+            &["cc_threads", "cc_commits_per_s", "cc_commit_p50_us", "cc_commit_p99_us", "cc_fsyncs_per_commit"]
+        }
         _ => &[],
     }
 }
@@ -253,24 +296,64 @@ fn fmt_num(v: f64) -> String {
     }
 }
 
+/// The engine a row name refers to: `lsm@m0` and `kerno-tuned[x]` are
+/// variants of `lsm` and `kerno-tuned`.
+fn base_engine(name: &str) -> &str {
+    name.split(['@', '[']).next().unwrap_or(name)
+}
+
 /// redb has no mode that skips fsync but survives a process crash; its
 /// `buffered` numbers are published but flagged (ADR-0012).
 fn not_comparable(engine: &str, durability: &str) -> bool {
-    engine == "redb" && durability.starts_with("buffered")
+    base_engine(engine) == "redb" && durability.starts_with("buffered")
 }
 
 fn cmd_report(args: &Args) {
     let input = args.get_or("input", "results.jsonl");
     let text = std::fs::read_to_string(&input).unwrap();
+    let baseline = args.get("baseline").map(|path| std::fs::read_to_string(path).unwrap());
+    let label = args.get_or("baseline-label", "baseline");
+    println!("{}", render_report(&text, baseline.as_deref().map(|b| (b, label.as_str()))));
+}
+
+/// The rows of a results file. With `label`, they are baseline rows: every
+/// engine `e` becomes `e@label`, so that they are never merged with the
+/// rows of the same engine in the current results.
+fn parse_rows(text: &str, label: Option<&str>) -> Vec<Value> {
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            let mut v: Value = serde_json::from_str(line).unwrap();
+            if let Some(label) = label {
+                let engine = v["engine"].as_str().unwrap_or("?").to_string();
+                v["engine"] = format!("{engine}@{label}").into();
+            }
+            v
+        })
+        .collect()
+}
+
+/// Markdown tables of `current` (JSON lines), with the rows of
+/// `baseline = (text, label)` relabelled as in [`parse_rows`].
+fn render_report(current: &str, baseline: Option<(&str, &str)>) -> String {
+    let mut rows = parse_rows(current, None);
+    if let Some((text, label)) = baseline {
+        rows.extend(parse_rows(text, Some(label)));
+    }
     // (workload, durability, n) -> engine -> metric -> values
     type Cell = BTreeMap<String, Vec<f64>>;
     let mut groups: BTreeMap<(usize, String, u64), BTreeMap<String, Cell>> = BTreeMap::new();
     let mut failures = Vec::new();
-    let engine_order = |e: &str| ENGINES.iter().position(|x| *x == e).unwrap_or(99);
-    for line in text.lines().filter(|l| !l.trim().is_empty()) {
-        let v: Value = serde_json::from_str(line).unwrap();
+    // Engines in the order of ENGINES; a baseline right after the current
+    // rows of the same engine.
+    let engine_order =
+        |e: &str| (ENGINES.iter().position(|x| *x == base_engine(e)).unwrap_or(99), e.contains('@'), e.to_string());
+    for v in &rows {
         let workload = v["workload"].as_str().unwrap().to_string();
-        let engine = v["engine"].as_str().unwrap().to_string();
+        let mut engine = v["engine"].as_str().unwrap().to_string();
+        if let Some(tuning) = v["tuning"].as_str() {
+            engine = format!("{engine}[{tuning}]");
+        }
         let n = v["n"].as_f64().unwrap() as u64;
         let mut durability = v["durability"].as_str().unwrap_or("sync").to_string();
         if v["cache"].as_str() == Some("cold") {
@@ -305,6 +388,7 @@ fn cmd_report(args: &Args) {
         out += &format!("|---|---|{}\n", "---:|".repeat(cols.len()));
         let mut names: Vec<&String> = engines.keys().collect();
         names.sort_by_key(|e| engine_order(e));
+        let loads: Vec<f64> = engines.values().filter_map(|c| c.get("load1")).flatten().copied().collect();
         for e in names {
             let cell = &engines[e];
             let reps = cell.get("wall_s").map(|v| v.len()).unwrap_or(0);
@@ -333,6 +417,11 @@ fn cmd_report(args: &Args) {
         if engines.keys().any(|e| not_comparable(e, durability)) {
             out += "\n† redb `Durability::None` does not survive a process crash: not comparable with the other engines' `buffered`.\n";
         }
+        if !loads.is_empty() {
+            let lo = loads.iter().cloned().fold(f64::INFINITY, f64::min);
+            let hi = loads.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            out += &format!("\nLoad average (1 min) when the runs started: {lo:.2}–{hi:.2}.\n");
+        }
     }
     if !failures.is_empty() {
         out += "\n#### Failed runs\n\n";
@@ -340,7 +429,7 @@ fn cmd_report(args: &Args) {
             out += &format!("- {f}\n");
         }
     }
-    println!("{out}");
+    out
 }
 
 fn env_info(dir: &Path) -> String {
@@ -382,6 +471,7 @@ fn env_info(dir: &Path) -> String {
     v.insert("kernel".into(), read("/proc/sys/kernel/osrelease").trim().into());
     v.insert("rustc".into(), cmd("rustc", &["--version"]).into());
     v.insert("git_commit".into(), cmd("git", &["rev-parse", "--short", "HEAD"]).into());
+    v.insert("loadavg".into(), load_average().to_vec().into());
     let fs = cmd("df", &["-T", dir.to_str().unwrap()])
         .lines()
         .nth(1)
@@ -392,4 +482,52 @@ fn env_info(dir: &Path) -> String {
         .to_string();
     v.insert("filesystem".into(), fs.into());
     Value::Object(v).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(engine: &str, rep: u32, commits_per_s: f64) -> String {
+        format!(
+            r#"{{"engine":"{engine}","workload":"small_commits","n":20000.0,"durability":"sync","cache":"warm","rep":{rep},"wall_s":1.0,"commits_per_s":{commits_per_s}}}"#
+        )
+    }
+
+    #[test]
+    fn baseline_rows_are_relabelled() {
+        let current = [row("lsm", 0, 100.0), row("lsm", 1, 110.0), row("kerno", 0, 105.0)].join("\n");
+        let baseline = [row("lsm", 0, 400.0), row("lsm", 1, 410.0), row("lsm", 2, 420.0)].join("\n");
+        let rows = parse_rows(&baseline, Some("m0"));
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().all(|r| r["engine"] == "lsm@m0"), "{rows:?}");
+        assert!(parse_rows(&current, None).iter().any(|r| r["engine"] == "lsm"));
+
+        let out = render_report(&current, Some((&baseline, "m0")));
+        let pos = |engine: &str| {
+            out.find(&format!("| {engine} |")).unwrap_or_else(|| panic!("no row for {engine} in\n{out}"))
+        };
+        let line = |engine: &str| out[pos(engine)..].lines().next().unwrap().to_string();
+        // The current lsm rows (2 reps, median 110) and the baseline ones
+        // (3 reps, median 410) stay apart.
+        assert!(line("lsm").starts_with("| lsm | 2 | 110 |"), "{}", line("lsm"));
+        assert!(line("lsm@m0").starts_with("| lsm@m0 | 3 | 410 |"), "{}", line("lsm@m0"));
+        assert!(line("kerno").starts_with("| kerno | 1 | 105 |"), "{}", line("kerno"));
+        // A baseline follows the current rows of its engine.
+        assert!(pos("lsm") < pos("lsm@m0") && pos("lsm@m0") < pos("kerno"), "{out}");
+        // Without a baseline there is no relabelled row, and the default
+        // label is used when none is given.
+        assert!(!render_report(&current, None).contains('@'));
+        assert!(render_report(&current, Some((&baseline, "baseline"))).contains("| lsm@baseline | 3 |"));
+    }
+
+    #[test]
+    fn tuned_rows_are_named_after_their_tuning() {
+        let mut tuned: Value = serde_json::from_str(&row("kerno-tuned", 0, 200.0)).unwrap();
+        tuned["tuning"] = "slowdown=off".into();
+        let current = [row("kerno", 0, 100.0), tuned.to_string()].join("\n");
+        let out = render_report(&current, None);
+        assert!(out.contains("| kerno-tuned[slowdown=off] | 1 | 200 |"), "{out}");
+        assert!(out.contains("| kerno | 1 | 100 |"), "{out}");
+    }
 }

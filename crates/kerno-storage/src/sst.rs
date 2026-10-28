@@ -57,12 +57,20 @@ pub struct TableCtx {
     pub cache: BlockCache,
     pub stats: Arc<Stats>,
     pub block_size: usize,
+    /// New tables call `sync_data` every this many bytes written, besides
+    /// the final one (`CompactionConfig::bytes_per_sync`).
+    pub bytes_per_sync: Option<u64>,
 }
 
 impl TableCtx {
     pub fn new(vfs: Arc<dyn Vfs>, dir: PathBuf, cache_bytes: usize, stats: Arc<Stats>, block_size: usize) -> Self {
         let cache = BlockCache::with_weighter((cache_bytes / block_size).max(1), cache_bytes as u64, BlockWeighter);
-        TableCtx { vfs, dir, cache, stats, block_size }
+        TableCtx { vfs, dir, cache, stats, block_size, bytes_per_sync: None }
+    }
+
+    pub fn with_bytes_per_sync(mut self, bytes_per_sync: Option<u64>) -> Self {
+        self.bytes_per_sync = bytes_per_sync;
+        self
     }
 
     pub fn path(&self, number: u64) -> PathBuf {
@@ -156,6 +164,8 @@ pub struct TableBuilder {
     number: u64,
     file: Arc<dyn File>,
     written: u64,
+    /// `written` at the last intermediate `sync_data`.
+    synced: u64,
     pending: Vec<u8>,
     block: BlockBuilder,
     index: Vec<IndexEntry>,
@@ -173,6 +183,7 @@ impl TableBuilder {
             number,
             file,
             written: 0,
+            synced: 0,
             pending: Vec::new(),
             block: BlockBuilder::default(),
             index: Vec::new(),
@@ -220,6 +231,14 @@ impl TableBuilder {
             self.file.write_at(&self.pending, self.written)?;
             self.written += self.pending.len() as u64;
             self.pending.clear();
+            if let Some(every) = self.ctx.bytes_per_sync
+                && self.written - self.synced >= every
+            {
+                // Bounds the dirty data the final sync has to write back at
+                // once (phase1-design.md §5.4, H3).
+                self.file.sync_data()?;
+                self.synced = self.written;
+            }
         }
         Ok(())
     }
@@ -622,6 +641,32 @@ mod tests {
                 }
                 assert_eq!(count, n);
             }
+        }
+    }
+
+    #[test]
+    fn bytes_per_sync_syncs_while_writing() {
+        use kerno_testkit::vfs::CountingVfs;
+        for every in [None, Some(1u64)] {
+            let (vfs, io) = CountingVfs::wrap(SimVfs::new(1).as_vfs());
+            vfs.create_dir_all(Path::new("/t")).unwrap();
+            let stats = Arc::new(Stats::default());
+            let ctx = Arc::new(TableCtx::new(vfs, PathBuf::from("/t"), 1 << 20, stats, 64).with_bytes_per_sync(every));
+            let mut b = TableBuilder::create(&ctx, 1).unwrap();
+            // About 1 MiB of entries: several 256 KiB chunks.
+            for i in 0..1000 {
+                b.add(&key(i), 1, Some(&[7u8; 1000])).unwrap();
+            }
+            b.finish().unwrap();
+            let io = io.snapshot();
+            assert!(io.writes >= 4, "{} writes", io.writes);
+            let expected = match every {
+                // Only the final sync.
+                None => 1,
+                // After every write, plus the final one.
+                Some(_) => io.writes + 1,
+            };
+            assert_eq!(io.file_syncs, expected, "bytes_per_sync {every:?}, {} writes", io.writes);
         }
     }
 

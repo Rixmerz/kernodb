@@ -17,13 +17,14 @@ use kerno_core::vfs::Vfs;
 use kerno_core::{Durability, Error, Result, WriteBatch};
 use parking_lot::{Condvar, Mutex};
 
-use crate::compaction::{self, BLOCK_SIZE, L0_SLOWDOWN, L0_STOP, NUM_LEVELS, Plan, Tuning};
-use crate::config::{AccessMode, Background, Config};
+use crate::compaction::{self, BLOCK_SIZE, NUM_LEVELS, Plan, Tuning};
+use crate::config::{AccessMode, Background, Config, SlowdownPolicy};
 use crate::iter::{InternalIterator, MergeIter};
 use crate::manifest::{self, MANIFEST, MANIFEST_TMP, ManifestData};
 use crate::memtable::Memtable;
+use crate::metrics::{LevelMetrics, Metrics, ShapeMetrics};
 use crate::sst::{Table, TableBuilder, TableCtx};
-use crate::stats::{Stats, bump};
+use crate::stats::{BackgroundIo, StallEpisode, StallReason, Stats, bump, bump_max, nanos};
 use crate::version::{Levels, Version};
 use crate::wal::{self, WalWriter, wal_name};
 
@@ -255,6 +256,8 @@ fn recover(ctx: &Arc<TableCtx>) -> Result<Recovered> {
         let name = wal_name(n);
         let file = vfs.open(&dir.join(&name), kerno_core::vfs::OpenMode::Existing)?;
         let r = wal::replay(&*file, &name, last_seq + 1, |seq, ops| mem.apply(seq, ops))?;
+        bump(&ctx.stats.last_open_replayed_records, r.records);
+        bump(&ctx.stats.last_open_replayed_bytes, r.valid_len);
         if r.torn && i + 1 < live_wals.len() {
             return Err(Error::Corruption(format!(
                 "{name}: invalid record at offset {} in a log that is not the newest",
@@ -267,6 +270,8 @@ fn recover(ctx: &Arc<TableCtx>) -> Result<Recovered> {
         let table = write_memtable(ctx, &mem, next_file)?;
         next_file += 1;
         vfs.sync_dir(dir)?;
+        bump(&ctx.stats.flushes, 1);
+        bump(&ctx.stats.flush_bytes_written, table.size);
         levels[0].insert(0, Arc::new(table));
     }
 
@@ -332,6 +337,7 @@ impl Inner {
     /// Publishes a version with new levels (and without the flushed
     /// memtable, if any). Called with the manifest lock held.
     fn install(&self, levels: Levels, flushed: Option<&Arc<Memtable>>) {
+        bump_max(&self.stats.l0_files_max, levels[0].len() as u64);
         let old = {
             let mut st = self.state.lock();
             let v = &st.version;
@@ -350,6 +356,7 @@ impl Inner {
     // ---- commit path ----
 
     fn commit(&self, batch: &WriteBatch) -> Result<u64> {
+        let start = Instant::now();
         batch.validate()?;
         let _phase = probe::phase("commit");
         let mut w = self.writer.lock();
@@ -357,23 +364,40 @@ impl Inner {
         if batch.is_empty() {
             return Ok(w.last_seq);
         }
+        let room_start = Instant::now();
         self.make_room(&mut w)?;
+        let write_start = Instant::now();
         let seq = w.last_seq.checked_add(1).ok_or_else(|| Error::Corruption("commit sequence exhausted".into()))?;
         let sync = self.durability == Durability::Sync;
         let record = wal::encode_record(seq, batch.ops(), sync)?;
-        let io = w.wal.append(&record).and_then(|()| if sync { w.wal.sync() } else { Ok(()) });
+        let io = w.wal.append(&record);
+        let sync_start = Instant::now();
+        // Whether a flush or compaction was writing during the sync (H3).
+        let background = || self.stats.background_active.load(Ordering::Relaxed) > 0;
+        let busy = sync && background();
+        let io = io.and_then(|()| if sync { w.wal.sync() } else { Ok(()) });
         if let Err(e) = io {
             self.poison(format!("WAL write failed: {e}"));
             return Err(e.into());
         }
+        let apply_start = Instant::now();
+        let busy = busy || (sync && background());
         w.mem.apply(seq, batch.ops());
         w.last_seq = seq;
         self.state.lock().last_seq = seq;
-        bump(&self.stats.commits, 1);
-        bump(&self.stats.wal_bytes, record.len() as u64);
+        let end = Instant::now();
+        let s = &*self.stats;
+        bump(&s.commits, 1);
+        bump(&s.wal_bytes, record.len() as u64);
+        s.commit_make_room.record_single_writer(nanos(room_start, write_start));
+        s.commit_wal_write.record_single_writer(nanos(write_start, sync_start));
         if sync {
-            bump(&self.stats.wal_syncs, 1);
+            bump(&s.wal_syncs, 1);
+            let h = if busy { &s.commit_wal_sync_busy } else { &s.commit_wal_sync_quiet };
+            h.record_single_writer(nanos(sync_start, apply_start));
         }
+        s.commit_apply.record_single_writer(nanos(apply_start, end));
+        s.commit_total.record_single_writer(nanos(start, end));
         Ok(seq)
     }
 
@@ -384,31 +408,53 @@ impl Inner {
             return self.make_room_inline(w);
         }
         let mut slowed = false;
+        // Counted once, however many times the writer wakes up; timed until
+        // the loop ends.
+        let mut stall = StallEpisode::new(&self.stats);
         loop {
             self.check_poisoned()?;
             let mut st = self.state.lock();
             let l0 = st.version.levels[0].len();
-            if !slowed && l0 >= L0_SLOWDOWN {
+            if !slowed
+                && l0 >= self.tuning.l0_slowdown
+                && let SlowdownPolicy::Sleep { micros } = self.tuning.slowdown
+            {
                 // Give compaction a moment instead of stopping hard later.
                 slowed = true;
-                bump(&self.stats.write_slowdowns, 1);
-                self.cv.wait_for(&mut st, Duration::from_millis(1));
+                let start = Instant::now();
+                self.cv.wait_for(&mut st, Duration::from_micros(micros));
+                let slept = nanos(start, Instant::now());
+                bump(&self.stats.slowdown_commits, 1);
+                bump(&self.stats.slowdown_nanos, slept);
+                // L0 may reach the slowdown during a stall: count it once.
+                stall.exclude(slept);
                 continue;
             }
             if w.mem.approx_bytes() < self.tuning.write_buffer {
                 return Ok(());
             }
-            if st.version.imms.len() >= self.max_immutable || l0 >= L0_STOP {
-                let start = Instant::now();
+            let reason = if st.version.imms.len() >= self.max_immutable {
+                Some(StallReason::Memtable)
+            } else if l0 >= self.tuning.l0_stop {
+                Some(StallReason::L0)
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                stall.waiting(reason);
                 if st.poisoned.is_none() {
                     self.cv.wait(&mut st);
                 }
-                bump(&self.stats.write_stalls, 1);
-                bump(&self.stats.write_stall_micros, start.elapsed().as_micros() as u64);
                 continue;
             }
             drop(st);
-            return self.or_poison("memtable switch failed", || self.rotate(w));
+            drop(stall);
+            let start = Instant::now();
+            let r = self.or_poison("memtable switch failed", || self.rotate(w));
+            let took = nanos(start, Instant::now());
+            bump(&self.stats.memtable_rotation_nanos, took);
+            bump_max(&self.stats.memtable_rotation_nanos_max, took);
+            return r;
         }
     }
 
@@ -497,6 +543,8 @@ impl Inner {
     /// Writes the oldest immutable memtable to L0 and retires its WAL.
     fn flush(&self, mem: &Arc<Memtable>) -> Result<()> {
         let _phase = probe::phase("flush");
+        let _io = BackgroundIo::start(&self.stats);
+        let start = Instant::now();
         let table = if mem.is_empty() {
             None
         } else {
@@ -523,6 +571,7 @@ impl Inner {
         let _delete = probe::phase("delete");
         let _ = self.vfs.remove_file(&self.dir.join(wal_name(mem.wal_number())));
         bump(&self.stats.flushes, 1);
+        bump_max(&self.stats.flush_nanos_max, nanos(start, Instant::now()));
         Ok(())
     }
 
@@ -535,9 +584,13 @@ impl Inner {
     fn compactor(&self) {
         // Round-robin position per level: largest key of the last compaction.
         let mut pointers = vec![Vec::new(); NUM_LEVELS];
-        while let Some((plan, running)) =
-            self.wait_for_work(Job::Compaction, |st| compaction::pick(&st.version.levels, &self.tuning, &pointers))
-        {
+        while let Some(((plan, l0_files), running)) = self.wait_for_work(Job::Compaction, |st| {
+            compaction::pick(&st.version.levels, &self.tuning, &pointers).map(|p| (p, st.version.levels[0].len()))
+        }) {
+            if plan.level > 0 && l0_files >= self.tuning.l0_slowdown {
+                // L0 is slowing writers down, yet a deeper level won (H2).
+                bump(&self.stats.compactions_while_l0_slowdown, 1);
+            }
             let r = self.or_poison("compaction failed", || self.compact(&plan, &mut pointers));
             // The inputs it made obsolete are deleted while the job still
             // counts as running.
@@ -583,6 +636,8 @@ impl Inner {
             bump(&self.stats.trivial_moves, 1);
             return Ok(true);
         }
+        let _io = BackgroundIo::start(&self.stats);
+        let start = Instant::now();
         let Some(outputs) =
             compaction::run(&self.ctx, plan, &self.tuning, &self.next_file, &self.shutting_down, &self.stats)?
         else {
@@ -595,6 +650,9 @@ impl Inner {
             self.vfs.sync_dir(&self.dir)?;
         }
         let mut ms = self.manifest.lock();
+        // Only this thread changes L1 and deeper: what it holds now is what
+        // `pick` saw.
+        let next_level_files = ms.levels[plan.level + 1].len() as u64;
         let levels = compaction::apply(&ms.levels, plan, &outputs)?;
         self.write_manifest(&levels, ms.last_seq, ms.log_number)?;
         ms.levels = levels.clone();
@@ -604,9 +662,20 @@ impl Inner {
         self.install(levels, None);
         drop(ms);
         let read: u64 = plan.all_inputs().map(|t| t.size).sum();
-        bump(&self.stats.compactions, 1);
-        bump(&self.stats.compaction_bytes_read, read);
-        bump(&self.stats.compaction_bytes_written, outputs.iter().map(|t| t.size).sum());
+        let s = &*self.stats;
+        bump(&s.compactions, 1);
+        bump(&s.compaction_bytes_read, read);
+        bump(&s.compaction_bytes_written, outputs.iter().map(|t| t.size).sum());
+        bump_max(&s.compaction_nanos_max, nanos(start, Instant::now()));
+        if plan.level == 0 {
+            let l1_files = plan.next_inputs.len() as u64;
+            bump(&s.l0_compactions, 1);
+            bump(&s.l0_compaction_input_bytes, read);
+            bump_max(&s.l0_compaction_input_bytes_max, read);
+            bump(&s.l0_compaction_l1_files, l1_files);
+            bump_max(&s.l0_compaction_l1_files_max, l1_files);
+            bump(&s.l0_compaction_l1_files_present, next_level_files);
+        }
         Ok(true)
     }
 
@@ -654,6 +723,8 @@ impl Inner {
         if !tables.is_empty() {
             self.vfs.sync_dir(&self.dir)?;
         }
+        bump(&self.stats.flushes, tables.len() as u64);
+        bump(&self.stats.flush_bytes_written, tables.iter().map(|t| t.size).sum());
         let mut ms = self.manifest.lock();
         let mut levels = ms.levels.clone();
         for t in tables {
@@ -808,9 +879,15 @@ impl TestHooks for KernoDb {
 impl KernoDb {
     /// Wakes every thread waiting on the engine's condition variable. Every
     /// wait re-checks its condition, so the only effect is that a stalled
-    /// writer counts the stall and waits again.
+    /// writer re-checks its condition and waits again; the stall episode is
+    /// not counted again.
     pub(crate) fn wake_waiters(&self) {
         self.inner.cv.notify_all();
+    }
+
+    /// The engine's own counters.
+    pub(crate) fn raw_stats(&self) -> &Stats {
+        &self.inner.stats
     }
 }
 
@@ -940,8 +1017,13 @@ impl KernoDb {
             _ => Error::Io(e),
         })?;
         let stats = Arc::new(Stats::default());
-        let ctx = Arc::new(TableCtx::new(vfs.clone(), dir.to_path_buf(), cfg.cache_bytes, stats.clone(), BLOCK_SIZE));
+        let ctx = Arc::new(
+            TableCtx::new(vfs.clone(), dir.to_path_buf(), cfg.cache_bytes, stats.clone(), BLOCK_SIZE)
+                .with_bytes_per_sync(cfg.compaction.bytes_per_sync),
+        );
         let r = recover(&ctx)?;
+        // The L0 found at open counts as seen by this handle.
+        bump_max(&stats.l0_files_max, r.levels[0].len() as u64);
         let mem = Arc::new(Memtable::new(r.wal.number()));
         let version = Arc::new(Version { mem: mem.clone(), imms: Vec::new(), levels: r.levels.clone() });
         let inner = Arc::new(Inner {
@@ -983,6 +1065,48 @@ impl KernoDb {
         }
         Ok(engine)
     }
+
+    /// The metrics of this handle now (phase1-design.md §3).
+    pub fn metrics(&self) -> Metrics {
+        let inner = &*self.inner;
+        let (v, last_seq) = {
+            let st = inner.state.lock();
+            (st.version.clone(), st.last_seq)
+        };
+        let shape = ShapeMetrics {
+            levels: v
+                .levels
+                .iter()
+                .map(|l| LevelMetrics { files: l.len() as u64, bytes: l.iter().map(|t| t.size).sum() })
+                .collect(),
+            l0_depth: compaction::l0_depth(&v.levels[0]) as u64,
+            l0_files_max: 0,
+            memtable_bytes: v.mem.approx_bytes() as u64,
+            immutable_memtables: v.imms.len() as u64,
+            last_seq,
+            block_cache_bytes: inner.ctx.cache.weight(),
+        };
+        inner.stats.metrics(shape, compaction::pending_bytes(&v.levels, &inner.tuning))
+    }
+
+    /// Closes the handle like `Engine::close` and returns its metrics after
+    /// the close (its flushes and compactions included). Until `close`
+    /// returns its own report (WP05), this is how tests observe the work of
+    /// a close.
+    #[doc(hidden)]
+    pub fn close_with_metrics(self) -> Result<Metrics> {
+        self.close_inner()?;
+        Ok(self.metrics())
+    }
+
+    fn close_inner(&self) -> Result<()> {
+        self.stop_threads();
+        self.inner.check_poisoned()?;
+        self.inner.or_poison("close failed", || {
+            self.inner.close()?;
+            self.inner.compact_until_settled()
+        })
+    }
 }
 
 impl Engine for KernoDb {
@@ -1015,30 +1139,12 @@ impl Engine for KernoDb {
 
     fn close(self) -> Result<()> {
         let _phase = probe::phase("close");
-        self.stop_threads();
-        self.inner.check_poisoned()?;
-        self.inner.or_poison("close failed", || {
-            self.inner.close()?;
-            self.inner.compact_until_settled()
-        })
+        self.close_inner()
     }
 
+    /// [`KernoDb::metrics`], flattened ([`Metrics::flatten`]).
     fn stats(&self) -> Vec<(String, u64)> {
-        let (v, seq) = {
-            let st = self.inner.state.lock();
-            (st.version.clone(), st.last_seq)
-        };
-        let mut out = Vec::new();
-        for (i, level) in v.levels.iter().enumerate() {
-            out.push((format!("l{i}_files"), level.len() as u64));
-            out.push((format!("l{i}_bytes"), level.iter().map(|t| t.size).sum()));
-        }
-        out.push(("memtable_bytes".into(), v.mem.approx_bytes() as u64));
-        out.push(("immutable_memtables".into(), v.imms.len() as u64));
-        out.push(("last_seq".into(), seq));
-        out.push(("block_cache_bytes".into(), self.inner.ctx.cache.weight()));
-        out.extend(self.inner.stats.report());
-        out
+        self.metrics().flatten()
     }
 }
 
