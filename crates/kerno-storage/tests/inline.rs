@@ -69,6 +69,9 @@ fn inline_flush_happens_in_commit_path() {
     let disk = SimVfs::new(1);
     let cfg = Config {
         write_buffer_bytes: 16 << 10,
+        // The protocol of a log that grows; `tests/wal_prealloc.rs` has the
+        // one of a preallocated log (the spare is prepared halfway).
+        wal_preallocate: false,
         test: kerno_storage::TestConfig { background: Background::Inline, db_id: None },
         ..Config::default()
     };

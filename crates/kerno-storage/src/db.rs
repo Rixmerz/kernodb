@@ -34,7 +34,7 @@ use crate::recovery::{self, FileKind, list_dir, parse_name, refuse_without_manif
 use crate::sst::{Table, TableCtx};
 use crate::stats::{BackgroundIo, StallEpisode, StallReason, Stats, bump, bump_max, nanos};
 use crate::version::{Levels, Version, level_metas};
-use crate::wal::{WalWriter, wal_name};
+use crate::wal::{self, SPARE_WAL, WalWriter, wal_name};
 
 /// Owned by the (single) writer: the active WAL and memtable.
 struct Writer {
@@ -68,6 +68,8 @@ struct State {
     /// A background thread is working on a flush or a compaction (including
     /// the deletions that follow it). See `Inner::wait_idle`.
     flush_running: bool,
+    /// The writer asked the flush thread to prepare the spare WAL.
+    spare_wanted: bool,
     /// Compactions in progress (at most `max_background_compactions`).
     compactions_running: usize,
     /// What they read and write, for choosing the next one.
@@ -82,6 +84,13 @@ struct State {
 enum Job {
     Flush,
     Compaction,
+}
+
+/// What the flush thread was woken for.
+enum FlusherWork {
+    Flush(Arc<Memtable>),
+    /// Prepare the spare WAL (`Config::wal_preallocate`).
+    Spare,
 }
 
 /// Marks a background job as running until dropped (also on a panic).
@@ -139,6 +148,18 @@ struct Inner {
     /// open, left alone by a read-only one.
     orphans: Vec<String>,
     next_file: AtomicU64,
+    /// Bytes a WAL is preallocated with (`Config::wal_preallocate`); 0 when
+    /// off.
+    wal_prealloc: u64,
+    /// Whether the spare WAL (`wal::SPARE_WAL`) is complete and durable. The
+    /// lock is held while the spare is prepared and while a rotation takes
+    /// it, so that neither sees the other's half-done file; a rotation that
+    /// finds it held does not wait for it (leaf lock: nothing is taken under
+    /// it).
+    spare: Mutex<bool>,
+    /// The active memtable already asked for the spare (reset by the
+    /// rotation), so that it is asked for once per memtable.
+    spare_requested: AtomicBool,
     /// The write slot (D-03): a blind commit holds it only to enqueue.
     txn_gate: Mutex<()>,
     queue: CommitQueue<Work>,
@@ -626,6 +647,11 @@ impl Inner {
                 continue;
             }
             if w.mem.approx_bytes() < self.tuning.write_buffer {
+                if self.spare_due(w.mem.approx_bytes()) {
+                    st.spare_wanted = true;
+                    drop(st);
+                    self.cv.notify_all();
+                }
                 return Ok(());
             }
             let reason = if st.version.imms.len() >= self.max_immutable {
@@ -659,6 +685,10 @@ impl Inner {
     /// calling thread, before the commit writes its own record.
     fn make_room_inline(&self, w: &mut Writer) -> Result<()> {
         if w.mem.approx_bytes() < self.tuning.write_buffer {
+            if self.spare_due(w.mem.approx_bytes()) {
+                let _phase = probe::phase("wal_spare");
+                self.prepare_spare_if_absent();
+            }
             return Ok(());
         }
         self.or_poison("memtable switch failed", || self.rotate(w))?;
@@ -667,8 +697,29 @@ impl Inner {
         Ok(())
     }
 
+    /// Whether the active memtable, `bytes` full, should have the spare WAL
+    /// prepared now (once per memtable): half way to the rotation leaves the
+    /// preparation time to finish before the next log is needed, and keeps a
+    /// handle that is only read or barely written from creating one.
+    fn spare_due(&self, bytes: usize) -> bool {
+        self.wal_prealloc > 0
+            && bytes >= self.tuning.write_buffer / 2
+            && !self.spare_requested.swap(true, Ordering::SeqCst)
+    }
+
+    /// Prepares a new spare unless one is ready (or being prepared).
+    fn prepare_spare_if_absent(&self) {
+        if let Some(mut ready) = self.spare.try_lock()
+            && !*ready
+        {
+            *ready = self.make_spare(None);
+        }
+    }
+
     fn rotate(&self, w: &mut Writer) -> Result<()> {
         let _phase = probe::phase("rotate");
+        self.spare_requested.store(false, Ordering::SeqCst);
+        w.mem.set_wal_len(w.wal.written());
         if self.durability == Durability::Buffered {
             // Every older log must be complete before a newer one exists,
             // so that recovery's "only the newest log may be torn" holds.
@@ -677,7 +728,18 @@ impl Inner {
             self.state.lock().durable_seq = w.last_seq;
         }
         let number = self.next_file.fetch_add(1, Ordering::SeqCst);
-        let wal = WalWriter::create(&*self.vfs, &self.dir, number, self.ctx.db_id, w.last_seq + 1)?;
+        // Without a spare the new log grows like any other: waiting here for
+        // a preallocation would stall the commit that rotates.
+        let mut spare = self.spare.try_lock();
+        let wal = match spare.as_deref_mut() {
+            Some(ready @ true) => {
+                *ready = false;
+                bump(&self.stats.wal_recycled, 1);
+                WalWriter::create_from_spare(&*self.vfs, &self.dir, number, self.ctx.db_id, w.last_seq + 1)?
+            }
+            _ => WalWriter::create(&*self.vfs, &self.dir, number, self.ctx.db_id, w.last_seq + 1, 0)?,
+        };
+        drop(spare);
         let mem = Arc::new(Memtable::new(number));
         let old = {
             let mut st = self.state.lock();
@@ -726,12 +788,58 @@ impl Inner {
         }
     }
 
+    /// Gets rid of the WAL `number`, which the MANIFEST no longer needs: with
+    /// preallocation and no spare yet it becomes the spare (zeroed, see
+    /// [`wal::prepare_spare`]), otherwise it is deleted. Best effort either
+    /// way: the spare only saves work later, and a leftover log below
+    /// `log_number` is deleted by the next recovery.
+    fn retire_wal(&self, number: u64, written: u64) {
+        if self.wal_prealloc > 0 {
+            let mut ready = self.spare.lock();
+            if !*ready {
+                *ready = self.make_spare(Some((number, written)));
+                if *ready {
+                    return;
+                }
+            }
+        }
+        let _ = self.vfs.remove_file(&self.dir.join(wal_name(number)));
+    }
+
+    /// Prepares the spare WAL from the retired log `retired`, or from nothing,
+    /// and returns whether it is ready (the caller holds `spare`). A failure (a full disk, say) leaves
+    /// no spare behind and is not an error of the engine: rotations create
+    /// their logs as before.
+    fn make_spare(&self, retired: Option<(u64, u64)>) -> bool {
+        let abort = || self.shutting_down.load(Ordering::SeqCst);
+        match wal::prepare_spare(&*self.vfs, &self.dir, retired, self.wal_prealloc, &abort) {
+            Ok(ready) => ready,
+            Err(_) => {
+                // The half-made spare is useless, and it holds the space the
+                // failed write wanted.
+                let _ = self.vfs.remove_file(&self.dir.join(SPARE_WAL));
+                false
+            }
+        }
+    }
+
     fn flusher(&self) {
-        while let Some((mem, _running)) =
-            self.wait_for_work(Job::Flush, |st| st.version.imms.last().cloned().map(|m| (m, None)))
-        {
-            if self.or_poison("flush failed", || self.flush(&mem)).is_err() {
-                return;
+        while let Some((work, _running)) = self.wait_for_work(Job::Flush, |st| {
+            if let Some(mem) = st.version.imms.last() {
+                return Some((FlusherWork::Flush(mem.clone()), None));
+            }
+            std::mem::take(&mut st.spare_wanted).then_some((FlusherWork::Spare, None))
+        }) {
+            match work {
+                FlusherWork::Flush(mem) => {
+                    if self.or_poison("flush failed", || self.flush(&mem)).is_err() {
+                        return;
+                    }
+                }
+                FlusherWork::Spare => {
+                    let _phase = probe::phase("wal_spare");
+                    self.prepare_spare_if_absent();
+                }
             }
         }
     }
@@ -789,7 +897,7 @@ impl Inner {
         // The MANIFEST no longer needs this log (W-5; best effort: a leftover
         // log below `log_number` is deleted by the next recovery).
         let _delete = probe::phase("delete");
-        let _ = self.vfs.remove_file(&self.dir.join(wal_name(mem.wal_number())));
+        self.retire_wal(mem.wal_number(), mem.wal_len());
         bump(&self.stats.flushes, 1);
         bump_max(&self.stats.flush_nanos_max, nanos(start, Instant::now()));
         Ok(())
@@ -1040,8 +1148,9 @@ impl Inner {
         }
         // W-9 step 6: nothing needs the WALs any more.
         let _phase = probe::phase("close");
+        *self.spare.lock() = false;
         for name in self.vfs.list(&self.dir)? {
-            if let FileKind::Wal(_) = parse_name(&name) {
+            if let FileKind::Wal(_) | FileKind::SpareWal = parse_name(&name) {
                 self.vfs.remove_file(&self.dir.join(name))?;
             }
         }
@@ -1068,6 +1177,7 @@ impl Inner {
                 || (!st.flush_running
                     && st.compactions_running == 0
                     && st.version.imms.is_empty()
+                    && !st.spare_wanted
                     && !self.compaction_due(&st.version.levels));
             if idle {
                 break;
@@ -1402,6 +1512,9 @@ impl KernoDb {
             recovery::unknown_ro_compat_reason(&plan.unknown_ro_compat, table_ro_compat)
         };
         let tuning = Tuning::new(cfg);
+        // A read-only handle never writes a log, so it never prepares or
+        // recycles one either.
+        let wal_prealloc = if cfg.wal_preallocate && read_only.is_none() { tuning.write_buffer as u64 } else { 0 };
         let floor = CHECKPOINT_FLOOR;
         let (levels, last_seq, log_number, next_file, wal, manifest_writer, mem) = if read_only.is_some() {
             let (mem, last_seq) = recovery::replay_in_memory(&ctx, &plan, db_id, &loaded.replay.state)?;
@@ -1409,7 +1522,7 @@ impl KernoDb {
             let state = &loaded.replay.state;
             (levels, last_seq, state.log_number, plan.next_file, WalWriter::read_only(0), writer, Arc::new(mem))
         } else {
-            let r = recovery::apply(&ctx, &plan, &loaded, levels, tuning.write_buffer, floor)?;
+            let r = recovery::apply(&ctx, &plan, &loaded, levels, tuning.write_buffer, floor, wal_prealloc)?;
             let mem = Arc::new(Memtable::new(r.wal.number()));
             (r.levels, r.last_seq, r.log_number, r.next_file, r.wal, r.manifest, mem)
         };
@@ -1431,6 +1544,9 @@ impl KernoDb {
             read_only,
             orphans: plan.orphans,
             next_file: AtomicU64::new(next_file),
+            wal_prealloc,
+            spare: Mutex::new(false),
+            spare_requested: AtomicBool::new(false),
             txn_gate: Mutex::new(()),
             queue: CommitQueue::new(cfg.group_commit.queue_limits()),
             writer: Mutex::new(Writer {
@@ -1452,6 +1568,7 @@ impl KernoDb {
                 poisoned: None,
                 shutdown: false,
                 flush_running: false,
+                spare_wanted: false,
                 compactions_running: 0,
                 busy: Busy::default(),
                 pointers: vec![Vec::new(); NUM_LEVELS],

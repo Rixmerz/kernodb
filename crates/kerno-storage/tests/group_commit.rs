@@ -24,8 +24,10 @@ use kerno_testkit::vfs::{CountingVfs, CrashKind, HookAction, HookOp, HookOpKind,
 /// How long a test waits for any thread before it fails as hung.
 const LIMIT: Duration = Duration::from_secs(60);
 
+/// Logs that grow: the tests hold the leader at its WAL write and count the
+/// I/O of the frames, which the zeros of a preallocated log would add to.
 fn config(durability: Durability, group_commit: GroupCommitConfig) -> Config {
-    Config { group_commit, ..Config::from(&Options { durability, ..Options::default() }) }
+    Config { group_commit, wal_preallocate: false, ..Config::from(&Options { durability, ..Options::default() }) }
 }
 
 fn open(vfs: Arc<dyn Vfs>, cfg: &Config) -> Arc<KernoDb> {

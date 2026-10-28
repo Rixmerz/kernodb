@@ -66,6 +66,10 @@ Cada punto indica la opción elegida (**en negrita**) y las descartadas.
 14. **Objetivos de rendimiento T1–T10** (ADR-0001 condición 1, ADR-0012).
     - **Los objetivos son los de [phase1-design.md](../architecture/phase1-design.md) §7.2, registrados antes de medir (WP04) y aprobados por el propietario (C-06).** Este ADR los cita por referencia: no los duplica para que no diverjan.
 
+15. **Preasignación y reciclado del WAL sin bit `incompat`** (seguimiento de WP05, ADR-0001 condición 1).
+    - **El escritor deja el WAL como `cabecera ‖ ceros` y reutiliza un WAL ya volcado tras sobrescribirlo entero con ceros; el lector no cambia.** Es el relleno de ceros que §6.1 y WAL-R4 ya admiten, así que ningún archivo válido cambia de bytes y los vectores siguen idénticos (v1.md §6.5, nota «Preasignación y reciclado»). Las tramas de la vida anterior de un archivo reciclado no se reproducirían (su CRC cubre otro número de archivo), pero un WAL intermedio de la cadena que termine en ellas sería una cola rota (REC-10a): por eso se sobrescriben con ceros antes de renombrar el archivo a su nombre canónico.
+    - Reciclado sin poner a cero, con el bit `incompat` reservado: ahorra la escritura de ceros, pero exige que el lector acepte como final limpio un archivo que acaba en tramas ajenas (un cambio de WAL-R4 y de REC-10a que invalida el barrido de caídas y los vectores). Se deja para cuando la medición pida ese ahorro.
+
 ## Criterios de decisión
 
 Fijados antes de implementar el códec:

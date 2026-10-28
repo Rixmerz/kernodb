@@ -216,6 +216,15 @@ pub struct Config {
     /// How much compaction `close` may do (default
     /// [`CloseBudget::default`]).
     pub close_budget: CloseBudget,
+    /// Writes each WAL as `header ‖ zeros` of the size of the write buffer
+    /// before the first commit goes into it, and recycles flushed WALs
+    /// instead of deleting them, so that the `fdatasync` of a commit never
+    /// has to commit the file's size (phase1-design.md §9, WAL padding of
+    /// `docs/file-format/v1.md` §6.1). Costs one write buffer of extra
+    /// writes per memtable, done in the flush thread (inline: in the
+    /// committing thread), and up to one more WAL of disk space while the
+    /// handle is open. The files are valid v1 either way (default `false`: the micro-benchmark shows no gain on an idle machine).
+    pub wal_preallocate: bool,
 }
 
 /// How much compaction work a clean close may do (phase1-design.md §5.4,
@@ -492,6 +501,7 @@ impl Default for Config {
             test: TestConfig::default(),
             compaction: CompactionConfig::default(),
             close_budget: CloseBudget::default(),
+            wal_preallocate: false,
         }
     }
 }

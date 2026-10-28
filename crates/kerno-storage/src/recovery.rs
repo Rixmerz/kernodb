@@ -35,13 +35,16 @@ use crate::memtable::Memtable;
 use crate::sst::{Table, TableCtx, sst_name};
 use crate::stats::bump;
 use crate::version::{Levels, level_metas};
-use crate::wal::{self, WalWriter, wal_name};
+use crate::wal::{self, SPARE_WAL, WalWriter, wal_name};
 
 /// What a directory entry is (DIR-1, §2).
 pub enum FileKind {
     Manifest,
     ManifestTmp,
     Lock,
+    /// The spare WAL (`wal::SPARE_WAL`): never replayed; it may be half
+    /// written, so recovery deletes it.
+    SpareWal,
     Wal(u64),
     Sst(u64),
     Other,
@@ -63,6 +66,8 @@ pub fn parse_name(name: &str) -> FileKind {
         FileKind::ManifestTmp
     } else if name == "LOCK" {
         FileKind::Lock
+    } else if name == SPARE_WAL {
+        FileKind::SpareWal
     } else if let Some(n) = name.strip_suffix(".wal").and_then(number) {
         FileKind::Wal(n)
     } else if let Some(n) = name.strip_suffix(".sst").and_then(number) {
@@ -82,6 +87,8 @@ pub struct Listing {
     pub wals: Vec<u64>,
     /// Canonical SST numbers, ascending.
     pub ssts: Vec<u64>,
+    /// A spare WAL was left behind (it may be half written: never reused).
+    pub spare_wal: bool,
     /// Entries that are not engine files (`LOCK` and `MANIFEST.tmp` aside),
     /// by name (REC-13).
     pub unknown: Vec<String>,
@@ -97,6 +104,7 @@ impl Listing {
                 FileKind::ManifestTmp => l.has_manifest_tmp = true,
                 FileKind::Wal(n) => l.wals.push(n),
                 FileKind::Sst(n) => l.ssts.push(n),
+                FileKind::SpareWal => l.spare_wal = true,
                 FileKind::Lock => {}
                 FileKind::Other => l.unknown.push(name.as_ref().to_string()),
             }
@@ -256,6 +264,10 @@ pub fn classify(listing: &Listing, manifest: &ManifestReplay, scans: &[WalFacts]
         orphans.extend(listing.wals.iter().filter(|&&n| n < state.log_number).map(|&n| orphan_wal(n)));
     }
     orphans.extend(listing.ssts.iter().filter(|n| !referenced.contains(n)).map(|&n| sst_name(n)));
+    // A spare WAL may be half written; the next one is prepared from scratch.
+    if listing.spare_wal {
+        orphans.push(SPARE_WAL.to_string());
+    }
     orphans.sort_unstable();
     Ok(Plan {
         clean,
@@ -398,6 +410,7 @@ pub fn apply(
     mut levels: Levels,
     write_buffer: usize,
     checkpoint_floor: u64,
+    wal_prealloc: u64,
 ) -> Result<Recovered> {
     let (vfs, dir) = (&*ctx.vfs, ctx.dir.as_path());
     let state = &loaded.replay.state;
@@ -442,7 +455,7 @@ pub fn apply(
     }
     let wal_number = next_file;
     next_file += 1;
-    let wal = WalWriter::create(vfs, dir, wal_number, db_id, last_seq + 1)?;
+    let wal = WalWriter::create(vfs, dir, wal_number, db_id, last_seq + 1, wal_prealloc)?;
 
     // S-4.
     if writer.checkpoint_due() {

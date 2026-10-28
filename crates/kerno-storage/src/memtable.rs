@@ -46,11 +46,30 @@ pub struct Memtable {
     max_seq: AtomicU64,
     /// The WAL file that holds this memtable's commits.
     wal_number: u64,
+    /// Bytes written to that file when this memtable stopped being the
+    /// active one (0: not known, or still active).
+    wal_len: AtomicU64,
 }
 
 impl Memtable {
     pub fn new(wal_number: u64) -> Self {
-        Memtable { map: SkipMap::new(), bytes: AtomicUsize::new(0), max_seq: AtomicU64::new(0), wal_number }
+        Memtable {
+            map: SkipMap::new(),
+            bytes: AtomicUsize::new(0),
+            max_seq: AtomicU64::new(0),
+            wal_number,
+            wal_len: AtomicU64::new(0),
+        }
+    }
+
+    /// Records how many bytes of its WAL file are written: what a recycled
+    /// log has to zero (the rest of the file already is).
+    pub fn set_wal_len(&self, len: u64) {
+        self.wal_len.store(len, Relaxed);
+    }
+
+    pub fn wal_len(&self) -> u64 {
+        self.wal_len.load(Relaxed)
     }
 
     pub fn wal_number(&self) -> u64 {

@@ -56,7 +56,8 @@ mod wal_damage {
     fn check(label: &str, disk: &SimVfs, opts: &Options, corrupt_off: Option<(u64, u8)>) {
         let wal = wal_path(disk);
         let len = disk.files().into_iter().find(|(p, _)| *p == wal).unwrap().1;
-        assert_eq!(len, HEADER_LEN as u64 + 10 * frame_bytes(), "{label}: unexpected WAL length");
+        // The ten frames, then nothing or the zeros of a preallocated log.
+        assert!(len >= HEADER_LEN as u64 + 10 * frame_bytes(), "{label}: unexpected WAL length");
         if let Some((off, mask)) = corrupt_off {
             disk.corrupt_byte(&wal, off, mask);
         }

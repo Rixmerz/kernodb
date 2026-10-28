@@ -155,7 +155,7 @@ Ningún commit de la cola de las ejecuciones con traza poco cargadas cambió de 
 
 - Las palancas de **contrapresión** (frenado por tasa, prioridad de L0) no atacan la cola observada: en la fase medida no hay bloqueos ni frenado. Siguen siendo útiles como red de seguridad cuando la compactación se retrasa (como con `bytes_per_sync`, que lleva L0 a la parada).
 - Lo que reduce la cola es **menos escritura de fondo y más repartida**: *flush split* (H1: evita reescribir los `mem/` antiguos en cada compactación de L0), compactación parcial de L0 y corte por solape con el abuelo (compactaciones más pequeñas), y `bytes_per_sync` (H3), cuyo coste en velocidad de compactación hay que compensar con lo anterior. Ninguna palanca de la tabla de §5.4 cambia la parte de la cola que se debe a escritura de otros procesos.
-- Una palanca que la tabla de §5.4 no incluye y que ataca directamente el mecanismo: que el `fdatasync` del WAL no tenga que confirmar el diario del sistema de archivos (WAL con tamaño ya asignado y escrito, como el reciclado de logs de RocksDB). El diseño lo deja fuera de la Fase 1 (§9, «reciclado y preasignación del WAL»); si WP05 no alcanza T1, es candidata para el memorando de decisión, previa medición.
+- Una palanca que la tabla de §5.4 no incluye y que ataca directamente el mecanismo: que el `fdatasync` del WAL no tenga que confirmar el diario del sistema de archivos (WAL con tamaño ya asignado y escrito, como el reciclado de logs de RocksDB). El diseño lo deja fuera de la Fase 1 (§9, «reciclado y preasignación del WAL»); si WP05 no alcanza T1, es candidata para el memorando de decisión, previa medición. **Seguimiento: implementada y medida en [§8](#8-preasignación-y-reciclado-del-wal).**
 - Medir siempre con `--trace true` además de las ejecuciones limpias: el reparto por fases y `wal_sync_busy`/`wal_sync_quiet` distinguen una mejora real de un cambio en el ruido de la máquina.
 - Las cifras de T1 de este documento son provisionales; el punto de decisión de WP05 debe repetir la medición en la misma sesión con spike-btree y fjall, y la de referencia es la de WP14.
 
@@ -257,3 +257,111 @@ Lectura:
 - `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings` y `cargo test --workspace --all-features --release` pasan.
 - Cierre acotado: las pruebas de `tests/close_budget.rs` (`l0_bounded_across_100_short_sessions`: profundidad de L0 < `l0_trigger` y ≤ 2 × `l0_trigger` archivos tras cada cierre; `space_bounded_across_100_short_sessions`; `budgeted_close_crash_at_every_point`).
 - **T1 no cumplido; T4 cumplido** (`medium` 204 ms, `large` 376 ms) tras las palancas del cierre. Siguen sin cumplirse T2 de Cauce (atribuido a `bytes_per_sync`, en conflicto con T1), `module_scan` frente a btree (igual que el M0) y `append_seq` actualización frente a fjall. La decisión de la condición 1 queda en [f1-decision-cond1.md](f1-decision-cond1.md) para el propietario.
+
+## 8. Preasignación y reciclado del WAL
+
+Seguimiento de WP05: la palanca 1 de [f1-decision-cond1.md §3](f1-decision-cond1.md#3-siguientes-palancas), que ataca el mecanismo de H3 en lugar de reducir la escritura de fondo. **No cambia el estado de la decisión**: T1 sigue sin cumplirse (§8.3).
+
+| Campo | Valor |
+|---|---|
+| Estado | **Provisional**, como el resto del documento: máquina compartida, carga de 1 minuto 1,1–2,0 en las ejecuciones del motor y 1,6–5,6 en las del microbanco (cada serie lleva su `uptime-*.txt`). La medición de referencia sigue siendo la de WP14 con la máquina en reposo |
+| Fecha | 2026-10-28 |
+| Código medido | `kerno-storage` con `Config::wal_preallocate` ([DESIGN.md](../../crates/kerno-storage/DESIGN.md), «WAL preasignado y reciclado»), sobre `b745205`. La primera implementación (`*-v1-fullzero.*`) ponía a cero el WAL reciclado entero; la final solo la parte escrita |
+| Datos | [`spikes/storage/results/2026-10-28-f1-wal/`](../../spikes/storage/results/2026-10-28-f1-wal): `walsync.jsonl` y `walsync-load5.jsonl` (microbanco), `agent_memory.jsonl` (10 repeticiones), `results.jsonl` y `report.md` (seis cargas, `medium`, 5 repeticiones), `large.jsonl`, `control-*.jsonl` (controles del interruptor), `*-v1-fullzero.*` (primera implementación), `env.json`, `uptime-*.txt` |
+
+### 8.1 Qué hace
+
+El WAL se escribe como `cabecera ‖ ceros` del tamaño del *write buffer* antes de su primera trama, y un WAL ya volcado se sobrescribe con ceros y queda como reserva (`WAL.spare`) para la rotación siguiente. El `fdatasync` de una trama sobrescribe bloques ya asignados y escritos, así que no tiene que confirmar el tamaño del archivo. **Sin cambio de formato**: los ceros son el relleno de v1.md §6.1 y WAL-R4; el reciclado sin poner a cero necesitaría el bit `incompat` reservado y cambiar WAL-R4/REC-10a ([ADR-0013, punto 15](../adr/0013-formato-v1-y-protocolo-del-motor.md)). Interruptor: `Config::wal_preallocate` (por defecto `false`, porque el microbanco en reposo no muestra ganancia; se enciende con `KERNO_TUNING=wal_preallocate=true`; el perfil `M0` lo apaga). Pruebas: `wal.rs` (17 pruebas del WAL, 8 nuevas), `tests/wal_prealloc.rs` (11) y los barridos de caídas, corrupción y fallos compartidos, que ahora recorren WAL preasignados y reciclados (la escena del barrido `every_point` recicla WAL: `the_crash_sweep_scenario_recycles_logs`).
+
+### 8.2 Microbanco de `fdatasync` (`spike-bench walsync`)
+
+Cada variante añade 512 B por iteración y mide el `sync_data` siguiente (5 000 por ejecución, variantes intercaladas): `grow` (el archivo crece), `setlen` (`set_len` previo: tamaño final, bloques sin asignar) y `prewritten` (ceros escritos y sincronizados hasta el tamaño final). «Con escritura de fondo» añade un hilo que escribe ráfagas de 16 MiB con `sync_data` cada MiB y 30 ms de pausa en el mismo directorio. Mediana de las ejecuciones (entre paréntesis, mínimo–máximo), en µs:
+
+| Sesión | Fondo | Variante | p50 | p99 |
+|---|---|---|---:|---:|
+| carga 1,6–1,8, 9 repeticiones (`walsync.jsonl`) | no | `grow` | 148 | 435 (326–532) |
+| | no | `setlen` | 106 | 379 (299–705) |
+| | no | `prewritten` | 149 | 360 (290–607) |
+| | sí | `grow` | 164 | 1 629 (1 533–1 732) |
+| | sí | `setlen` | 109 | 1 487 (1 318–1 669) |
+| | sí | `prewritten` | 164 | 1 649 (1 341–1 798) |
+| carga 4,9–5,9, 7 repeticiones (`walsync-load5.jsonl`) | no | `grow` | 156 | 3 987 (475–4 131) |
+| | no | `setlen` | 110 | 723 (309–5 276) |
+| | no | `prewritten` | 159 | 765 (403–5 304) |
+| | sí | `grow` | 181 | 3 957 (1 871–7 963) |
+| | sí | `setlen` | 127 | 2 128 (1 507–3 879) |
+| | sí | `prewritten` | 186 | 2 458 (1 396–3 148) |
+
+Lectura: **con la máquina en reposo el microbanco no muestra ganancia** (p99 de `grow` y `prewritten` indistinguibles, también con la escritura de fondo propia); con la carga de otros procesos (carga ≥ 5) el p99 de `grow` es 3–5× el de `prewritten`, pero con rangos que llegan a solaparse (una ejecución de `prewritten` llegó a 5,3 ms). La ganancia del `fdatasync` aislado depende, por tanto, de la contención con escritura ajena, justo el escenario de H3, y no se reproduce con la escritura de fondo del propio banco. `setlen` tiene un p50 más bajo (~110 frente a ~150 µs) y un p99 que no se distingue de `prewritten`; no se probó en el motor.
+
+### 8.3 `agent_memory` y T1
+
+Sesiones del A/B (`kerno` con la palanca, `kerno-tuned` con `wal_preallocate=false`; `agent_memory` `medium`, `Sync`, repeticiones intercaladas, mediana y rango de `memory_write_p99_us`, µs):
+
+| Sesión | Código | Reps | `kerno` p99 | sin palanca p99 | `kerno` p50 | sin palanca p50 | fjall p99 | btree p99 | Carga |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---|
+| `agent_memory-v1-fullzero.jsonl` | primera impl. | 7 | 1 754 (1 449–3 017) | 2 370 (2 212–2 621) | 217 | 361 | 814 | 1 247 | 1,7–4,0 |
+| `results-v1-fullzero.jsonl` | primera impl. | 5 | 2 783 (2 312–3 133) | 2 548 (1 679–3 027) | 231 | 401 | 1 132 | 1 182 | 1,2–1,7 |
+| `agent_memory.jsonl` | final | 10 | 1 958 (1 367–2 738) | 2 563 (1 884–2 771) | 197 | 331 | 1 032 | 1 068 | 1,1–1,5 |
+| `results.jsonl` | final | 5 | 2 437 (1 657–2 781) | 2 548 (2 347–2 841) | 215 | 364 | 1 116 | 1 127 | 1,4–1,6 |
+| `control-tuned-*.jsonl` | final | 6 | 2 416 (2 048–2 877) | 2 030 (1 688–2 421) | 214 | 326 | — | — | 1,1 |
+
+(En el control, `kerno-tuned[wal_preallocate=true]` da 2 430 µs y 203 µs de p50: el perfil `Tuned` no añade nada por sí mismo.)
+
+Con el código final, las 15 repeticiones de las dos sesiones que incluyen fjall y btree (`agent_memory.jsonl` y `results.jsonl`):
+
+| | p99 (µs), mediana (cuartiles) | p50 (µs) | frente a fjall (objetivo ≤ 2,0×) | frente a btree (objetivo ≤ 1,5×) |
+|---|---:|---:|---:|---:|
+| `kerno` con la palanca | 2 173 (1 708–2 466) | 206 | **2,08×** | **1,93×** |
+| `kerno` sin la palanca | 2 548 (2 347–2 763) | 348 | 2,44× | 2,27× |
+| fjall | 1 044 (657–1 147) | 286 | — | — |
+| btree | 1 123 (1 022–1 225) | 445 | — | — |
+
+1. **El p50 de escritura baja un 40 % de forma estable** (206 frente a 348 µs; 197–231 frente a 326–401 µs en todas las series y en el control) y el rendimiento de `agent_memory` sube entre un 7 y un 28 % (`steps_per_s`, según la serie): es el efecto esperado de no confirmar el tamaño en cada commit. En `cauce` el p50 no cambia (169 frente a 162 µs en el control).
+2. **El p99 mejora de media un 15 % (8 % con las 27 repeticiones de las tres series con la palanca), pero no de forma estable**: en las cinco series los rangos con y sin la palanca se solapan, y en el control es peor (2 416 frente a 2 030 µs). La primera implementación, que ponía a cero el WAL entero, empeoró el p99 en una sesión (2 783 frente a 2 548): la escritura de ceros compite con el `fdatasync` igual que cualquier otra escritura de fondo, y por eso el reciclado solo reescribe la parte escrita.
+3. **T1 no se cumple**: 2,08× fjall (objetivo ≤ 2,0×) y 1,93× btree (≤ 1,5×); sin la palanca, 2,44× y 2,27×. La palanca acerca T1 un 15 %, pero la proporción con btree sigue un 29 % por encima del objetivo; lo que queda es la cola de la escritura de fondo que ninguna palanca de WAL toca (§4).
+
+### 8.4 T2–T5 (`report.md`; mediana de 5 repeticiones, `Sync`, carga de 1 minuto 1,1–2,0)
+
+Las proporciones son frente a `lsm` (M0) de la misma sesión; «sin palanca» es `kerno-tuned[wal_preallocate=false]`.
+
+| Objetivo | Medida | `kerno` | sin palanca | `lsm` | fjall | btree | `kerno`/`lsm` | Objetivo | |
+|---|---|---:|---:|---:|---:|---:|---:|---|---|
+| T2 | LiveSpec `changeset_commit_p99_us` | 1 605 | 2 658 | 4 342 | 1 658 | 2 793 | 0,37× | ≤ 1,2× | cumple |
+| T2 | `append_seq` `append_commit100_p99_us` | 1 508 | 2 043 | 3 803 | 973 | 1 692 | 0,40× | ≤ 1,2× | cumple |
+| T2 | `append_seq` `update_commit100_p99_us` | 2 339 | 3 654 | 6 054 | 1 378 | 1 635 | 0,39× (1,70× fjall) | ≤ 1,2× `lsm`, ≤ 2× fjall | **cumple las dos** (WP05: 2,65× fjall) |
+| T2 | `history_sim` `rev_commit100_p99_us` | 4 506 | 5 698 | 8 331 | 2 261 | 13 959 | 0,54× | ≤ 1,2× | cumple |
+| T2 | Cauce `step_commit_p99_us` | 998 | 1 094 | 504 | 514 | 1 320 | 1,98× | ≤ 1,2× | **no cumple** (WP05: 2,31×; el p50 no cambia: 173 frente a 171 µs) |
+| T3 | LiveSpec `symbol_get_p99_us` | 31,3 | 30,4 | 28,1 | 21,7 | 29,6 | 1,11× | ≤ 1,2× | cumple |
+| T3 | LiveSpec `module_scan_p99_us` | 711 | 627 | 540 | 398 | 295 | 1,32× (sin palanca 1,16×) | ≤ 1,2× `lsm`, ≤ 1,5× btree | **no cumple con la palanca** (ver abajo) |
+| T3 | Cauce `step_read_p99_us` | 76,7 | 83,6 | 74,7 | 75,2 | 54,0 | 1,03× | ≤ 1,2× | cumple |
+| T3 | `recall_p99_us` / `recent_scan_p99_us` | 53,2 / 59,3 | 54,4 / 65,6 | 55,7 / 61,1 | 41,5 / 64,4 | 34,6 / 51,5 | 0,95× / 0,97× | ≤ 1,2× | cumple |
+| T4 | `bulk_load` `close_ms`, `medium` | 219 | 223 | 731 | 77 | 11 | — | ≤ 250 ms | cumple |
+| T4 | `bulk_load` `close_ms`, `large` (3 repeticiones, `large.jsonl`) | 409 | 449 | 3 446 | 982 | — | — | ≤ 1 000 ms | cumple |
+| T5 | rendimiento: LiveSpec / Cauce / `append_seq` / `agent_memory` / `history_sim` / `bulk_load` | 925 / 4 293 / 205 / 1 553 / 84,2 / 209 | 810 / 4 326 / 176 / 1 268 / 72,9 / 203 | 873 / 4 373 / 179 / 1 318 / 80,3 / 189 | | | 1,06× / 0,98× / 1,15× / 1,18× / 1,05× / 1,11× | ≥ 0,9× | cumple |
+
+- **`module_scan_p99_us` (T3).** Con la palanca es 667–711 µs en tres sesiones frente a 604–627 sin ella y 540–577 de `lsm` (`control-livespec-*.jsonl`: 667 y 691 frente a 604 µs, rangos solapados 591–724 y 509–728; el p50 es igual, 161–167 µs). Es una diferencia de ~10–14 % que cae dentro de la dispersión y que no se ha explicado (las lecturas no usan el WAL); no se descarta que sea real. En WP05 era 0,93× `lsm`.
+- **Cauce (T2)** pasa de 2,31× a 1,98× `lsm`: mejora, pero el objetivo (≤ 1,2×) sigue sin cumplirse y su atribución a `bytes_per_sync` ([§7.4](#74-t2t5-reportmd-largejsonl-mediana-de-3-repeticiones)) no cambia.
+- **LiveSpec, `append_seq` e `history_sim` mejoran un 30–40 % en p99** (y el p50 de LiveSpec un 16 %: 381 frente a 457 µs) con la palanca.
+
+### 8.5 Costes
+
+| Medida (`bulk_load` `medium`, mediana de 5) | con la palanca | sin ella |
+|---|---:|---:|
+| `write_amp` | 3,97 | 2,97 |
+| `reopen_ms` | 17,0 (16,3–22,4) | 3,71 |
+| `recovery_ms` | 28,9 | 6,36 |
+| `cauce` `recovery_ms` | 33,2 | 8,89 |
+| `history_sim` `space_amp` | 2,06 (2,06–2,85) | 1,68 |
+| `append_seq` `space_amp` | 2,24 | 2,04 |
+
+- **Escritura:** el WAL se escribe dos veces (la trama y los ceros del reciclado, solo la parte escrita), de ahí +1,0 en `write_amp` de `bulk_load` (+1,0 en `large`: 6,49 frente a 5,52).
+- **Apertura:** `reopen_ms` sube 13 ms y `recovery_ms` 22 ms (crear el WAL de recuperación con el tamaño del *write buffer*, ocho `sync_data` de 1 MiB, y leer sus ceros al reproducir; no se midió cuánto corresponde a cada cosa). Un handle que se abre para pocas escrituras paga ese tiempo.
+- **Espacio:** hasta un WAL más (el de reserva) mientras el handle está abierto; los archivos se borran al cerrar (`space_amp_closed` igual: 1,04).
+- **Disco lleno:** el espacio del WAL se toma al crearlo, no al hacer commit; un commit que cabe en lo preasignado no necesita espacio nuevo. Un fallo al preparar la reserva no envenena el handle (`a_failure_preparing_the_spare_is_not_an_engine_failure`).
+
+### 8.6 Límites
+
+- Misma máquina y mismo sistema de archivos que el resto (ext4 sobre disco virtual); la ganancia de `fdatasync` depende de cómo el sistema de archivos ordene la confirmación del diario y de la contención con otros procesos (R-S3).
+- El microbanco con la máquina en reposo no reproduce la ganancia del microbanco con carga; la palanca queda apagada por defecto porque el microbanco no muestra ganancia en reposo; la evidencia a favor de encenderla es la del motor (p50 −40 %, T2 −30–40 %) y queda pendiente de que la medición de referencia de WP14 la confirme para cambiar el valor por defecto.
+- El p99 de T1 mejora por debajo de la dispersión entre ejecuciones (cuartiles 1 708–2 466 µs con la palanca): la mejora del 15 % es una mediana, no una diferencia que separe las distribuciones.

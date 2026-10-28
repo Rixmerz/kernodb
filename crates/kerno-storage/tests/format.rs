@@ -31,10 +31,13 @@ use parking_lot::Mutex;
 const DIR: &str = "/db";
 const DB_ID: [u8; 16] = [0xd1; 16];
 
+/// Logs that grow: these tests build and edit WAL images byte by byte
+/// (`tests/wal_prealloc.rs` covers the zero-padded ones).
 fn config(durability: Durability) -> Config {
     Config {
         durability,
         write_buffer_bytes: 16 << 10,
+        wal_preallocate: false,
         test: TestConfig { background: Background::Inline, db_id: Some(DB_ID) },
         ..Config::default()
     }

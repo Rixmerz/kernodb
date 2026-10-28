@@ -10,6 +10,9 @@
 //! spike-bench report --input results.jsonl [--baseline FILE [--baseline-label L]]
 //!                                                              (Markdown to stdout)
 //! spike-bench env    [--dir bench-data]                        (JSON to stdout)
+//! spike-bench walsync [--dir D] [--out walsync.jsonl] [--reps 5] [--iterations 5000]
+//!                    [--record 512] [--burst 16777216] [--pause-ms 30]
+//!                                  (fdatasync of a growing vs a pre-written file)
 //! ```
 //!
 //! `suite` runs every (engine, workload, scale) combination `reps` times,
@@ -86,12 +89,30 @@ fn main() {
         "run" => cmd_run(&args),
         "suite" => cmd_suite(&args),
         "report" => cmd_report(&args),
+        "walsync" => cmd_walsync(&args),
         "env" => println!("{}", env_info(Path::new(&args.get_or("dir", "bench-data")))),
         other => {
             eprintln!("unknown command {other}");
             std::process::exit(2);
         }
     }
+}
+
+fn cmd_walsync(args: &Args) {
+    let num = |name: &str, default: &str| -> usize {
+        args.get_or(name, default).parse().unwrap_or_else(|_| panic!("--{name} must be a number"))
+    };
+    let mut params = spike_bench::walsync::Params {
+        dir: PathBuf::from(args.get_or("dir", "bench-data")).join("walsync"),
+        iterations: num("iterations", "5000"),
+        record: num("record", "512"),
+        background: false,
+        burst: num("burst", "16777216"),
+        pause: std::time::Duration::from_millis(num("pause-ms", "30") as u64),
+    };
+    let out = PathBuf::from(args.get_or("out", "walsync.jsonl"));
+    spike_bench::walsync::suite(&mut params, num("reps", "5"), &out).expect("walsync");
+    let _ = std::fs::remove_dir_all(&params.dir);
 }
 
 fn run_engine<E: Engine>(workload: &str, ctx: &Ctx, rep: &mut Report) {

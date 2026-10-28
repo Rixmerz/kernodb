@@ -25,6 +25,8 @@ pub struct Stats {
     pub memtable_rotations: AtomicU64,
     pub memtable_rotation_nanos: AtomicU64,
     pub memtable_rotation_nanos_max: AtomicU64,
+    /// Rotations whose new WAL was the prepared spare (`Config::wal_preallocate`).
+    pub wal_recycled: AtomicU64,
 
     // Commit phases (written by the group leader, under the writer lock).
     pub commit_queue: LogHistogram,
@@ -241,6 +243,7 @@ impl Stats {
                 memtable_rotations: load(&self.memtable_rotations),
                 memtable_rotation_micros: micros(&self.memtable_rotation_nanos),
                 memtable_rotation_micros_max: micros(&self.memtable_rotation_nanos_max),
+                wal_recycled: load(&self.wal_recycled),
             },
             commit_phases: CommitPhaseMetrics {
                 queue: self.commit_queue.snapshot().latency(),

@@ -419,7 +419,8 @@ La matriz de fallos gana una sección «LSM v1 (`kerno-storage`)» con las filas
 | Índices secundarios, texto, vectores | P5 |
 | Fuzzing con `cargo fuzz`, `cargo audit`/`cargo deny`, benchmarks beta | P6 |
 | Durabilidad por commit (`commit_with`) | diferida; el formato ya la admite (C-05) |
-| Compresión, compresión de prefijos, índice o filtro particionados, nivel base dinámico, reciclado y preasignación del WAL | no requeridos; el formato los admite vía bits `incompat` o relleno de ceros |
+| Compresión, compresión de prefijos, índice o filtro particionados, nivel base dinámico | no requeridos; el formato los admite vía bits `incompat` |
+| Reciclado y preasignación del WAL | añadidos tras WP05 como palanca de la condición 1 (`Config::wal_preallocate`, [resultados](../testing/f1-diagnostico-colas.md#8-preasignación-y-reciclado-del-wal)); sin cambio de formato: usan el relleno de ceros de v1.md §6.1 |
 | Escritura multiproceso, servidor, replicación, SQL | no objetivos (SAD §1.4) |
 | Garantías en macOS y Windows | sin verificar (§5.10) |
 

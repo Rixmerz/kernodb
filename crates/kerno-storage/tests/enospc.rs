@@ -23,8 +23,15 @@ const DIR: &str = "/db";
 const MODES: [Background; 2] = [Background::Threads, Background::Inline];
 const FILLER: &str = "/spare/filler";
 
+/// Logs that grow: with a preallocated log (`tests/wal_prealloc.rs`) a commit
+/// never needs new space, and a full disk shows at creation instead.
 fn config(background: Background) -> Config {
-    Config { write_buffer_bytes: 16 << 10, test: TestConfig { background, db_id: None }, ..Config::default() }
+    Config {
+        write_buffer_bytes: 16 << 10,
+        wal_preallocate: false,
+        test: TestConfig { background, db_id: None },
+        ..Config::default()
+    }
 }
 
 fn open(vfs: &Arc<dyn Vfs>, mode: Background) -> kerno_core::Result<KernoDb> {

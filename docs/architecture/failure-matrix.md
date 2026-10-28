@@ -117,10 +117,10 @@ Matriz del motor de Fase 1 ([diseño](phase1-design.md), §6.3). Las filas se as
 | Fila | Punto de fallo | Muerte del proceso | Corte de energía | Por qué |
 |---|---|---|---|---|
 | L1–L4 | commit: antes de escribir el registro, durante su escritura, antes o durante el `fsync` del WAL, tras el `fsync` | `N` o `N+1` | `N` o `N+1` (`N` si el registro se rompió o no llegó) | Un registro roto falla su crc y es la cola del WAL más nuevo → se ignora; tras el `fsync` es durable y se reproduce. |
-| L5′ | rotación: creación del WAL nuevo y escritura de su cabecera, `sync_dir` | `N` | `N` | La cabecera aún no es durable: un WAL sin tramas es huérfano y se ignora; el WAL viejo sigue vigente. |
+| L5′ | rotación: creación del WAL nuevo (o `rename` de `WAL.spare`) y escritura de su cabecera, `sync_dir`; con `wal_preallocate`, también la preparación de `WAL.spare` desde cero (fase `wal_spare`) | `N` | `N` | La cabecera aún no es durable: un WAL sin tramas es huérfano y se ignora; el WAL viejo sigue vigente. Un `WAL.spare` a medias no es un nombre canónico: nunca se reproduce y se borra al abrir. |
 | L6 | flush: escritura y `fsync` de la SST | `N` | `N` | SST huérfana (ningún registro `FLUSH` la referencia) → se borra al abrir; los datos se reproducen del WAL. |
 | L7′ | flush: registro `FLUSH` en el MANIFEST | `N` | `N` | Una cola rota del MANIFEST se acepta tras una caída; si el registro es completo, la SST y `log_number` nuevo están vigentes: mismo estado lógico. |
-| L8 | flush: borrado del WAL ya volcado | `N` | `N` | WAL con número `< log_number` → se borra al abrir. |
+| L8 | flush: borrado del WAL ya volcado o, con `wal_preallocate`, su reciclado (`rename` a `WAL.spare`, ceros, `sync_data`, `sync_dir`) | `N` | `N` | WAL con número `< log_number` o `WAL.spare` → se borran al abrir; el reciclado solo empieza cuando el MANIFEST ya no necesita ese WAL. |
 | L9 | compactación: escritura de las SST de salida | `N` | `N` | Salidas huérfanas → se borran al abrir. |
 | L10′ | compactación: registro `COMPACTION` | `N` | `N` | Un único registro atómico; entradas y salidas contienen el mismo estado lógico. |
 | L11 | compactación: borrado diferido de entradas obsoletas | `N` | `N` | Solo se borran cuando el MANIFEST ya no las referencia y ningún snapshot las usa; las no borradas son huérfanas y se borran al abrir. |

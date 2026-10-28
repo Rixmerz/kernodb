@@ -273,6 +273,9 @@ pub struct WriteMetrics {
     /// `sync_dir`, phase1-design.md §5.4 H4): total and largest.
     pub memtable_rotation_micros: u64,
     pub memtable_rotation_micros_max: u64,
+    /// Rotations whose new WAL was the prepared spare, preallocated with
+    /// zeros (`Config::wal_preallocate`).
+    pub wal_recycled: u64,
 }
 
 /// Duration of each phase of a successful non-empty commit.
@@ -448,6 +451,7 @@ impl Metrics {
         put("memtable_rotations", w.memtable_rotations);
         put("memtable_rotation_micros", w.memtable_rotation_micros);
         put("memtable_rotation_micros_max", w.memtable_rotation_micros_max);
+        put("wal_recycled", w.wal_recycled);
 
         let c = &self.commit_phases;
         for (phase, l) in [

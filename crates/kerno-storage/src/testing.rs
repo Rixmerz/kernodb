@@ -68,11 +68,14 @@ impl Profile for Inline {
     fn adjust(cfg: &mut Config) {
         cfg.test.background = Background::Inline;
         cfg.close_budget = cfg.close_budget.deterministic();
+        // The sweeps built on this profile cover preallocated and recycled WALs
+        // (the engine default is off).
+        cfg.wal_preallocate = true;
     }
 }
 
 /// The M0 engine: [`CompactionConfig::m0`] for the write buffer of the
-/// harness options and an unbounded close.
+/// harness options, an unbounded close and WALs that grow.
 pub struct M0;
 
 impl Profile for M0 {
@@ -81,6 +84,7 @@ impl Profile for M0 {
     fn adjust(cfg: &mut Config) {
         cfg.compaction = CompactionConfig::m0(cfg.write_buffer_bytes);
         cfg.close_budget = CloseBudget::Unbounded;
+        cfg.wal_preallocate = false;
     }
 }
 
@@ -167,11 +171,13 @@ impl Profile for Tuned {
 ///   `close_subcompactions`,
 ///   `max_background_compactions` (integers), and
 ///   `slowdown=rate:<bytes per second>`;
-/// * of [`Config`]: `max_immutable_memtables`, and `close_budget`
-///   (`unbounded`, or `<max bytes>` or `<max bytes>:<max millis>`).
+/// * of [`Config`]: `max_immutable_memtables`, `wal_preallocate` (`true` or
+///   `false`), and `close_budget` (`unbounded`, or `<max bytes>` or
+///   `<max bytes>:<max millis>`).
 ///
 /// `m0` alone as an item replaces the compaction configuration and the close
-/// budget with [`CompactionConfig::m0`] and an unbounded close.
+/// budget with [`CompactionConfig::m0`] and an unbounded close, and turns WAL
+/// preallocation off.
 ///
 /// `KernoDb::open` validates the result as usual.
 pub fn apply_tuning(spec: &str, cfg: &mut Config) -> std::result::Result<(), String> {
@@ -179,6 +185,7 @@ pub fn apply_tuning(spec: &str, cfg: &mut Config) -> std::result::Result<(), Str
         if item == "m0" {
             cfg.compaction = CompactionConfig::m0(cfg.write_buffer_bytes);
             cfg.close_budget = CloseBudget::Unbounded;
+            cfg.wal_preallocate = false;
             continue;
         }
         let (key, value) = item.split_once('=').ok_or_else(|| format!("`{item}` is not field=value"))?;
@@ -224,6 +231,7 @@ pub fn apply_tuning(spec: &str, cfg: &mut Config) -> std::result::Result<(), Str
             "level_base_bytes" => c.level_base_bytes = Some(int()?),
             "target_file_size" => c.target_file_size = Some(int()?),
             "max_immutable_memtables" => cfg.max_immutable_memtables = int()? as usize,
+            "wal_preallocate" => cfg.wal_preallocate = flag()?,
             "bytes_per_sync" => c.bytes_per_sync = if value == "none" { None } else { Some(int()?) },
             "slowdown" => {
                 c.slowdown = if value == "off" {

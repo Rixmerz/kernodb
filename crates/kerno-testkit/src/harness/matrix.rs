@@ -26,6 +26,8 @@ pub enum FileClass {
     Manifest,
     ManifestTmp,
     Wal,
+    /// The spare WAL (`WAL.spare`) of a preallocating engine.
+    SpareWal,
     Sst,
     /// A `sync_dir`: the directory itself.
     Dir,
@@ -41,6 +43,7 @@ pub fn file_class(op: &OpInfo) -> FileClass {
     match name {
         "MANIFEST" => FileClass::Manifest,
         "MANIFEST.tmp" => FileClass::ManifestTmp,
+        "WAL.spare" => FileClass::SpareWal,
         _ => match Path::new(name).extension().and_then(|e| e.to_str()) {
             Some("wal") => FileClass::Wal,
             Some("sst") => FileClass::Sst,
@@ -66,10 +69,15 @@ pub fn classify(op: &OpInfo) -> &'static [&'static str] {
     let file = file_class(op);
     match (op.phase, file, op.kind) {
         ("commit", Wal, OpKind::WriteAt | OpKind::SyncData) => &["L1-L4"],
-        ("rotate", Wal, _) | ("rotate", Dir, OpKind::SyncDir) => &["L5'"],
+        ("rotate", Wal | SpareWal, _) | ("rotate", Dir, OpKind::SyncDir) => &["L5'"],
+        // Preparing the spare WAL from scratch is part of getting the next
+        // log ready: a half-made spare is deleted at open.
+        ("wal_spare", SpareWal, _) | ("wal_spare", Dir, OpKind::SyncDir) => &["L5'"],
         ("flush", Sst, _) | ("flush", Dir, OpKind::SyncDir) => &["L6"],
         ("flush", Manifest, OpKind::WriteAt | OpKind::SyncData) => &["L7'"],
         ("delete", Wal, OpKind::Remove) => &["L8"],
+        // Recycling the flushed WAL into the spare instead of deleting it.
+        ("delete", Wal, OpKind::Rename) | ("delete", SpareWal, _) | ("delete", Dir, OpKind::SyncDir) => &["L8"],
         ("compact", Sst, _) | ("compact", Dir, OpKind::SyncDir) => &["L9"],
         ("compact", Manifest, OpKind::WriteAt | OpKind::SyncData) => &["L10'"],
         ("delete", Sst, OpKind::Remove) => &["L11"],
@@ -118,6 +126,10 @@ mod tests {
         assert_eq!(rows(op(OpKind::SyncData, "/db/000009.sst", "flush")), ["L6"]);
         assert_eq!(rows(op(OpKind::WriteAt, "/db/MANIFEST", "flush")), ["L7'"]);
         assert_eq!(rows(op(OpKind::Remove, "/db/000003.wal", "delete")), ["L8"]);
+        assert_eq!(rows(op(OpKind::Rename, "/db/000003.wal", "delete")), ["L8"]);
+        assert_eq!(rows(op(OpKind::WriteAt, "/db/WAL.spare", "delete")), ["L8"]);
+        assert_eq!(rows(op(OpKind::WriteAt, "/db/WAL.spare", "wal_spare")), ["L5'"]);
+        assert_eq!(rows(op(OpKind::Rename, "/db/WAL.spare", "rotate")), ["L5'"]);
         assert_eq!(rows(op(OpKind::WriteAt, "/db/MANIFEST", "compact")), ["L10'"]);
         assert_eq!(rows(op(OpKind::Remove, "/db/000004.sst", "delete")), ["L11"]);
         assert_eq!(rows(op(OpKind::SyncData, "/db/MANIFEST", "session")), ["L12'", "R0"]);
