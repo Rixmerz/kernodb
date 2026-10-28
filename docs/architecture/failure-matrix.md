@@ -107,3 +107,32 @@ Protocolo de commit `Sync`: registro `[len|crc|seq|batch]` en el WAL activo (un 
 - Daño del medio **durante** el uso o combinado con caídas: `SimVfs::corrupt_byte_live` ya puede provocarlo, pero ninguna suite lo aplica todavía.
 - Pruebas con dispositivos reales (kill -9, LazyFS / `dm-log-writes`).
 - Fallos durante migraciones de formato (no existen todavía).
+
+## 6. LSM v1 (`kerno-storage`): group commit y `sync()`
+
+Esta sección es la de `kerno-storage` ([diseño de la Fase 1](phase1-design.md) §6.3 y §8); las secciones 2–4 describen el M0 y quedan como histórico. Cada paquete de la Fase 1 añade aquí sus filas; WP12b aporta las filas de grupo (G1–G3), de `sync()` (S1–S2) y de `fsync` fallido en `Buffered` (FL). Notación: `N` = último commit confirmado antes del grupo o de la llamada; `N+k` = el grupo de `k` commits en curso, **completo**.
+
+Protocolo de commit (`Sync`, un grupo): el líder toma `writer` y el grupo FIFO → `make_room` una vez → asigna secuencias consecutivas → **una trama** (`count = k`, un CRC) en **un** `write_at` → `sync_data` del WAL → aplica a la memtable en orden → publica `last_seq` y `durable_seq` **una vez**, tras el `fsync` → completa a los miembros y cede el liderazgo.
+
+| # | Punto de fallo | Muerte del proceso | Corte de energía | Por qué |
+|---|---|---|---|---|
+| G1 | Con el grupo tomado, antes de escribir la trama (incluido `make_room`: cambio de memtable, creación del WAL) | `N` | `N` | Nada del grupo tocó el WAL. Los miembros no fueron confirmados. |
+| G2 | Durante el `write_at` de la trama del grupo | `N` o `N+k` | `N` o `N+k` | Una trama es un grupo con un solo CRC: una escritura rota falla el CRC y es la cola rota del WAL más nuevo (se ignora entera). **Nunca hay un grupo a medias**; en `Sync` el `synced_len` de la trama (WAL-R5) distingue la cola rota del daño. |
+| G3 | Antes o durante el `fsync` del grupo, o tras él y antes de publicar | `N` o `N+k` | `N` o `N+k` | La trama puede haber llegado entera. Si el `fsync` falla, **todos** los miembros reciben `Io`, los encolados detrás del grupo reciben `Poisoned` sin que se escriba nada más y el handle queda envenenado; tras reabrir, el grupo está entero o ausente. Los lectores no vieron ninguna secuencia del grupo (publicación después del `fsync`, I-16). |
+| S1 | `sync()` con tramas sin sincronizar (`Buffered`): antes o durante su `fsync` | prefijo ≥ `N` | prefijo ≥ último `sync()` correcto | `sync()` encola una petición sin lote; el líder hace `sync_data` solo si hay tramas sin sincronizar y devuelve la secuencia duradera. Hasta que vuelve, solo vale lo anterior. Con la base en `Sync`, o sin tramas pendientes, `sync()` no hace E/S. |
+| S2 | `sync()` cuyo `fsync` falla | `N` (todo lo confirmado) | prefijo ≥ último `sync()` correcto | `sync()` devuelve `Io` y envenena; `commit` y `sync` posteriores devuelven `Poisoned` sin E/S. |
+| FL | `Buffered` tras un `fsync` fallido con semántica de Linux (`FsyncFailure::LinuxDropPages`) | todo lo confirmado | prefijo ≥ último `sync()` correcto | Linux descarta las páginas del `fsync` fallido y el siguiente `fsync` devuelve `Ok` sin persistirlas: los commits `Buffered` posteriores al último `sync()` correcto pueden perderse aunque se confirmaran. El motor no reintenta (CONTRIBUTING): envenena, y el estado recuperado sigue siendo un prefijo consistente no anterior a ese `sync()`. |
+
+**Presupuesto de `fsync`** (WP12b): un commit `Sync` cuesta **1 `sync_data` por grupo** del WAL (exactamente 1 con un escritor; menos de 1 por commit con escritores concurrentes: `fsyncs_per_commit_below_half_with_8_writers`); `sync()` cuesta 0 en `Sync` y 0 o 1 en `Buffered` (1 solo si hay tramas sin sincronizar). La rotación, el flush y la compactación no cambian respecto del M0.
+
+**Cómo se verifica.**
+
+| Prueba | Filas |
+|---|---|
+| `shared_concurrency::scenario_c_*` (escenario C: 4 escritores × 10 commits con `set_sync_latency`; muerte de proceso, corte de energía, muerte con pendientes y barridos EIO con ambos modelos de `fsync`, en `Sync` y `Buffered`), sobre `KernoDb`, `Profiled<Inline>` y `Profiled<Serial>` | G1–G3 |
+| `shared_concurrency::multi_writer_power_loss_prefix_no_holes`, `no_reader_sees_undurable_data` | G2, G3 (I-01, I-16) |
+| `shared_sync::*` (`sync_makes_buffered_commits_durable`, `sync_failure_poisons`, `sync_on_poisoned_returns_poisoned`, `power_loss_at_every_io_point_buffered_with_sync`, `scenario_c_*_with_sync`) | S1, S2, FL (I-17) |
+| `group_commit.rs::failed_group_fsync_fails_all_members_and_poisons`, `queued_requests_get_poisoned_after_failure`, `leader_panic_poisons_and_wakes_followers`, `group_frame_torn_by_power_loss_recovers_prefix`, `sync_mode_readers_never_see_undurable_seq` | G2, G3 |
+| `loom_leader_handoff`, `loom_poison_fanout`, `loom_txn_gate_drain`, `loom_backpressure` (`--cfg kerno_loom`) | el protocolo de la cola |
+
+Los vectores de directorio `dirty-group-frame` y `dirty-buffered-synced-len` pasan a WP11 (que genera los vectores de directorio).

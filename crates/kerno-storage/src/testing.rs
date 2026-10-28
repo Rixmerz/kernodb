@@ -19,12 +19,15 @@
 //!   ([`CompactionConfig::m0`], [`CloseBudget::Unbounded`]), so that the
 //!   shared suites also run against the M0 behaviour and a regression can be
 //!   bisected to a lever.
+//! * [`Serial`] (`kerno-serial`): group commit off
+//!   ([`GroupCommitConfig::enabled`](crate::GroupCommitConfig::enabled)), one
+//!   commit per WAL frame and per `fsync`.
 
 use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::Arc;
 
-use kerno_core::contract::{Engine, Options, TestHooks};
+use kerno_core::contract::{Engine, Options, SyncEngine, TestHooks};
 use kerno_core::vfs::Vfs;
 use kerno_core::{Result, WriteBatch};
 
@@ -81,6 +84,17 @@ impl Profile for M0 {
     }
 }
 
+/// One commit per WAL frame and per `fsync`: group commit off.
+pub struct Serial;
+
+impl Profile for Serial {
+    const NAME: &'static str = "kerno-serial";
+
+    fn adjust(cfg: &mut Config) {
+        cfg.group_commit.enabled = false;
+    }
+}
+
 impl<P: Profile> Engine for Profiled<P> {
     type Snapshot = KernoSnapshot;
 
@@ -108,6 +122,12 @@ impl<P: Profile> Engine for Profiled<P> {
 
     fn stats(&self) -> Vec<(String, u64)> {
         self.0.stats()
+    }
+}
+
+impl<P: Profile> SyncEngine for Profiled<P> {
+    fn sync(&self) -> Result<u64> {
+        self.0.sync()
     }
 }
 

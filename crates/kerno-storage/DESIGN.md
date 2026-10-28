@@ -21,6 +21,7 @@ Un árbol LSM nivelado al estilo de LevelDB/RocksDB que implementa directamente 
 | `limits` | `Limits::default()` | límites de API de un commit, comprobados antes de escribir nada (v1.md §1.4): `max_key_len` 512 B, `max_value_len` 1 MiB, `max_batch_bytes` 64 MiB (bytes que el commit ocupa en el WAL) y `max_batch_ops` 2^20. Deben estar dentro de los máximos del formato (16 KiB, 64 MiB, 2^30 y 2^24) y ser al menos 1: si no, `open` devuelve `InvalidArgument` sin tocar nada |
 | `allow_unverified_platform` | `false` | las garantías de `Durability::Sync` solo están verificadas en Linux (ext4, xfs). En otra plataforma, abrir con `Sync` devuelve `InvalidArgument("durability not verified on this platform")` salvo que esto sea `true`; `Buffered` no lo necesita |
 | `test` (oculto, solo pruebas) | `TestConfig::default()` | `background`: `Threads` (hilos de segundo plano, como en el M0) o `Inline` (ver [Modo en línea](#modo-en-línea-backgroundinline)); `db_id`: identificador fijo para una base nueva (por defecto, uno aleatorio), para que los vectores y las pruebas sean reproducibles |
+| `group_commit` | `GroupCommitConfig::default()` | `enabled` (`true`), `max_group_bytes` (1 MiB de commits codificados por grupo; un commit mayor forma un grupo propio), `max_group_commits` (1024; máximo del formato 65 536) y `max_queued_bytes` (64 MiB: un commit espera antes de encolarse mientras haya más bytes encolados o en vuelo). Con `enabled = false` los grupos son de un commit (perfil `Serial`). Los valores a cero o fuera del máximo del formato son `InvalidArgument` |
 | `compaction` | `CompactionConfig::default()` | umbrales de L0 (`l0_trigger` 4, `l0_slowdown` 8, `l0_stop` 12) medidos por **profundidad** de L0, `level_multiplier` 10, frenado por tasa (`Rate`, 16 MiB/s iniciales) y las palancas de la tabla de abajo; `level_base_bytes`, `target_file_size`, `max_compaction_bytes` y `grandparent_overlap_bytes` son `None` y se derivan del *write buffer* efectivo (4 ×, 1 ×, 25 × y 10 × el tamaño objetivo), así que una `Config` construida con `..Config::default()` y otro `write_buffer_bytes` conserva la geometría; `CompactionConfig::m0(wb)` apaga todas las palancas y fija esos tamaños de forma explícita |
 | `close_budget` | `Bounded { max_bytes: 256 MiB, max_duration: Some(200 ms) }` | compactación máxima de un cierre limpio, más allá de la obligatoria (ver [Cierre limpio](#cierre-limpio)); `Unbounded` es el M0 |
 
@@ -62,7 +63,7 @@ Los números de WAL y de SST salen de un único contador creciente (`next_file`)
 El formato está especificado byte a byte en [`docs/file-format/v1.md`](../../docs/file-format/v1.md); aquí solo lo que el motor hace con él.
 
 - **Cabecera común** (96 bytes, §3) en los tres tipos de archivo: `magic`, `format_version`, bits `compat` / `ro_compat` / `incompat`, `db_id`, número de archivo (la generación en el MANIFEST) y un campo por tipo (`first_edit_seq`, `base_seq`, tamaño de bloque), con un CRC32C propio. Se valida entera (HDR-1..10) en todo archivo que se lee, antes de interpretar nada más y antes de escribir nada. El motor pone `DRAFT` en `incompat` de todo lo que escribe; un bit `incompat` desconocido, `AEAD` o `format_version > 1` es `Incompatible`; los bits `compat` desconocidos se ignoran (y un archivo reescrito no los conserva); un bit `ro_compat` desconocido da por ahora `Incompatible("read-only open not yet supported")` (WP08 lo convertirá en apertura de solo lectura).
-- **WAL** (§6): trama de 32 bytes de cabecera + carga, **una trama por commit** hasta el group commit (WP12). Cada trama lleva `first_seq`, `count = 1` y `synced_len` (W-11): el prefijo del archivo que el escritor sabía duradero al escribirla. El CRC lleva como contexto el número de archivo. La carga es el commit en forma canónica (WAL-C1).
+- **WAL** (§6): trama de 32 bytes de cabecera + carga, **una trama por grupo de commits** (WP12; un grupo de un commit cuando el group commit está apagado o hay un solo escritor). Cada trama lleva `first_seq`, `count` (los commits del grupo, con secuencias consecutivas) y `synced_len` (W-11): el prefijo del archivo que el escritor sabía duradero al escribirla. El CRC lleva como contexto el número de archivo. La carga es el commit en forma canónica (WAL-C1).
 - **SST** (§7): cabecera, bloques de datos, filtro, propiedades, índice y pie de 80 bytes. Cada bloque va encapsulado como `carga ‖ ranura AEAD de 40 bytes (ceros) ‖ crc`, con el desplazamiento del bloque como contexto del CRC. Guarda una versión por clave de usuario y una secuencia por entrada. Sin compresión de prefijos ni de bloques; la búsqueda binaria dentro de un bloque usa el array de desplazamientos.
 - **MANIFEST** (§8): un registro `SNAPSHOT` con `next_file`, `last_seq`, `log_number`, `num_levels` (7), `flags` (`CLEAN`), `prev_generation` y un `FileMeta` por archivo (nivel, número, tamaño, entradas, fragmentos de rango —siempre 0—, rango de secuencias, extremos de clave). L0 se lista del más nuevo al más viejo; L1 y los siguientes, ordenados y sin solapes. Significado de los campos:
   - `last_seq`: el commit más nuevo contenido en las SST.
@@ -72,21 +73,26 @@ Cada actualización del MANIFEST es la del M0 sobre registros v1: `write MANIFES
 
 ## Camino de commit
 
-1. Se comprueba el lote contra `Config::limits` (operaciones, claves, valores y bytes; `InvalidArgument` antes de escribir nada, sin consumir secuencia ni envenenar), se canonicaliza (WAL-C1; la forma canónica es lo que se escribe **y** lo que aplica la memtable) y se toma el mutex del escritor (escritor único). Un handle envenenado devuelve `Poisoned`, un lote vacío devuelve la secuencia actual y con la secuencia 2^63−1 ya usada el commit falla con `InvalidArgument("commit sequence exhausted")`, también sin escribir ni envenenar.
-2. `make_room` comprueba el *write buffer* y aplica contrapresión (ver abajo). Si la memtable supera `write_buffer_bytes`, cambia de memtable:
-   - En modo `Buffered`, primero `sync_data` del WAL viejo.
-   - Crea el WAL nuevo (cabecera con `base_seq = last_seq + 1`, sin `sync_data`: W-1) y después `sync_dir`.
-   - Publica una `Version` nueva en la que la memtable vieja es inmutable.
-3. Codifica una trama con `seq = last + 1` y el `synced_len` vigente, la escribe en el WAL con un único `write_at` y, en modo `Sync`, hace `sync_data` (que fija `synced_len` en los bytes escritos).
-4. Inserta en la memtable: un `crossbeam_skiplist::SkipMap` con clave (clave de usuario ascendente, seq descendente) y lápidas. Aplica la forma canónica, así que las claves repetidas dentro de un lote ya se redujeron a la última operación.
-5. Publica `last_seq` bajo el mutex de estado. Una instantánea toma `(Arc<Version>, last_seq)` bajo el mismo mutex, así que capturarla es atómico respecto de la publicación. Los lectores con una seq más antigua ignoran las entradas más nuevas de la skip list.
+Todo commit no vacío pasa por la cola de commits (`commit_queue.rs`, ver [Group commit](#group-commit-y-sync)); lo que sigue es el trabajo de la **petición líder** para su grupo.
 
-**fsyncs por commit `Sync`: exactamente un `sync_data` (el del WAL).** Amortizados además:
+1. En el hilo que llama, el lote se comprueba contra `Config::limits` (operaciones, claves, valores y bytes; `InvalidArgument` antes de escribir nada, sin consumir secuencia ni envenenar) y se canonicaliza (WAL-C1; la forma canónica es lo que se escribe **y** lo que aplica la memtable). Un handle envenenado devuelve `Poisoned` y un lote vacío devuelve la última secuencia **publicada**, sin pasar por la cola. El commit se encola con la ranura de escritura (`txn_gate`) tomada solo durante el encolado.
+2. La petición de cabeza es la líder. Toma el mutex del escritor, toma de la cola un grupo FIFO (hasta `max_group_bytes` / `max_group_commits`) y, desde aquí, trabaja para todo el grupo:
+   - Con la secuencia 2^63−1 ya usada, los commits que no caben fallan con `InvalidArgument("commit sequence exhausted")`, sin escribir ni envenenar; los que caben siguen.
+   - `make_room` **una vez** (un grupo nunca cruza dos WAL): comprueba el *write buffer* y aplica contrapresión (ver abajo). Si la memtable supera `write_buffer_bytes`, cambia de memtable:
+     - En modo `Buffered`, primero `sync_data` del WAL viejo (y `durable_seq` pasa a ser la última secuencia confirmada).
+     - Crea el WAL nuevo (cabecera con `base_seq = last_seq + 1`, sin `sync_data`: W-1) y después `sync_dir`.
+     - Publica una `Version` nueva en la que la memtable vieja es inmutable.
+3. Asigna secuencias consecutivas `last + 1 ..= last + n`, codifica **una trama** (`count = n`, `synced_len` vigente) y la escribe con un único `write_at`. Hace `sync_data` en modo `Sync` o si hay una petición `sync()` en el grupo (que fija `synced_len` en los bytes escritos).
+4. Aplica los lotes a la memtable en orden de secuencia: un `crossbeam_skiplist::SkipMap` con clave (clave de usuario ascendente, seq descendente) y lápidas. Aplica la forma canónica, así que las claves repetidas dentro de un lote ya se redujeron a la última operación.
+5. Publica `last_seq` (y `durable_seq`) **una vez**, bajo el mutex de estado y **después del `fsync`** en modo `Sync` (W-12, I-16): ningún lector observa una secuencia que un corte de energía pueda deshacer. Una instantánea toma `(Arc<Version>, last_seq)` bajo el mismo mutex, así que capturarla es atómico respecto de la publicación. Los lectores con una seq más antigua ignoran las entradas más nuevas de la skip list.
+6. Entrega a cada miembro su resultado (su secuencia), pasa el liderazgo a la petición siguiente y despierta a quien espere sitio en la cola.
+
+**fsyncs por commit `Sync`: un `sync_data` (el del WAL) por grupo**, es decir, exactamente 1 con un solo escritor y menos de 1 con escritores concurrentes. Amortizados además:
 
 - Un `sync_dir` por cambio de memtable, es decir, cada `write_buffer_bytes`.
 - En segundo plano, por flush: `sync_data` de la SST, `sync_dir` y después `sync_data` + `sync_dir` del MANIFEST.
 
-No hay *group commit*: los escritores concurrentes pagan cada uno su propia sincronización. La cabecera de la trama (32 bytes) añade 16 bytes por commit respecto del M0.
+La cabecera de la trama (32 bytes) se paga una vez por grupo; con un solo escritor añade 16 bytes por commit respecto del M0.
 
 **Contrapresión:**
 
@@ -94,6 +100,20 @@ No hay *group commit*: los escritores concurrentes pagan cada uno su propia sinc
 - Con ≥ `max_immutable_memtables` memtables inmutables (4 por defecto) o la métrica de L0 ≥ `l0_stop` (12 por defecto), el commit se bloquea hasta que un hilo de segundo plano avanza.
 - Los umbrales están en `Config::compaction` (`CompactionConfig`); `CompactionConfig::m0(write_buffer)` reproduce las constantes del M0.
 - Cada bloqueo es un **episodio**: se cuenta una vez al entrar en la espera, por motivo (memtables o L0), con su duración; los despertares intermedios no cuentan (el M0 contaba despertares).
+
+## Group commit y `sync()`
+
+`commit_queue.rs` es la máquina de estados de la cola, **sin E/S**, escrita sobre la fachada `crate::sync` (`parking_lot` normalmente; `loom` con `--cfg kerno_loom`). `db.rs` pone la E/S en el cuerpo del líder.
+
+- **Cola.** `Mutex<State>` con una `VecDeque` FIFO de peticiones y, por petición, un `Mutex<Slot>` + `Condvar` propios (`Waiting` → `Leader` → `Done(resultado)`). La petición de cabeza es la líder; el hilo cuya petición encuentra la cola vacía lidera sin esperar (camino rápido, sin regresión con un escritor). Un líder dirige **un** grupo —él incluido— y lo completa: `complete` saca el grupo de la cola, entrega los resultados y asciende a la siguiente petición. Solo hay un grupo en vuelo.
+- **Orden de bloqueo:** `txn_gate → cola → ranura de la petición` y, en `db.rs`, `txn_gate → cola → writer → manifest → state`. El cerrojo de la cola nunca se mantiene durante la E/S ni mientras se pide otro: el líder toma `writer` y **después** toma el grupo, para que los commits que llegan mientras espera a `writer` (por ejemplo, a un flush en línea) se unan a él.
+- **Fallo.** Si la escritura o el `fsync` de un grupo fallan, se envenena el handle: los miembros del grupo reciben `Io` (se construye un `io::Error` por miembro: no es `Clone`) y los encolados que no estaban en el grupo, `Poisoned` sin que se escriba nada más; los que esperan sitio y los que llegan después reciben `Poisoned` de la cola. El cuerpo del líder va dentro de `catch_unwind`: un pánico envenena (`"commit leader panicked"`), falla el grupo con `Io` y despierta a todos; nadie espera a un líder que ya no existe.
+- **Contrapresión.** `enqueue` espera mientras los bytes encolados o en vuelo superen `max_queued_bytes`; el máximo de bytes encolados a la vez es, por construcción, `max_queued_bytes` más un commit.
+- **Vaciado.** `CommitQueue::drain` espera a que no quede nada encolado ni en vuelo. Lo usará `begin_write` (WP13b) con la ranura de escritura tomada: como los commits ciegos solo la toman para encolar, quien la tiene y vació la cola tiene el pipeline para sí.
+- **`sync()`.** Encola una petición sin lote (0 bytes). El líder hace `sync_data` solo si hay una trama sin sincronizar (`WalWriter::needs_sync`, no `synced_len < bytes escritos`: un WAL con solo cabecera no tiene nada que hacer duradero) y devuelve `durable_seq`, que es la última secuencia confirmada. En modo `Sync` no hace E/S. Un `sync()` fallido envenena como un commit fallido; sobre un handle envenenado devuelve `Poisoned` sin E/S. Un handle de solo lectura devolverá `ReadOnly` cuando exista (WP08: hoy `open` rechaza `AccessMode::ReadOnly`).
+- **`durable_seq`** (en `State`, publicado junto con `last_seq`): igual a `last_seq` en `Sync`; en `Buffered`, la última secuencia cubierta por un `sync()` o por la rotación del WAL (W-2) y, al abrir, la recuperada.
+- **Semántica de Linux tras un `fsync` fallido (fila FL de la [matriz de fallos](../../docs/architecture/failure-matrix.md)).** En `Buffered`, el `fsync` fallido de un `sync()` descarta en Linux las páginas pendientes del WAL: los commits `Buffered` posteriores al último `sync()` correcto pueden perderse aunque se hubieran confirmado, y el estado recuperado sigue siendo un prefijo no anterior a ese `sync()`.
+- **Comprobación.** `loom` (`RUSTFLAGS="--cfg kerno_loom" cargo test -p kerno-storage --release --lib commit_queue`) explora el relevo de líder, la propagación del envenenamiento, el vaciado de `txn_gate` y la contrapresión con tres hilos (cota de 3 expulsiones por modelo); los mismos escenarios se ejecutan con hilos reales en cada compilación. Además, `tests/group_commit.rs` sujeta al líder en un punto exacto con `HookVfs` y un estrés de 10^4 commits con retrasos y cesiones aleatorias (con `--features deadlock_detection`, el detector de `parking_lot` vigila los cerrojos del motor).
 
 ## Trabajo en segundo plano
 
@@ -195,15 +215,17 @@ Cualquier discrepancia devuelve `Error::Corruption`. La corrupción encontrada p
 
 ## Modos de durabilidad
 
-- **Sync:** un commit es duradero cuando vuelve.
+- **Sync:** un commit es duradero cuando vuelve (un `fsync` por grupo).
 - **Buffered:** sin sincronización por commit, pero los registros se escriben con `write_at` antes de que `commit` vuelva, así que una caída del proceso no pierde nada confirmado. Ante un corte de energía, el estado recuperado es un **prefijo de commits**, nunca más antiguo que el estado que informó la última `open`. Se cumple porque:
   - el WAL viejo se sincroniza antes de crear uno nuevo, así que solo el log más nuevo puede tener huecos, y la reproducción se detiene en el primer hueco;
   - la SST y el MANIFEST son duraderos antes de borrar cualquier WAL al que sustituyen;
   - la recuperación hace duradero su resultado antes de volver.
 
+  `sync()` (ADR-0002) hace duradero lo confirmado hasta ese momento y devuelve la secuencia duradera (ver [Group commit](#group-commit-y-sync)).
+
 ## Errores y envenenamiento
 
-Cualquier error de E/S en el camino de commit (anexado, sincronización, cambio de memtable) o en un hilo de segundo plano (flush, compactación, escritura del MANIFEST) envenena el handle. A partir de ahí, `commit`, `snapshot` y `close` devuelven `Poisoned` hasta que se reabre la base. Las instantáneas tomadas antes siguen funcionando sobre lo que siga siendo legible.
+Cualquier error de E/S en el camino de commit (anexado, sincronización, cambio de memtable), un pánico del líder o un error en un hilo de segundo plano (flush, compactación, escritura del MANIFEST) envenena el handle. A partir de ahí, `commit`, `sync`, `snapshot` y `close` devuelven `Poisoned` hasta que se reabre la base. Los miembros del grupo que falló reciben `Io`. Las instantáneas tomadas antes siguen funcionando sobre lo que siga siendo legible.
 
 `Drop` activa la marca de apagado, despierta a todos los que esperan y espera a los dos hilos, que terminan al apagar, al envenenarse o en su primera E/S fallida. Un pánico en un hilo de segundo plano se captura y envenena el handle.
 
@@ -211,9 +233,9 @@ Cualquier error de E/S en el camino de commit (anexado, sincronización, cambio 
 
 `KernoDb::metrics()` devuelve una instantánea tipada (`Metrics`, en `src/metrics.rs`); `stats()` la aplana con nombres estables y conserva todos los del M0 (`write_stalls` cuenta ahora episodios).
 
-- **Forma:** `l{0..6}_files` / `l{0..6}_bytes`, `l0_depth` (máximo de archivos de L0 que se solapan en una clave), `l0_files_max`, `memtable_bytes`, `immutable_memtables`, `last_seq`, `block_cache_bytes`.
-- **Escritura:** commits, bytes y sincronizaciones del WAL, cambios de memtable y su duración dentro del commit (`memtable_rotation_micros`, `_max`).
-- **Fases del commit:** histogramas log2 (cada potencia de dos partida en cuatro: percentiles con error < 25 %) de `make_room`, `wal_write`, `wal_sync`, `apply` y el total, con `commit_<fase>_{count,micros,max_micros,p50_micros,p99_micros}`. `wal_sync` se separa además en `wal_sync_busy` (con un flush o una compactación escribiendo) y `wal_sync_quiet`. `queue` es 0 hasta que exista group commit (WP12). Cada fase cuesta un `Instant::now()` y tres sumas atómicas relajadas.
+- **Forma:** `l{0..6}_files` / `l{0..6}_bytes`, `l0_depth` (máximo de archivos de L0 que se solapan en una clave), `l0_files_max`, `memtable_bytes`, `immutable_memtables`, `last_seq`, `durable_seq`, `block_cache_bytes`.
+- **Escritura:** commits, grupos (`commit_groups`, `group_commits_max`), `queued_bytes_max`, bytes y sincronizaciones del WAL, cambios de memtable y su duración dentro del commit (`memtable_rotation_micros`, `_max`).
+- **Fases del commit:** histogramas log2 (cada potencia de dos partida en cuatro: percentiles con error < 25 %) de `queue`, `make_room`, `wal_write`, `wal_sync`, `apply` y el total, con `commit_<fase>_{count,micros,max_micros,p50_micros,p99_micros}`. `wal_sync` se separa además en `wal_sync_busy` (con un flush o una compactación escribiendo) y `wal_sync_quiet`. `queue` y `total` tienen una muestra por commit; `make_room`, `wal_write`, `wal_sync` y `apply`, una por grupo (las escribe el líder, bajo el mutex del escritor). Cada fase cuesta un `Instant::now()` y tres sumas atómicas relajadas.
 - **Bloqueos:** `stall_episodes_{memtable,l0}`, `stall_micros_{memtable,l0}`, `stall_micros_max`, `slowdown_commits`, `slowdown_micros`; los nombres del M0 `write_stalls`, `write_stall_micros` y `write_slowdowns` se derivan de ellos.
 - **Segundo plano:** flushes y bytes de flush (incluidos los del cierre y de la recuperación), `flush_micros_max`, compactaciones, `compaction_micros_max`, movimientos triviales, bytes leídos y escritos por la compactación, lápidas descartadas, compactaciones de L0 con sus bytes de entrada y archivos de L1 reescritos (totales y máximos), `compactions_while_l0_slowdown` (compactaciones de niveles profundos elegidas con L0 en frenado) y `pending_compaction_bytes` (bytes por encima del objetivo de L1 a L5, más todo L0 cuando alcanza `l0_trigger`).
 - **Lecturas:** comprobaciones del bloom, negativos y falsos positivos; aciertos y fallos de la caché de bloques. Cada contador se reparte en 16 ranuras alineadas a 64 bytes (una por hilo, por turno) que se suman al leer, para que los lectores concurrentes no compitan por la misma línea de caché.
@@ -225,7 +247,7 @@ Cualquier error de E/S en el camino de commit (anexado, sincronización, cambio 
 Los paquetes de la Fase 1 atacan varias de ellas ([diseño de la Fase 1](../../docs/architecture/phase1-design.md) §5).
 
 - **MANIFEST.** Cada generación es una instantánea completa que se reescribe en cada flush y compactación, con coste O(archivos); WP08 lo convierte en un log de ediciones de solo anexado con checkpoints periódicos.
-- **Escrituras.** No hay *group commit*, así que los escritores `Sync` concurrentes se serializan con un fsync cada uno. Tampoco se reciclan los WAL, así que cada cambio de memtable paga una creación más `sync_dir`.
+- **Escrituras.** El commit se copia a la petición para que el líder lo lea mientras su dueño espera (una copia de claves y valores por commit). El líder de un grupo hace de líder de **un** grupo: bajo carga, cada grupo cuesta un relevo de hilo. No se reciclan los WAL, así que cada cambio de memtable paga una creación más `sync_dir`. Un grupo que espera en `make_room` (un bloqueo por flush) retrasa a todos sus miembros.
 - **Compactación.** Por defecto un único hilo de compactación y sin subcompactaciones (`max_background_compactions` y `max_subcompactions` existen pero están apagadas). No hay tamaños de nivel dinámicos. El frenado por tasa mira solo L0, no la deuda de los niveles profundos.
 - **Formato de SST.** Sin compresión de prefijos, sin compresión, sin índice o filtro particionados y sin versionado del formato más allá de los números mágicos.
 - **Memoria y archivos.** El índice y el filtro de cada tabla quedan residentes y todas las tablas quedan abiertas, así que la memoria crece con el número de archivos. La caché de bloques solo guarda bloques de datos.

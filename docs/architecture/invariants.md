@@ -28,6 +28,17 @@ Las pruebas citadas viven en [`crates/kerno-testkit/src/harness/`](../../crates/
 | I-14 | **Equivalencia lógica entre candidatos.** La misma secuencia de operaciones produce el mismo estado lógico y la misma secuencia en todos los motores. | `spike-bench/tests/differential.rs` (contenido y escaneos acotados en los seis motores; la secuencia, solo en los que la persisten: candidatos y `LogEngine`) | verificada |
 | I-15 | **Formato versionado.** Cada archivo persistente lleva magic y versión; una versión desconocida se rechaza sin modificar el archivo. | `regressions.rs::format_version` de cada candidato (meta del B+ tree; MANIFEST del LSM, que fija la versión de todo el directorio) | parcial: las SST del LSM solo llevan una versión implícita en el magic (`KRNOSST1`) y su WAL no lleva ni magic ni versión (ADR-0003) |
 
+### 1.1 Invariantes del motor `kerno-storage` (Fase 1, propuestas)
+
+Propuestas de [phase1-design.md §8](phase1-design.md); se promueven a la tabla anterior en WP14. Las de group commit y `sync()` las introduce WP12b.
+
+| ID | Invariante | Verificación automatizada |
+|---|---|---|
+| I-16 | **Visibilidad tras durabilidad.** En `Sync`, ningún lector observa datos que un corte de energía pueda perder: el líder publica `last_seq` una vez por grupo, después del `fsync` de la trama que lo contiene (W-12). | `shared_concurrency::no_reader_sees_undurable_data`, `group_commit.rs::sync_mode_readers_never_see_undurable_seq` |
+| I-17 | **`sync()`.** Tras `sync()` → `Ok(s)`, todo commit con secuencia `≤ s` sobrevive a un corte de energía (`s` es al menos la secuencia de todo commit confirmado antes de la llamada); un `fsync` fallido envenena el handle. | `shared_sync::*`, `sync.rs::sync_returns_durable_seq` |
+
+Cambio en una existente: **I-01** (atomicidad) cubre también a cada miembro de un grupo: una trama es un grupo con un solo CRC, así que tras cualquier caída el grupo está entero o ausente (`group_frame_torn_by_power_loss_recovers_prefix`, escenario C).
+
 ## 2. Invariantes de capas superiores (registradas ahora, verificables más adelante)
 
 | ID | Invariante | Origen | Se verificará en |

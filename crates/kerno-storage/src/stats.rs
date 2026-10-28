@@ -7,21 +7,27 @@ use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::time::Instant;
 
 use crate::metrics::{
-    BackgroundMetrics, CommitPhaseMetrics, LatencyMetrics, LogHistogram, MaintenanceMetrics, Metrics, OpenMetrics,
-    ReadMetrics, ShapeMetrics, ShardedCounter, StallMetrics, WriteMetrics,
+    BackgroundMetrics, CommitPhaseMetrics, LogHistogram, MaintenanceMetrics, Metrics, OpenMetrics, ReadMetrics,
+    ShapeMetrics, ShardedCounter, StallMetrics, WriteMetrics,
 };
 
 #[derive(Default)]
 pub struct Stats {
     // Writes.
     pub commits: AtomicU64,
+    /// Groups of commits written as one frame, and the most commits in one.
+    pub commit_groups: AtomicU64,
+    pub group_commits_max: AtomicU64,
+    /// Most bytes queued or in flight in the commit queue at once.
+    pub queued_bytes_max: AtomicU64,
     pub wal_bytes: AtomicU64,
     pub wal_syncs: AtomicU64,
     pub memtable_rotations: AtomicU64,
     pub memtable_rotation_nanos: AtomicU64,
     pub memtable_rotation_nanos_max: AtomicU64,
 
-    // Commit phases (written by the writer, under the writer lock).
+    // Commit phases (written by the group leader, under the writer lock).
+    pub commit_queue: LogHistogram,
     pub commit_make_room: LogHistogram,
     pub commit_wal_write: LogHistogram,
     pub commit_wal_sync_busy: LogHistogram,
@@ -219,6 +225,9 @@ impl Stats {
             shape,
             writes: WriteMetrics {
                 commits: load(&self.commits),
+                commit_groups: load(&self.commit_groups),
+                group_commits_max: load(&self.group_commits_max),
+                queued_bytes_max: load(&self.queued_bytes_max),
                 wal_bytes: load(&self.wal_bytes),
                 wal_syncs: load(&self.wal_syncs),
                 memtable_rotations: load(&self.memtable_rotations),
@@ -226,7 +235,7 @@ impl Stats {
                 memtable_rotation_micros_max: micros(&self.memtable_rotation_nanos_max),
             },
             commit_phases: CommitPhaseMetrics {
-                queue: LatencyMetrics::default(),
+                queue: self.commit_queue.snapshot().latency(),
                 make_room: self.commit_make_room.snapshot().latency(),
                 wal_write: self.commit_wal_write.snapshot().latency(),
                 wal_sync: busy.merge(&quiet).latency(),

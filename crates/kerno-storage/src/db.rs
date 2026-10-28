@@ -5,18 +5,20 @@ use std::any::Any;
 use std::collections::HashSet;
 use std::io;
 use std::ops::Bound;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use kerno_core::contract::{Engine, Options, Snapshot, TestHooks};
+use kerno_core::contract::{Engine, Options, Snapshot, SyncEngine, TestHooks};
 use kerno_core::probe;
 use kerno_core::vfs::Vfs;
 use kerno_core::{Durability, Error, Op, Result, WriteBatch};
 use parking_lot::{Condvar, Mutex};
 
+use crate::commit_queue::{CommitQueue, Request, Wake, replicate};
 use crate::compaction::{self, BLOCK_SIZE, Busy, Claim, NUM_LEVELS, Plan, RateController, Tuning};
 use crate::config::{AccessMode, Background, CloseBudget, Config, Limits, SlowdownPolicy};
 use crate::flush;
@@ -133,8 +135,13 @@ static NO_POINTERS: [Vec<u8>; NUM_LEVELS] = [const { Vec::new() }; NUM_LEVELS];
 /// Published state, read by snapshots and background threads.
 struct State {
     version: Arc<Version>,
-    /// Last commit visible to new snapshots.
+    /// Last commit visible to new snapshots. In `Sync` mode it is published
+    /// only after the `fsync` of the frame that holds it (W-12, I-16).
     last_seq: u64,
+    /// Every commit up to this sequence survives a power loss. Equal to
+    /// `last_seq` in `Sync` mode; in `Buffered` mode it follows `sync()` and
+    /// WAL rotations.
+    durable_seq: u64,
     poisoned: Option<String>,
     shutdown: bool,
     /// A background thread is working on a flush or a compaction (including
@@ -206,7 +213,11 @@ struct Inner {
     ctx: Arc<TableCtx>,
     stats: Arc<Stats>,
     next_file: AtomicU64,
-    // Lock order: writer -> manifest -> state.
+    /// The write slot (D-03): a blind commit holds it only to enqueue.
+    txn_gate: Mutex<()>,
+    queue: CommitQueue<Work>,
+    // Lock order: txn_gate -> queue -> writer -> manifest -> state (the
+    // queue's own lock is never held while taking another).
     writer: Mutex<Writer>,
     manifest: Mutex<ManifestState>,
     state: Mutex<State>,
@@ -389,6 +400,14 @@ fn recover(ctx: &Arc<TableCtx>, listing: &Listing, loaded: manifest::Loaded) -> 
     Ok(Recovered { levels, last_seq, log_number: wal_number, next_file, wal, manifest: writer })
 }
 
+/// What a queued request asks the leader for.
+enum Work {
+    /// A non-empty commit, already canonical, and when its call began.
+    Commit { commit: CanonicalCommit<Vec<u8>>, started: Instant },
+    /// `sync()`: make everything acknowledged so far durable.
+    Sync,
+}
+
 /// The format-level form of one operation of a batch.
 fn commit_op(op: &Op) -> CommitOp<'_> {
     match op {
@@ -520,63 +539,195 @@ impl Inner {
     // ---- commit path ----
 
     fn commit(&self, batch: &WriteBatch) -> Result<u64> {
-        let start = Instant::now();
+        let started = Instant::now();
         validate_batch(batch, &self.limits)?;
         let commit = canonical(batch);
-        if commit.encoded_len() > self.limits.max_batch_bytes {
+        let bytes = commit.encoded_len();
+        if bytes > self.limits.max_batch_bytes {
             return Err(Error::InvalidArgument(format!(
-                "batch encodes to {} bytes, over the limit of {}",
-                commit.encoded_len(),
+                "batch encodes to {bytes} bytes, over the limit of {}",
                 self.limits.max_batch_bytes
             )));
         }
-        let _phase = probe::phase("commit");
-        let mut w = self.writer.lock();
         self.check_poisoned()?;
         if batch.is_empty() {
-            return Ok(w.last_seq);
+            return Ok(self.state.lock().last_seq);
         }
-        if w.last_seq >= MAX_SEQ {
-            // Nothing is written and nothing is poisoned: reads still work.
-            return Err(Error::InvalidArgument("commit sequence exhausted".into()));
-        }
-        let room_start = Instant::now();
-        self.make_room(&mut w, batch.payload_bytes() as u64)?;
-        let write_start = Instant::now();
-        let seq = w.last_seq + 1;
-        let sync = self.durability == Durability::Sync;
-        let io = w.wal.append(seq, &commit);
-        let sync_start = Instant::now();
-        // Whether a flush or compaction was writing during the sync (H3).
-        let background = || self.stats.background_active.load(Ordering::Relaxed) > 0;
-        let busy = sync && background();
-        let io = io.and_then(|len| if sync { w.wal.sync().map(|()| len) } else { Ok(len) });
-        let frame_len = match io {
-            Ok(len) => len,
-            Err(e) => {
-                self.poison(format!("WAL write failed: {e}"));
-                return Err(e.into());
-            }
+        // ponytail: the commit is copied into the request so the leader can
+        // read it while this thread waits; borrow it for a leader's own
+        // commit if profiling ever shows the copy.
+        self.submit(Work::Commit { commit: commit.to_owned_commit(), started }, bytes)
+    }
+
+    /// [`SyncEngine::sync`]: makes every commit acknowledged so far durable
+    /// and returns the durable sequence.
+    fn sync(&self) -> Result<u64> {
+        self.check_poisoned()?;
+        self.submit(Work::Sync, 0)
+    }
+
+    /// Queues `work`, leads the group it ends up in or waits for the leader
+    /// that serves it, and returns its result.
+    fn submit(&self, work: Work, bytes: usize) -> Result<u64> {
+        let request = Request::new(work, bytes);
+        let queued = {
+            let _gate = self.txn_gate.lock();
+            self.queue.enqueue(&request)?
         };
-        let apply_start = Instant::now();
-        let busy = busy || (sync && background());
-        w.mem.apply_commit(seq, &commit);
-        w.last_seq = seq;
-        self.state.lock().last_seq = seq;
-        let end = Instant::now();
-        let s = &*self.stats;
-        bump(&s.commits, 1);
-        bump(&s.wal_bytes, frame_len as u64);
-        s.commit_make_room.record_single_writer(nanos(room_start, write_start));
-        s.commit_wal_write.record_single_writer(nanos(write_start, sync_start));
-        if sync {
-            bump(&s.wal_syncs, 1);
-            let h = if busy { &s.commit_wal_sync_busy } else { &s.commit_wal_sync_quiet };
-            h.record_single_writer(nanos(sync_start, apply_start));
+        bump_max(&self.stats.queued_bytes_max, queued.queued_bytes as u64);
+        if !queued.leader
+            && let Wake::Done(result) = request.wait()
+        {
+            return result;
         }
-        s.commit_apply.record_single_writer(nanos(apply_start, end));
-        s.commit_total.record_single_writer(nanos(start, end));
-        Ok(seq)
+        self.lead();
+        match request.wait() {
+            Wake::Done(result) => result,
+            Wake::Lead => unreachable!("a leader that completed its group is not promoted again"),
+        }
+    }
+
+    /// Runs the group at the front of the queue, whose first request is the
+    /// caller's, and completes it. A panic in the leader poisons the handle
+    /// and fails the group, so nobody waits for a leader that is gone.
+    fn lead(&self) {
+        let mut w = self.writer.lock();
+        let group = self.queue.take_group();
+        let _phase =
+            probe::phase(if group.iter().all(|r| matches!(r.payload(), Work::Sync)) { "sync" } else { "commit" });
+        let (results, poison) =
+            catch_unwind(AssertUnwindSafe(|| self.run_group(&mut w, &group))).unwrap_or_else(|_| {
+                const MSG: &str = "commit leader panicked";
+                self.poison(MSG.into());
+                (group.iter().map(|_| Err(Error::Io(io::Error::other(MSG)))).collect(), Some(MSG.into()))
+            });
+        drop(w);
+        self.queue.complete(&group, results, poison);
+    }
+
+    /// W-11/W-12 for one group, under the writer lock: one memtable switch
+    /// check, consecutive sequences, one frame, one `write_at`, one `fsync`
+    /// (in `Sync` mode, or when a `sync()` is in the group and something is
+    /// unsynced), the batches applied in sequence order, and the sequences
+    /// published once, after the `fsync`. Returns one result per member, and
+    /// the poison message if the handle must fail for good.
+    fn run_group(
+        &self,
+        w: &mut Writer,
+        group: &[crate::sync::Arc<Request<Work>>],
+    ) -> (Vec<Result<u64>>, Option<String>) {
+        let s = &*self.stats;
+        let started = Instant::now();
+        let fail_all = |e: Error, poison: Option<String>| (group.iter().map(|_| Err(replicate(&e))).collect(), poison);
+        let commits: Vec<&CanonicalCommit<Vec<u8>>> = group
+            .iter()
+            .filter_map(|r| match r.payload() {
+                Work::Commit { commit, .. } => Some(commit),
+                Work::Sync => None,
+            })
+            .collect();
+        for r in group {
+            if matches!(r.payload(), Work::Commit { .. }) {
+                s.commit_queue.record_single_writer(nanos(r.enqueued(), started));
+            }
+        }
+        if let Err(e) = self.check_poisoned() {
+            return fail_all(e, None);
+        }
+        let wants_sync = group.iter().any(|r| matches!(r.payload(), Work::Sync));
+        // Sequences are exhausted before they wrap: the commits that do not
+        // fit are refused, nothing is poisoned and reads still work.
+        let room = usize::try_from(MAX_SEQ - w.last_seq).unwrap_or(usize::MAX);
+        let accepted = commits.len().min(room);
+        let first = w.last_seq + 1;
+        let mut frame_len = 0;
+        let mut synced = self.durability == Durability::Sync;
+        if accepted > 0 {
+            let room_start = Instant::now();
+            // The rate slowdown charges the group's encoded bytes.
+            let group_bytes = commits[..accepted].iter().map(|c| c.encoded_len() as u64).sum();
+            if let Err(e) = self.make_room(w, group_bytes) {
+                return fail_all(e, None);
+            }
+            let write_start = Instant::now();
+            let io = w.wal.append_group(first, &commits[..accepted]);
+            let sync_start = Instant::now();
+            // Whether a flush or compaction was writing during the sync (H3).
+            let background = || s.background_active.load(Ordering::Relaxed) > 0;
+            let fsync = synced || wants_sync;
+            let busy = fsync && background();
+            let io = io.and_then(|len| if fsync { w.wal.sync().map(|()| len) } else { Ok(len) });
+            frame_len = match io {
+                Ok(len) => len,
+                Err(e) => {
+                    let msg = format!("WAL write failed: {e}");
+                    self.poison(msg.clone());
+                    return fail_all(Error::Io(e), Some(msg));
+                }
+            };
+            synced |= wants_sync;
+            let apply_start = Instant::now();
+            let busy = busy || (fsync && background());
+            for (i, commit) in commits[..accepted].iter().enumerate() {
+                w.mem.apply_commit(first + i as u64, commit);
+            }
+            s.commit_make_room.record_single_writer(nanos(room_start, write_start));
+            s.commit_wal_write.record_single_writer(nanos(write_start, sync_start));
+            if fsync {
+                bump(&s.wal_syncs, 1);
+                let h = if busy { &s.commit_wal_sync_busy } else { &s.commit_wal_sync_quiet };
+                h.record_single_writer(nanos(sync_start, apply_start));
+            }
+            s.commit_apply.record_single_writer(nanos(apply_start, Instant::now()));
+        } else if wants_sync {
+            // Only `sync()` requests (or commits refused for the sequence
+            // limit): an `fsync` only if a frame is unsynced.
+            if w.wal.needs_sync() {
+                let sync_start = Instant::now();
+                if let Err(e) = w.wal.sync() {
+                    let msg = format!("WAL sync failed: {e}");
+                    self.poison(msg.clone());
+                    return fail_all(Error::Io(e), Some(msg));
+                }
+                bump(&s.wal_syncs, 1);
+                s.commit_wal_sync_quiet.record_single_writer(nanos(sync_start, Instant::now()));
+            }
+            synced = true;
+        }
+        let last = first - 1 + accepted as u64;
+        w.last_seq = last;
+        {
+            // Published together, once: a reader never sees a sequence that
+            // a power loss could take back (Sync mode).
+            let mut st = self.state.lock();
+            st.last_seq = last;
+            if synced {
+                st.durable_seq = last;
+            }
+        }
+        let end = Instant::now();
+        if accepted > 0 {
+            bump(&s.commits, accepted as u64);
+            bump(&s.commit_groups, 1);
+            bump_max(&s.group_commits_max, accepted as u64);
+            bump(&s.wal_bytes, frame_len as u64);
+        }
+        let mut next = 0;
+        let results = group
+            .iter()
+            .map(|r| match r.payload() {
+                Work::Commit { started, .. } => {
+                    next += 1;
+                    if next > accepted {
+                        return Err(Error::InvalidArgument("commit sequence exhausted".into()));
+                    }
+                    s.commit_total.record_single_writer(nanos(*started, end));
+                    Ok(first + next as u64 - 1)
+                }
+                Work::Sync => Ok(last),
+            })
+            .collect();
+        (results, None)
     }
 
     /// Applies backpressure and switches to a new memtable when the active
@@ -672,6 +823,8 @@ impl Inner {
             // Every older log must be complete before a newer one exists,
             // so that recovery's "only the newest log may be torn" holds.
             w.wal.sync()?;
+            // ...and everything acknowledged so far is durable.
+            self.state.lock().durable_seq = w.last_seq;
         }
         let number = self.next_file.fetch_add(1, Ordering::SeqCst);
         let wal = WalWriter::create(&*self.vfs, &self.dir, number, self.ctx.db_id, w.last_seq + 1)?;
@@ -1373,6 +1526,8 @@ impl KernoDb {
             ctx,
             stats,
             next_file: AtomicU64::new(r.next_file),
+            txn_gate: Mutex::new(()),
+            queue: CommitQueue::new(cfg.group_commit.queue_limits()),
             writer: Mutex::new(Writer {
                 wal: r.wal,
                 mem,
@@ -1392,6 +1547,8 @@ impl KernoDb {
             state: Mutex::new(State {
                 version,
                 last_seq: r.last_seq,
+                // Recovery made what it recovered durable.
+                durable_seq: r.last_seq,
                 poisoned: None,
                 shutdown: false,
                 flush_running: false,
@@ -1421,9 +1578,9 @@ impl KernoDb {
     /// The metrics of this handle now (phase1-design.md §3).
     pub fn metrics(&self) -> Metrics {
         let inner = &*self.inner;
-        let (v, last_seq) = {
+        let (v, last_seq, durable_seq) = {
             let st = inner.state.lock();
-            (st.version.clone(), st.last_seq)
+            (st.version.clone(), st.last_seq, st.durable_seq)
         };
         let shape = ShapeMetrics {
             levels: v
@@ -1436,9 +1593,20 @@ impl KernoDb {
             memtable_bytes: v.mem.approx_bytes() as u64,
             immutable_memtables: v.imms.len() as u64,
             last_seq,
+            durable_seq,
             block_cache_bytes: inner.ctx.cache.weight(),
         };
         inner.stats.metrics(shape, compaction::pending_bytes(&v.levels, &inner.tuning))
+    }
+
+    /// Makes every commit acknowledged so far durable and returns the durable
+    /// sequence (ADR-0002, I-17). With [`Durability::Sync`](kerno_core::Durability::Sync)
+    /// every acknowledged commit is durable already and this does no I/O; in
+    /// `Buffered` mode it costs one `fsync` of the WAL if frames are
+    /// unsynced. A failed `fsync` poisons the handle. Shares the commit queue:
+    /// it is served by the leader of the group it joins.
+    pub fn sync(&self) -> Result<u64> {
+        self.inner.sync()
     }
 
     /// Closes the handle like `Engine::close` and returns its metrics after
@@ -1516,6 +1684,12 @@ impl Engine for KernoDb {
     /// [`KernoDb::metrics`], flattened ([`Metrics::flatten`]).
     fn stats(&self) -> Vec<(String, u64)> {
         self.metrics().flatten()
+    }
+}
+
+impl SyncEngine for KernoDb {
+    fn sync(&self) -> Result<u64> {
+        KernoDb::sync(self)
     }
 }
 

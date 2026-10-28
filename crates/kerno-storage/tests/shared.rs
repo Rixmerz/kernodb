@@ -19,3 +19,12 @@ mod m0_profile {
         buffered_power_loss_prefix = true
     );
 }
+
+/// One commit per WAL frame and per `fsync`: group commit off (profile
+/// `kerno-serial`, phase1-design.md §5.6).
+mod serial {
+    kerno_testkit::engine_test_suite!(
+        kerno_storage::testing::Profiled<kerno_storage::testing::Serial>,
+        buffered_power_loss_prefix = true
+    );
+}

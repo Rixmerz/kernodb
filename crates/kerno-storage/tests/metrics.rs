@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use kerno_core::contract::{Engine, Options, Snapshot};
 use kerno_core::vfs::{File, OpenMode, Vfs};
 use kerno_core::{Durability, WriteBatch};
-use kerno_storage::metrics::{LatencyMetrics, READ_COUNTER_SHARDS, ReadMetrics};
+use kerno_storage::metrics::{READ_COUNTER_SHARDS, ReadMetrics};
 use kerno_storage::{CompactionConfig, Config, KernoDb, Metrics, SlowdownPolicy};
 use kerno_testkit::vfs::SimVfs;
 use parking_lot::{Condvar, Mutex};
@@ -334,8 +334,10 @@ fn commit_phase_histograms_populated() {
         assert!(l.p50_micros <= l.p99_micros && l.p99_micros <= l.max_micros, "{phase}: {l:?}");
     }
     assert_eq!(c.total.count, 50);
-    // The queue phase only exists with group commit (WP12).
-    assert_eq!(c.queue, LatencyMetrics::default());
+    // One writer: every commit leads its own group, so it never waits for a
+    // leader, only for the lock and the queue bookkeeping.
+    assert_eq!(c.queue.count, 50);
+    assert!(c.queue.max_micros < 1_000, "{:?}", c.queue);
     // Every sync took at least 2 ms; histogram percentiles are within 25 %
     // of the truth (the upper bound leaves room for a loaded machine).
     assert!((1_500..=4_200).contains(&c.wal_sync.p50_micros), "{:?}", c.wal_sync);
@@ -353,7 +355,8 @@ fn commit_phase_histograms_populated() {
     for phase in ["queue", "make_room", "wal_write", "wal_sync", "apply"] {
         assert!(st.contains_key(&format!("commit_{phase}_p99_micros")), "{phase}");
     }
-    assert_eq!(st["commit_queue_p99_micros"], 0);
+    assert_eq!(st["commit_queue_count"], 50);
+    assert_eq!(st["commit_queue_p99_micros"], c.queue.p99_micros);
     assert_eq!(st["commit_wal_sync_p99_micros"], c.wal_sync.p99_micros);
     assert_eq!(st["commit_wal_sync_count"], 50);
     db.close().unwrap();

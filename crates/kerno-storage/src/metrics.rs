@@ -248,6 +248,9 @@ pub struct ShapeMetrics {
     pub immutable_memtables: u64,
     /// Last commit visible to new snapshots.
     pub last_seq: u64,
+    /// Every commit up to this sequence survives a power loss: `last_seq` in
+    /// `Sync` mode, the last `sync()` or WAL rotation in `Buffered` mode.
+    pub durable_seq: u64,
     pub block_cache_bytes: u64,
 }
 
@@ -257,6 +260,12 @@ pub struct ShapeMetrics {
 pub struct WriteMetrics {
     /// Non-empty commits that succeeded.
     pub commits: u64,
+    /// WAL frames written for commits (one per group), and the most commits
+    /// one of them held.
+    pub commit_groups: u64,
+    pub group_commits_max: u64,
+    /// Most bytes of commits queued or being written at once.
+    pub queued_bytes_max: u64,
     pub wal_bytes: u64,
     pub wal_syncs: u64,
     pub memtable_rotations: u64,
@@ -270,23 +279,24 @@ pub struct WriteMetrics {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct CommitPhaseMetrics {
-    /// Waiting for the commit queue. Always empty until group commit
-    /// (WP12) exists.
+    /// From joining the commit queue until the group it is in starts (one
+    /// sample per commit).
     pub queue: LatencyMetrics,
-    /// Backpressure (slowdown and stalls) and the memtable switch.
+    /// Backpressure (slowdown and stalls) and the memtable switch (one sample
+    /// per group, like the three phases below).
     pub make_room: LatencyMetrics,
-    /// Encoding the record and writing it to the WAL.
+    /// Encoding the group's frame and writing it to the WAL.
     pub wal_write: LatencyMetrics,
-    /// `sync_data` of the WAL (`Sync` durability only).
+    /// `sync_data` of the WAL (`Sync` durability, or a `sync()` call).
     pub wal_sync: LatencyMetrics,
     /// `wal_sync` while a flush or compaction was writing (H3).
     pub wal_sync_busy: LatencyMetrics,
     /// `wal_sync` while no flush or compaction was writing.
     pub wal_sync_quiet: LatencyMetrics,
-    /// Inserting into the memtable and publishing the sequence.
+    /// Inserting the group into the memtable.
     pub apply: LatencyMetrics,
     /// The whole commit call, including argument checks and the wait for
-    /// the writer lock.
+    /// the queue and the writer lock (one sample per commit).
     pub total: LatencyMetrics,
 }
 
@@ -413,10 +423,14 @@ impl Metrics {
         put("memtable_bytes", s.memtable_bytes);
         put("immutable_memtables", s.immutable_memtables);
         put("last_seq", s.last_seq);
+        put("durable_seq", s.durable_seq);
         put("block_cache_bytes", s.block_cache_bytes);
 
         let w = &self.writes;
         put("commits", w.commits);
+        put("commit_groups", w.commit_groups);
+        put("group_commits_max", w.group_commits_max);
+        put("queued_bytes_max", w.queued_bytes_max);
         put("wal_bytes", w.wal_bytes);
         put("wal_syncs", w.wal_syncs);
         put("memtable_rotations", w.memtable_rotations);

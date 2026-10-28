@@ -9,6 +9,7 @@ use std::time::Duration;
 use kerno_core::contract::Options;
 use kerno_core::{Durability, Error, Result};
 
+use crate::commit_queue::QueueLimits;
 use crate::compaction::{L0_COMPACTION_TRIGGER, L0_SLOWDOWN, L0_STOP, LEVEL_SIZE_RATIO, MAX_IMMUTABLE};
 use crate::format::limits;
 
@@ -95,6 +96,60 @@ impl Limits {
     }
 }
 
+/// Group commit (phase1-design.md §5.6): concurrent commits are written as
+/// one WAL frame with one `fsync`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GroupCommitConfig {
+    /// `false` writes one frame per commit (the single-commit path; the
+    /// `kerno-serial` test profile). Commits still go through the queue, one
+    /// at a time.
+    pub enabled: bool,
+    /// A group stops growing before it would hold more than this many bytes
+    /// of encoded commits; a single commit over the limit forms a group of
+    /// its own (default 1 MiB; at most the format's frame payload).
+    pub max_group_bytes: usize,
+    /// Most commits in one group (default 1024; format limit 65 536).
+    pub max_group_commits: usize,
+    /// A commit waits before queueing while more than this many bytes of
+    /// commits are queued or being written (default 64 MiB).
+    pub max_queued_bytes: usize,
+}
+
+impl Default for GroupCommitConfig {
+    fn default() -> Self {
+        GroupCommitConfig {
+            enabled: true,
+            max_group_bytes: 1 << 20,
+            max_group_commits: 1024,
+            max_queued_bytes: 64 << 20,
+        }
+    }
+}
+
+impl GroupCommitConfig {
+    fn validate(&self) -> Result<()> {
+        let check = |name: &str, value: usize, max: u64| {
+            if value == 0 || value as u64 > max {
+                return Err(Error::InvalidArgument(format!("group_commit: {name} must be in 1..={max}, got {value}")));
+            }
+            Ok(())
+        };
+        check("max_group_bytes", self.max_group_bytes, u64::from(limits::MAX_FRAME_PAYLOAD))?;
+        check("max_group_commits", self.max_group_commits, u64::from(limits::MAX_FRAME_COMMITS))?;
+        check("max_queued_bytes", self.max_queued_bytes, u64::MAX)
+    }
+
+    /// The queue limits this configuration means: a disabled group commit
+    /// is a group of one.
+    pub(crate) fn queue_limits(&self) -> QueueLimits {
+        QueueLimits {
+            max_group_bytes: self.max_group_bytes,
+            max_group_commits: if self.enabled { self.max_group_commits } else { 1 },
+            max_queued_bytes: self.max_queued_bytes,
+        }
+    }
+}
+
 /// Options of [`KernoDb::open`](crate::KernoDb::open).
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -122,6 +177,9 @@ pub struct Config {
     pub max_immutable_memtables: usize,
     /// Size limits of a commit (default [`Limits::default`]).
     pub limits: Limits,
+    /// Group commit and the commit queue's limits (default
+    /// [`GroupCommitConfig::default`]).
+    pub group_commit: GroupCommitConfig,
     /// Open with [`Durability::Sync`] on a platform where its guarantees
     /// have not been verified (default `false`). Only Linux (ext4, xfs) is
     /// verified; elsewhere such an open fails with
@@ -409,6 +467,7 @@ impl Default for Config {
             write_buffer_bytes: 8 << 20,
             max_immutable_memtables: MAX_IMMUTABLE,
             limits: Limits::default(),
+            group_commit: GroupCommitConfig::default(),
             allow_unverified_platform: false,
             test: TestConfig::default(),
             compaction: CompactionConfig::default(),
@@ -441,6 +500,7 @@ impl Config {
             return Err(Error::InvalidArgument("durability not verified on this platform".into()));
         }
         self.limits.validate()?;
+        self.group_commit.validate()?;
         self.compaction.validate()
     }
 }

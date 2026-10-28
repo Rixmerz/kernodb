@@ -27,6 +27,7 @@
 //! and limitations.
 
 mod block;
+mod commit_queue;
 mod compaction;
 mod config;
 mod db;
@@ -38,6 +39,7 @@ mod memtable;
 pub mod metrics;
 mod sst;
 mod stats;
+mod sync;
 mod version;
 mod wal;
 
@@ -48,7 +50,9 @@ pub mod format;
 #[doc(hidden)]
 pub mod testing;
 
-pub use config::{AccessMode, CloseBudget, CompactionConfig, Config, L0Metric, Limits, SlowdownPolicy};
+pub use config::{
+    AccessMode, CloseBudget, CompactionConfig, Config, GroupCommitConfig, L0Metric, Limits, SlowdownPolicy,
+};
 #[doc(hidden)]
 pub use config::{Background, TestConfig};
 #[doc(hidden)]

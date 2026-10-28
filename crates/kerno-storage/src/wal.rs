@@ -6,8 +6,10 @@
 //! frame* (32-byte head: payload_len, crc, first_seq, synced_len, count; payload = commits)
 //! ```
 //!
-//! This engine writes one commit per frame; the frame, canonical commit and
-//! replay rules (WAL-C1..C4, WAL-R1..R6) live in [`crate::format::wal`].
+//! A frame holds one group of commits (group commit, one `write_at` and at
+//! most one `fsync` per group; a single commit when groups are disabled);
+//! the frame, canonical commit and replay rules (WAL-C1..C4, WAL-R1..R6) live
+//! in [`crate::format::wal`].
 //!
 //! **Torn tail or media damage?** Every frame records `synced_len`, the
 //! prefix of the file the writer knew durable when it wrote the frame. An
@@ -58,20 +60,27 @@ impl WalWriter {
         self.number
     }
 
-    /// Appends one frame holding the commit with sequence `seq` (a single
-    /// `write_at`) and returns its length. The sequence must follow the one of
-    /// the previous frame.
-    pub fn append(&mut self, seq: u64, commit: &CanonicalCommit<&[u8]>) -> io::Result<usize> {
+    /// Appends one frame holding `commits`, the first of which has sequence
+    /// `first_seq` (a single `write_at`), and returns its length. The
+    /// sequence must follow the last one of the previous frame, and
+    /// `commits` must be 1..=`MAX_FRAME_COMMITS` commits.
+    pub fn append_group<B: AsRef<[u8]>>(
+        &mut self,
+        first_seq: u64,
+        commits: &[&CanonicalCommit<B>],
+    ) -> io::Result<usize> {
         let slot = frame_has_slot(WRITE_INCOMPAT);
-        let payload_len = commit.encoded_len();
+        let payload_len: usize = commits.iter().map(|c| c.encoded_len()).sum();
         let mut frame = Vec::with_capacity(frame_len(payload_len as u32, slot) as usize);
         frame.extend_from_slice(&(payload_len as u32).to_le_bytes());
         frame.extend_from_slice(&[0; 4]); // crc, set below
-        frame.extend_from_slice(&seq.to_le_bytes());
+        frame.extend_from_slice(&first_seq.to_le_bytes());
         frame.extend_from_slice(&self.synced_len.to_le_bytes());
-        frame.extend_from_slice(&1u32.to_le_bytes()); // one commit per frame
+        frame.extend_from_slice(&(commits.len() as u32).to_le_bytes());
         frame.extend_from_slice(&[0; 4]); // reserved
-        commit.encode_into(&mut frame);
+        for commit in commits {
+            commit.encode_into(&mut frame);
+        }
         if slot {
             frame.resize(frame.len() + SLOT_LEN, 0);
         }
@@ -79,6 +88,13 @@ impl WalWriter {
         self.file.write_at(&frame, self.offset)?;
         self.offset += frame.len() as u64;
         Ok(frame.len())
+    }
+
+    /// Whether a frame was written since the last successful `sync` (a log
+    /// holding only its header has nothing to make durable: the header
+    /// becomes durable with the first frame's `fsync`, W-1).
+    pub fn needs_sync(&self) -> bool {
+        self.offset > self.synced_len.max(HEADER_LEN as u64)
     }
 
     /// `sync_data`; on success everything written so far is durable. After a
@@ -177,7 +193,7 @@ mod tests {
     }
 
     fn append(w: &mut WalWriter, seq: u64) {
-        w.append(seq, &canonical(&batch(seq))).unwrap();
+        w.append_group(seq, &[&canonical(&batch(seq))]).unwrap();
     }
 
     #[test]
@@ -265,6 +281,49 @@ mod tests {
         assert!(torn_seen > 0);
     }
 
+    /// One frame holds a whole group: `count` commits, the first sequence of
+    /// the group, one `synced_len`, and replay hands out the commits in order.
+    #[test]
+    fn group_frame_holds_consecutive_commits() {
+        let sim = SimVfs::new(1);
+        let (vfs, mut w) = setup(&sim, 1);
+        append(&mut w, 1);
+        w.sync().unwrap();
+        let synced = w.offset;
+        let batches: Vec<WriteBatch> = (2..=5).map(batch).collect();
+        let commits: Vec<_> = batches.iter().map(canonical).collect();
+        let len = w.append_group(2, &commits.iter().collect::<Vec<_>>()).unwrap();
+        assert_eq!(w.offset, synced + len as u64);
+        let (scan, got) = collect(&*vfs, 1).unwrap();
+        assert_eq!((scan.frames, scan.commits, scan.next_seq, scan.end), (2, 5, 6, End::Clean));
+        for (i, (s, c)) in got.iter().enumerate() {
+            assert_eq!(*s, 1 + i as u64);
+            assert_eq!(c, &canonical(&batch(1 + i as u64)).to_owned_commit());
+        }
+        let file = vfs.open(Path::new("/w/000001.wal"), OpenMode::Existing).unwrap();
+        let mut frames = Vec::new();
+        let mut src = FileSource::new(&*file).unwrap();
+        scan_wal(&mut src, &WalScanParams { file_number: 1, db_id: DB, expected_seq: 1 }, |off, f| {
+            frames.push((off, f.first_seq, f.synced_len, f.commits.len()));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(frames, [(HEADER_LEN as u64, 1, 0, 1), (synced, 2, synced, 4)]);
+    }
+
+    #[test]
+    fn needs_sync_follows_unsynced_frames() {
+        let sim = SimVfs::new(1);
+        let (_vfs, mut w) = setup(&sim, 1);
+        assert!(!w.needs_sync(), "a header alone has nothing to make durable");
+        append(&mut w, 1);
+        assert!(w.needs_sync());
+        w.sync().unwrap();
+        assert!(!w.needs_sync());
+        append(&mut w, 2);
+        assert!(w.needs_sync());
+    }
+
     #[test]
     fn garbage_tail_after_valid_frames() {
         let sim = SimVfs::new(1);
@@ -336,7 +395,7 @@ mod tests {
         let (vfs, mut w) = setup(&sim, 1);
         let mut b = WriteBatch::new();
         b.put("a", "1").delete_range("b", "c");
-        w.append(1, &canonical(&b)).unwrap();
+        w.append_group(1, &[&canonical(&b)]).unwrap();
         assert!(matches!(collect(&*vfs, 1), Err(Error::Incompatible(m)) if m.contains("range deletions")));
         // The callback never sees a commit with ranges.
         let r = replay(&*vfs, Path::new("/w"), 1, DB, 1, |_, c| assert!(c.ranges.is_empty()));
