@@ -86,6 +86,8 @@ fn failed_delete_is_retried_and_counted() {
     let db = open_in(&vfs, &threads_config(Durability::Sync)).unwrap();
     let mut model = Model::new();
     churn(&db, &mut model);
+    // Let flushes and compactions settle so no table is still being written.
+    kerno_core::contract::TestHooks::wait_idle(db.hooks()).unwrap();
     // The deleter retries by itself: wait for it, polling a condition.
     let deadline = Instant::now() + Duration::from_secs(20);
     while stat(&db, "obsolete_bytes_pending") > 0 || stat(&db, "delete_failures") < 3 {
