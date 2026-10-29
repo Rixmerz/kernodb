@@ -334,6 +334,9 @@ pub struct BackgroundMetrics {
     /// `open` replayed WAL records, and by a clean close.
     pub flushes: u64,
     pub flush_bytes_written: u64,
+    /// Writeback requests (`File::start_writeback`) made by SST writers
+    /// (`bytes_per_writeback`); 0 when the option is off.
+    pub sst_writeback_hints: u64,
     /// The longest flush by the flush thread (SST, `sync_dir`, MANIFEST).
     pub flush_micros_max: u64,
     /// Compactions that rewrote files (trivial moves excluded).
@@ -365,6 +368,9 @@ pub struct BackgroundMetrics {
     /// L1 files that existed when those compactions ran (summed): with
     /// `l0_compaction_l1_files`, the share of L1 each one rewrote.
     pub l0_compaction_l1_files_present: u64,
+    /// L0 compactions whose output went below an empty L1
+    /// (`dynamic_base_level`); 0 when the option is off.
+    pub l0_base_level_skips: u64,
     /// Compactions of a deeper level chosen while L0 had `l0_slowdown`
     /// files or more (H2: L0 has no priority).
     pub compactions_while_l0_slowdown: u64,
@@ -496,6 +502,7 @@ impl Metrics {
         let b = &self.background;
         put("flushes", b.flushes);
         put("flush_bytes_written", b.flush_bytes_written);
+        put("sst_writeback_hints", b.sst_writeback_hints);
         put("flush_micros_max", b.flush_micros_max);
         put("compactions", b.compactions);
         put("compaction_micros_max", b.compaction_micros_max);
@@ -513,6 +520,7 @@ impl Metrics {
         put("l0_compaction_l1_files", b.l0_compaction_l1_files);
         put("l0_compaction_l1_files_max", b.l0_compaction_l1_files_max);
         put("l0_compaction_l1_files_present", b.l0_compaction_l1_files_present);
+        put("l0_base_level_skips", b.l0_base_level_skips);
         put("compactions_while_l0_slowdown", b.compactions_while_l0_slowdown);
         put("pending_compaction_bytes", b.pending_compaction_bytes);
 

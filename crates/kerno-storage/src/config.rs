@@ -334,6 +334,19 @@ pub enum SlowdownPolicy {
     },
 }
 
+/// Which file of a level that is over its target is compacted next.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FilePicker {
+    /// The first file after the end of the previous compaction out of the
+    /// level, wrapping around (M0).
+    #[default]
+    RoundRobin,
+    /// The file whose overlap with the level below is the fewest bytes per
+    /// byte of the file, so that the compaction rewrites the least it can to
+    /// move a given amount of data down. Ties go to the round-robin order.
+    MinOverlap,
+}
+
 /// Compaction policy and write throttling (phase1-design.md §5.4).
 /// [`CompactionConfig::m0`] reproduces the M0 engine, whose constants these
 /// fields replace.
@@ -362,6 +375,27 @@ pub struct CompactionConfig {
     /// SST writers call `sync_data` every this many bytes, in addition to the
     /// final one (M0: `None`, only the final one).
     pub bytes_per_sync: Option<u64>,
+    /// SST writers ask the file system to start writing their data back
+    /// every this many bytes (`sync_file_range` on Linux through
+    /// `File::start_writeback`; nothing on other platforms), in addition to
+    /// the final `sync_data` and instead of an intermediate `sync_data`
+    /// where `bytes_per_sync` already syncs. It bounds the dirty data the
+    /// final sync meets like `bytes_per_sync` does, but the writer waits for the range it asked to write back
+    /// (`wait_writeback`) so the queue stays bounded, and makes nothing durable. M0: `None`; the default is 1 MiB, in place
+    /// of the intermediate `sync_data` of `bytes_per_sync` (which is `None`
+    /// by default now): on a platform without `sync_file_range` the SST
+    /// writers then bound nothing, which only matters to the tail of the WAL
+    /// sync.
+    pub bytes_per_writeback: Option<u64>,
+    /// With L1 empty, no compaction in flight towards it and L2 small enough
+    /// for an L0 compaction to take at least `l0_trigger` files with it,
+    /// L0 is compacted straight into L2, so that the data is rewritten once
+    /// instead of once per level while the database is small. M0: off;
+    /// off by default (it trades a worse LiveSpec commit p99 for a better T1 p99; the owner decides). A clean close does not skip L1.
+    pub dynamic_base_level: bool,
+    /// Which file of a level over its target is compacted next (M0:
+    /// [`FilePicker::RoundRobin`]).
+    pub file_picker: FilePicker,
     /// Writing a memtable cuts the output between two consecutive keys
     /// whenever an L1 file lies entirely between them (M0: off).
     pub flush_split: bool,
@@ -416,6 +450,9 @@ impl CompactionConfig {
             target_file_size: Some(write_buffer),
             slowdown: SlowdownPolicy::Sleep { micros: 1000 },
             bytes_per_sync: None,
+            bytes_per_writeback: None,
+            dynamic_base_level: false,
+            file_picker: FilePicker::RoundRobin,
             flush_split: false,
             l0_metric: L0Metric::Files,
             l0_priority: false,
@@ -442,8 +479,8 @@ impl CompactionConfig {
         if self.level_multiplier == 0 || self.level_base_bytes == Some(0) || self.target_file_size == Some(0) {
             return bad("level_multiplier, level_base_bytes and target_file_size must be at least 1");
         }
-        if self.bytes_per_sync == Some(0) {
-            return bad("bytes_per_sync must be at least 1");
+        if self.bytes_per_sync == Some(0) || self.bytes_per_writeback == Some(0) {
+            return bad("bytes_per_sync and bytes_per_writeback must be at least 1");
         }
         if self.max_compaction_bytes == Some(0) || self.grandparent_overlap_bytes == Some(0) {
             return bad("max_compaction_bytes and grandparent_overlap_bytes must be at least 1");
@@ -471,7 +508,9 @@ impl Default for CompactionConfig {
             level_base_bytes: None,
             target_file_size: None,
             slowdown: SlowdownPolicy::Rate { initial_bytes_per_sec: 16 << 20 },
-            bytes_per_sync: Some(1 << 20),
+            bytes_per_sync: None,
+            bytes_per_writeback: Some(1 << 20),
+            dynamic_base_level: false,
             flush_split: true,
             l0_metric: L0Metric::Depth,
             l0_priority: false,
@@ -580,6 +619,9 @@ mod tests {
         assert_eq!(c.l0_metric, L0Metric::Files);
         assert_eq!((c.max_compaction_bytes, c.grandparent_overlap_bytes), (None, Some(u64::MAX)));
         assert_eq!((c.heap_merge_threshold, c.max_background_compactions, c.max_subcompactions), (usize::MAX, 1, 1));
+        // The follow-up levers (writeback requests, L0 below an empty L1,
+        // min-overlap picks) are off too.
+        assert_eq!((c.bytes_per_writeback, c.dynamic_base_level, c.file_picker), (None, false, FilePicker::RoundRobin));
     }
 
     #[test]
@@ -589,7 +631,11 @@ mod tests {
         assert!(!c.l0_priority, "WP04 rejected the hypothesis behind L0 priority");
         assert_eq!(c.l0_metric, L0Metric::Depth);
         assert_eq!(c.slowdown, SlowdownPolicy::Rate { initial_bytes_per_sec: 16 << 20 });
-        assert_eq!((c.bytes_per_sync, c.heap_merge_threshold), (Some(1 << 20), 8));
+        assert_eq!((c.bytes_per_sync, c.heap_merge_threshold), (None, 8));
+        assert_eq!(
+            (c.bytes_per_writeback, c.dynamic_base_level, c.file_picker),
+            (Some(1 << 20), false, FilePicker::RoundRobin)
+        );
         assert_eq!((c.max_compaction_bytes, c.grandparent_overlap_bytes), (None, None));
         assert_eq!(Config::default().close_budget, CloseBudget::default());
         assert_eq!(
@@ -626,6 +672,7 @@ mod tests {
             CompactionConfig { level_base_bytes: Some(0), ..base.clone() },
             CompactionConfig { target_file_size: Some(0), ..base.clone() },
             CompactionConfig { bytes_per_sync: Some(0), ..base.clone() },
+            CompactionConfig { bytes_per_writeback: Some(0), ..base.clone() },
             CompactionConfig { max_compaction_bytes: Some(0), ..base.clone() },
             CompactionConfig { grandparent_overlap_bytes: Some(0), ..base.clone() },
             CompactionConfig { slowdown: SlowdownPolicy::Rate { initial_bytes_per_sec: 0 }, ..base.clone() },

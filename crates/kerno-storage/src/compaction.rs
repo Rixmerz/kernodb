@@ -33,7 +33,7 @@ use std::time::Duration;
 
 use kerno_core::{Error, Result};
 
-use crate::config::{Background, Config, L0Metric, MIN_WRITE_BUFFER, SlowdownPolicy};
+use crate::config::{Background, Config, FilePicker, L0Metric, MIN_WRITE_BUFFER, SlowdownPolicy};
 use crate::format::props::{REASON_COMPACTION, REASON_DIRECTED};
 use crate::format::rangedel::Fragment;
 use crate::iter::{InternalIterator, LevelIter, MergeIter};
@@ -80,9 +80,11 @@ pub struct Tuning {
     pub max_compaction_bytes: u64,
     pub grandparent_overlap_bytes: u64,
     pub heap_merge_threshold: usize,
+    pub dynamic_base_level: bool,
+    pub file_picker: FilePicker,
     pub max_subcompactions: usize,
     pub close_subcompactions: usize,
-    /// New tables honour `bytes_per_sync`. Off for the compactions of a
+    /// New tables honour `bytes_per_sync` and `bytes_per_writeback`. Off for the compactions of a
     /// close: nothing else is writing, so the intermediate syncs only slow
     /// the output down.
     pub intermediate_syncs: bool,
@@ -113,6 +115,8 @@ impl Tuning {
                 .grandparent_overlap_bytes
                 .unwrap_or_else(|| target_file_size.saturating_mul(10)),
             heap_merge_threshold: c.heap_merge_threshold,
+            dynamic_base_level: c.dynamic_base_level,
+            file_picker: c.file_picker,
             max_subcompactions: c.max_subcompactions,
             // Inline mode promises no threads of its own (`Background::Inline`).
             close_subcompactions: match cfg.test.background {
@@ -174,11 +178,14 @@ impl RateController {
 }
 
 pub struct Plan {
-    /// Input level; the output goes to `level + 1`.
+    /// Input level.
     pub level: usize,
+    /// The level the output goes to: `level + 1`, except for an L0
+    /// compaction that skips an empty L1 ([`l0_output_level`]).
+    pub output: usize,
     /// Files from `level` (L0: newest first).
     pub inputs: Vec<Arc<Table>>,
-    /// Overlapping files from `level + 1` (sorted).
+    /// Overlapping files from the output level (sorted).
     pub next_inputs: Vec<Arc<Table>>,
     /// Levels below the output level, for the tombstone check.
     pub deeper: Levels,
@@ -211,7 +218,7 @@ impl Plan {
     fn footprint(&self) -> Footprint {
         let lo = self.all_inputs().map(|t| t.smallest.as_slice()).min().unwrap_or_default();
         let hi = self.all_inputs().map(|t| t.largest.as_slice()).max().unwrap_or_default();
-        Footprint { level: self.level + 1, lo: lo.to_vec(), hi: hi.to_vec() }
+        Footprint { level: self.output, lo: lo.to_vec(), hi: hi.to_vec() }
     }
 }
 
@@ -270,6 +277,11 @@ impl Busy {
         self.outputs.iter().any(|o| o.level == f.level && o.lo <= f.hi && f.lo <= o.hi)
     }
 
+    /// Whether a compaction in flight writes to `level`.
+    fn writes_to(&self, level: usize) -> bool {
+        self.outputs.iter().any(|o| o.level == level)
+    }
+
     /// Records `plan` as in flight. It must not conflict.
     pub fn claim(&mut self, plan: &Plan) -> Claim {
         debug_assert!(!self.conflicts(plan));
@@ -311,20 +323,40 @@ pub fn pick(levels: &Levels, tuning: &Tuning, pointers: &[Vec<u8>], busy: &Busy)
     due.into_iter().find_map(|(_, level)| pick_level(levels, tuning, pointers, busy, level))
 }
 
-/// The compaction out of `level` that follows the round-robin position, or
-/// the first one after it that does not conflict.
+/// The compaction out of `level`: with [`FilePicker::RoundRobin`] the one that
+/// follows the round-robin position, or the first one after it that does not
+/// conflict; with [`FilePicker::MinOverlap`] the one that rewrites the fewest
+/// bytes of the level below per byte it moves down (the round-robin order
+/// breaks ties), or the next best that does not conflict.
 fn pick_level(levels: &Levels, tuning: &Tuning, pointers: &[Vec<u8>], busy: &Busy, level: usize) -> Option<Plan> {
     if level == 0 {
         return pick_l0(levels, tuning, busy);
     }
     let files = &levels[level];
     let after = files.iter().position(|t| t.largest > pointers[level]).unwrap_or(0);
-    (0..files.len()).find_map(|k| {
-        let input = files[(after + k) % files.len()].clone();
+    let mut order: Vec<usize> = (0..files.len()).map(|k| (after + k) % files.len()).collect();
+    if tuning.file_picker == FilePicker::MinOverlap {
+        // A table with range-deletion fragments goes first whatever it
+        // overlaps: pushing it down is what lets the levels below drop the
+        // keys it covers, and delaying it keeps that garbage on disk.
+        let ratio = |i: usize| {
+            let t = &files[i];
+            if t.has_fragments() {
+                return 0.0;
+            }
+            level_bytes(overlapping(&levels[level + 1], &t.smallest, &t.largest)) as f64 / t.size.max(1) as f64
+        };
+        let ratios: Vec<f64> = (0..files.len()).map(ratio).collect();
+        // Stable: files with the same ratio stay in round-robin order.
+        order.sort_by(|&a, &b| ratios[a].total_cmp(&ratios[b]));
+    }
+    order.into_iter().find_map(|i| {
+        let input = files[i].clone();
         let next_inputs = overlapping(&levels[level + 1], &input.smallest, &input.largest).to_vec();
         let trivial = next_inputs.is_empty() && !input.has_fragments();
         let plan = Plan {
             level,
+            output: level + 1,
             inputs: vec![input],
             next_inputs,
             deeper: levels[level + 2..].to_vec(),
@@ -333,6 +365,27 @@ fn pick_level(levels: &Levels, tuning: &Tuning, pointers: &[Vec<u8>], busy: &Bus
         };
         (!busy.conflicts(&plan)).then_some(plan)
     })
+}
+
+/// The level an L0 compaction writes to: L1, unless `dynamic_base_level`
+/// applies. L0 may skip L1 only when
+///
+/// * L1 is empty and nothing in flight writes to it, because the output must
+///   stay newer than every file below it and older than L0 (a file left in
+///   L1 would be older than what bypasses it), and
+/// * L2 is small enough for a compaction that takes `l0_trigger` L0 files to
+///   stay within `max_compaction_bytes`, because the output rewrites every L2
+///   file the L0 files overlap, which is all of them for keys in random order.
+///   Past that size, the two-level shape rewrites less per byte flushed.
+///
+/// A database that outgrows L2 this way starts filling L1 again, with nothing
+/// to move: it needs no transition.
+pub fn l0_output_level(levels: &Levels, tuning: &Tuning, busy: &Busy) -> usize {
+    let fits = || {
+        let batch = (tuning.l0_trigger as u64).saturating_mul(tuning.target_file_size);
+        level_bytes(&levels[2]).saturating_add(batch) <= tuning.max_compaction_bytes
+    };
+    if tuning.dynamic_base_level && levels[1].is_empty() && !busy.writes_to(1) && fits() { 2 } else { 1 }
 }
 
 /// The L0 compaction, whether or not L0 is over its trigger; `None` if L0 is
@@ -357,12 +410,22 @@ pub fn pick_l0_floor(levels: &Levels, tuning: &Tuning) -> Option<Plan> {
 fn pick_l0_files(levels: &Levels, tuning: &Tuning, busy: &Busy, floor: bool) -> Option<Plan> {
     let l0 = &levels[0];
     let oldest = l0.last()?;
-    let deeper = levels[2..].to_vec();
+    let output = l0_output_level(levels, tuning, busy);
+    let base = &levels[output];
+    let deeper = levels[output + 1..].to_vec();
     let plan = if tuning.l0_trivial_move
         && !oldest.has_fragments()
-        && overlapping(&levels[1], &oldest.smallest, &oldest.largest).is_empty()
+        && overlapping(base, &oldest.smallest, &oldest.largest).is_empty()
     {
-        Plan { level: 0, inputs: vec![oldest.clone()], next_inputs: Vec::new(), deeper, trivial: true, directed: false }
+        Plan {
+            level: 0,
+            output,
+            inputs: vec![oldest.clone()],
+            next_inputs: Vec::new(),
+            deeper,
+            trivial: true,
+            directed: false,
+        }
     } else {
         let mut take = l0.len();
         if tuning.l0_partial {
@@ -373,7 +436,7 @@ fn pick_l0_files(levels: &Levels, tuning: &Tuning, busy: &Busy, floor: bool) -> 
                     break;
                 }
                 let (nlo, nhi) = (lo.min(t.smallest.as_slice()), hi.max(t.largest.as_slice()));
-                let total = bytes + t.size + level_bytes(overlapping(&levels[1], nlo, nhi));
+                let total = bytes + t.size + level_bytes(overlapping(base, nlo, nhi));
                 if take > 0 && total > tuning.max_compaction_bytes {
                     break;
                 }
@@ -383,8 +446,8 @@ fn pick_l0_files(levels: &Levels, tuning: &Tuning, busy: &Busy, floor: bool) -> 
         let inputs = l0[l0.len() - take..].to_vec();
         let lo = inputs.iter().map(|t| t.smallest.as_slice()).min()?;
         let hi = inputs.iter().map(|t| t.largest.as_slice()).max()?;
-        let next_inputs = overlapping(&levels[1], lo, hi).to_vec();
-        Plan { level: 0, inputs, next_inputs, deeper, trivial: false, directed: false }
+        let next_inputs = overlapping(base, lo, hi).to_vec();
+        Plan { level: 0, output, inputs, next_inputs, deeper, trivial: false, directed: false }
     };
     (!busy.conflicts(&plan)).then_some(plan)
 }
@@ -429,7 +492,15 @@ pub fn pick_range(levels: &Levels, busy: &Busy, start: Bound<&[u8]>, end: Bound<
         let next_inputs = overlapping(&levels[level + 1], lo, hi).to_vec();
         let trivial =
             next_inputs.is_empty() && inputs.len() == 1 && !inputs[0].has_fragments() && inputs[0].point_deletes() == 0;
-        let plan = Plan { level, inputs, next_inputs, deeper: levels[level + 2..].to_vec(), trivial, directed: true };
+        let plan = Plan {
+            level,
+            output: level + 1,
+            inputs,
+            next_inputs,
+            deeper: levels[level + 2..].to_vec(),
+            trivial,
+            directed: true,
+        };
         return if busy.conflicts(&plan) { RangeStep::Blocked } else { RangeStep::Plan(plan) };
     }
     RangeStep::Done
@@ -779,26 +850,28 @@ fn keep_fragments(all: &[Fragment], plan: &Plan, lo: Option<&[u8]>, hi: Option<&
     kept
 }
 
-/// The levels after replacing the plan's inputs with `outputs` in
-/// `level + 1`. `levels` may have gained newer L0 files since the plan was
-/// picked; they stay where they are.
+/// The levels after replacing the plan's inputs with `outputs` in the output
+/// level. `levels` may have gained newer L0 files since the plan was picked;
+/// they stay where they are.
 pub fn apply(levels: &Levels, plan: &Plan, outputs: &[Arc<Table>]) -> Result<Levels> {
     let removed: HashSet<u64> = plan.all_inputs().map(|t| t.number).collect();
     let mut new = levels.clone();
-    let before = new[plan.level].len() + new[plan.level + 1].len();
+    let before = new[plan.level].len() + new[plan.output].len();
     new[plan.level].retain(|t| !removed.contains(&t.number));
-    new[plan.level + 1].retain(|t| !removed.contains(&t.number));
-    if before - new[plan.level].len() - new[plan.level + 1].len() != removed.len() {
+    new[plan.output].retain(|t| !removed.contains(&t.number));
+    if before - new[plan.level].len() - new[plan.output].len() != removed.len() {
         return Err(Error::Corruption("internal: compaction inputs are no longer in the version".into()));
     }
-    let out = &mut new[plan.level + 1];
+    // An L0 compaction that skipped L1 must not leave files in it: they would
+    // be older than the output below them.
+    if plan.output > plan.level + 1 && new[plan.level + 1..plan.output].iter().any(|l| !l.is_empty()) {
+        return Err(Error::Corruption("internal: a compaction skipped a level that is no longer empty".into()));
+    }
+    let out = &mut new[plan.output];
     out.extend(outputs.iter().cloned());
     out.sort_by(|a, b| a.smallest.cmp(&b.smallest));
     if out.windows(2).any(|w| !w[0].ends_before(&w[1].smallest)) {
-        return Err(Error::Corruption(format!(
-            "internal: compaction produced overlapping files in L{}",
-            plan.level + 1
-        )));
+        return Err(Error::Corruption(format!("internal: compaction produced overlapping files in L{}", plan.output)));
     }
     Ok(new)
 }
@@ -905,6 +978,109 @@ mod tests {
         assert_eq!(input(&pick(&levels, &tuning, &NO_POINTERS, &busy).unwrap()), 1);
         busy.release(&claim_second);
         assert!(busy.tables.is_empty() && busy.outputs.is_empty());
+    }
+
+    #[test]
+    fn min_overlap_picks_the_file_that_rewrites_the_least_below_it() {
+        let ctx = ctx();
+        let mut cfg = Config::from(&Options::small_for_tests());
+        cfg.compaction.l0_trigger = 100;
+        let tuning = |file_picker| Tuning { l1_max_bytes: 1, file_picker, ..Tuning::new(&cfg) };
+        let mut levels: Levels = vec![Vec::new(); NUM_LEVELS];
+        // File 1 overlaps three files of L2, file 2 none, file 3 one.
+        levels[1] = vec![table(&ctx, 1, "a", "f"), table(&ctx, 2, "g", "h"), table(&ctx, 3, "i", "k")];
+        levels[2] = vec![
+            table(&ctx, 4, "a", "b"),
+            table(&ctx, 5, "c", "d"),
+            table(&ctx, 6, "e", "f"),
+            table(&ctx, 7, "j", "j"),
+        ];
+        let first = |t: &Tuning, busy: &Busy, pointers: &[Vec<u8>]| pick(&levels, t, pointers, busy).unwrap();
+
+        // Round robin follows the position, whatever the overlap.
+        let rr = tuning(FilePicker::RoundRobin);
+        assert_eq!(first(&rr, &Busy::default(), &NO_POINTERS).inputs[0].number, 1);
+        let mut at_two: [Vec<u8>; NUM_LEVELS] = [const { Vec::new() }; NUM_LEVELS];
+        at_two[1] = b"f".to_vec();
+        assert_eq!(first(&rr, &Busy::default(), &at_two).inputs[0].number, 2);
+
+        // Min overlap goes for the file that overlaps nothing, wherever the
+        // position is...
+        let mo = tuning(FilePicker::MinOverlap);
+        let mut busy = Busy::default();
+        for pointers in [&NO_POINTERS, &at_two] {
+            let plan = first(&mo, &busy, pointers);
+            assert_eq!((plan.inputs[0].number, plan.is_trivial_move()), (2, true));
+        }
+        // ...then the one with the fewest bytes below it, skipping what is
+        // in flight.
+        let claim = busy.claim(&first(&mo, &busy, &NO_POINTERS));
+        let plan = first(&mo, &busy, &NO_POINTERS);
+        assert_eq!((plan.inputs[0].number, plan.next_inputs.len()), (3, 1));
+        busy.claim(&plan);
+        let plan = first(&mo, &busy, &NO_POINTERS);
+        assert_eq!((plan.inputs[0].number, plan.next_inputs.len()), (1, 3));
+        busy.release(&claim);
+    }
+
+    #[test]
+    fn l0_output_level_skips_l1_only_when_that_is_safe_and_cheap() {
+        let ctx = ctx();
+        let mut cfg = Config::from(&Options::small_for_tests());
+        cfg.compaction.dynamic_base_level = true;
+        let tuning = Tuning { max_compaction_bytes: 1 << 20, ..Tuning::new(&cfg) };
+        let mut levels: Levels = vec![Vec::new(); NUM_LEVELS];
+        levels[0] = vec![table(&ctx, 3, "a", "z")];
+        levels[2] = vec![table(&ctx, 1, "a", "b"), table(&ctx, 2, "m", "n")];
+        let busy = Busy::default();
+        assert_eq!(l0_output_level(&levels, &tuning, &busy), 2);
+        // Off.
+        assert_eq!(l0_output_level(&levels, &Tuning { dynamic_base_level: false, ..tuning.clone() }, &busy), 1);
+        // L1 holds a file: the output must not end up under it.
+        let mut with_l1 = levels.clone();
+        with_l1[1].push(table(&ctx, 4, "c", "d"));
+        assert_eq!(l0_output_level(&with_l1, &tuning, &busy), 1);
+        // A compaction in flight towards L1 will fill it.
+        let towards_l1 = pick_l0(&levels, &Tuning { dynamic_base_level: false, ..tuning.clone() }, &busy).unwrap();
+        assert_eq!(towards_l1.output, 1);
+        let mut busy_l1 = Busy::default();
+        busy_l1.claim(&towards_l1);
+        assert_eq!(l0_output_level(&levels, &tuning, &busy_l1), 1);
+        // L2 plus the L0 files a compaction must take is over the limit.
+        let batch = tuning.l0_trigger as u64 * tuning.target_file_size;
+        let fits = level_bytes(&levels[2]) + batch;
+        assert_eq!(l0_output_level(&levels, &Tuning { max_compaction_bytes: fits, ..tuning.clone() }, &busy), 2);
+        assert_eq!(l0_output_level(&levels, &Tuning { max_compaction_bytes: fits - 1, ..tuning.clone() }, &busy), 1);
+    }
+
+    #[test]
+    fn a_plan_below_an_empty_l1_reads_and_replaces_l2() {
+        let ctx = ctx();
+        let mut cfg = Config::from(&Options::small_for_tests());
+        cfg.compaction.dynamic_base_level = true;
+        let tuning = Tuning { max_compaction_bytes: 1 << 20, ..Tuning::new(&cfg) };
+        let mut levels: Levels = vec![Vec::new(); NUM_LEVELS];
+        levels[0] = vec![table(&ctx, 3, "b", "c")];
+        levels[2] = vec![table(&ctx, 1, "a", "a"), table(&ctx, 2, "b", "b"), table(&ctx, 4, "x", "y")];
+        levels[3] = vec![table(&ctx, 5, "a", "z")];
+        let plan = pick_l0(&levels, &Tuning { l0_trivial_move: false, ..tuning.clone() }, &Busy::default()).unwrap();
+        assert_eq!((plan.level, plan.output), (0, 2));
+        assert_eq!(plan.next_inputs.iter().map(|t| t.number).collect::<Vec<_>>(), [2]);
+        assert_eq!(plan.deeper.len(), NUM_LEVELS - 3, "the tombstone check looks below the output level");
+        assert_eq!(plan.footprint().level, 2);
+        let out = table(&ctx, 9, "b", "c");
+        let after = apply(&levels, &plan, std::slice::from_ref(&out)).unwrap();
+        assert!(after[0].is_empty() && after[1].is_empty());
+        assert_eq!(after[2].iter().map(|t| t.number).collect::<Vec<_>>(), [1, 9, 4]);
+        // A level in between that is no longer empty means the plan is stale.
+        let mut stale = levels.clone();
+        stale[1].push(table(&ctx, 6, "m", "m"));
+        assert!(matches!(apply(&stale, &plan, std::slice::from_ref(&out)), Err(Error::Corruption(_))));
+
+        // The oldest file moves down by itself when nothing in L2 overlaps it.
+        levels[0] = vec![table(&ctx, 7, "m", "n")];
+        let moved = pick_l0(&levels, &Tuning { l0_trivial_move: true, ..tuning }, &Busy::default()).unwrap();
+        assert!(moved.is_trivial_move() && moved.output == 2);
     }
 
     #[test]

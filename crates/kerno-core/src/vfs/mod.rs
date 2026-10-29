@@ -11,6 +11,11 @@
 //!   file returns `Ok`.
 //! * Creating, removing and renaming directory entries is durable only after
 //!   `Vfs::sync_dir` on the parent directory returns `Ok`.
+//! * `File::start_writeback` and `File::wait_writeback` guarantee nothing: the
+//!   first only asks the system to begin writing a range back, the second to
+//!   wait for the writeback already under way in a range, and a file system
+//!   that cannot do that ignores them. Writes they cover are as pending
+//!   afterwards as they were before.
 //! * Nothing else is ordered: before a sync, any subset of pending writes may
 //!   reach the disk, in any order, and a single write may be torn at 512-byte
 //!   sector boundaries.
@@ -46,6 +51,26 @@ pub trait File: Send + Sync {
     fn set_len(&self, len: u64) -> io::Result<()>;
     /// `fdatasync`: makes previous writes and length changes durable.
     fn sync_data(&self) -> io::Result<()>;
+    /// Asks the system to start writing the `len` bytes at `offset` back to
+    /// the device without waiting for it (`sync_file_range` with
+    /// `SYNC_FILE_RANGE_WRITE` on Linux), so that a later `sync_data` finds
+    /// less dirty data to write. **Advisory and not a durability operation**:
+    /// nothing it covers is durable afterwards, it may do nothing at all
+    /// (the default, and every platform but Linux), and an error from it says
+    /// nothing about the data, which only `sync_data` reports on.
+    fn start_writeback(&self, _offset: u64, _len: u64) -> io::Result<()> {
+        Ok(())
+    }
+    /// Waits until the writeback already under way in the `len` bytes at
+    /// `offset` has finished (`sync_file_range` with
+    /// `SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WAIT_AFTER` on Linux),
+    /// without starting any. Paired with [`start_writeback`](Self::start_writeback)
+    /// on the next range it keeps the amount of data in flight to a couple of
+    /// ranges, which is what throttles a writer; like it, **not a durability
+    /// operation** and a no-op by default.
+    fn wait_writeback(&self, _offset: u64, _len: u64) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 pub trait Vfs: Send + Sync + 'static {

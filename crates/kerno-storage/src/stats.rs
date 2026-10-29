@@ -51,6 +51,8 @@ pub struct Stats {
     pub background_active: AtomicU64,
     pub flushes: AtomicU64,
     pub flush_bytes_written: AtomicU64,
+    /// Writeback requests of SST writers (`bytes_per_writeback`).
+    pub sst_writeback_hints: AtomicU64,
     pub flush_nanos_max: AtomicU64,
     pub compactions: AtomicU64,
     pub compaction_nanos_max: AtomicU64,
@@ -71,6 +73,7 @@ pub struct Stats {
     pub l0_compaction_l1_files: AtomicU64,
     pub l0_compaction_l1_files_max: AtomicU64,
     pub l0_compaction_l1_files_present: AtomicU64,
+    pub l0_base_level_skips: AtomicU64,
     pub compactions_while_l0_slowdown: AtomicU64,
     pub l0_files_max: AtomicU64,
 
@@ -272,6 +275,7 @@ impl Stats {
             background: BackgroundMetrics {
                 flushes: load(&self.flushes),
                 flush_bytes_written: load(&self.flush_bytes_written),
+                sst_writeback_hints: load(&self.sst_writeback_hints),
                 flush_micros_max: micros(&self.flush_nanos_max),
                 compactions: load(&self.compactions),
                 compaction_micros_max: micros(&self.compaction_nanos_max),
@@ -289,6 +293,7 @@ impl Stats {
                 l0_compaction_l1_files: load(&self.l0_compaction_l1_files),
                 l0_compaction_l1_files_max: load(&self.l0_compaction_l1_files_max),
                 l0_compaction_l1_files_present: load(&self.l0_compaction_l1_files_present),
+                l0_base_level_skips: load(&self.l0_base_level_skips),
                 compactions_while_l0_slowdown: load(&self.compactions_while_l0_slowdown),
                 pending_compaction_bytes,
             },

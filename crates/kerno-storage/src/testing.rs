@@ -14,7 +14,9 @@
 //!   committing thread instead of background threads
 //!   ([`Background::Inline`]), so the sequence of file-system operations is
 //!   deterministic. Its close budget has no time limit, so a close is as
-//!   deterministic as the rest.
+//!   deterministic as the rest. It also turns on the optional levers that add
+//!   I/O steps (WAL preallocation, SST writeback requests, L0 below an empty
+//!   L1) so that the crash and failure sweeps cover them.
 //! * [`M0`] (`kerno-m0`): every condition-1 lever off and an unbounded close
 //!   ([`CompactionConfig::m0`], [`CloseBudget::Unbounded`]), so that the
 //!   shared suites also run against the M0 behaviour and a regression can be
@@ -31,7 +33,9 @@ use kerno_core::contract::{Engine, Options, RangeDeleteEngine, SyncEngine, TestH
 use kerno_core::vfs::Vfs;
 use kerno_core::{Result, WriteBatch};
 
-use crate::{Background, CloseBudget, CompactionConfig, Config, KernoDb, KernoSnapshot, L0Metric, SlowdownPolicy};
+use crate::{
+    Background, CloseBudget, CompactionConfig, Config, FilePicker, KernoDb, KernoSnapshot, L0Metric, SlowdownPolicy,
+};
 
 /// A named adjustment of the [`Config`] derived from the harness
 /// [`Options`].
@@ -69,8 +73,14 @@ impl Profile for Inline {
         cfg.test.background = Background::Inline;
         cfg.close_budget = cfg.close_budget.deterministic();
         // The sweeps built on this profile cover preallocated and recycled WALs
-        // (the engine default is off).
+        // (the engine default is off), and the follow-up levers of the
+        // condition-1 decision: writeback requests after every chunk of an
+        // SST, L0 compacted below an empty L1 and the min-overlap file
+        // picker.
         cfg.wal_preallocate = true;
+        cfg.compaction.bytes_per_writeback = Some(1);
+        cfg.compaction.dynamic_base_level = true;
+        cfg.compaction.file_picker = crate::config::FilePicker::MinOverlap;
     }
 }
 
@@ -165,9 +175,10 @@ impl Profile for Tuned {
 /// * of [`CompactionConfig`](crate::CompactionConfig): `l0_trigger`,
 ///   `l0_slowdown`, `l0_stop`, `level_multiplier`, `level_base_bytes`,
 ///   `target_file_size` (integers), `slowdown` (`off`, or `sleep:<micros>`),
-///   `bytes_per_sync` (bytes, or `none`);
+///   `bytes_per_sync` and `bytes_per_writeback` (bytes, or `none`);
 /// * of [`CompactionConfig`](crate::CompactionConfig) as well: `flush_split`,
-///   `l0_priority`, `l0_partial`, `l0_trivial_move` (`true` or `false`),
+///   `l0_priority`, `l0_partial`, `l0_trivial_move`, `dynamic_base_level`
+///   (`true` or `false`), `file_picker` (`round_robin` or `min_overlap`),
 ///   `l0_metric` (`files` or `depth`), `max_compaction_bytes`,
 ///   `grandparent_overlap_bytes`, `heap_merge_threshold`, `max_subcompactions`,
 ///   `close_subcompactions`,
@@ -235,6 +246,15 @@ pub fn apply_tuning(spec: &str, cfg: &mut Config) -> std::result::Result<(), Str
             "max_immutable_memtables" => cfg.max_immutable_memtables = int()? as usize,
             "wal_preallocate" => cfg.wal_preallocate = flag()?,
             "bytes_per_sync" => c.bytes_per_sync = if value == "none" { None } else { Some(int()?) },
+            "bytes_per_writeback" => c.bytes_per_writeback = if value == "none" { None } else { Some(int()?) },
+            "dynamic_base_level" => c.dynamic_base_level = flag()?,
+            "file_picker" => {
+                c.file_picker = match value {
+                    "round_robin" => FilePicker::RoundRobin,
+                    "min_overlap" => FilePicker::MinOverlap,
+                    _ => return Err(format!("file_picker: `{value}` is neither round_robin nor min_overlap")),
+                }
+            }
             "slowdown" => {
                 c.slowdown = if value == "off" {
                     SlowdownPolicy::Off
@@ -359,7 +379,24 @@ mod tests {
         assert_eq!((c.level_base_bytes, c.target_file_size), (Some(1000), Some(500)));
         assert_eq!(cfg.max_immutable_memtables, 6);
 
-        for bad in ["l0_stop", "l0_stop=x", "nope=1", "slowdown=fast", "slowdown=sleep:x"] {
+        apply_tuning("bytes_per_writeback=1048576,dynamic_base_level=true,file_picker=min_overlap", &mut cfg).unwrap();
+        let c = &cfg.compaction;
+        assert_eq!((c.bytes_per_writeback, c.dynamic_base_level), (Some(1 << 20), true));
+        assert_eq!(c.file_picker, FilePicker::MinOverlap);
+        apply_tuning("bytes_per_writeback=none,dynamic_base_level=false,file_picker=round_robin", &mut cfg).unwrap();
+        let c = &cfg.compaction;
+        assert_eq!((c.bytes_per_writeback, c.dynamic_base_level, c.file_picker), (None, false, FilePicker::RoundRobin));
+
+        for bad in [
+            "l0_stop",
+            "l0_stop=x",
+            "nope=1",
+            "slowdown=fast",
+            "slowdown=sleep:x",
+            "file_picker=random",
+            "dynamic_base_level=1",
+            "bytes_per_writeback=x",
+        ] {
             assert!(apply_tuning(bad, &mut cfg).is_err(), "{bad} was accepted");
         }
     }

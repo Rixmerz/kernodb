@@ -131,6 +131,14 @@ pub enum OpKind {
     WriteAt,
     SetLen,
     SyncData,
+    /// `File::start_writeback`: counts as a mutating operation (it can be the
+    /// point of a crash or of an injected error, and appears in traces), but
+    /// changes nothing: the writes it covers stay pending, as after any
+    /// other call that promises no durability.
+    StartWriteback,
+    /// `File::wait_writeback`: like [`StartWriteback`](Self::StartWriteback),
+    /// an operation without effect on any state.
+    WaitWriteback,
     /// Creation of a file (`open` with `CreateNew`/`CreateOrOpen` of a
     /// missing file).
     Create,
@@ -150,9 +158,10 @@ pub struct OpInfo {
     pub path: PathBuf,
     /// Destination of a rename; `None` for every other kind.
     pub to: Option<PathBuf>,
-    /// `WriteAt`: offset written. Otherwise 0.
+    /// `WriteAt`, `StartWriteback`, `WaitWriteback`: offset written or covered. Otherwise 0.
     pub offset: u64,
-    /// `WriteAt`: bytes written. `SetLen`: the new length. Otherwise 0.
+    /// `WriteAt`: bytes written. `StartWriteback`, `WaitWriteback`: bytes covered. `SetLen`:
+    /// the new length. Otherwise 0.
     pub len: u64,
     /// [`kerno_core::probe::current_phase`] of the calling thread.
     pub phase: &'static str,
@@ -1066,6 +1075,18 @@ impl File for SimFile {
         }
         Ok(())
     }
+
+    fn start_writeback(&self, offset: u64, len: u64) -> io::Result<()> {
+        let mut s = self.state.lock();
+        // Only the accounting of a mutating operation: nothing becomes
+        // durable and no pending write is dropped, whatever the fsync model.
+        s.tick(self.op(OpKind::StartWriteback, offset, len)).map_err(Refused::into_io)
+    }
+
+    fn wait_writeback(&self, offset: u64, len: u64) -> io::Result<()> {
+        let mut s = self.state.lock();
+        s.tick(self.op(OpKind::WaitWriteback, offset, len)).map_err(Refused::into_io)
+    }
 }
 
 struct SimLock {
@@ -1949,6 +1970,69 @@ mod tests {
         let image = vfs.take_crash_image().unwrap();
         assert!(image.exists(&path("/db/a")).unwrap());
         assert!(!image.exists(&path("/db/b")).unwrap());
+    }
+
+    #[test]
+    fn start_writeback_is_an_operation_that_guarantees_nothing() {
+        // The write it covers is lost by a power loss exactly as often as one
+        // that was never mentioned: the call is not a sync.
+        let (mut lost_covered, mut lost_alone) = (0, 0);
+        for seed in 0..64 {
+            for covered in [true, false] {
+                let vfs = SimVfs::new(seed);
+                vfs.create_dir_all(&path("/db")).unwrap();
+                let f = vfs.open(&path("/db/a"), OpenMode::CreateNew).unwrap();
+                f.write_at(b"hello", 0).unwrap();
+                f.sync_data().unwrap();
+                vfs.sync_dir(&path("/db")).unwrap();
+                f.write_at(b"world", 5).unwrap();
+                let before = vfs.mutating_ops();
+                if covered {
+                    f.start_writeback(5, 5).unwrap();
+                    f.wait_writeback(5, 5).unwrap();
+                    assert_eq!(vfs.mutating_ops(), before + 2, "mutating operations");
+                    assert_eq!(f.len().unwrap(), 10, "no visible effect");
+                }
+                let a = read_all(&vfs.crash_now(CrashKind::PowerLoss), "/db/a");
+                assert_eq!(&a[..5], b"hello");
+                if a.len() == 5 && covered {
+                    lost_covered += 1;
+                } else if a.len() == 5 {
+                    lost_alone += 1;
+                }
+            }
+        }
+        assert!(lost_covered > 0, "the covered write survived every power loss: it was made durable");
+        // Same seeds, same random draws: the call consumes none.
+        assert_eq!(lost_covered, lost_alone);
+    }
+
+    #[test]
+    fn start_writeback_can_be_traced_failed_and_crashed_on() {
+        let vfs = SimVfs::new(8);
+        vfs.create_dir_all(&path("/db")).unwrap();
+        let f = vfs.open(&path("/db/a"), OpenMode::CreateNew).unwrap();
+        f.write_at(&[1u8; 100], 0).unwrap();
+        vfs.start_trace();
+        vfs.fail_when(|op| op.kind == OpKind::StartWriteback, 1, None);
+        assert!(f.start_writeback(0, 100).is_err());
+        assert!(vfs.fault_injected());
+        f.start_writeback(0, 50).unwrap(); // one-shot; the device keeps working
+        let last = vfs.trace().pop().unwrap().op;
+        assert_eq!((last.kind, last.offset, last.len), (OpKind::StartWriteback, 0, 50));
+        vfs.fail_when(|op| op.kind == OpKind::WaitWriteback, 1, None);
+        assert!(f.wait_writeback(0, 50).is_err());
+        f.wait_writeback(0, 50).unwrap();
+        assert_eq!(vfs.trace().pop().unwrap().op.kind, OpKind::WaitWriteback);
+        // A failed hint does not stop a later sync from persisting the data.
+        f.sync_data().unwrap();
+        vfs.sync_dir(&path("/db")).unwrap();
+        vfs.crash_when(|op| op.kind == OpKind::StartWriteback, 1, CrashKind::PowerLoss);
+        assert!(f.start_writeback(0, 1).is_err());
+        assert!(vfs.has_crashed());
+        assert!(f.start_writeback(0, 1).is_err(), "the device is gone");
+        let image = vfs.take_crash_image().unwrap();
+        assert_eq!(read_all(&image, "/db/a"), vec![1u8; 100]);
     }
 
     #[test]

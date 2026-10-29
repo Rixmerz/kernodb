@@ -492,6 +492,10 @@ const WP04_NAMES: &[&str] = &[
     "last_open_replayed_bytes",
 ];
 
+/// The names the condition-1 follow-up levers add (`bytes_per_writeback` and
+/// `dynamic_base_level`).
+const FOLLOW_UP_NAMES: &[&str] = &["sst_writeback_hints", "l0_base_level_skips"];
+
 #[test]
 fn legacy_stat_names_present() {
     let vfs = SimVfs::new(6).as_vfs();
@@ -506,7 +510,7 @@ fn legacy_stat_names_present() {
     }
     drop(snap);
     let st = stats(&db);
-    for name in M0_NAMES.iter().chain(WP04_NAMES) {
+    for name in M0_NAMES.iter().chain(WP04_NAMES).chain(FOLLOW_UP_NAMES) {
         assert!(st.contains_key(*name), "missing stat {name}");
     }
     assert_eq!(st["commits"], 400);

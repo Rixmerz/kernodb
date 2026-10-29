@@ -363,5 +363,138 @@ Las proporciones son frente a `lsm` (M0) de la misma sesión; «sin palanca» es
 ### 8.6 Límites
 
 - Misma máquina y mismo sistema de archivos que el resto (ext4 sobre disco virtual); la ganancia de `fdatasync` depende de cómo el sistema de archivos ordene la confirmación del diario y de la contención con otros procesos (R-S3).
-- El microbanco con la máquina en reposo no reproduce la ganancia del microbanco con carga; la palanca queda apagada por defecto porque el microbanco no muestra ganancia en reposo; la evidencia a favor de encenderla es la del motor (p50 −40 %, T2 −30–40 %) y queda pendiente de que la medición de referencia de WP14 la confirme para cambiar el valor por defecto.
+- El microbanco con la máquina en reposo no reproduce la ganancia del microbanco con carga; la palanca queda apagada por defecto porque el microbanco no muestra ganancia en reposo; la evidencia a favor de encenderla es la del motor (p50 −40 %, T2 −30–40 %) y queda pendiente de que la medición de referencia de WP14 la confirme para cambiar el valor por defecto. **Decidido en [§9.1](#91-wal_preallocate-ayuda-se-queda-apagado)** con 15 parejas intercaladas más Cauce y LiveSpec: se queda apagada.
 - El p99 de T1 mejora por debajo de la dispersión entre ejecuciones (cuartiles 1 708–2 466 µs con la palanca): la mejora del 15 % es una mediana, no una diferencia que separe las distribuciones.
+
+## 9. Seguimiento de la condición 1: `wal_preallocate`, volcado incremental y niveles dinámicos
+
+Seguimiento de [§8](#8-preasignación-y-reciclado-del-wal) y de las palancas 4 y 5 de [f1-decision-cond1.md §3](f1-decision-cond1.md#3-siguientes-palancas). **No cambia el estado de la decisión**: T1 sigue sin cumplirse (§9.5).
+
+| Campo | Valor |
+|---|---|
+| Estado | **Provisional**, como el resto del documento: máquina compartida con otros paquetes que compilaban y probaban (cada serie lleva la carga de 1 minuto de cada fila y [`README.txt`](../../spikes/storage/results/2026-10-28-f1-cond1b/README.txt) la resume). La medición de referencia sigue siendo la de WP14 con la máquina en reposo |
+| Fecha | 2026-10-28 |
+| Código medido | `kerno-storage` sobre `1764311` con `File::start_writeback` / `wait_writeback`, `CompactionConfig::{bytes_per_writeback, dynamic_base_level, file_picker}` ([DESIGN.md](../../crates/kerno-storage/DESIGN.md)) |
+| Datos | [`spikes/storage/results/2026-10-28-f1-cond1b/`](../../spikes/storage/results/2026-10-28-f1-cond1b) |
+
+### 9.1 `wal_preallocate`: ¿ayuda? Se queda apagado
+
+`agent_memory` `medium`, `Sync`, `kerno` (apagado, el valor por defecto) frente a `kerno-tuned[wal_preallocate=true]`, intercalados con fjall y btree. Dos series de la misma orden, la segunda con el orden de los motores invertido para quitar el efecto del orden dentro de la repetición; 15 repeticiones en total, mediana del `memory_write_p99_us` (µs):
+
+| Serie | Carga | `kerno` apagado | con la palanca | diferencia pareada (mediana) | con la palanca mejor en | fjall | btree |
+|---|---|---:|---:|---:|---:|---:|---:|
+| A (7 rep., `kerno` primero) | 2,6–6,1 | 4 927 (3 928–9 593) | 5 628 (3 363–8 126) | −12 % | 4 de 7 | 2 026 | 1 916 |
+| B (8 rep., `kerno-tuned` primero) | 1,4–1,8 | 3 873 (3 256–4 952) | 3 448 (3 006–4 067) | −15 % | 6 de 8 | 949 | 1 518 |
+| A + B | 1,4–6,1 | 4 016 (cuartiles 3 828–4 936) | 3 582 (3 363–5 628) | **−12 %** | **10 de 15** | 1 050 | 1 625 |
+
+El p50 de escritura baja un 44 % (570 → 322 µs) en las 15 parejas, como en [§8.3](#83-agent_memory-y-t1). Con la palanca T1 queda en 3,41× fjall y 2,20× btree (3,83× y 2,47× sin ella): **no se cumple de ninguna de las dos formas**. Las otras cargas que dependen del WAL (`livespec` y `cauce`, 7 repeticiones intercaladas con `lsm`, carga 1,3–2,0, `walprealloc-t3.jsonl`):
+
+| Medida | `kerno` apagado | con la palanca | `lsm` |
+|---|---:|---:|---:|
+| LiveSpec `changeset_commit_p99_us` | 3 119 (2 468–5 329) | 2 513 (2 095–3 023) | 6 410 |
+| LiveSpec `module_scan_p99_us` | 911 (779–945) | 977 (818–1 008) | 856 |
+| Cauce `step_commit_p99_us` | 1 321 (1 213–1 535) | 1 499 (1 342–1 716) | 686 |
+| Cauce `step_commit_p50_us` | 263 | 267 | 264 |
+
+**Decisión: `wal_preallocate` se queda en `false`.** A favor: el p50 (−44 %), una mejora de la mediana del p99 de T1 de entre el 12 y el 15 % en las tres series independientes (§8.3 y estas dos) y el p99 de commit de LiveSpec (−19 %). En contra: la mejora del p99 de T1 no separa las distribuciones (10 de 15 parejas; rangos y cuartiles solapados) y T1 no se cumple; el p99 de Cauce (T2) empeora un 13 % (también con rangos solapados) y `module_scan` un 7 %; y el coste de [§8.5](#85-costes) incluye +1,0 de `write_amp` en `bulk_load` (≈ 3,2 → 4,2 frente al límite de 3,6 de T7) y +13 ms de apertura. Una palanca que no cumple el objetivo que la motivó, que lleva T7 a incumplirse y cuyo efecto es del orden del ruido no es un valor por defecto razonable. La evidencia a favor de encenderla (p50, T2 de LiveSpec) no es un objetivo de T1.
+
+### 9.2 Palanca 5: volcado incremental de las SST con `sync_file_range`
+
+**Implementación.** `File::start_writeback(offset, len)` y `File::wait_writeback(offset, len)` (por defecto no hacen nada; `StdVfs` en Linux: `sync_file_range` con `SYNC_FILE_RANGE_WRITE` y con `WAIT_BEFORE | WAIT_AFTER`; en otras plataformas, nada). `SimVfs` las modela como operaciones mutantes sin efecto (`OpKind::StartWriteback` y `WaitWriteback`): cuentan para los puntos de caída y de fallo inyectado y salen en las trazas, pero **no hacen duradero nada** (lo no sincronizado se pierde con un corte de energía exactamente como sin ellas: `an_sst_writeback_request_never_makes_data_durable`). Opción: `CompactionConfig::bytes_per_writeback`.
+
+**Microbanco primero** (`spike-bench walsync --writeback true`; p99 del `fdatasync` de 512 B que crece, o de un archivo ya escrito, mientras otro hilo escribe ráfagas de 16 MiB en el mismo directorio; mediana de 6–7 repeticiones intercaladas, carga 1,7–3,0, µs):
+
+| Cómo acota sus datos sucios la ráfaga | archivo que crece (WAL por defecto) | archivo preasignado |
+|---|---:|---:|
+| sin escritura de fondo | 460 | 458 |
+| nada hasta el final de la ráfaga (M0) | 9 880–10 519 | 9 814–10 559 |
+| `sync_data` cada MiB (`bytes_per_sync`) | 2 494–2 724 | 2 234–2 482 |
+| `sync_file_range(WRITE)` cada MiB, sin esperar | 10 117–10 166 | 10 260–10 707 |
+| ídem y espera del rango anterior (dos rangos en vuelo) | 5 222 | 4 413 |
+| ídem y espera del mismo rango (uno en vuelo) | 3 608 | 2 867 |
+
+Pedir el volcado sin esperar **no cambia la cola**: solo adelanta la ráfaga y el `fdatasync` del WAL sigue esperando detrás de toda la cola del dispositivo. Lo que acota la cola es no dejar más de un rango en vuelo; con esa espera, `sync_file_range` se queda a ~1,3× del `fdatasync` por MiB. En el microbanco **ninguna variante mejora a `bytes_per_sync`**.
+
+**En el motor** el escritor de la SST pide el volcado de cada MiB y espera ese mismo rango (la variante «un rango en vuelo»), en lugar de sincronizar (`bytes_per_sync = None`). A/B contra el valor por defecto de entonces (`bytes_per_sync = 1 MiB`), intercalados, 6 repeticiones por serie, mediana (rango) y diferencia pareada:
+
+| Serie | Carga | Medida | por defecto | `bytes_per_writeback` | diferencia pareada | mejor en |
+|---|---|---|---:|---:|---:|---:|
+| 1 MiB | 1,7–1,9 | `agent_memory` p99 | 3 763 (3 168–4 264) | 2 696 (2 134–3 318) | **−24 %** | 6 de 6 |
+| 1 MiB (otra sesión) | 1,2–2,0 | `agent_memory` p99 | 3 358 (2 910–4 575) | 2 982 (2 550–3 719) | −10 % | 4 de 6 |
+| 1 MiB (otra sesión) | 1,6–1,8 | Cauce `step_commit_p99_us` | 1 423 (1 200–1 584) | 1 148 (953–1 251) | **−21 %** | 6 de 6 |
+| 256 KiB | 1,3–1,8 | `agent_memory` p99 | 3 167 (2 243–3 836) | 2 563 (2 195–3 736) | −4 % | 4 de 6 |
+| 256 KiB | 1,5–1,8 | Cauce `step_commit_p99_us` | 1 327 (997–1 457) | 853 (839–976) | **−34 %** | 6 de 6 |
+
+El valor de 1 MiB mejora el p99 de T1 entre un 10 y un 24 % por serie (mediana de las 12 parejas: −18 %, mejor en 10 de 12) y el de Cauce entre un 21 % (1 MiB) y un 34 % (256 KiB), mejor en 6 de 6 repeticiones en las dos series: **resuelve la mitad del conflicto T1 / T2 de Cauce** descrito en [§7.4](#74-t2t5-reportmd-largejsonl-mediana-de-3-repeticiones), porque quita la barrera del diario de los `sync_data` intermedios de las compactaciones sin dejar la escritura sin acotar. No cumple T1 por sí solo (3 358–3 763 → 2 696–2 982 µs).
+
+### 9.3 Palanca 4: niveles dinámicos y prioridad por bytes
+
+**`dynamic_base_level`.** Con L1 vacío, ninguna compactación en vuelo hacia él y L2 lo bastante pequeño para que una compactación de L0 con `l0_trigger` archivos quepa en `max_compaction_bytes`, L0 se compacta directamente en L2: el dato se reescribe una vez en lugar de una por nivel mientras la base de datos es pequeña. La condición de que L1 esté vacío no es un detalle: un archivo en L1 sería más viejo que lo que lo esquiva, y `compaction::apply` lo rechaza como `Corruption` interna ([DESIGN.md](../../crates/kerno-storage/DESIGN.md)). Un cierre limpio **no** salta L1 (fusionar L0 con todo L2 cuesta mucho más que con L1; sin esa excepción el cierre de `bulk_load` `medium` subía un 6–17 % en los A/B).
+
+**`file_picker = MinOverlap`** (prioridad por bytes: del nivel por encima de su objetivo se compacta el archivo que reescribe menos bytes del nivel de abajo por byte que baja).
+
+A/B contra el valor por defecto de entonces, intercalados, 6 repeticiones, `agent_memory` `medium`:
+
+| Variante | Carga | p99 por defecto | p99 con la palanca | diferencia pareada | mejor en | compactaciones · MB escritos por compactación (por defecto → palanca) |
+|---|---|---:|---:|---:|---:|---|
+| `dynamic_base_level` | 1,3–1,8 | 3 591 (2 734–4 284) | 2 527 (2 380–2 900) | **−30 %** | 6 de 6 | 22 → 17 · 561 → 523 (−7 %) |
+| `file_picker = MinOverlap` | 1,5–1,8 | 3 718 (2 718–4 452) | 3 039 (2 464–3 514) | −17 % | 6 de 6 | 23 → 18 · 611 → 467 (−23 %) |
+| `bytes_per_writeback` + `dynamic_base_level` | 1,4–1,8 | 3 474 (2 804–4 059) | **2 240 (1 894–2 562)** | **−31 %** | 6 de 6 | 23 → 14 · 611 → 530 (−13 %) |
+
+La amplificación de escritura de `bulk_load` no cambia (3,0–3,3 en todas las variantes): la carga en orden aleatorio reescribe todo L1 por cada archivo de L0 y esas palancas no tocan eso. En `agent_memory` la escritura de compactación baja entre un 7 y un 23 %, y los bytes de flush (318 MB) son los mismos.
+
+**Costes.**
+
+- `dynamic_base_level`: el p99 de commit de LiveSpec sube un 54 % (5 118 frente a 3 332 µs con la palanca apagada; 16 y 8 repeticiones; `attr-livespec.jsonl`): compactaciones de L0 en L2 más largas. Sigue en 0,74–0,87× `lsm` (objetivo ≤ 1,2×). En el A/B aislado el cierre de `bulk_load` `medium` subía un 6 % (299 → 325 ms) y un 17 % junto con `bytes_per_writeback` (297 → 318 ms); con la excepción del cierre de más arriba, la sesión final lo mide en 179 ms frente a 252 con los valores anteriores (§9.4; no se midió la excepción aislada).
+- `MinOverlap` **no es el valor por defecto** (no se midió con la corrección siguiente, así que sus cifras de la tabla no se han repetido). Tal como se midió, retrasaba justo los archivos que más basura contienen y fallaba la prueba compartida `space_is_reclaimed_after_range_deletes` con el perfil `Inline` (3 375 523 bytes en disco tras la recarga del ciclo 6, límite 3 172 072). Ahora el selector pasa primero los archivos con fragmentos de borrado de rango, la prueba pasa y `Inline` incluye `MinOverlap`. Sigue el límite de amplificación de espacio que preveía [f1-decision-cond1.md §3](f1-decision-cond1.md#3-siguientes-palancas).
+
+### 9.4 Nuevos valores por defecto y T1–T5
+
+Valores por defecto de `CompactionConfig` que cambian: `bytes_per_sync = None`, `bytes_per_writeback = Some(1 MiB)`. `dynamic_base_level = false` (apagada por defecto hasta que el propietario decida: T1 mejora, el p99 de commit de LiveSpec empeora 1,43×), `file_picker = RoundRobin` y `wal_preallocate = false` no cambian. El perfil `M0` apaga las tres. En una plataforma sin `sync_file_range` el valor por defecto deja las SST sin acotar (solo afecta a la cola del `sync` del WAL, y las garantías de `Sync` solo están verificadas en Linux).
+
+Sesión final (`results.jsonl`): `kerno` con los valores nuevos tal como estaban entonces (`dynamic_base_level` encendida; ya no es el valor por defecto), `kerno-tuned[bytes_per_sync=1048576,bytes_per_writeback=none,dynamic_base_level=false]` (los valores por defecto anteriores), `lsm`, btree y fjall, `medium`, `Sync`, 5 repeticiones intercaladas, mediana. **Carga de 1 minuto: 1,14–2,38 (mediana 1,41).**
+
+| T | carga | métrica | kerno | rango | defecto anterior | lsm | fjall | btree | k/lsm | k/fjall | k/btree | k/anterior |
+| T1 | agent_memory | `memory_write_p99_us` | 2339 | 2093–2425 | 3709 | 6947 | 783 | 1399 | 0.34× | 2.99× | 1.67× | 0.63× |
+| T2 | livespec | `changeset_commit_p99_us` | 4387 | 4094–5394 | 3062 | 5911 | 1428 | 3406 | 0.74× | 3.07× | 1.29× | 1.43× |
+| T2 | append_seq | `append_commit100_p99_us` | 2486 | 2048–2623 | 2486 | 5059 | 1483 | 2632 | 0.49× | 1.68× | 0.94× | 1.00× |
+| T2 | append_seq | `update_commit100_p99_us` | 4936 | 4172–5358 | 4772 | 7778 | 1637 | 2468 | 0.63× | 3.01× | 2.00× | 1.03× |
+| T2 | history_sim | `rev_commit100_p99_us` | 7078 | 6275–7995 | 7016 | 11026 | 2851 | 19055 | 0.64× | 2.48× | 0.37× | 1.01× |
+| T2 | cauce | `step_commit_p99_us` | 1197 | 901–1346 | 1402 | 671 | 574 | 2030 | 1.78× | 2.09× | 0.59× | 0.85× |
+| T3 | livespec | `symbol_get_p99_us` | 47.1 | 44.8–52.7 | 48.2 | 47.4 | 37.2 | 44.6 | 0.99× | 1.27× | 1.06× | 0.98× |
+| T3 | livespec | `module_scan_p99_us` | 842 | 700–898 | 871 | 848 | 565 | 478 | 0.99× | 1.49× | 1.76× | 0.97× |
+| T3 | cauce | `step_read_p99_us` | 127 | 108–142 | 130 | 138 | 109 | 90.3 | 0.92× | 1.17× | 1.41× | 0.98× |
+| T3 | agent_memory | `recall_p99_us` | 71.9 | 67.6–80.3 | 85.6 | 80.8 | 61.1 | 52.2 | 0.89× | 1.18× | 1.38× | 0.84× |
+| T3 | agent_memory | `recent_scan_p99_us` | 89.3 | 84.0–111 | 109 | 99.9 | 98.0 | 81.7 | 0.89× | 0.91× | 1.09× | 0.82× |
+| T4 | bulk_load | `close_ms` | 179 | 175–186 | 252 | 1058 | 187 | 21.6 | 0.17× | 0.96× | 8.28× | 0.71× |
+| T5 | livespec | `changesets_per_s` | 623 | 571–671 | 610 | 631 | 639 | 379 | 0.99× | 0.98× | 1.65× | 1.02× |
+| T5 | cauce | `steps_per_s` | 2882 | 2809–3009 | 2693 | 2983 | 3002 | 1000 | 0.97× | 0.96× | 2.88× | 1.07× |
+| T5 | append_seq | `append_kops` | 113 | 110–136 | 124 | 126 | 128 | 82.9 | 0.90× | 0.88× | 1.36× | 0.91× |
+| T5 | agent_memory | `steps_per_s` | 1100 | 1059–1202 | 915 | 949 | 1338 | 1016 | 1.16× | 0.82× | 1.08× | 1.20× |
+| T5 | history_sim | `revisions_per_s_k` | 57.3 | 54.2–60.7 | 54.6 | 58.1 | 53.1 | 7.24 | 0.99× | 1.08× | 7.91× | 1.05× |
+| T5 | bulk_load | `load_kops` | 118 | 105–130 | 129 | 116 | 134 | 15.6 | 1.02× | 0.88× | 7.56× | 0.91× |
+| T7 | bulk_load | `write_amp` | 3.27 | 3.25–3.31 | 3.18 | 3.37 | 1.58 | 10.1 | 0.97× | 2.07× | 0.32× | 1.03× |
+| T8 | bulk_load | `reopen_ms` | 4.08 | 3.81–13.3 | 4.30 | 6.59 | 517 | 1.42 | 0.62× | 0.01× | 2.88× | 0.95× |
+| T8 | bulk_load | `recovery_ms` | 8.37 | 7.78–13.4 | 9.44 | 8.34 | 512 | 1.04 | 1.00× | 0.02× | 8.04× | 0.89× |
+| - | agent_memory | `memory_write_p50_us` | 496 | 440–505 | 485 | 445 | 417 | 630 | 1.11× | 1.19× | 0.79× | 1.02× |
+| - | agent_memory | `space_amp` | 3.02 | 3.02–3.02 | 3.02 | 2.46 | 3.15 | 3.93 | 1.23× | 0.96× | 0.77× | 1.00× |
+| - | append_seq | `write_amp` | 2.74 | 2.74–2.75 | 2.87 | 3.45 | 1.74 | 2.27 | 0.80× | 1.57× | 1.21× | 0.96× |
+
+(`k/anterior` < 1 es mejora en las métricas de latencia y de espacio, > 1 en las de rendimiento. `bulk_load` `large`, 3 repeticiones, carga 1,2–2,6: `close_ms` 531 (453–632) frente a 598 con los valores anteriores, `lsm` 4 658 y fjall 1 405; objetivo ≤ 1 000 ms.)
+
+Lectura:
+
+- **T1 no se cumple**: 2 339 µs frente a 783 de fjall en la misma sesión (**2,99×**, objetivo ≤ 2,0×) y 1 399 de btree (**1,67×**, ≤ 1,5×). Los valores nuevos bajan el p99 un 37 % respecto de los anteriores de la misma sesión (3 709 µs: 4,74× fjall y 2,65× btree) y acercan la proporción con btree a un 11 % del objetivo, pero la proporción con fjall empeora frente a las de §7–§8 (2,1–2,7×) porque fjall midió aquí 783 µs, menos que en las otras sesiones (1 044–1 059): la proporción con fjall depende tanto de fjall como de `kerno`.
+- **T2**: LiveSpec 0,74× `lsm` y `append_seq` inserción y actualización 0,49× y 0,63× (cumplen); `history_sim` 0,64× (cumple); `append_seq` actualización 3,01× fjall (objetivo ≤ 2×: no cumple, como en el M0 y en WP05); **Cauce 1,78× `lsm`** (antes 2,09×; el objetivo es ≤ 1,2×: sigue sin cumplirse, mejor).
+- **T3**: `symbol_get` 0,99×, Cauce `step_read` 0,92×, `recall` 0,89× y `recent_scan` 0,89× (cumplen); `module_scan` 0,99× `lsm` (cumple) y 1,76× btree (no cumple, como el M0: 2,18×).
+- **T4**: `medium` 179 ms (objetivo ≤ 250 ms) y `large` 531 ms (≤ 1 000 ms): se cumple. Con la carga de estas sesiones (1,3–2,0) el valor por defecto anterior medía 252 ms.
+- **T5**: entre 0,90× y 1,16× `lsm` en las seis cargas (≥ 0,9×: cumple, `append_seq` en el límite).
+- **T7**: `write_amp` de `bulk_load` 3,27 (≤ 3,6: cumple; 3,18 con los valores anteriores).
+- **T8**: apertura limpia 4,1 ms y recuperación 8,4 ms, 0,62× y 1,00× `lsm`.
+
+### 9.5 Estado de la decisión y límites
+
+- **T1 sigue sin cumplirse** (2,99× fjall y 1,67× btree frente a ≤ 2,0× y ≤ 1,5×): el estado de [f1-decision-cond1.md](f1-decision-cond1.md) sigue siendo *candidato a NO-GO, provisional*. No se modifica ningún objetivo.
+- Todas las cifras son de una máquina compartida (carga de 1 minuto 0,7–6,1; las series con carga > 3 se marcan) y de un solo sistema de archivos (ext4 sobre disco virtual). Una mejora del 10–15 % del p99 de T1 está dentro de la dispersión entre repeticiones; las que superan el 25 % (`dynamic_base_level`, la combinación) se repiten en 6 de 6 repeticiones pero con 6 repeticiones por serie.
+- Los valores por defecto nuevos son una decisión tomada con estas series y quedan pendientes de que WP14 las confirme con la máquina en reposo. `dynamic_base_level` (apagada por defecto) cambia el compromiso entre objetivos (T1 mejor, p99 de commit de LiveSpec peor, aún dentro de T2); si el propietario prefiere lo contrario, se enciende con `KERNO_TUNING=dynamic_base_level=true` o `CompactionConfig::dynamic_base_level`.
+- La prueba compartida `space_is_reclaimed_after_range_deletes` y `space_is_reclaimed` de los perfiles con hilos (`threads`, `m0_profile`) tuvieron fallos aislados al ejecutar el conjunto completo con otros procesos compilando (también en el perfil `M0`, que no lleva ninguna palanca nueva); aislados pasan siempre (6 de 6). No se han atribuido.

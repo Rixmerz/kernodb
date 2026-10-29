@@ -80,6 +80,8 @@ pub fn classify(op: &OpInfo) -> &'static [&'static str] {
         // Preparing the spare WAL from scratch is part of getting the next
         // log ready: a half-made spare is deleted at open.
         ("wal_spare", SpareWal, _) | ("wal_spare", Dir, OpKind::SyncDir) => &["L5'"],
+        // Any operation on an SST, `StartWriteback` and `WaitWriteback` (advisory
+        // requests while it is being written) included.
         ("flush", Sst, _) | ("flush", Dir, OpKind::SyncDir) => &["L6"],
         ("flush", Manifest, OpKind::WriteAt | OpKind::SyncData) => &["L7'"],
         ("delete", Wal, OpKind::Remove) => &["L8"],
@@ -150,6 +152,18 @@ mod tests {
         assert_eq!(rows(op(OpKind::WriteAt, "/db/MANIFEST", "compact_range")), ["DC"]);
         assert_eq!(rows(op(OpKind::Remove, "/db/000004.sst", "compact_range")), ["DC"]);
         assert_eq!(rows(op(OpKind::Create, "/db/MANIFEST.tmp", "create")), ["CR"]);
+        // A writeback request for an SST belongs to the row of the write it
+        // follows: it is advisory, so no new place in the protocol.
+        assert_eq!(rows(op(OpKind::StartWriteback, "/db/000009.sst", "flush")), ["L6"]);
+        assert_eq!(rows(op(OpKind::StartWriteback, "/db/000010.sst", "compact")), ["L9"]);
+        assert_eq!(rows(op(OpKind::StartWriteback, "/db/000011.sst", "compact_range")), ["DC"]);
+        assert_eq!(rows(op(OpKind::StartWriteback, "/db/000012.sst", "close")), ["L13'"]);
+        assert_eq!(rows(op(OpKind::StartWriteback, "/db/000013.sst", "session")), ["L12'"]);
+        assert_eq!(rows(op(OpKind::WaitWriteback, "/db/000009.sst", "flush")), ["L6"]);
+        assert_eq!(rows(op(OpKind::WaitWriteback, "/db/000010.sst", "compact")), ["L9"]);
+        // Nothing but SST writers makes one: a request for any other file has no row.
+        assert!(classify(&op(OpKind::StartWriteback, "/db/000007.wal", "commit")).is_empty());
+        assert!(classify(&op(OpKind::WaitWriteback, "/db/000007.wal", "commit")).is_empty());
         // A WAL write outside a commit has no row.
         assert!(classify(&op(OpKind::WriteAt, "/db/000007.wal", "flush")).is_empty());
     }

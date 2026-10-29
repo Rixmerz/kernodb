@@ -11,8 +11,13 @@
 //!                                                              (Markdown to stdout)
 //! spike-bench env    [--dir bench-data]                        (JSON to stdout)
 //! spike-bench walsync [--dir D] [--out walsync.jsonl] [--reps 5] [--iterations 5000]
-//!                    [--record 512] [--burst 16777216] [--pause-ms 30]
-//!                                  (fdatasync of a growing vs a pre-written file)
+//!                    [--record 512] [--burst 16777216] [--pause-ms 30] [--writeback false]
+//!                    [--modes all|sync_every_mib,sync_at_end,writeback_every_mib,
+//!                             paced_writeback_every_mib,blocking_writeback_every_mib]
+//!                                  (fdatasync of a growing vs a pre-written file;
+//!                                  `--writeback true`: with each way of bounding the
+//!                                  dirty data of a background burst, `sync_file_range`
+//!                                  included)
 //! ```
 //!
 //! `suite` runs every (engine, workload, scale) combination `reps` times,
@@ -107,11 +112,29 @@ fn cmd_walsync(args: &Args) {
         iterations: num("iterations", "5000"),
         record: num("record", "512"),
         background: false,
+        background_sync: spike_bench::walsync::BackgroundSync::EveryMiB,
+        modes: args
+            .get_or("modes", "all")
+            .split(',')
+            .filter(|m| *m != "all")
+            .map(|m| {
+                spike_bench::walsync::BackgroundSync::from_name(m)
+                    .unwrap_or_else(|| panic!("unknown --modes entry {m}"))
+            })
+            .collect(),
         burst: num("burst", "16777216"),
         pause: std::time::Duration::from_millis(num("pause-ms", "30") as u64),
     };
     let out = PathBuf::from(args.get_or("out", "walsync.jsonl"));
-    spike_bench::walsync::suite(&mut params, num("reps", "5"), &out).expect("walsync");
+    let reps = num("reps", "5");
+    if params.modes.is_empty() {
+        params.modes = spike_bench::walsync::BackgroundSync::ALL.to_vec();
+    }
+    if args.get_or("writeback", "false") == "true" {
+        spike_bench::walsync::suite_writeback(&mut params, reps, &out).expect("walsync");
+    } else {
+        spike_bench::walsync::suite(&mut params, reps, &out).expect("walsync");
+    }
     let _ = std::fs::remove_dir_all(&params.dir);
 }
 

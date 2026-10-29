@@ -890,9 +890,16 @@ impl Inner {
         }
     }
 
-    /// The L1 files a flush cuts around (`flush_split`); none if it is off.
+    /// The files of the level L0 compacts into (L1, or L2 when
+    /// `dynamic_base_level` skips an empty L1) that a flush cuts around
+    /// (`flush_split`); none if it is off.
     fn l1_for_split(&self) -> Vec<Arc<Table>> {
-        if self.tuning.flush_split { self.state.lock().version.levels[1].clone() } else { Vec::new() }
+        if !self.tuning.flush_split {
+            return Vec::new();
+        }
+        let st = self.state.lock();
+        let base = compaction::l0_output_level(&st.version.levels, &self.tuning, &st.busy);
+        st.version.levels[base].clone()
     }
 
     /// [`flush::write_memtable`] with file numbers from this engine.
@@ -1007,14 +1014,14 @@ impl Inner {
             let t = &plan.inputs[0];
             let mut levels = ms.levels.clone();
             levels[plan.level].retain(|x| x.number != t.number);
-            let next = &mut levels[plan.level + 1];
+            let next = &mut levels[plan.output];
             let at = next.partition_point(|x| x.smallest < t.smallest);
             next.insert(at, t.clone());
             let (last_seq, log_number) = (ms.last_seq, ms.log_number);
             let edit = Edit::Compaction {
                 reason: REASON_TRIVIAL_MOVE,
                 next_file: Some(self.next_file.load(Ordering::SeqCst)),
-                add: vec![t.meta(plan.level as u8 + 1)],
+                add: vec![t.meta(plan.output as u8)],
                 delete: vec![(plan.level as u8, t.number)],
             };
             self.log_edit(&mut ms, edit, &levels, last_seq, log_number)?;
@@ -1050,10 +1057,10 @@ impl Inner {
         let mut ms = self.manifest.lock();
         // Only this thread changes L1 and deeper: what it holds now is what
         // `pick` saw.
-        let next_level_files = ms.levels[plan.level + 1].len() as u64;
+        let next_level_files = ms.levels[plan.output].len() as u64;
         let levels = compaction::apply(&ms.levels, plan, &outputs)?;
         let (last_seq, log_number) = (ms.last_seq, ms.log_number);
-        let out_level = plan.level as u8 + 1;
+        let out_level = plan.output as u8;
         let edit = Edit::Compaction {
             reason: match purpose {
                 Purpose::Background => REASON_BACKGROUND,
@@ -1091,6 +1098,9 @@ impl Inner {
             bump(&s.l0_compaction_l1_files, l1_files);
             bump_max(&s.l0_compaction_l1_files_max, l1_files);
             bump(&s.l0_compaction_l1_files_present, next_level_files);
+            if plan.output > 1 {
+                bump(&s.l0_base_level_skips, 1);
+            }
         }
         Ok(Some(Compacted { read, written }))
     }
@@ -1179,6 +1189,11 @@ impl Inner {
     fn compact_for_close(&self, start: Instant) -> Result<(u64, bool)> {
         // The compaction must not see the shutdown flag and abandon its work.
         self.shutting_down.store(false, Ordering::SeqCst);
+        // A close writes into L1 even if it is empty: merging the L0 files
+        // with L1 rewrites far less than merging them with all of L2, which is
+        // what skipping L1 would do, and the next session starts from the
+        // usual shape (`dynamic_base_level` needs no transition).
+        let tuning = Tuning { dynamic_base_level: false, ..self.tuning.clone() };
         let mut pointers = vec![Vec::new(); NUM_LEVELS];
         let mut compacted = 0u64;
         // Time spent in those compactions, the deletion of their inputs
@@ -1193,10 +1208,10 @@ impl Inner {
         loop {
             let plan = {
                 let st = self.state.lock();
-                if self.tuning.l0_metric(&st.version.levels[0]) < self.tuning.l0_trigger {
+                if tuning.l0_metric(&st.version.levels[0]) < tuning.l0_trigger {
                     break;
                 }
-                compaction::pick_l0_floor(&st.version.levels, &self.tuning)
+                compaction::pick_l0_floor(&st.version.levels, &tuning)
             };
             let Some(plan) = plan else { break };
             let (bytes, took) = run(plan, &mut pointers)?;
@@ -1205,7 +1220,7 @@ impl Inner {
         let exhausted = loop {
             let plan = {
                 let st = self.state.lock();
-                compaction::pick(&st.version.levels, &self.tuning, &pointers, &Busy::default())
+                compaction::pick(&st.version.levels, &tuning, &pointers, &Busy::default())
             };
             let Some(plan) = plan else { break false };
             if !self.close_budget.allows(compacted, start.elapsed(), compacting, plan.io_bytes()) {
@@ -1629,6 +1644,7 @@ impl KernoDb {
         let ctx = Arc::new(
             TableCtx::new(vfs.clone(), dir.to_path_buf(), cfg.cache_bytes, stats.clone(), BLOCK_SIZE)
                 .with_bytes_per_sync(cfg.compaction.bytes_per_sync)
+                .with_bytes_per_writeback(cfg.compaction.bytes_per_writeback)
                 .with_db_id(db_id)
                 .with_deleter(deleter),
         );

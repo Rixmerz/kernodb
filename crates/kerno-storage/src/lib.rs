@@ -60,7 +60,7 @@ pub mod format;
 pub mod testing;
 
 pub use config::{
-    AccessMode, CloseBudget, CompactionConfig, Config, GroupCommitConfig, L0Metric, Limits, ReadOnlyReason,
+    AccessMode, CloseBudget, CompactionConfig, Config, FilePicker, GroupCommitConfig, L0Metric, Limits, ReadOnlyReason,
     SlowdownPolicy,
 };
 #[doc(hidden)]

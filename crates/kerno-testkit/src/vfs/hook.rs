@@ -33,6 +33,8 @@ pub enum HookOpKind {
     Len,
     SetLen,
     SyncData,
+    StartWriteback,
+    WaitWriteback,
 }
 
 /// Whether the hook runs before or after the operation.
@@ -54,10 +56,10 @@ pub struct HookOp<'a> {
     pub to: Option<&'a Path>,
     /// `Open`: the mode. Otherwise `None`.
     pub mode: Option<OpenMode>,
-    /// `ReadAt`/`WriteAt`: the offset. Otherwise 0.
+    /// `ReadAt`/`WriteAt`/`StartWriteback`/`WaitWriteback`: the offset. Otherwise 0.
     pub offset: u64,
-    /// `ReadAt`/`WriteAt`: bytes read or written. `SetLen`: the new length.
-    /// Otherwise 0.
+    /// `ReadAt`/`WriteAt`: bytes read or written. `StartWriteback`/`WaitWriteback`:
+    /// bytes covered. `SetLen`: the new length. Otherwise 0.
     pub len: u64,
     /// [`kerno_core::probe::current_phase`] of the calling thread.
     pub phase: &'static str,
@@ -182,6 +184,16 @@ impl File for HookFile {
     fn sync_data(&self) -> io::Result<()> {
         hooked(&self.hook, self.call(HookOpKind::SyncData, 0, 0), || self.inner.sync_data())
     }
+
+    fn start_writeback(&self, offset: u64, len: u64) -> io::Result<()> {
+        let call = self.call(HookOpKind::StartWriteback, offset, len);
+        hooked(&self.hook, call, || self.inner.start_writeback(offset, len))
+    }
+
+    fn wait_writeback(&self, offset: u64, len: u64) -> io::Result<()> {
+        let call = self.call(HookOpKind::WaitWriteback, offset, len);
+        hooked(&self.hook, call, || self.inner.wait_writeback(offset, len))
+    }
 }
 
 impl Vfs for HookVfs {
@@ -269,6 +281,8 @@ mod tests {
         assert_eq!(sim.mutating_ops(), ops, "the inner file system never saw the write");
         assert_eq!(a.len().unwrap(), 4);
         a.sync_data().unwrap();
+        a.start_writeback(0, 4).unwrap();
+        a.wait_writeback(0, 4).unwrap();
         // After + Fail: the sync happened, but the caller is told it failed.
         let b = vfs.open(&path("/db/b"), OpenMode::CreateNew).unwrap();
         b.write_at(b"synced anyway", 0).unwrap();
@@ -292,8 +306,23 @@ mod tests {
         assert_eq!(buf, b"synced anyway");
         // The hook saw every kind of operation.
         use HookOpKind::*;
-        let all =
-            [CreateDirAll, Open, Exists, Remove, Rename, List, SyncDir, Lock, ReadAt, WriteAt, Len, SetLen, SyncData];
+        let all = [
+            CreateDirAll,
+            Open,
+            Exists,
+            Remove,
+            Rename,
+            List,
+            SyncDir,
+            Lock,
+            ReadAt,
+            WriteAt,
+            Len,
+            SetLen,
+            SyncData,
+            StartWriteback,
+            WaitWriteback,
+        ];
         assert_eq!(*seen.lock(), all.into_iter().collect::<BTreeSet<_>>());
     }
 

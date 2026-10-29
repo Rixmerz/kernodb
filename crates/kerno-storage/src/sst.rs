@@ -72,6 +72,11 @@ pub struct TableCtx {
     /// New tables call `sync_data` every this many bytes written, besides
     /// the final one (`CompactionConfig::bytes_per_sync`).
     pub bytes_per_sync: Option<u64>,
+    /// New tables ask the file system to start writing their data back every
+    /// this many bytes written (`File::start_writeback`), waiting for that range before going on, and
+    /// without making anything durable
+    /// (`CompactionConfig::bytes_per_writeback`).
+    pub bytes_per_writeback: Option<u64>,
     /// The database id every table of this engine carries (HDR-10).
     pub db_id: [u8; 16],
     /// Where an obsolete table's file is queued when its last reference goes
@@ -83,7 +88,17 @@ impl TableCtx {
     pub fn new(vfs: Arc<dyn Vfs>, dir: PathBuf, cache_bytes: usize, stats: Arc<Stats>, block_size: usize) -> Self {
         let cache = BlockCache::with_weighter((cache_bytes / block_size).max(1), cache_bytes as u64, BlockWeighter);
         let deleter = Deleter::inline(vfs.clone(), stats.clone());
-        TableCtx { vfs, dir, cache, stats, block_size, bytes_per_sync: None, db_id: [0; 16], deleter }
+        TableCtx {
+            vfs,
+            dir,
+            cache,
+            stats,
+            block_size,
+            bytes_per_sync: None,
+            bytes_per_writeback: None,
+            db_id: [0; 16],
+            deleter,
+        }
     }
 
     pub fn with_deleter(mut self, deleter: Arc<Deleter>) -> Self {
@@ -93,6 +108,11 @@ impl TableCtx {
 
     pub fn with_bytes_per_sync(mut self, bytes_per_sync: Option<u64>) -> Self {
         self.bytes_per_sync = bytes_per_sync;
+        self
+    }
+
+    pub fn with_bytes_per_writeback(mut self, bytes_per_writeback: Option<u64>) -> Self {
+        self.bytes_per_writeback = bytes_per_writeback;
         self
     }
 
@@ -112,8 +132,12 @@ struct Sink {
     written: u64,
     /// `written` at the last intermediate `sync_data`.
     synced: u64,
+    /// `written` at the last intermediate `sync_data` or writeback request.
+    hinted: u64,
     pending: Vec<u8>,
     bytes_per_sync: Option<u64>,
+    bytes_per_writeback: Option<u64>,
+    stats: Arc<Stats>,
 }
 
 impl Sink {
@@ -141,6 +165,23 @@ impl Sink {
                 // once (phase1-design.md §5.4, H3).
                 self.file.sync_data()?;
                 self.synced = self.written;
+                self.hinted = self.written;
+            } else if let Some(every) = self.bytes_per_writeback
+                && self.written - self.hinted >= every
+            {
+                // The same bound without a journal barrier: the kernel starts
+                // writing these bytes back and the call waits for that, so
+                // the device queue never holds more than this range of the
+                // table (starting writeback without waiting only moves the
+                // burst earlier: `spike-bench walsync --writeback true`).
+                // Both are advisory and their errors say nothing about the
+                // data, which the final `sync_data` of `finish_with` reports
+                // on, so a failure is not an engine failure.
+                let (offset, len) = (self.hinted, self.written - self.hinted);
+                let _ = self.file.start_writeback(offset, len);
+                let _ = self.file.wait_writeback(offset, len);
+                bump(&self.stats.sst_writeback_hints, 1);
+                self.hinted = self.written;
             }
         }
         Ok(())
@@ -168,15 +209,26 @@ impl TableBuilder {
             ctx: ctx.clone(),
             number,
             reason,
-            sink: Sink { file, written: 0, synced: 0, pending: Vec::new(), bytes_per_sync: ctx.bytes_per_sync },
+            sink: Sink {
+                file,
+                written: 0,
+                synced: 0,
+                hinted: 0,
+                pending: Vec::new(),
+                bytes_per_sync: ctx.bytes_per_sync,
+                bytes_per_writeback: ctx.bytes_per_writeback,
+                stats: ctx.stats.clone(),
+            },
             inner: SstBuilder::new(ctx.db_id, number, block_size),
             entries: 0,
         })
     }
 
-    /// Syncs the file once, when finished, whatever `bytes_per_sync` says.
+    /// Syncs the file once, when finished, whatever `bytes_per_sync` and
+    /// `bytes_per_writeback` say.
     pub fn without_intermediate_syncs(mut self) -> Self {
         self.sink.bytes_per_sync = None;
+        self.sink.bytes_per_writeback = None;
         self
     }
 
@@ -682,6 +734,97 @@ mod tests {
                 io.writes
             );
         }
+    }
+
+    #[test]
+    fn bytes_per_writeback_asks_for_writeback_while_writing() {
+        use kerno_testkit::vfs::OpKind;
+        // (bytes_per_sync, bytes_per_writeback, suppressed) and whether hints are expected.
+        let cases = [
+            (None, None, false, false),
+            (None, Some(1u64), false, true),
+            // A sync already bounds the dirty data: no hint on top of it.
+            (Some(1u64), Some(1u64), false, false),
+            (None, Some(1u64), true, false),
+        ];
+        for (sync, writeback, suppressed, hints) in cases {
+            let sim = SimVfs::new(1);
+            sim.start_trace();
+            let vfs = sim.as_vfs();
+            vfs.create_dir_all(Path::new("/t")).unwrap();
+            let stats = Arc::new(Stats::default());
+            let ctx = Arc::new(
+                TableCtx::new(vfs, PathBuf::from("/t"), 1 << 20, stats.clone(), 64)
+                    .with_bytes_per_sync(sync)
+                    .with_bytes_per_writeback(writeback),
+            );
+            let mut b = TableBuilder::create(&ctx, 1, REASON_FLUSH).unwrap();
+            if suppressed {
+                b = b.without_intermediate_syncs();
+            }
+            for i in 0..1000 {
+                b.add(&key(i), 1, Some(&[7u8; 1000])).unwrap();
+            }
+            let table = b.finish().unwrap();
+            let trace = sim.trace();
+            let writes: Vec<_> = trace.iter().filter(|t| t.op.kind == OpKind::WriteAt).collect();
+            let hinted: Vec<_> = trace.iter().filter(|t| t.op.kind == OpKind::StartWriteback).collect();
+            let waited: Vec<_> = trace.iter().filter(|t| t.op.kind == OpKind::WaitWriteback).collect();
+            assert!(writes.len() >= 4, "{} writes", writes.len());
+            let ctx_desc = format!("sync {sync:?}, writeback {writeback:?}, suppressed {suppressed}");
+            assert_eq!(stats.sst_writeback_hints.load(std::sync::atomic::Ordering::Relaxed), hinted.len() as u64);
+            if !hints {
+                assert!(hinted.is_empty() && waited.is_empty(), "{ctx_desc}: {} hints", hinted.len());
+                continue;
+            }
+            // With 1 byte as the interval, every chunk written is hinted, and
+            // the hints tile the file with no gap or overlap.
+            assert_eq!(hinted.len(), writes.len(), "{ctx_desc}");
+            for (w, h) in writes.iter().zip(&hinted) {
+                assert_eq!(
+                    (h.op.offset, h.op.len),
+                    (w.op.offset, w.op.len),
+                    "{ctx_desc}: hint does not cover its chunk"
+                );
+                assert!(w.n < h.n, "{ctx_desc}: hint before the data it covers");
+            }
+            // Each request is followed by the wait for the same range.
+            assert_eq!(waited.len(), hinted.len(), "{ctx_desc}");
+            for (w, h) in waited.iter().zip(&hinted) {
+                assert_eq!((w.op.offset, w.op.len), (h.op.offset, h.op.len), "{ctx_desc}: waits for another range");
+                assert_eq!(w.n, h.n + 1, "{ctx_desc}: the wait does not follow the request");
+            }
+            assert_eq!(table.size, writes.iter().map(|w| w.op.len).sum::<u64>());
+        }
+    }
+
+    #[test]
+    fn a_failed_writeback_request_does_not_fail_the_table() {
+        use kerno_testkit::vfs::OpKind;
+        let sim = SimVfs::new(2);
+        let vfs = sim.as_vfs();
+        vfs.create_dir_all(Path::new("/t")).unwrap();
+        let ctx = Arc::new(
+            TableCtx::new(vfs, PathBuf::from("/t"), 1 << 20, Arc::new(Stats::default()), 64)
+                .with_bytes_per_writeback(Some(1)),
+        );
+        // The first request fails (one-shot); the data and the final sync are
+        // what make the table valid.
+        sim.fail_when(|op| op.kind == OpKind::StartWriteback, 1, None);
+        let mut b = TableBuilder::create(&ctx, 1, REASON_FLUSH).unwrap();
+        for i in 0..1000 {
+            b.add(&key(i), 1, Some(&[7u8; 1000])).unwrap();
+        }
+        let table = b.finish().unwrap();
+        assert!(sim.fault_injected(), "the request that was to fail never happened");
+        let mut it = table.iter(false);
+        it.seek_to_first().unwrap();
+        let mut n = 0;
+        while it.valid() {
+            n += 1;
+            it.next().unwrap();
+        }
+        assert_eq!(n, 1000);
     }
 
     #[test]

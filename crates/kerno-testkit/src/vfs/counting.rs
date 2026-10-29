@@ -97,6 +97,16 @@ impl File for CountingFile {
         self.counters.file_syncs.fetch_add(1, Relaxed);
         self.inner.sync_data()
     }
+
+    /// Forwarded and not counted: it is not a sync, and the snapshot fields
+    /// are part of the benchmark rows.
+    fn start_writeback(&self, offset: u64, len: u64) -> io::Result<()> {
+        self.inner.start_writeback(offset, len)
+    }
+
+    fn wait_writeback(&self, offset: u64, len: u64) -> io::Result<()> {
+        self.inner.wait_writeback(offset, len)
+    }
 }
 
 impl Vfs for CountingVfs {

@@ -515,7 +515,8 @@ fn m0_profile_disables_all_levers() {
     let d = CompactionConfig::default();
     assert!(d.flush_split && d.l0_partial && d.l0_trivial_move);
     assert_eq!(d.l0_metric, L0Metric::Depth);
-    assert_eq!(d.bytes_per_sync, Some(1 << 20));
+    assert_eq!((d.bytes_per_sync, d.bytes_per_writeback), (None, Some(1 << 20)));
+    assert!(!d.dynamic_base_level);
     assert_eq!(d.slowdown, SlowdownPolicy::Rate { initial_bytes_per_sec: 16 << 20 });
 
     // Behaviour: a flush with L1 files in its gap is one table, and L0 is
