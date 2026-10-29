@@ -1,6 +1,6 @@
 # Plan de pruebas
 
-Estado: vigente para M0; se amplía por fase · Relacionado con: [SAD §17.6, §18](../architecture/SAD.md#18-calidad-pruebas-y-definición-de-terminado), [invariantes](../architecture/invariants.md), [matriz de fallos](../architecture/failure-matrix.md), [ADR-0012](../adr/0012-metodologia-de-benchmarks.md)
+Estado: vigente; ampliado al cierre de la Fase 1 (2026-10-29, §7) · Relacionado con: [SAD §17.6, §18](../architecture/SAD.md#18-calidad-pruebas-y-definición-de-terminado), [invariantes](../architecture/invariants.md), [matriz de fallos](../architecture/failure-matrix.md), [ADR-0012](../adr/0012-metodologia-de-benchmarks.md)
 
 ## 1. Principio
 
@@ -119,16 +119,83 @@ SPIKE_POINT=57 cargo test -p spike-lsm shared_crash::power_loss_at_every_io_poin
 | Unitarias | codificación de nodos/bloques, filtros bloom, manifest, WAL | + serialización documental, claves, políticas |
 | Propiedades / modelo | modelo `BTreeMap` con historias aleatorias | `proptest` con reducción de casos; modelos de revisiones e índices |
 | Integración | contrato `Engine` | API pública, CLI, documentos, revisiones |
-| Crash testing | `SimVfs` (energía y proceso, todos los puntos de E/S; un EIO aislado en cada punto) | + modelos opcionales de `SimVfs` en cada punto (`extended_failure_suite!`: semántica Linux de páginas descartadas tras `fsync` fallido, durabilidad por directorio, disco lleno, muerte del proceso sin pérdida de lo pendiente); kill -9 real de procesos y dispositivo con pérdida de escrituras (LazyFS / `dm-log-writes`) |
-| Corrupción | bit flips y truncamientos tras cierre limpio | + daño durante uso, archivos fabricados |
+| Crash testing | `SimVfs` (energía y proceso, todos los puntos de E/S; un EIO aislado en cada punto) | + modelos opcionales de `SimVfs` en cada punto (`extended_failure_suite!`: semántica Linux de páginas descartadas tras `fsync` fallido, durabilidad por directorio, disco lleno, muerte del proceso sin pérdida de lo pendiente); `kill -9` real de un escritor (`process_kill.rs`, hecho en la Fase 1); dispositivo con pérdida de escrituras (LazyFS: preparado, **registro pendiente**; `dm-log-writes`: no intentado) |
+| Corrupción | bit flips y truncamientos tras cierre limpio | + daño durante uso, archivos fabricados con CRC válido, daño exhaustivo de los vectores de directorio (hecho en la Fase 1) |
 | Fuzzing | — | `cargo fuzz` sobre lectores de formato, WAL/manifest y parser documental (Fase 6) |
-| Compatibilidad | — | vectores de prueba por versión de formato, migraciones con interrupción simulada |
+| Compatibilidad | — | vectores de prueba por versión de formato (hechos en la Fase 1: 194 de estructura y 29 de directorio, con guardia de regeneración), migraciones con interrupción simulada |
 | Rendimiento | `spike-bench` (ADR-0012) | CI de rendimiento con umbrales de regresión de ADR-0012 |
 
 ## 5. Integración continua
 
-[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) ejecuta en cada PR y en `main`: `cargo fmt --check`, `clippy -D warnings`, todas las suites en `release` (con un resumen de los resultados de corrupción en la página del job) y una pasada de benchmarks a escala `tiny` como prueba de humo. Una ejecución semanal programada sube las suites aleatorias a 1000 semillas.
+[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) ejecuta en cada PR y en `main`: `cargo fmt --check`, `clippy -D warnings`, todas las suites en `release` (con un resumen de los resultados de corrupción en la página del job) y una pasada de benchmarks a escala `tiny` como prueba de humo. Una ejecución semanal programada sube las suites aleatorias a 1000 semillas y los `kill -9` a 200 iteraciones por modo. El detalle de los trabajos de la Fase 1 está en §7.5.
 
 ## 6. Gate de M0
 
 M0 solo se cierra si todas las pruebas compartidas pasan para el candidato elegido con `SPIKE_SEEDS ≥ 400` en `release`, el barrido de todos los puntos de E/S pasa para ambos tipos de fallo y los resultados de benchmark están publicados con su entorno. Los resultados de cada ejecución se registran en el [informe de M0](m0-report.md).
+
+## 7. Fase 1: pruebas de `kerno-storage`
+
+Lo que se añadió al plan de M0 con el motor del producto. Los números de las puertas de salida y su resultado están en el [informe de la Fase 1](f1-report.md); el diseño de cada suite, en [phase1-design.md §6](../architecture/phase1-design.md).
+
+### 7.1 Macros del harness y dónde se ejecutan
+
+Cada macro genera un módulo de pruebas para cualquier motor que implemente el contrato correspondiente. Se validan **primero** sobre `LogEngine` o `Emulated<E>` (si fallan allí, la prueba está mal) y después sobre `kerno-storage`.
+
+| Macro (módulo generado) | Contrato | Contenido | Se ejecuta en `kerno-storage` |
+|---|---|---|---|
+| `engine_test_suite!` (`shared_functional`, `shared_crash`, `shared_faults`, `shared_corruption`) | `Engine` | funcionales, caídas en puntos aleatorios y en cada punto de E/S, EIO aislado, bit flips y truncamientos | `shared.rs` (perfiles `KernoDb`, `inline`, `m0_profile`, `serial`) |
+| `extended_failure_suite!` (`shared_ext_failure`) | `Engine` | los modelos opcionales de `SimVfs` en cada punto del escenario A | `ext_failure.rs` (hilos e `Inline`) |
+| `range_delete_test_suite!` (`shared_range`) | `RangeDeleteEngine` | `[start, end)`, orden dentro del lote, instantáneas, espacio | `shared_ranges.rs` |
+| `sync_test_suite!` (`shared_sync`) | `SyncEngine` | `sync()`, envenenamiento, prefijo ≥ último `sync()` | `sync.rs` |
+| `group_commit_test_suite!` (`shared_concurrency`) | `Engine` | escenario C (varios escritores), visibilidad tras durabilidad | `sync.rs` |
+| `txn_test_suite!` (`shared_txn`) | `TxnEngine` | transacciones read-modify-write, escrituras propias, abortar | `txn.rs` (nativo en `KernoDb` e `Inline`; `Emulated<LogEngine>` valida la suite) |
+
+Las suites que fijan un detalle del motor (formato, recuperación, métricas) no son macros: `format.rs`, `recovery_rules.rs`, `clean_shutdown.rs`, `read_only.rs`, `manifest_log.rs`, `file_lifecycle.rs`, `coverage.rs`, `verify.rs`, `crafted.rs`, `damage.rs`, `process_lock.rs`, `compact_range.rs`, `range_delete.rs`, `group_commit.rs`, `snapshot_metrics.rs`, `compaction.rs`, `close_budget.rs`, `metrics.rs`, `wal_prealloc.rs`, `write_amp_levers.rs`, `enospc.rs`, `inline.rs`, `model.rs`, `engine.rs`, `regressions.rs` y los vectores (`struct_vectors.rs`, `dir_vectors.rs`, `spec_decoder/`).
+
+### 7.2 Modos de `SimVfs`
+
+Todos están desactivados por defecto (el comportamiento por defecto, incluidas las extracciones del generador aleatorio, lo fija `default_mode_crash_images_unchanged`); la [matriz de fallos](../architecture/failure-matrix.md) dice qué sobrevive en cada uno.
+
+| Modo | Para qué |
+|---|---|
+| `CrashKind::{PowerLoss, ProcessKill}` | los del M0 |
+| `CrashKind::ProcessKillKeepPending` | la muerte del proceso deja pendiente lo no sincronizado; un corte de energía posterior aún puede perderlo (fila KP) |
+| `FsyncFailure::{KeepPending, LinuxDropPages}` | `fsync` fallido: pendiente (por defecto) o descartado para siempre, como en Linux (filas FL, FLb) |
+| `DirDurability::{Global, PerDir}` | `sync_dir(d)` global o solo bajo `d` |
+| `set_space_limit`, `fill_disk_after` | disco lleno (fila NS) |
+| `crash_when`, `fail_when`, `start_trace` | caídas y errores filtrados por tipo, ruta y fase; trazas de E/S (`coverage.rs`, barridos del MANIFEST) |
+| `dump`, `restore`, `assert_dir_unchanged`, `corrupt_byte_live` | imágenes byte a byte, comprobación de que no se mutó nada (I-18), daño durante el uso |
+| `set_sync_latency` | `sync_data` duerme fuera del mutex global, para que se formen grupos |
+
+### 7.3 Escenarios y barridos
+
+- **A** (el del M0): creación, 25 commits, cierre, apertura, 20 commits, `Drop`, apertura, 10 commits, cierre.
+- **B «formato»:** creación → 30 commits (10 % rangos) → `compact_range` → cierre → apertura → 10 transacciones → `sync` → `Drop` → apertura → checkpoint forzado → cierre. Lo recorre `coverage.rs` en modo `Inline` con traza.
+- **C «grupo»:** 4 escritores × 10 commits con `set_sync_latency`.
+- Cada escenario, bajo muerte de proceso, corte de energía, muerte con pendientes + corte, EIO con ambos modelos de `fsync` y ENOSPC, en `Sync` y `Buffered` donde tiene sentido; más barridos filtrados sobre las operaciones de `MANIFEST*` y la prueba dirigida `chained_crash_during_session_start_after_torn_wal` (REC-10c).
+- `failure_matrix_rows_are_covered` falla si una fila de la matriz no recibe ningún punto; `threads_mode_rows_superset_of_inline` exige lo mismo con hilos de segundo plano.
+
+### 7.4 Procesos reales y dispositivo real
+
+| Prueba | Qué hace | Estado |
+|---|---|---|
+| `process_lock.rs` | un hijo mantiene la base abierta; el padre comprueba `Locked` en apertura, solo lectura, `verify()` e `inspect()`; el candado se libera al morir el hijo | en la CI |
+| `process_kill.rs` | un hijo (el mismo binario de pruebas, `kerno_testkit::process`) escribe con `StdVfs` una secuencia de lotes y publica por stdout cada secuencia confirmada; el padre lo mata con SIGKILL en un momento aleatorio, ejecuta `verify()`, reabre y exige `s ≥` última confirmada y contenido igual al modelo. Cada iteración continúa desde el estado de la anterior. `KERNO_KILL_ITERS` fija las iteraciones (20 por defecto, 200 en la ejecución semanal y de salida) | en la CI |
+| `lazyfs.rs` + `spikes/storage/run-lazyfs.sh` + `.github/workflows/lazyfs.yml` | escenario A sobre un montaje LazyFS (commit fijado), con una prueba de control de que el montaje pierde lo no sincronizado y `lazyfs::clear-cache` entre el escritor y el comprobador; el script devuelve 2 (**pendiente**, nunca verde) si faltan FUSE o herramientas | manual y semanal; **registro pendiente** (ver el informe de la Fase 1) |
+
+Los dos tests de `process_kill.rs` no se ejecutan a la vez (un `fork` en un hilo copia los descriptores que el otro tiene abiertos, entre ellos el `LOCK` de un `verify()` en curso, y el candado `flock` no se libera hasta el `exec` del hijo: la reapertura del otro test veía `Locked`).
+
+### 7.5 Puertas de salida y presupuesto de CI
+
+| Puerta | Comando | Dónde |
+|---|---|---|
+| G0 | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace --all-features --release` | cada PR (`checks`, `test-spikes`, `test-kerno`) |
+| FP (huella del harness) | las tres órdenes de [phase1-design.md §1](../architecture/phase1-design.md) con `SPIKE_SEEDS=400`; deben dar exactamente las cifras de `Outcomes` de ese apartado | cada paquete y la salida |
+| Corrección, 1000 semillas | `SPIKE_SEEDS=1000 cargo test --workspace --all-features --release -- --nocapture` | semanal (`SPIKE_SEEDS` y `KERNO_KILL_ITERS` los fija el evento `schedule`) y salida |
+| `kill -9` | `KERNO_KILL_ITERS=200 cargo test --release -p kerno-storage --test process_kill` | semanal y salida |
+| `loom` | `RUSTFLAGS="--cfg kerno_loom" cargo test -p kerno-storage --release --lib commit_queue` | semanal y a demanda (trabajo `loom`) |
+| LazyFS | `./spikes/storage/run-lazyfs.sh` | manual y semanal (`lazyfs.yml`) |
+| Benchmarks | `ENGINES=btree,lsm,kerno,redb,fjall,sqlite ./spikes/storage/run-benchmarks.sh` y `spike-bench report --baseline … --baseline-label m0` | salida de la fase y cada PR que cambie rendimiento (CONTRIBUTING) |
+| Vectores | `struct_vectors_encode_exact`, `dir_vectors_are_reproducible` (normales, en la CI) | cada PR; un vector que falla no se regenera para pasar ([CONTRIBUTING](../../CONTRIBUTING.md)) |
+
+Presupuesto de tiempo (objetivos de [phase1-design.md §6.7](../architecture/phase1-design.md)): `test-spikes` ≤ 15 min y `test-kerno` ≤ 25 min por PR. Medido en la VM de salida (4 núcleos), la suite normal de `kerno-storage` con `--all-features --release` tarda TIEMPO_SUITE; los tiempos en los ejecutores de GitHub no se han medido. Si un paquete supera el presupuesto, reduce las semillas por defecto de sus pruebas nuevas, no las de la suite compartida.

@@ -62,6 +62,8 @@ jobs:
     env:
       # Empty means "each suite's default"; the weekly run uses 1000 seeds.
       SPIKE_SEEDS: ${{ github.event_name == 'schedule' && '1000' || '' }}
+      # Iterations of the kill -9 tests (tests/process_kill.rs); empty means 20.
+      KERNO_KILL_ITERS: ${{ github.event_name == 'schedule' && '200' || '' }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable

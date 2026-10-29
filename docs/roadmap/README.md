@@ -44,6 +44,17 @@ El plan completo, con objetivos y salidas por fase, está en [SAD §16](../archi
 4. Transacciones read-modify-write, `sync()` explícito y métricas de snapshots (ADR-0002).
 5. Repetir los benchmarks de M0 en el hardware objetivo.
 
+### Estado de los paquetes de trabajo (WP01–WP14)
+
+Estado a 2026-10-29. WP01–WP13b están integrados y probados en `kerno-storage`, `kerno-testkit` y `kerno-core`; el estado de cada decisión pendiente está en el [informe de la Fase 1](../testing/f1-report.md).
+
+| Paquete | Estado |
+|---|---|
+| WP01–WP13b | Integrados (formato v1, motor LSM, MANIFEST como log de ediciones, *range tombstones*, lectura de solo lectura, group commit, transacciones read-modify-write) |
+| WP14 | Integrado **parcialmente**: `kill -9` real con 200 iteraciones y barrido de 1000 semillas en verde; benchmarks medidos en la clase de VM de M0 con **T1 sin cumplir** y otros incumplimientos documentados. **Pendientes**: registro de LazyFS, benchmarks en la máquina objetivo (C-09), escala `large` completa y la **congelación del formato v1** (ADR-0013 sigue «Propuesto») |
+
+La Fase 1 **no está cerrada**: la condición de inicio de la etapa 3 (formato v1 congelado con ADR-0013 aceptado) no se cumple todavía, y la revisión de contingencia de ADR-0001 por T1 es una decisión abierta del propietario.
+
 ### Benchmarks de cierre de la Fase 1 y SQLite como baseline
 
 La tarea de cierre de la Fase 1 (revisión adversarial, benchmarks, documentación) mide `kerno` con `ENGINES=btree,lsm,kerno,redb,fjall,sqlite` ([objetivos T1–T10](../testing/f1-objetivos-rendimiento.md)). A petición de la [especificación v0.2.0](../spec/README.md) §15, el informe presentará además **SQLite como baseline explícito**: una tabla `kerno` / SQLite por workload, con durabilidad equivalente declarada (`Sync` frente a `journal_mode=WAL` + `synchronous=FULL`; `Buffered` frente a `synchronous=NORMAL`, cuya garantía ante corte de energía no es idéntica y se anota). Esto **no** añade umbrales nuevos a T1–T10 ni reemplaza los resultados de M0 (B+ tree, LSM, redb, fjall y SQLite del 2026-10-27), que se conservan en [`spikes/storage/results/`](../../spikes/storage/results/) y en el [informe M0](../testing/m0-report.md). Los umbrales frente a SQLite, si se quieren, los fija el propietario antes de medir (ADR-0012).
@@ -54,7 +65,7 @@ Después de la Fase 1 el trabajo se organiza por las etapas de la [especificaci�
 
 | Etapa | Depende de | Condición de inicio | ADR que se deciden |
 |---|---|---|---|
-| 3 Unidades, revisiones y procedencia | Etapa 2 (Fase 1) | Fase 1 cerrada: WP14 integrado, formato v1 congelado con ADR-0013 aceptado | 0004, 0008, 0010, 0017 |
+| 3 Unidades, revisiones y procedencia | Etapa 2 (Fase 1) | Fase 1 cerrada: WP14 integrado, formato v1 congelado con ADR-0013 aceptado (a 2026-10-29 **pendiente**: ver el estado de WP14 arriba) | 0004, 0008, 0010, 0017 |
 | 4 Relaciones e índices | 3 | API de unidades estable (ADR-0010 aceptado) | 0007, 0014 |
 | 5 Planificador y observabilidad | 4 | Consultas por filtro y relación con ruta de referencia probada | 0015 |
 | 6 Primera plasticidad operacional | 5 | Planificador determinista con prueba diferencial en CI | 0016 |

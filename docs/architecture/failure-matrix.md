@@ -2,7 +2,7 @@
 
 > **Histórico:** las secciones 1 a 5 describen el M0 (spikes de Fase 0) y se conservan como referencia. La matriz vigente del formato LSM v1 está en la sección 6.
 
-Estado: borrador para revisión · Anexo de [ADR-0002](../adr/0002-transacciones-y-durabilidad.md) · Criterio 3 de [SAD §17.5](SAD.md#175-criterios-de-aceptación)
+Estado: vigente; la sección 6 (LSM v1) queda **finalizada** al cierre de la Fase 1 (2026-10-29) · Anexo de [ADR-0002](../adr/0002-transacciones-y-durabilidad.md) · Criterio 3 de [SAD §17.5](SAD.md#175-criterios-de-aceptación)
 
 Para cada punto de interrupción del protocolo de cada candidato, este documento indica **qué estado debe observarse tras reabrir**. La notación es:
 
@@ -38,6 +38,9 @@ La matriz no es solo documentación: cada fila se ejercita automáticamente.
 | `crash::run` | Caídas en puntos aleatorios de historias largas (5 rondas por semilla, incluidas caídas **durante** la recuperación y durante trabajo en segundo plano), en `Sync` y `Buffered`; el corte de energía en `Buffered` solo para motores que declaran prefijo consistente | igual que arriba, encadenando recuperaciones; en `Buffered` + corte de energía, cualquier prefijo desde el inicio de la ronda |
 | `corruption::*` | Bit flips y truncamientos tras cierre limpio | dato correcto o error; nunca otro dato ni retroceso |
 | `shared_ext_failure::*` (`extended_failure_suite!`, hoy sobre `LogEngine`) | Los modelos opcionales en **cada** operación de E/S del escenario anterior: muerte del proceso sin pérdida de lo pendiente seguida de un corte de energía inmediato (`Sync` y `Buffered`), un EIO con semántica de Linux (`Sync`; `Buffered` con reinicio), un EIO en `Buffered`, corte de energía con durabilidad por directorio (`Sync`) y disco lleno | `confirmados ≤ s ≤ intentados`; tras la muerte del proceso y el corte inmediato, exactamente el `s` recuperado (la recuperación hizo durable su estado); con disco lleno, solo errores `Io` o `Poisoned` y recuperación correcta al liberar espacio; al final, un commit más, cierre, corte de energía y comparación con el modelo |
+
+| `process_kill.rs` (`kerno-storage`, WP14) | `kill -9` (SIGKILL) real de un proceso escritor con `StdVfs` sobre un disco real, en `Sync` y en `Buffered`, en momentos aleatorios (en pleno commit, flush o compactación, o durante el arranque y la recuperación del propio hijo); cada iteración continúa desde el estado que dejó la anterior, y se alterna un cierre limpio con un manejador abandonado | `s ≥` último commit que el hijo informó como confirmado, contenido exactamente igual al modelo tras los lotes `1..=s`, `verify()` sin incidencias antes de abrir. 20 iteraciones por modo en la CI, 200 en la ejecución semanal y de salida (`KERNO_KILL_ITERS`) |
+| `lazyfs.rs` + `spikes/storage/run-lazyfs.sh` (WP14) | Escenario A sobre un montaje LazyFS con `StdVfs`; tras el escritor se descartan las páginas no sincronizadas (`lazyfs::clear-cache`), con una prueba de control que muestra que el montaje sí pierde datos sin `fsync` | `durable ≤ s ≤ último` y contenido igual al modelo, con `durable` = todo lo confirmado en `Sync` y el resultado de `sync()` en `Buffered`. **Su registro es criterio de salida y a 2026-10-29 está pendiente** (ver [informe F1](../testing/f1-report.md)) |
 
 Los puntos concretos del escenario varían con el motor (cada uno hace un número distinto de operaciones); las filas siguientes agrupan esos puntos por fase del protocolo. Las pruebas comprueban la regla común a todas las filas (`N ≤ s ≤ N+1` respecto del commit en curso), no el valor concreto que predice cada fila: las filas explican por qué la regla se cumple en cada punto. Las filas de modo `Buffered` se ejercitan con caídas aleatorias (`crash::run`) y con el barrido de muerte de proceso en `Buffered`; no hay barrido de corte de energía en `Buffered`, porque ahí la única garantía es el prefijo (LSM) o ninguna (B+ tree).
 
@@ -104,10 +107,10 @@ Protocolo de commit `Sync`: registro `[len|crc|seq|batch]` en el WAL activo (un 
 
 **Daño tras un cierre sucio.** B+ tree: cada slot guarda dos copias del meta en sectores distintos; dañar una copia del meta más reciente no cambia nada (antes de la revisión de M0, un solo bit hacía volver al commit anterior en silencio). Solo si se dañan **ambas** copias vuelve al commit anterior. LSM: el daño de un registro del WAL seguido de un registro válido escrito en modo `Sync` se informa como `Corruption` en vez de truncarse (antes de la revisión, se perdían en silencio commits confirmados); el daño del **último** registro sigue siendo indistinguible de una escritura rota del commit en curso.
 
-## 5. Fuera del modelo (pendiente para Fase 1)
+## 5. Fuera del modelo y límites de la evidencia
 
 - Daño del medio **durante** el uso o combinado con caídas en `kerno-storage`: cubierto desde WP09 por `damage_during_use_is_detected_or_harmless` y `damage_after_unclean_crash_never_returns_wrong_data` (error o datos exactos; tras una caída, nunca una secuencia menor que la confirmada salvo que el daño esté en la última trama del WAL más nuevo, indistinguible de una cola rota) y por `verify_detects_every_bit_flip`. Los motores M0 no lo aplican.
-- Pruebas con dispositivos reales: el bloqueo entre procesos reales lo prueba `process_lock.rs` (WP09); `kill -9` de un escritor y LazyFS / `dm-log-writes` siguen pendientes (WP14).
+- Pruebas con procesos y dispositivos reales: el bloqueo entre procesos lo prueba `process_lock.rs` (WP09) y la muerte de un escritor real, `process_kill.rs` (WP14). Una muerte de proceso **no** pierde la caché del SO, así que esas pruebas demuestran el prefijo confirmado y la recuperación del WAL, no la durabilidad ante un corte de energía: esa solo la demuestran `SimVfs` (modelo) y, cuando se registre, LazyFS. **El registro de LazyFS está pendiente** a 2026-10-29 (`/dev/fuse` existía en el entorno de WP14, pero LazyFS no pudo construirse allí); `dm-log-writes` no se ha intentado.
 - Fallos durante migraciones de formato (no existen todavía).
 
 ## 6. LSM v1 (`kerno-storage`)
@@ -136,7 +139,11 @@ Matriz del motor de Fase 1 ([diseño](phase1-design.md), §6.3). Las filas se as
 | NS | disco lleno (ENOSPC) | error `Io` o `Poisoned` | `N` | Sin efecto sobre lo confirmado; la base se recupera al liberar espacio. |
 | KP | muerte del proceso que deja pendiente lo no sincronizado, seguida de corte de energía | `N` o `N+1` | `N` o `N+1` | La recuperación hace durable su estado antes de aceptar commits. |
 
-Las filas de grupos y `sync()` (G1–G3, S1–S2, FLb) están en la subsección siguiente (WP12b); RT y DC (rangos, `compact_range`) las implementa WP10b; SC (subcompactaciones) la añade el paquete que las construya. `failure_matrix_rows_are_covered` cubre las filas de WP08 y `range_rows_are_covered` las de rangos (DC se deriva de la fase `compact_range` de la traza; RT se registra al observar una SST con fragmentos durante el escenario); los barridos de caídas son `range_delete_crash_at_every_point` y `compact_range_crash_at_every_point`.
+Las filas de grupos y `sync()` (G1–G3, S1–S2, FLb) están en la subsección siguiente (WP12b). RT y DC (rangos, `compact_range`) los implementó WP10b. `failure_matrix_rows_are_covered` cubre las filas de WP08 y `range_rows_are_covered` las de rangos (DC se deriva de la fase `compact_range` de la traza; RT se registra al observar una SST con fragmentos durante el escenario); los barridos de caídas son `range_delete_crash_at_every_point` y `compact_range_crash_at_every_point`.
+
+**SC (subcompactaciones).** Las construye WP05 (`max_subcompactions`, y `close_subcompactions` para el cierre) y **no añaden un punto de fallo propio**: una compactación dividida en subintervalos escribe sus salidas como SST huérfanas y las instala con **un único** registro `COMPACTION` (`subcompactions_install_single_manifest_write`), así que se rigen por las filas L9–L11. No hay fila SC en `coverage.rs`: la cubren los barridos de las filas L9–L11 con la configuración por defecto (una subcompactación) y la prueba anterior, que fija la única edición. Con `max_subcompactions > 1` y varios hilos no se ejecuta un barrido propio; es una limitación conocida.
+
+**Estado final de las filas.** Todas las filas de este apartado tienen una prueba que las ejercita, salvo las ya indicadas: SC (arriba) y los dispositivos con pérdida de páginas (LazyFS, pendiente de registro). La suite se ejecutó con 1000 semillas en la salida de la Fase 1 sin fallos ([informe F1](../testing/f1-report.md)).
 
 ### Presupuesto de `fsync` (LSM v1)
 

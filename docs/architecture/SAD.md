@@ -2,16 +2,25 @@
 
 | Campo | Valor |
 |---|---|
-| Versión | 0.1.0 |
-| Fecha | 27 de octubre de 2026 |
-| Estado | Baseline inicial para revisión técnica |
+| Versión | 0.2.0 |
+| Fecha | 29 de octubre de 2026 (0.1.0: 27 de octubre de 2026) |
+| Estado | Baseline 0.1.0 con las actualizaciones de la Fase 1 que lista «Cambios de la versión 0.2.0»; el resto del texto no se ha reescrito |
 | Tipo | Documento de arquitectura de software (SAD) |
 | Lenguaje de implementación | Rust |
 | Modelo de entrega inicial | Biblioteca embebida y CLI local |
 
 > **Resumen ejecutivo.** Kerno será un motor de datos embebido, persistente y extensible. Su núcleo será un almacén key-value transaccional; sobre él se construirán documentos estructurados, historial de revisiones, índices y, más adelante, recuperación híbrida para IA. La arquitectura prioriza correctitud, recuperación, portabilidad y evolución explícita de los datos. El algoritmo de almacenamiento físico —copy-on-write B+ tree o LSM— permanece pendiente de un ADR basado en una prueba técnica reproducible.
 
-> **Nota de mantenimiento.** Este archivo es la baseline 0.1.0 tal como fue aprobada para revisión. Las decisiones posteriores se registran en [`docs/adr/`](../adr/README.md); cuando un ADR cambie algo de este documento, se publicará una nueva versión del SAD en lugar de editar esta silenciosamente.
+> **Nota de mantenimiento.** La versión 0.1.0 fue la baseline aprobada para revisión. Las decisiones posteriores se registran en [`docs/adr/`](../adr/README.md); cuando un ADR cambia algo de este documento, se publica una nueva versión del SAD en lugar de editar esta silenciosamente. La 0.2.0 (cierre de la Fase 1) enumera abajo cada cambio; todo lo que no figura ahí conserva el texto de la 0.1.0, aunque la Fase 1 lo haya superado en detalle (por ejemplo, el reparto de crates de §14 es el propuesto, no el construido).
+
+## Cambios de la versión 0.2.0
+
+| Apartado | Cambio |
+|---|---|
+| §2.2 | Nota de estado: el motor físico, el protocolo de commit y la representación binaria quedan resueltos por ADR-0001, ADR-0002 y ADR-0003 (Aceptados el 2026-10-28) y por el formato v1 ([ADR-0013](../adr/0013-formato-v1-y-protocolo-del-motor.md), Propuesto). Las demás decisiones de la lista siguen abiertas. |
+| §14 | Nota con los crates que existen hoy: `kerno-core`, `kerno-testkit` y `kerno-storage`, más los spikes de M0 congelados. |
+| §15 | Estado vigente de cada ADR (0001–0012) y referencia a ADR-0013…0018, que no figuraban en la lista original. |
+| §16 | Estado de la Fase 0 (cerrada) y de la Fase 1 (implementación completa; exit items abiertos y su motivo). |
 
 ## Contenido
 
@@ -125,6 +134,8 @@ Estos casos serán workloads de evaluación, no dependencias del motor ni modelo
 - API pública estable, semver y política de deprecación.
 
 Cada tema deberá resolverse en un Architecture Decision Record (ADR) antes de que sus supuestos queden codificados de forma difícil de revertir.
+
+> **Estado a la versión 0.2.0.** Resueltos: la elección del motor físico (**LSM nivelado**, ADR-0001), el protocolo de commit, la sincronización y la recuperación (ADR-0002) y las reglas de versionado e integridad (ADR-0003), todos Aceptados el 2026-10-28; la representación binaria concreta es el [formato v1](../file-format/v1.md), que sigue siendo **candidato a congelación** hasta que el propietario acepte [ADR-0013](../adr/0013-formato-v1-y-protocolo-del-motor.md). El resto de la lista sigue abierto.
 
 ## 3. Principios de arquitectura
 
@@ -422,33 +433,35 @@ kerno/
 
 La estructura final de crates se revisará después de que los contratos se estabilicen. El primer prototipo debe preferir simplicidad y pocas dependencias, no una fragmentación prematura.
 
+> **Estado a la versión 0.2.0.** Existen tres crates del producto: `kerno-core` (contrato, errores, `Vfs`; sin dependencias externas), `kerno-testkit` (harness, simuladores y motor de referencia; `publish = false`, nunca una dependencia en tiempo de ejecución del motor) y `kerno-storage` (el motor LSM v1; API explícitamente inestable). Los demás crates de la lista son la propuesta de la 0.1.0 y no existen. Los prototipos de M0 siguen en `spikes/storage/` (`spike-btree` y `spike-lsm` congelados como línea base de rendimiento, `spike-bench` como banco de pruebas). Las guardias de CI que protegen estos límites están en [CONTRIBUTING](../../CONTRIBUTING.md#comprobaciones-locales).
+
 ## 15. Architecture Decision Records (ADR)
 
 Los ADR describen decisiones duraderas y sus consecuencias. Los siguientes son propuestos; su estado inicial es *Propuesto / pendiente de aprobación*, excepto los puntos explícitamente confirmados en la sección 2. El estado vigente de cada uno se mantiene en [`docs/adr/`](../adr/README.md).
 
-**ADR-0001 — Motor de almacenamiento físico.** Estado: Pendiente.
+**ADR-0001 — Motor de almacenamiento físico.** Estado: **Aceptado** (2026-10-28): LSM nivelado.
 Pregunta: ¿B+ tree copy-on-write o LSM?
 Opciones: implementación propia de B+ tree copy-on-write; implementación propia de LSM; evaluar una tercera opción solo si la evidencia la justifica.
 Propuesta: comparar un prototipo de cada enfoque con workloads iguales, incluyendo punto, rango, actualización, historial y recuperación.
 Criterios: correctitud, latencia p50/p95/p99, throughput, tiempo de recuperación, RAM máxima, bytes escritos/tamaño de datos y complejidad operacional. No fijar un ganador por benchmarks externos.
 Consecuencia: esta decisión debe cerrarse antes de congelar el formato físico.
 
-**ADR-0002 — Modelo de transacciones y durabilidad.** Estado: Pendiente.
+**ADR-0002 — Modelo de transacciones y durabilidad.** Estado: **Aceptado** (2026-10-28).
 Pregunta: ¿qué protocolo define commit, sincronización, snapshots y recuperación?
 Opciones: WAL con protocolo de commit; copy-on-write con raíz/manifest de commit; variante apropiada al motor seleccionado.
 Criterio de aprobación: matriz de fallos que define cada punto de interrupción y el estado esperado después de reabrir. La API debe documentar qué garantías ofrece cada modo de durabilidad.
 
-**ADR-0003 — Formato físico y versionado.** Estado: Pendiente.
+**ADR-0003 — Formato físico y versionado.** Estado: **Aceptado** (2026-10-28); el formato concreto se congela con la aceptación de ADR-0013.
 Pregunta: ¿cómo se versionan cabeceras, páginas, registros, checksums y commits?
 Propuesta: versionado explícito desde la primera base; rechazo seguro de versiones no compatibles; exportación lógica independiente.
 Criterios: detección de truncamientos/corrupción, compatibilidad probada y migración con interrupción simulada.
 
-**ADR-0004 — Historial de revisiones.** Estado: Pendiente.
+**ADR-0004 — Historial de revisiones.** Estado: Pendiente (diseño preliminar disponible).
 Pregunta: ¿qué representa una revisión y cuándo usar snapshot/delta?
 Propuesta: Revision Engine separado del journal; ChangeSet opcional; snapshot + delta con límite de profundidad; restauración que crea una nueva revisión.
 Criterios: reconstrucción exacta, diff determinista y retención configurable.
 
-**ADR-0005 — Identificadores públicos.** Estado: Pendiente.
+**ADR-0005 — Identificadores públicos.** Estado: Propuesto (borrador).
 Pregunta: token aleatorio con mapeo o token cifrado reversible.
 Propuesta: abstracción `IdentifierCodec`; comparar el coste de persistir una correspondencia frente a la gestión de claves, rotación, longitud y validación.
 Criterios: estabilidad del token, rechazo de manipulación, soporte de versionado y claridad de la separación entre identificación y autorización.
@@ -483,10 +496,12 @@ Pregunta: qué contratos comunes definen embeddings, métricas, filtros y frescu
 Propuesta: vectores exactos primero; metadatos de modelo y revisión fuente; generación mediante adaptadores; ANN solo con evidencia.
 Criterios: comparación con baseline exacto, verificación de dimensiones/métrica y prueba de invalidación tras actualizar/borrar el documento.
 
-**ADR-0012 — Metodología de benchmarks y umbrales de salida.** Estado: Pendiente.
+**ADR-0012 — Metodología de benchmarks y umbrales de salida.** Estado: Propuesto (aplicada en M0 y en la medición de salida de la Fase 1).
 Pregunta: cómo medir sin declarar éxito a partir de una única prueba sintética.
 Propuesta: datasets y scripts reproducibles; misma máquina, mismos datos y durabilidad equivalente; reportar p50/p95/p99, throughput, RAM, disco y recuperación.
 Criterios: resultados repetibles y publicación de entorno, versión, configuración y limitaciones.
+
+**ADR-0013 a ADR-0018** no figuraban en la lista de la 0.1.0. ADR-0013 (formato v1 y protocolo del motor) nace en la Fase 1 y es requisito de la congelación; ADR-0014…0018 (relaciones, privacidad de la observabilidad, adaptación, unidad neuronal, derivados) provienen de la [especificación v0.2.0](../spec/especificacion-arquitectonica-v0.2.0.md) §17. El estado vigente de todos está en [`docs/adr/`](../adr/README.md).
 
 ## 16. Plan de implementación
 

@@ -531,6 +531,36 @@ fn tombstone_only_sst() -> Case {
     case
 }
 
+fn range_delete_clean() -> Case {
+    // Two range deletions, one with a put after it in the same batch; the
+    // clean close flushes the memtable that holds them, so a table carries
+    // the range fragments next to its points.
+    let mut s = Session::new(SimVfs::new(5), &vector_config(Durability::Sync));
+    for i in 0..60u32 {
+        s.commit_ok(&put_batch(format!("key-{i:04}").as_bytes(), &[i as u8; 40]));
+    }
+    let mut b = WriteBatch::new();
+    b.delete_range("key-0010", "key-0030").put("key-0020", "after the range, same batch");
+    s.commit_ok(&b);
+    let mut b = WriteBatch::new();
+    b.delete_range("key-0045", "key-0050");
+    s.commit_ok(&b);
+    let case = s.close("range-delete-clean");
+    let with_fragments = case
+        .files
+        .iter()
+        .filter(|(n, _)| is_sst(n))
+        .filter(|(n, bytes)| {
+            let number = n.trim_end_matches(".sst").parse().unwrap();
+            let expect = SstExpect { file_number: number, db_id: VECTOR_DB_ID, meta: None, last_seq: u64::MAX >> 1 };
+            let meta = open_sst_from(&mut &bytes[..], &expect).map_err(|e| e.into_format()).unwrap();
+            meta.props.range_fragments > 0
+        })
+        .count();
+    assert!(with_fragments > 0, "range-delete-clean: no table holds range fragments");
+    case
+}
+
 fn flush_split_l0() -> Case {
     let mut cfg = vector_config(Durability::Sync);
     cfg.compaction.flush_split = true;
@@ -997,6 +1027,7 @@ fn all_cases() -> Vec<Case> {
     let mut cases = vec![
         empty_clean(),
         basic.clone(),
+        range_delete_clean(),
         tombstone_only_sst(),
         flush_split_l0(),
         dirty,
@@ -1042,6 +1073,7 @@ fn dirty_wal_with_synced_frames() -> Case {
 const REQUIRED: &[&str] = &[
     "empty-clean",
     "basic-clean",
+    "range-delete-clean",
     "tombstone-only-sst",
     "flush-split-l0",
     "dirty-wal-torn-tail",

@@ -126,3 +126,4 @@ Lectura de los datos:
 - Aceptado el 2026-10-28 junto con ADR-0002 y ADR-0003; M0 queda cerrado.
 - Repetir los benchmarks de M0 en el hardware objetivo (riesgo R-S3) antes de cerrar la Fase 1.
 - Implementar los puntos 1–3 de la decisión en Fase 1, con criterios de salida de ADR-0012.
+- **Seguimiento de la Fase 1 (WP14, 2026-10-29; sin cambios de decisión).** El motor del producto (`kerno-storage`) implementa las condiciones de esta decisión sobre el formato v1 ([`docs/file-format/v1.md`](../file-format/v1.md), interpretaciones en [ADR-0013](0013-formato-v1-y-protocolo-del-motor.md), aún «Propuesto»). La medición de salida en la clase de VM de M0 **no cumple T1** (condición 1) y deja otros incumplimientos documentados en el [informe de la Fase 1](../testing/f1-report.md); la revisión de contingencia (R-10/R-11) la decide el propietario. La repetición en el hardware objetivo (R-S3) sigue abierta.
