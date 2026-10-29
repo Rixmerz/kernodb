@@ -24,6 +24,10 @@
 //!   deleted only when no MANIFEST and no live `Version` references them.
 //! * Every on-disk byte that influences results is covered by a crc32c.
 //!
+//! * [`KernoDb::begin_write`] starts a read-modify-write transaction that
+//!   reads its own writes and holds the engine's one write slot until it
+//!   commits or ends, so it is serializable; snapshots are registered and
+//!   the engine reports how many are alive and what they keep on disk.
 //! * [`verify`] checks a whole database and [`inspect`] reads the headers of
 //!   its files; neither writes (v1.md §9.5).
 //!
@@ -45,9 +49,11 @@ mod memtable;
 pub mod metrics;
 mod rangedel;
 mod recovery;
+mod snapshots;
 mod sst;
 mod stats;
 mod sync;
+mod txn;
 mod verify;
 mod version;
 mod wal;
@@ -70,4 +76,5 @@ pub use db::TableInfo;
 pub use db::{CloseReport, CompactRangeReport, KernoDb, KernoSnapshot};
 pub use inspect::{FileInfo, FileType, FormatInfo, HeaderInfo, inspect};
 pub use metrics::Metrics;
+pub use txn::WriteTxn;
 pub use verify::{Issue, LevelReport, Orphan, VerifyOptions, VerifyReport, WalReport, verify};

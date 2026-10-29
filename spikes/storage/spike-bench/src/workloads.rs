@@ -144,6 +144,15 @@ pub fn run<E: Engine>(workload: &str, ctx: &Ctx, rep: &mut Report) -> Result<()>
     }
 }
 
+/// [`run`] for an engine with transactions of its own: `rmw_counters` runs on
+/// them natively instead of through `Emulated`.
+pub fn run_with_txns<E: TxnEngine>(workload: &str, ctx: &Ctx, rep: &mut Report) -> Result<()> {
+    match workload {
+        "rmw_counters" => rmw_counters::<E>(ctx, rep),
+        other => run::<E>(other, ctx, rep),
+    }
+}
+
 fn io_report(rep: &mut Report, prefix: &str, s: &IoSnapshot, commits: u64) {
     if s.file_syncs + s.dir_syncs > 0 && commits > 0 {
         rep.num(&format!("{prefix}_fsyncs_per_commit"), (s.file_syncs + s.dir_syncs) as f64 / commits as f64);
@@ -964,6 +973,7 @@ pub fn rmw_counters<E: TxnEngine>(ctx: &Ctx, rep: &mut Report) -> Result<()> {
         }
     }
     assert_eq!(sum, done, "lost updates: the counters add up to {sum}, {done} increments were committed");
+    db.record_stats(rep);
     rep.num("rmw_threads", RMW_THREADS as f64);
     rep.num("rmw_keys", counters as f64);
     rep.num("rmw_txns_per_s", done as f64 / secs);

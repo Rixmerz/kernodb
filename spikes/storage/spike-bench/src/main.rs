@@ -144,6 +144,14 @@ fn run_engine<E: Engine>(workload: &str, ctx: &Ctx, rep: &mut Report) {
     }
 }
 
+/// [`run_engine`] for an engine with transactions of its own.
+#[cfg(feature = "kerno")]
+fn run_txn_engine<E: spike_core::engine::TxnEngine>(workload: &str, ctx: &Ctx, rep: &mut Report) {
+    if let Err(e) = workloads::run_with_txns::<E>(workload, ctx, rep) {
+        panic!("{} / {workload}: {e}", E::name());
+    }
+}
+
 fn dispatch(engine: &str, workload: &str, ctx: &Ctx, rep: &mut Report) {
     match engine {
         #[cfg(feature = "candidates")]
@@ -151,10 +159,10 @@ fn dispatch(engine: &str, workload: &str, ctx: &Ctx, rep: &mut Report) {
         #[cfg(feature = "candidates")]
         "lsm" => run_engine::<spike_lsm::LsmEngine>(workload, ctx, rep),
         #[cfg(feature = "kerno")]
-        "kerno" => run_engine::<kerno_storage::KernoDb>(workload, ctx, rep),
+        "kerno" => run_txn_engine::<kerno_storage::KernoDb>(workload, ctx, rep),
         #[cfg(feature = "kerno")]
         "kerno-tuned" => {
-            run_engine::<kerno_storage::testing::Profiled<kerno_storage::testing::Tuned>>(workload, ctx, rep)
+            run_txn_engine::<kerno_storage::testing::Profiled<kerno_storage::testing::Tuned>>(workload, ctx, rep)
         }
         "redb" => run_engine::<adapters::RedbEngine>(workload, ctx, rep),
         "fjall" => run_engine::<adapters::FjallEngine>(workload, ctx, rep),

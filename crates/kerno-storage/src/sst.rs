@@ -361,8 +361,13 @@ impl Table {
         file_meta(level, self.number, self.size, &self.props)
     }
 
+    /// Marks the table as replaced: its file goes when the last reference
+    /// does. Until then its bytes count as retained by snapshots
+    /// (`snapshot_retained_bytes`).
     pub fn mark_obsolete(&self) {
-        self.obsolete.store(true, Ordering::Release);
+        if !self.obsolete.swap(true, Ordering::AcqRel) {
+            self.ctx.stats.retained_table_bytes.fetch_add(self.size, Ordering::Relaxed);
+        }
     }
 
     /// Whether no key `>= key` can be in the table (the same rule as
@@ -471,6 +476,7 @@ impl Table {
 impl Drop for Table {
     fn drop(&mut self) {
         if self.obsolete.load(Ordering::Acquire) {
+            self.ctx.stats.retained_table_bytes.fetch_sub(self.size, Ordering::Relaxed);
             self.ctx.deleter.submit(self.ctx.path(self.number), self.size);
         }
     }

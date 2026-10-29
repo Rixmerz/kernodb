@@ -22,6 +22,13 @@
 //! should, in any source (memtable, L0, deeper levels, a file written by a
 //! compaction that cut or dropped it), shows up as a minimal history.
 //!
+//! `prop_txn_overlay_matches_model` does the same for write transactions
+//! (phase1-design.md §5.7): random puts, deletes and range deletions inside a
+//! transaction, mirrored on a model, with the transaction's `get` and `scan`
+//! (paginated, bounded, inverted bounds included) compared after every
+//! operation, over data spread across the memtable and files by flushes and
+//! compactions between the transactions, with snapshots held throughout.
+//!
 //! Cases: `PROPTEST_CASES`, else `SPIKE_SEEDS` (like the harness suites),
 //! else 256.
 
@@ -30,7 +37,9 @@ use std::path::Path;
 
 use kerno_core::WriteBatch;
 use kerno_core::contract::{Engine, Snapshot};
-use kerno_storage::{Background, CloseBudget, CompactionConfig, Config, KernoDb, KernoSnapshot, L0Metric, TestConfig};
+use kerno_storage::{
+    Background, CloseBudget, CompactionConfig, Config, KernoDb, KernoSnapshot, L0Metric, TestConfig, WriteTxn,
+};
 use kerno_testkit::harness::{Model, apply, diff, read_all};
 use kerno_testkit::vfs::{CrashKind, SimVfs};
 use proptest::prelude::*;
@@ -329,5 +338,277 @@ proptest! {
         ops in prop::collection::vec(mvcc_op(), 1..300),
     ) {
         run(seed, &ops, true);
+    }
+}
+
+// ---- write transactions ----
+
+/// Keys of the transaction histories: more than the page a transaction's scan
+/// reads from the snapshot, so that a range hides whole pages of it.
+const TXN_KEYS: u8 = 48;
+
+fn txn_key(k: u8) -> Vec<u8> {
+    format!("tkey-{k:02}").into_bytes()
+}
+
+#[derive(Clone, Debug)]
+enum TxnOp {
+    Put {
+        k: u8,
+        len: u16,
+    },
+    Delete {
+        k: u8,
+    },
+    /// `[key(min), key(max))`: `a == b` is the empty range, still a write.
+    DeleteRange {
+        a: u8,
+        b: u8,
+    },
+    /// A bounded scan between two keys in any order; `kinds` picks the kind
+    /// of each bound.
+    Scan {
+        a: u8,
+        b: u8,
+        kinds: u8,
+        limit: u8,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+enum End {
+    Commit,
+    Abort,
+    Drop,
+}
+
+#[derive(Clone, Debug)]
+enum Hist {
+    Put { k: u8, len: u16 },
+    DeleteRange { a: u8, b: u8 },
+    Flush,
+    CompactOnce,
+    TakeSnapshot,
+    DropSnapshot(Index),
+    Txn { ops: Vec<TxnOp>, end: End },
+    CleanReopen,
+    DropReopen,
+}
+
+fn txn_op() -> impl Strategy<Value = TxnOp> {
+    prop_oneof![
+        10 => (0..TXN_KEYS, 0..300u16).prop_map(|(k, len)| TxnOp::Put { k, len }),
+        4 => (0..TXN_KEYS).prop_map(|k| TxnOp::Delete { k }),
+        4 => (0..=TXN_KEYS, 0..=TXN_KEYS).prop_map(|(a, b)| TxnOp::DeleteRange { a, b }),
+        4 => (0..=TXN_KEYS, 0..=TXN_KEYS, any::<u8>(), any::<u8>())
+            .prop_map(|(a, b, kinds, limit)| TxnOp::Scan { a, b, kinds, limit }),
+    ]
+}
+
+fn hist() -> impl Strategy<Value = Hist> {
+    prop_oneof![
+        8 => (0..TXN_KEYS, 0..300u16).prop_map(|(k, len)| Hist::Put { k, len }),
+        2 => (0..=TXN_KEYS, 0..=TXN_KEYS).prop_map(|(a, b)| Hist::DeleteRange { a, b }),
+        2 => Just(Hist::Flush),
+        2 => Just(Hist::CompactOnce),
+        2 => Just(Hist::TakeSnapshot),
+        1 => any::<Index>().prop_map(Hist::DropSnapshot),
+        10 => (prop::collection::vec(txn_op(), 0..14), prop_oneof![
+            4 => Just(End::Commit),
+            1 => Just(End::Abort),
+            1 => Just(End::Drop),
+        ])
+            .prop_map(|(ops, end)| Hist::Txn { ops, end }),
+        1 => Just(Hist::CleanReopen),
+        1 => Just(Hist::DropReopen),
+    ]
+}
+
+type Rows = Vec<(Vec<u8>, Vec<u8>)>;
+
+/// What a scan over `model` returns: the rows within the bounds, in order, at
+/// most `limit`; nothing when the bounds are inverted.
+fn model_rows(model: &Model, start: Bound<&[u8]>, end: Bound<&[u8]>, limit: usize) -> Rows {
+    let after_start = |k: &[u8]| match start {
+        Bound::Included(s) => k >= s,
+        Bound::Excluded(s) => k > s,
+        Bound::Unbounded => true,
+    };
+    let before_end = |k: &[u8]| match end {
+        Bound::Included(e) => k <= e,
+        Bound::Excluded(e) => k < e,
+        Bound::Unbounded => true,
+    };
+    model
+        .iter()
+        .filter(|(k, _)| after_start(k) && before_end(k))
+        .take(limit)
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
+/// Everything the transaction sees, read in pages of 7 rows (an odd size, to
+/// restart pages in the middle of hidden ranges), and a `get` of every key.
+fn check_txn(t: &WriteTxn<'_>, model: &Model, ctx: &str) {
+    let mut seen = Model::new();
+    let mut last: Option<Vec<u8>> = None;
+    loop {
+        let from = last.as_deref().map_or(Bound::Unbounded, Bound::Excluded);
+        let page = t.scan(from, Bound::Unbounded, 7).unwrap_or_else(|e| panic!("{ctx}: scan failed: {e}"));
+        let done = page.len() < 7;
+        for (k, v) in page {
+            assert!(last.as_ref().is_none_or(|l| *l < k), "{ctx}: scan out of order");
+            last = Some(k.clone());
+            seen.insert(k, v);
+        }
+        if done {
+            break;
+        }
+    }
+    assert!(seen == *model, "{ctx}: scan differs from the model: {}", diff(model, &seen));
+    for k in 0..TXN_KEYS {
+        let got = t.get(&txn_key(k)).unwrap_or_else(|e| panic!("{ctx}: get failed: {e}"));
+        assert_eq!(got.as_ref(), model.get(&txn_key(k)), "{ctx}: get(tkey-{k:02})");
+    }
+}
+
+fn bound(kind: u8, key: &[u8]) -> Bound<&[u8]> {
+    match kind % 3 {
+        0 => Bound::Included(key),
+        1 => Bound::Excluded(key),
+        _ => Bound::Unbounded,
+    }
+}
+
+fn run_txn_history(seed: u64, hist: &[Hist]) {
+    let disk = SimVfs::new(seed);
+    if seed % 2 == 1 {
+        disk.set_tear_unit(1);
+    }
+    let mut db = Some(open(&disk, false));
+    let mut model = Model::new();
+    let mut seq = 0u64;
+    let mut puts = 0u64;
+    let mut snaps: Vec<LiveSnapshot> = Vec::new();
+    for (step, h) in hist.iter().enumerate() {
+        let ctx = format!("step {step} ({h:?})");
+        match h {
+            Hist::Put { k, len } => {
+                puts += 1;
+                let mut b = WriteBatch::new();
+                b.put(txn_key(*k), value(puts, *len));
+                seq = commit(db.as_ref().unwrap(), &b, seq, &ctx);
+                apply(&mut model, &b);
+            }
+            Hist::DeleteRange { a, b } => {
+                let mut batch = WriteBatch::new();
+                batch.delete_range(txn_key(*a.min(b)), txn_key(*a.max(b)));
+                seq = commit(db.as_ref().unwrap(), &batch, seq, &ctx);
+                apply(&mut model, &batch);
+            }
+            Hist::Flush => db.as_ref().unwrap().hooks().flush().unwrap_or_else(|e| panic!("{ctx}: flush failed: {e}")),
+            Hist::CompactOnce => {
+                db.as_ref().unwrap().hooks().compact_once().unwrap_or_else(|e| panic!("{ctx}: compaction failed: {e}"));
+            }
+            Hist::TakeSnapshot => {
+                let snap = db.as_ref().unwrap().snapshot().unwrap_or_else(|e| panic!("{ctx}: {e}"));
+                snaps.push(LiveSnapshot { snap, model: model.clone(), seq, taken_at: step });
+                if snaps.len() > 4 {
+                    snaps.remove(0);
+                }
+            }
+            Hist::DropSnapshot(i) => {
+                if !snaps.is_empty() {
+                    snaps.remove(i.index(snaps.len()));
+                }
+            }
+            Hist::Txn { ops, end } => {
+                let mut t =
+                    db.as_ref().unwrap().begin_write().unwrap_or_else(|e| panic!("{ctx}: begin_write failed: {e}"));
+                assert_eq!(t.read_seq(), seq, "{ctx}: the transaction begins on the latest commit");
+                let mut tx_model = model.clone();
+                check_txn(&t, &tx_model, &format!("{ctx}: on begin"));
+                let mut wrote = false;
+                for (i, op) in ops.iter().enumerate() {
+                    let ctx = format!("{ctx}, op {i} ({op:?})");
+                    match op {
+                        TxnOp::Put { k, len } => {
+                            puts += 1;
+                            let (key, val) = (txn_key(*k), value(puts, *len));
+                            t.put(&key, &val).unwrap_or_else(|e| panic!("{ctx}: {e}"));
+                            tx_model.insert(key, val);
+                            wrote = true;
+                        }
+                        TxnOp::Delete { k } => {
+                            t.delete(&txn_key(*k)).unwrap_or_else(|e| panic!("{ctx}: {e}"));
+                            tx_model.remove(&txn_key(*k));
+                            wrote = true;
+                        }
+                        TxnOp::DeleteRange { a, b } => {
+                            let (lo, hi) = (txn_key(*a.min(b)), txn_key(*a.max(b)));
+                            t.delete_range(&lo, &hi).unwrap_or_else(|e| panic!("{ctx}: {e}"));
+                            let doomed: Vec<_> = tx_model.range(lo..hi).map(|(k, _)| k.clone()).collect();
+                            doomed.iter().for_each(|k| drop(tx_model.remove(k)));
+                            wrote = true;
+                        }
+                        TxnOp::Scan { a, b, kinds, limit } => {
+                            let (ka, kb) = (txn_key(*a), txn_key(*b));
+                            let (start, end) = (bound(*kinds, &ka), bound(*kinds / 3, &kb));
+                            let limit = [0usize, 1, 2, 5, 50][*limit as usize % 5];
+                            let got = t.scan(start, end, limit).unwrap_or_else(|e| panic!("{ctx}: {e}"));
+                            let want = model_rows(&tx_model, start, end, limit);
+                            assert_eq!(got, want, "{ctx}: bounded scan");
+                        }
+                    }
+                    check_txn(&t, &tx_model, &ctx);
+                }
+                match end {
+                    End::Commit => {
+                        let got = t.commit().unwrap_or_else(|e| panic!("{ctx}: commit failed: {e}"));
+                        seq += u64::from(wrote);
+                        assert_eq!(got, seq, "{ctx}: commit sequence");
+                        model = tx_model;
+                    }
+                    End::Abort => t.abort(),
+                    End::Drop => drop(t),
+                }
+            }
+            Hist::CleanReopen => {
+                db.take().unwrap().close().unwrap_or_else(|e| panic!("{ctx}: close failed: {e}"));
+                db = Some(open(&disk, false));
+            }
+            Hist::DropReopen => {
+                drop(db.take());
+                db = Some(open(&disk, false));
+            }
+        }
+        let current = db.as_ref().unwrap().snapshot().unwrap_or_else(|e| panic!("{ctx}: snapshot failed: {e}"));
+        let all = read_all(&current).unwrap();
+        assert!(all == model, "{ctx}: state differs from the model: {}", diff(&model, &all));
+        assert_eq!(current.seq(), seq, "{ctx}: sequence");
+        for s in &snaps {
+            let all = read_all(&s.snap).unwrap();
+            assert!(
+                all == s.model,
+                "{ctx}: snapshot taken at step {} differs from its model: {}",
+                s.taken_at,
+                diff(&s.model, &all)
+            );
+        }
+    }
+    drop(snaps);
+    db.take().unwrap().close().unwrap();
+}
+
+proptest! {
+    #![proptest_config(proptest_config())]
+
+    /// Transactions against the model: what a transaction sees after every
+    /// write equals the model, its commit applies exactly that (consuming a
+    /// sequence only when it wrote), an abort or a drop applies nothing, and
+    /// snapshots held across it all never change.
+    #[test]
+    fn prop_txn_overlay_matches_model(seed in any::<u64>(), hist in prop::collection::vec(hist(), 1..40)) {
+        run_txn_history(seed, &hist);
     }
 }

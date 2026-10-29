@@ -742,7 +742,7 @@ fn real_rmw<E: TxnEngine>(programs: &[Program]) -> RmwRun {
 /// write exactly what the model oracle does — the values each program reads,
 /// the sequence of each commit, the contents at every checkpoint — across
 /// aborts, empty transactions, range deletions that hide committed and
-/// written keys, and clean reopens. `kerno` joins when it has transactions.
+/// written keys, and clean reopens. `kerno` runs its own transactions.
 #[test]
 fn differential_rmw() {
     for seed in RMW_SEEDS {
@@ -758,6 +758,16 @@ fn differential_rmw() {
 
         let mut results: BTreeMap<&str, RmwRun> = BTreeMap::new();
         results.insert("log", sim_rmw::<Emulated<spike_core::reference::LogEngine>>(&programs));
+        // The product engine's own transactions: the overlay over memtables,
+        // flushes and compactions, and the commit through the write slot.
+        #[cfg(feature = "kerno")]
+        {
+            results.insert("kerno", sim_rmw::<kerno_storage::KernoDb>(&programs));
+            results.insert(
+                "kerno-inline",
+                sim_rmw::<kerno_storage::testing::Profiled<kerno_storage::testing::Inline>>(&programs),
+            );
+        }
         #[cfg(feature = "candidates")]
         {
             results.insert("btree", sim_rmw::<Emulated<spike_btree::BTreeEngine>>(&programs));

@@ -43,7 +43,7 @@ Estos objetivos se registran antes de medir para que ninguna cifra de WP05 o WP1
 | T6 | `small_commits`; `concurrent_commits --threads 1` y `--threads 8` | `commit_fsyncs_per_commit`; `cc_fsyncs_per_commit`, `cc_commits_per_s` |
 | T7 | `small_commits`, `bulk_load` | `write_amp` |
 | T8 | `bulk_load` | `reopen_ms`, `recovery_ms` |
-| T9 | `rmw_counters` (WP13a) | — |
+| T9 | `rmw_counters` (WP13a; transacciones nativas en `kerno` desde WP13b) | `rmw_txns_per_s`, `rmw_txn_p99_us`, `rmw_fsyncs_per_commit`; en `kerno`, `stat_txn_gate_wait_micros` |
 | T10 | todas | proporción `kerno` / `fjall` de la columna de rendimiento |
 
 `concurrent_commits` (WP04) ejecuta 20 000 commits `Sync` pequeños (un `put` de 200 bytes con claves disjuntas) repartidos entre `--threads` hilos; con 8 escritores, T6 solo puede cumplirse cuando exista group commit (WP12).

@@ -234,10 +234,7 @@ impl<P> CommitQueue<P> {
         self.room.notify_all();
     }
 
-    /// Waits until nothing is queued or in flight.
-    // ponytail: the only caller will be `begin_write` (WP13b); the queue
-    // models and tests exercise it until then.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Waits until nothing is queued or in flight (`begin_write`).
     pub fn drain(&self) {
         let mut st = self.state.lock();
         while !st.requests.is_empty() {

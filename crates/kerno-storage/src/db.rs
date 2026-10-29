@@ -11,11 +11,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use kerno_core::contract::{Engine, Options, RangeDeleteEngine, Snapshot, SyncEngine, TestHooks};
+use kerno_core::contract::{Engine, Options, RangeDeleteEngine, Snapshot, SyncEngine, TestHooks, TxnEngine};
 use kerno_core::probe;
 use kerno_core::vfs::Vfs;
 use kerno_core::{Durability, Error, Op, Result, WriteBatch};
-use parking_lot::{Condvar, Mutex};
+use parking_lot::{Condvar, Mutex, MutexGuard};
 
 use crate::commit_queue::{CommitQueue, Request, Wake, replicate};
 use crate::compaction::{self, BLOCK_SIZE, Busy, Claim, NUM_LEVELS, Plan, RangeStep, RateController, Tuning};
@@ -31,8 +31,10 @@ use crate::manifest::{self, CHECKPOINT_FLOOR, MANIFEST, ManifestWriter, Snapshot
 use crate::memtable::Memtable;
 use crate::metrics::{LevelMetrics, Metrics, ShapeMetrics};
 use crate::recovery::{self, FileKind, list_dir, parse_name, refuse_without_manifest};
+use crate::snapshots::{SnapshotGuard, SnapshotRegistry};
 use crate::sst::{Table, TableCtx};
 use crate::stats::{BackgroundIo, StallEpisode, StallReason, Stats, bump, bump_max, nanos};
+use crate::txn::WriteTxn;
 use crate::version::{Levels, Version, level_metas};
 use crate::wal::{self, SPARE_WAL, WalWriter, wal_name};
 
@@ -127,7 +129,7 @@ struct ManifestState {
     writer: ManifestWriter,
 }
 
-struct Inner {
+pub(crate) struct Inner {
     vfs: Arc<dyn Vfs>,
     dir: PathBuf,
     durability: Durability,
@@ -160,8 +162,11 @@ struct Inner {
     /// The active memtable already asked for the spare (reset by the
     /// rotation), so that it is asked for once per memtable.
     spare_requested: AtomicBool,
-    /// The write slot (D-03): a blind commit holds it only to enqueue.
+    /// The write slot (D-03): a blind commit holds it only to enqueue, a
+    /// write transaction for its whole life.
     txn_gate: Mutex<()>,
+    /// Live snapshots, shared with each of them (it outlives the handle).
+    snapshots: Arc<SnapshotRegistry>,
     queue: CommitQueue<Work>,
     // Lock order: txn_gate -> queue -> writer -> manifest -> state (the
     // queue's own lock is never held while taking another).
@@ -184,6 +189,8 @@ pub struct KernoDb {
 pub struct KernoSnapshot {
     version: Arc<Version>,
     seq: u64,
+    /// Deregisters the snapshot when it is dropped.
+    _registered: SnapshotGuard,
 }
 
 /// What [`KernoDb::close`] did.
@@ -238,6 +245,29 @@ struct Compacted {
     written: u64,
 }
 
+/// The write slot, held. In debug builds a thread that takes the slot while
+/// it already holds it (a transaction open on this thread, then a commit or
+/// another `begin_write`) panics instead of deadlocking.
+pub(crate) struct Gate<'a> {
+    _guard: MutexGuard<'a, ()>,
+    /// Address of the owning database: the slot is per database, so the
+    /// debug guard is too.
+    #[cfg(debug_assertions)]
+    db: usize,
+}
+
+#[cfg(debug_assertions)]
+thread_local! {
+    static GATE_HELD: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(debug_assertions)]
+impl Drop for Gate<'_> {
+    fn drop(&mut self) {
+        GATE_HELD.with(|held| held.borrow_mut().retain(|&db| db != self.db));
+    }
+}
+
 impl Snapshot for KernoSnapshot {
     fn seq(&self) -> u64 {
         self.seq
@@ -279,41 +309,56 @@ fn canonical(batch: &WriteBatch) -> CanonicalCommit<&[u8]> {
     }
 }
 
+fn over(what: &str, got: usize, max: usize) -> Error {
+    Error::InvalidArgument(format!("{what} of {got} exceeds the limit of {max}"))
+}
+
+fn check_key(what: &str, k: &[u8], limits: &Limits) -> Result<()> {
+    if k.len() > limits.max_key_len { Err(over(what, k.len(), limits.max_key_len)) } else { Ok(()) }
+}
+
+/// The limits of a put: key and value length.
+pub(crate) fn check_put(key: &[u8], value: &[u8], limits: &Limits) -> Result<()> {
+    check_key("key", key, limits)?;
+    if value.len() > limits.max_value_len {
+        return Err(over("value", value.len(), limits.max_value_len));
+    }
+    Ok(())
+}
+
+/// The limits of a delete.
+pub(crate) fn check_delete(key: &[u8], limits: &Limits) -> Result<()> {
+    check_key("key", key, limits)
+}
+
+/// The limits of a range deletion, and that it does not run backwards.
+pub(crate) fn check_range(start: &[u8], end: &[u8], limits: &Limits) -> Result<()> {
+    check_key("range start", start, limits)?;
+    check_key("range end", end, limits)?;
+    if start > end {
+        return Err(Error::InvalidArgument("delete_range with start > end".into()));
+    }
+    Ok(())
+}
+
 /// Checks a batch against the configured limits before anything is written
 /// (`WriteBatch::validate` checks the fixed limits of the spikes, which the
 /// engine's limits replace).
 fn validate_batch(batch: &WriteBatch, limits: &Limits) -> Result<()> {
-    let over = |what: &str, got: usize, max: usize| {
-        Err(Error::InvalidArgument(format!("{what} of {got} exceeds the limit of {max}")))
-    };
     if batch.len() > limits.max_batch_ops {
-        return over("batch with operations", batch.len(), limits.max_batch_ops);
+        return Err(over("batch with operations", batch.len(), limits.max_batch_ops));
     }
-    let key = |what: &str, k: &[u8]| {
-        if k.len() > limits.max_key_len { over(what, k.len(), limits.max_key_len) } else { Ok(()) }
-    };
     for op in batch.ops() {
         match op {
-            Op::Put { key: k, value } => {
-                key("key", k)?;
-                if value.len() > limits.max_value_len {
-                    return over("value", value.len(), limits.max_value_len);
-                }
-            }
-            Op::Delete { key: k } => key("key", k)?,
-            Op::DeleteRange { start, end } => {
-                key("range start", start)?;
-                key("range end", end)?;
-                if start > end {
-                    return Err(Error::InvalidArgument("delete_range with start > end".into()));
-                }
-            }
+            Op::Put { key, value } => check_put(key, value, limits)?,
+            Op::Delete { key } => check_delete(key, limits)?,
+            Op::DeleteRange { start, end } => check_range(start, end, limits)?,
         }
     }
     // The keys and values alone are a lower bound of the encoding: reject
     // early what cannot fit before canonicalizing it.
     if batch.payload_bytes() > limits.max_batch_bytes {
-        return over("batch of payload bytes", batch.payload_bytes(), limits.max_batch_bytes);
+        return Err(over("batch of payload bytes", batch.payload_bytes(), limits.max_batch_bytes));
     }
     Ok(())
 }
@@ -425,6 +470,10 @@ impl Inner {
     /// memtable, if any). Called with the manifest lock held.
     fn install(&self, levels: Levels, flushed: Option<&Arc<Memtable>>) {
         bump_max(&self.stats.l0_files_max, levels[0].len() as u64);
+        if let Some(m) = flushed {
+            // Left the current version: only snapshots keep it from here on.
+            m.retire(&self.stats);
+        }
         let old = {
             let mut st = self.state.lock();
             let v = &st.version;
@@ -445,6 +494,16 @@ impl Inner {
     fn commit(&self, batch: &WriteBatch) -> Result<u64> {
         self.check_writable()?;
         let started = Instant::now();
+        match self.prepare(batch, started)? {
+            Some((work, bytes)) => self.submit(work, bytes),
+            None => Ok(self.state.lock().last_seq),
+        }
+    }
+
+    /// Checks `batch` against the limits and canonicalizes it into the
+    /// request the leader will write, with its encoded size; `None` for an
+    /// empty batch, which writes nothing and consumes no sequence.
+    fn prepare(&self, batch: &WriteBatch, started: Instant) -> Result<Option<(Work, usize)>> {
         validate_batch(batch, &self.limits)?;
         let commit = canonical(batch);
         let bytes = commit.encoded_len();
@@ -456,12 +515,90 @@ impl Inner {
         }
         self.check_poisoned()?;
         if batch.is_empty() {
-            return Ok(self.state.lock().last_seq);
+            return Ok(None);
         }
         // ponytail: the commit is copied into the request so the leader can
         // read it while this thread waits; borrow it for a leader's own
         // commit if profiling ever shows the copy.
-        self.submit(Work::Commit { commit: commit.to_owned_commit(), started }, bytes)
+        Ok(Some((Work::Commit { commit: commit.to_owned_commit(), started }, bytes)))
+    }
+
+    /// Takes the write slot. A wait that finds it taken is timed
+    /// (`txn_gate_wait_micros`); a free slot costs one `try_lock`.
+    fn lock_gate(&self) -> Gate<'_> {
+        #[cfg(debug_assertions)]
+        let db = std::ptr::from_ref(self) as usize;
+        #[cfg(debug_assertions)]
+        GATE_HELD.with(|held| {
+            assert!(
+                !held.borrow().contains(&db),
+                "the write slot is already held by this thread: an open transaction blocks it"
+            )
+        });
+        let guard = match self.txn_gate.try_lock() {
+            Some(guard) => guard,
+            None => {
+                let start = Instant::now();
+                let guard = self.txn_gate.lock();
+                bump(&self.stats.txn_gate_wait_nanos, nanos(start, Instant::now()));
+                guard
+            }
+        };
+        #[cfg(debug_assertions)]
+        GATE_HELD.with(|held| held.borrow_mut().push(db));
+        Gate {
+            _guard: guard,
+            #[cfg(debug_assertions)]
+            db,
+        }
+    }
+
+    // ---- write transactions ----
+
+    /// [`KernoDb::begin_write`]: takes the write slot, waits for the commit
+    /// pipeline to drain (nobody can enqueue meanwhile, so what was queued
+    /// completes and publishes) and reads from the latest committed state.
+    pub(crate) fn begin_txn(&self) -> Result<(Gate<'_>, KernoSnapshot)> {
+        self.check_writable()?;
+        self.check_poisoned()?;
+        let gate = self.lock_gate();
+        self.queue.drain();
+        // A group that failed while we waited poisoned the handle.
+        self.check_poisoned()?;
+        let snapshot = self.snapshot()?;
+        Ok((gate, snapshot))
+    }
+
+    /// Commits the operations of a transaction as one batch, enqueuing while
+    /// the transaction still holds the write slot (so that nothing commits
+    /// between its reads and its write), then releasing the slot and waiting
+    /// for the group. An empty log returns the current sequence.
+    pub(crate) fn commit_txn(&self, gate: Gate<'_>, batch: &WriteBatch) -> Result<u64> {
+        let started = Instant::now();
+        match self.prepare(batch, started)? {
+            Some((work, bytes)) => self.submit_gated(gate, work, bytes),
+            None => Ok(self.state.lock().last_seq),
+        }
+    }
+
+    pub(crate) fn limits(&self) -> &Limits {
+        &self.limits
+    }
+
+    pub(crate) fn stats(&self) -> &Stats {
+        &self.stats
+    }
+
+    /// A consistent view of the latest published state, registered.
+    fn snapshot(&self) -> Result<KernoSnapshot> {
+        let (version, seq) = {
+            let st = self.state.lock();
+            if let Some(msg) = &st.poisoned {
+                return Err(Error::Poisoned(msg.clone()));
+            }
+            (st.version.clone(), st.last_seq)
+        };
+        Ok(KernoSnapshot { version, seq, _registered: self.snapshots.register(seq) })
     }
 
     /// [`SyncEngine::sync`]: makes every commit acknowledged so far durable
@@ -475,9 +612,16 @@ impl Inner {
     /// Queues `work`, leads the group it ends up in or waits for the leader
     /// that serves it, and returns its result.
     fn submit(&self, work: Work, bytes: usize) -> Result<u64> {
+        let gate = self.lock_gate();
+        self.submit_gated(gate, work, bytes)
+    }
+
+    /// [`submit`](Self::submit) by a caller that already holds the write
+    /// slot: it is released once the request is queued.
+    fn submit_gated(&self, gate: Gate<'_>, work: Work, bytes: usize) -> Result<u64> {
         let request = Request::new(work, bytes);
         let queued = {
-            let _gate = self.txn_gate.lock();
+            let _gate = gate;
             self.queue.enqueue(&request)?
         };
         bump_max(&self.stats.queued_bytes_max, queued.queued_bytes as u64);
@@ -1691,6 +1835,7 @@ impl KernoDb {
             spare: Mutex::new(false),
             spare_requested: AtomicBool::new(false),
             txn_gate: Mutex::new(()),
+            snapshots: Arc::new(SnapshotRegistry::default()),
             queue: CommitQueue::new(cfg.group_commit.queue_limits()),
             writer: Mutex::new(Writer {
                 wal,
@@ -1774,7 +1919,31 @@ impl KernoDb {
             durable_seq,
             block_cache_bytes: inner.ctx.cache.weight(),
         };
-        inner.stats.metrics(shape, compaction::pending_bytes(&v.levels, &inner.tuning))
+        let mut metrics = inner.stats.metrics(shape, compaction::pending_bytes(&v.levels, &inner.tuning));
+        let snapshots = inner.snapshots.summary();
+        metrics.snapshots.live = snapshots.live;
+        metrics.snapshots.oldest_seq = snapshots.oldest_seq;
+        metrics.snapshots.oldest_age_ms = u64::try_from(snapshots.oldest_age.as_millis()).unwrap_or(u64::MAX);
+        metrics
+    }
+
+    /// Starts a read-modify-write transaction (ADR-0002, phase1-design.md
+    /// §5.7). It takes the write slot, which it keeps until it commits,
+    /// aborts or is dropped: meanwhile every other `begin_write` and every
+    /// blind [`commit`](Engine::commit) waits (a long transaction stalls all
+    /// writers; `txn_gate_wait_micros` shows it), so nothing commits between
+    /// its reads and its write and the transaction is serializable. Readers
+    /// are not held up. Waits for the commits already queued to finish, so in
+    /// `Durability::Sync` it may cost the `fsync` of the group in flight.
+    ///
+    /// Do not call `begin_write`, `commit` or `sync` on the thread that holds
+    /// the transaction: they wait for the slot it holds. Debug builds panic
+    /// instead.
+    ///
+    /// `ReadOnly` on a read-only handle, `Poisoned` on a poisoned one.
+    pub fn begin_write(&self) -> Result<WriteTxn<'_>> {
+        let (gate, snapshot) = self.inner.begin_txn()?;
+        Ok(WriteTxn::new(&self.inner, gate, snapshot))
     }
 
     /// Makes every commit acknowledged so far durable and returns the durable
@@ -1877,11 +2046,7 @@ impl Engine for KernoDb {
     }
 
     fn snapshot(&self) -> Result<KernoSnapshot> {
-        let st = self.inner.state.lock();
-        if let Some(msg) = &st.poisoned {
-            return Err(Error::Poisoned(msg.clone()));
-        }
-        Ok(KernoSnapshot { version: st.version.clone(), seq: st.last_seq })
+        self.inner.snapshot()
     }
 
     fn close(self) -> Result<()> {
@@ -1901,3 +2066,11 @@ impl SyncEngine for KernoDb {
 }
 
 impl RangeDeleteEngine for KernoDb {}
+
+impl TxnEngine for KernoDb {
+    type Txn<'a> = WriteTxn<'a>;
+
+    fn begin_write(&self) -> Result<WriteTxn<'_>> {
+        KernoDb::begin_write(self)
+    }
+}

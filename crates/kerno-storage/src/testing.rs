@@ -29,12 +29,13 @@ use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::Arc;
 
-use kerno_core::contract::{Engine, Options, RangeDeleteEngine, SyncEngine, TestHooks};
+use kerno_core::contract::{Engine, Options, RangeDeleteEngine, SyncEngine, TestHooks, TxnEngine};
 use kerno_core::vfs::Vfs;
 use kerno_core::{Result, WriteBatch};
 
 use crate::{
     Background, CloseBudget, CompactionConfig, Config, FilePicker, KernoDb, KernoSnapshot, L0Metric, SlowdownPolicy,
+    WriteTxn,
 };
 
 /// A named adjustment of the [`Config`] derived from the harness
@@ -146,6 +147,14 @@ impl<P: Profile> SyncEngine for Profiled<P> {
 }
 
 impl<P: Profile> RangeDeleteEngine for Profiled<P> {}
+
+impl<P: Profile> TxnEngine for Profiled<P> {
+    type Txn<'a> = WriteTxn<'a>;
+
+    fn begin_write(&self) -> Result<WriteTxn<'_>> {
+        self.0.begin_write()
+    }
+}
 
 /// The environment variable read by [`Tuned`].
 pub const TUNING_ENV: &str = "KERNO_TUNING";

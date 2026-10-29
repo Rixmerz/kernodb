@@ -8,6 +8,7 @@
 use std::cmp::Ordering;
 use std::ops::Bound;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed};
+use std::sync::{Arc, OnceLock};
 
 use crossbeam_skiplist::SkipMap;
 use crossbeam_skiplist::map::Entry;
@@ -17,6 +18,7 @@ use parking_lot::RwLock;
 use crate::format::rangedel::{self, Fragment};
 use crate::format::wal::CanonicalCommit;
 use crate::iter::InternalIterator;
+use crate::stats::Stats;
 
 /// Rough per-entry bookkeeping cost (skip-list node, key struct, vectors).
 const ENTRY_OVERHEAD: usize = 64;
@@ -64,6 +66,23 @@ pub struct Memtable {
     /// Bytes written to that file when this memtable stopped being the
     /// active one (0: not known, or still active).
     wal_len: AtomicU64,
+    /// Set when the memtable left the current version (it was written out):
+    /// from then on only snapshots keep it alive.
+    retired: OnceLock<Retired>,
+}
+
+/// A memtable's bytes counted in `snapshot_retained_bytes`.
+struct Retired {
+    stats: Arc<Stats>,
+    bytes: u64,
+}
+
+impl Drop for Memtable {
+    fn drop(&mut self) {
+        if let Some(r) = self.retired.get() {
+            r.stats.retained_memtable_bytes.fetch_sub(r.bytes, Relaxed);
+        }
+    }
 }
 
 impl Memtable {
@@ -76,6 +95,18 @@ impl Memtable {
             max_seq: AtomicU64::new(0),
             wal_number,
             wal_len: AtomicU64::new(0),
+            retired: OnceLock::new(),
+        }
+    }
+
+    /// Called when the memtable leaves the current version after its flush:
+    /// its bytes count as retained by snapshots until the last reference
+    /// drops. Nothing is applied to a memtable from then on, so its size is
+    /// final.
+    pub fn retire(&self, stats: &Arc<Stats>) {
+        let bytes = self.approx_bytes() as u64;
+        if self.retired.set(Retired { stats: stats.clone(), bytes }).is_ok() {
+            stats.retained_memtable_bytes.fetch_add(bytes, Relaxed);
         }
     }
 

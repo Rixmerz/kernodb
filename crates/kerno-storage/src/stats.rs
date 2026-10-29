@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use crate::metrics::{
     BackgroundMetrics, CommitPhaseMetrics, LogHistogram, MaintenanceMetrics, Metrics, OpenMetrics, ReadMetrics,
-    ShapeMetrics, ShardedCounter, StallMetrics, WriteMetrics,
+    ShapeMetrics, ShardedCounter, SnapshotMetrics, StallMetrics, TxnMetrics, WriteMetrics,
 };
 
 #[derive(Default)]
@@ -95,6 +95,16 @@ pub struct Stats {
     /// gauge).
     pub obsolete_bytes_pending: AtomicU64,
     pub delete_failures: AtomicU64,
+
+    // Snapshots: bytes only they keep alive (gauges; see `Table::mark_obsolete`
+    // and `Memtable::retire`).
+    pub retained_table_bytes: AtomicU64,
+    pub retained_memtable_bytes: AtomicU64,
+
+    // Write transactions.
+    pub txns_committed: AtomicU64,
+    pub txns_aborted: AtomicU64,
+    pub txn_gate_wait_nanos: AtomicU64,
 
     // The open of this handle.
     pub last_open_replayed_records: AtomicU64,
@@ -232,7 +242,9 @@ fn load(c: &AtomicU64) -> u64 {
 impl Stats {
     /// The typed metrics, given what only the caller knows: the current
     /// shape (its `l0_files_max` is raised to the current L0) and the
-    /// pending compaction bytes.
+    /// pending compaction bytes. The caller also fills in the live snapshots
+    /// (`snapshots.live`, `oldest_seq`, `oldest_age_ms`), which the snapshot
+    /// registry knows.
     pub fn metrics(&self, mut shape: ShapeMetrics, pending_compaction_bytes: u64) -> Metrics {
         let l0_now = shape.levels.first().map_or(0, |l| l.files);
         shape.l0_files_max = load(&self.l0_files_max).max(l0_now);
@@ -312,6 +324,15 @@ impl Stats {
                 obsolete_files_deleted: load(&self.obsolete_files_deleted),
                 obsolete_bytes_pending: load(&self.obsolete_bytes_pending),
                 delete_failures: load(&self.delete_failures),
+            },
+            snapshots: SnapshotMetrics {
+                retained_bytes: load(&self.retained_table_bytes) + load(&self.retained_memtable_bytes),
+                ..Default::default()
+            },
+            txns: TxnMetrics {
+                committed: load(&self.txns_committed),
+                aborted: load(&self.txns_aborted),
+                gate_wait_micros: micros(&self.txn_gate_wait_nanos),
             },
             last_open: OpenMetrics {
                 clean: replayed_records == 0,

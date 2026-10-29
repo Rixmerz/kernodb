@@ -411,6 +411,38 @@ pub struct MaintenanceMetrics {
     pub delete_failures: u64,
 }
 
+/// The snapshots of this handle now (phase1-design.md §5.7). The snapshot a
+/// write transaction reads from counts like any other.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SnapshotMetrics {
+    /// Snapshots alive.
+    pub live: u64,
+    /// Sequence of the oldest one (0 when there is none).
+    pub oldest_seq: u64,
+    /// Milliseconds the oldest one has been alive (0 when there is none).
+    pub oldest_age_ms: u64,
+    /// Bytes that only snapshots keep alive: tables that compaction replaced
+    /// and memtables that were written out, still referenced by a version
+    /// some snapshot holds. They go when the last such snapshot does.
+    pub retained_bytes: u64,
+}
+
+/// Write transactions, since the handle was opened.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct TxnMetrics {
+    /// Transactions whose `commit` returned a sequence (empty ones included).
+    pub committed: u64,
+    /// Transactions that ended by `abort` or by being dropped. A `commit`
+    /// that failed counts in neither.
+    pub aborted: u64,
+    /// Time threads spent waiting for the write slot (a long transaction
+    /// holds it, D-03): `begin_write`, blind commits and `sync`. Waits that
+    /// find the slot free cost nothing and are not timed.
+    pub gate_wait_micros: u64,
+}
+
 /// What the `open` of this handle found.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
@@ -433,6 +465,8 @@ pub struct Metrics {
     pub background: BackgroundMetrics,
     pub reads: ReadMetrics,
     pub maintenance: MaintenanceMetrics,
+    pub snapshots: SnapshotMetrics,
+    pub txns: TxnMetrics,
     pub last_open: OpenMetrics,
 }
 
@@ -539,6 +573,17 @@ impl Metrics {
         put("obsolete_files_deleted", m.obsolete_files_deleted);
         put("obsolete_bytes_pending", m.obsolete_bytes_pending);
         put("delete_failures", m.delete_failures);
+
+        let n = &self.snapshots;
+        put("snapshots_live", n.live);
+        put("snapshot_oldest_seq", n.oldest_seq);
+        put("snapshot_oldest_age_ms", n.oldest_age_ms);
+        put("snapshot_retained_bytes", n.retained_bytes);
+
+        let t = &self.txns;
+        put("txns_committed", t.committed);
+        put("txns_aborted", t.aborted);
+        put("txn_gate_wait_micros", t.gate_wait_micros);
 
         put("last_open_clean", u64::from(self.last_open.clean));
         put("last_open_replayed_bytes", self.last_open.replayed_bytes);
@@ -664,6 +709,17 @@ mod tests {
         assert_eq!(get("write_slowdowns"), Some(4));
         assert_eq!(get("l6_bytes"), Some(0));
         assert_eq!(get("commit_queue_p99_micros"), Some(0));
+        for name in [
+            "snapshots_live",
+            "snapshot_oldest_seq",
+            "snapshot_oldest_age_ms",
+            "snapshot_retained_bytes",
+            "txns_committed",
+            "txns_aborted",
+            "txn_gate_wait_micros",
+        ] {
+            assert_eq!(get(name), Some(0), "{name}");
+        }
         let mut names: Vec<&str> = stats.iter().map(|(k, _)| k.as_str()).collect();
         names.sort_unstable();
         let before = names.len();
