@@ -133,7 +133,25 @@ impl Vfs for StdVfs {
     }
 
     fn lock(&self, path: &Path) -> io::Result<Box<dyn Any + Send + Sync>> {
-        let f = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?;
+        let f = match fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path) {
+            Ok(f) => f,
+            // A read-only medium or directory (a backup, a read-only mount):
+            // lock the existing file without write access, or the directory
+            // when `LOCK` was never created, so a read-only open still works.
+            // ponytail: with no `LOCK` file the lock is on the directory, so
+            // it does not exclude a writer that later creates `LOCK`; fine
+            // while the directory is not writable, revisit if that changes.
+            Err(e) if matches!(e.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem) => {
+                match fs::File::open(path) {
+                    Ok(f) => f,
+                    Err(nf) if nf.kind() == io::ErrorKind::NotFound => {
+                        fs::File::open(path.parent().unwrap_or(Path::new(".")))?
+                    }
+                    Err(_) => return Err(e),
+                }
+            }
+            Err(e) => return Err(e),
+        };
         match f.try_lock() {
             Ok(()) => Ok(Box::new(f)),
             Err(fs::TryLockError::WouldBlock) => Err(io::Error::new(io::ErrorKind::WouldBlock, "lock held")),
@@ -173,6 +191,27 @@ mod tests {
         assert!(back == data);
         f.sync_data().unwrap();
         drop(f);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn lock_works_in_a_directory_without_write_permission() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("kerno-core-ro-lock-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let vfs = StdVfs;
+        vfs.create_dir_all(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+        // Root ignores the mode: then the directory is writable and there is nothing to show.
+        if fs::File::create(dir.join("probe")).is_err() {
+            let first = vfs.lock(&dir.join("LOCK")).expect("lock without LOCK in a read-only directory");
+            assert!(!dir.join("LOCK").exists(), "a read-only lock must not create LOCK");
+            // Held: a second lock on the same directory is refused.
+            assert_eq!(vfs.lock(&dir.join("LOCK")).unwrap_err().kind(), io::ErrorKind::WouldBlock);
+            drop(first);
+            vfs.lock(&dir.join("LOCK")).expect("released lock can be taken again");
+        }
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
         fs::remove_dir_all(&dir).unwrap();
     }
 }
