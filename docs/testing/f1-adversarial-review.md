@@ -136,3 +136,13 @@ Se anota lo que se intentó romper y por qué no se sostiene, para que el siguie
 3. M2, G2, G3 y D1 pueden ir en una fusión posterior sin bloquear la salida de la Fase 1.
 
 Lo que esta revisión **no** pudo comprobar: B1 y M1 sobre un dispositivo real (ver reproducciones), la ejecución de LazyFS (pendiente, ya declarada en el informe), y cualquier comportamiento en plataformas distintas de Linux/ext4.
+
+## 7. Estado de corrección
+
+Corregidos los hallazgos que bloqueaban la fusión (2026-10-31):
+
+- **B1** (`555565a`): `Sink::write_pending` propaga el error de `wait_writeback` (solo `Unsupported`/`InvalidInput` se toleran), así que envenena el handle por la vía `or_poison`; `start_writeback` sigue siendo consultivo. Corregidos los textos de `sst.rs`, `kerno-core/src/vfs/mod.rs` y la fila L6 de la matriz de fallos.
+- **G1** (`555565a`): `SimVfs` con `FsyncFailure::LinuxDropPages` descarta para siempre las escrituras que cubre un `WaitWriteback`/`SyncData` fallido y marca el error como visto. Barrido `write_amp_levers::a_failed_wait_for_writeback_never_loses_acknowledged_commits`: el motor debe envenenar el handle o no referenciar la SST; falla sin el arreglo de B1.
+- **M1** (`772f3fa`, opción b): el escritor sincroniza la cabecera del WAL antes de la primera trama (`synced_len` empieza en 96) y WAL-R6 trata toda trama con CRC válido bajo una cabecera rota como `Corruption`, incluso con `synced_len = 0`. Actualizados `docs/file-format/v1.md`, la matriz de fallos y ADR-0013; vectores nuevos `dirty-wal-one-frame` (positivo) y `wal-one-frame-broken-header` (negativo); vectores de directorio con WAL regenerados.
+
+Pendientes (no bloqueantes): M2, G2, G3 y D1.
