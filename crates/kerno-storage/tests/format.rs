@@ -483,12 +483,11 @@ fn wal_frame_synced_len_follows_sync_state() {
         for (i, (offset, frame)) in frames.iter().enumerate() {
             assert_eq!(frame.commits.len(), 1, "{label}");
             match durability {
-                // The first frame is written before anything of the file is
-                // durable; every later one after its predecessor was synced.
-                Durability::Sync if i == 0 => assert_eq!(frame.synced_len, 0, "{label}"),
+                // The header is durable before the first frame (W-1); every
+                // frame is written after its predecessor was synced.
                 Durability::Sync => assert_eq!(frame.synced_len, *offset, "{label}: frame {i}"),
-                // Nothing is synced since the file was created.
-                Durability::Buffered => assert_eq!(frame.synced_len, 0, "{label}: frame {i}"),
+                // Nothing but the header is synced since the file was created.
+                Durability::Buffered => assert_eq!(frame.synced_len, HEADER_LEN as u64, "{label}: frame {i}"),
             }
         }
     }

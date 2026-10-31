@@ -1780,19 +1780,24 @@ fn vectors() -> Vec<Vector> {
         },
     ));
     let two_frames = encode(&wctx(11), &wal_value(vec![], End::Clean));
-    v.push(pos(
-        "wal_broken_header_unsynced",
+    // M1: the writer syncs the header before the first frame, so a valid frame
+    // under a broken header is damage even when its `synced_len` is 0.
+    v.push(neg(
+        "neg_walr6_broken_header_unsynced",
         wctx(11),
-        Value::Wal {
-            header: None,
-            frames: vec![],
-            tail: {
-                let mut b = two_frames[..(96 + f1_len) as usize].to_vec();
-                b[..96].fill(0);
-                b
-            },
-            end: End::Torn,
+        {
+            let mut b = two_frames[..(96 + f1_len) as usize].to_vec();
+            b[..96].fill(0);
+            b
         },
+        "WAL-R6",
+        C,
+    ));
+    // A header the crash broke before it was durable, with no frame behind it.
+    v.push(pos(
+        "wal_broken_header_no_frames",
+        wctx(11),
+        Value::Wal { header: None, frames: vec![], tail: vec![0; 96], end: End::ZeroPadded },
     ));
     v.push(neg("neg_walr1_base_seq", wctx(12), two_frames.clone(), "WAL-R1", C));
     v.push(neg(

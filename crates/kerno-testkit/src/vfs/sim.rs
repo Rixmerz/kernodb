@@ -134,10 +134,13 @@ pub enum OpKind {
     /// `File::start_writeback`: counts as a mutating operation (it can be the
     /// point of a crash or of an injected error, and appears in traces), but
     /// changes nothing: the writes it covers stay pending, as after any
-    /// other call that promises no durability.
+    /// other call that promises no durability (on Linux its error stays
+    /// recorded in the mapping for the next `fsync`).
     StartWriteback,
-    /// `File::wait_writeback`: like [`StartWriteback`](Self::StartWriteback),
-    /// an operation without effect on any state.
+    /// `File::wait_writeback`: without an injected error it has no effect on
+    /// any state. An injected error under [`FsyncFailure::LinuxDropPages`]
+    /// drops the pending writes it covers for good, as `sync_file_range` with
+    /// `WAIT_*` does on Linux (it consumes the writeback error).
     WaitWriteback,
     /// Creation of a file (`open` with `CreateNew`/`CreateOrOpen` of a
     /// missing file).
@@ -1085,7 +1088,26 @@ impl File for SimFile {
 
     fn wait_writeback(&self, offset: u64, len: u64) -> io::Result<()> {
         let mut s = self.state.lock();
-        s.tick(self.op(OpKind::WaitWriteback, offset, len)).map_err(Refused::into_io)
+        let result = s.tick(self.op(OpKind::WaitWriteback, offset, len));
+        let drop_pages = s.fsync_failure == FsyncFailure::LinuxDropPages;
+        match result {
+            Ok(()) => Ok(()),
+            Err(Refused::Injected) => {
+                if drop_pages {
+                    // Linux: the wait reports the writeback error and advances
+                    // the file's error cursor, so the writes it covers are
+                    // gone for good and the next `sync_data` sees no error.
+                    // Length changes are metadata and stay pending.
+                    let end = offset.saturating_add(len);
+                    s.inode(self.ino).pending.retain(|(_, p)| match p {
+                        Pending::Write { off, data } => *off >= end || off.saturating_add(data.len() as u64) <= offset,
+                        Pending::SetLen(_) => true,
+                    });
+                }
+                Err(injected_error())
+            }
+            Err(Refused::Dead) => Err(dead_error()),
+        }
     }
 }
 

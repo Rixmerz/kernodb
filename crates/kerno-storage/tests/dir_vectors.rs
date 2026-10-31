@@ -837,11 +837,25 @@ fn dirty_buffered_synced_len() -> Case {
     let (image, models) = s.kill();
     let frames = frames_of_newest_wal(&image);
     assert!(
-        frames.iter().any(|(_, f)| f.synced_len > 0) && frames.iter().any(|(_, f)| f.synced_len == 0),
+        frames.iter().any(|(_, f)| f.synced_len > HEADER_LEN as u64)
+            && frames.iter().any(|(_, f)| f.synced_len == HEADER_LEN as u64),
         "dirty-buffered-synced-len: {:?}",
         frames.iter().map(|(_, f)| f.synced_len).collect::<Vec<_>>()
     );
     recovered_case("dirty-buffered-synced-len", &image, &models, 10)
+}
+
+/// A killed session whose only WAL holds exactly one `Sync` commit: the frame
+/// carries `synced_len = HEADER_LEN` because the writer syncs the header
+/// before it accepts the first frame (WAL-R6).
+fn dirty_wal_one_frame() -> Case {
+    let mut s = Session::new(SimVfs::new(17), &vector_config(Durability::Sync));
+    s.commit_ok(&put_batch(b"only", b"frame"));
+    let (image, models) = s.kill();
+    let frames = frames_of_newest_wal(&image);
+    assert_eq!(frames.len(), 1, "dirty-wal-one-frame");
+    assert_eq!(frames[0].1.synced_len, HEADER_LEN as u64, "the header is synced before the first frame");
+    recovered_case("dirty-wal-one-frame", &image, &models, 1)
 }
 
 // ---------------------------------------------------------------------------
@@ -967,6 +981,16 @@ fn wal_with_one_frame(number: u64, seq: u64, batch: &WriteBatch) -> Vec<u8> {
     out
 }
 
+/// A one-frame WAL whose header is damaged: the frame is valid and was written
+/// after a durable header, so this is media damage, not a torn creation
+/// (WAL-R6), and the acknowledged commit must not be dropped silently.
+fn wal_one_frame_broken_header(one_frame: &Case) -> Case {
+    let mut files = one_frame.files.clone();
+    let wal = files.keys().filter(|n| is_wal(n)).max().unwrap().clone();
+    files.get_mut(&wal).unwrap()[20] ^= 0x01;
+    reject("wal-one-frame-broken-header", files, Class::Corruption)
+}
+
 /// Damage in the middle of the log followed by a frame that was written after
 /// the damaged bytes were durable (WAL-R5).
 fn wal_mid_damage_synced(dirty: &Case) -> Case {
@@ -1024,6 +1048,7 @@ fn all_cases() -> Vec<Case> {
     let dirty = dirty_wal_torn_tail();
     // The base of the WAL-R5 vector: a log with synced frames, killed.
     let synced = dirty_wal_with_synced_frames();
+    let one_frame = dirty_wal_one_frame();
     let mut cases = vec![
         empty_clean(),
         basic.clone(),
@@ -1038,6 +1063,7 @@ fn all_cases() -> Vec<Case> {
         large_value_1mib(),
         dirty_group_frame(),
         dirty_buffered_synced_len(),
+        one_frame.clone(),
     ];
     cases.extend(negative_header_cases(&basic, &synced));
     cases.push(unknown_ro_compat(&basic));
@@ -1050,6 +1076,7 @@ fn all_cases() -> Vec<Case> {
     cases.push(missing_log_wal(&synced));
     cases.push(bytes_after_clean(&basic));
     cases.push(wal_mid_damage_synced(&synced));
+    cases.push(wal_one_frame_broken_header(&one_frame));
     cases
 }
 

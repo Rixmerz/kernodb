@@ -383,3 +383,61 @@ fn random_histories_match_the_model_with_all_levers_on() {
     }
     assert!(hints > 0, "no table of any history asked for writeback");
 }
+
+// ----------------------------------- a failed wait for writeback (B1, G1)
+
+/// On Linux a failed `sync_file_range(WAIT_*)` consumes the writeback error
+/// and the pages are marked clean, so the final `sync_data` of the table
+/// returns `Ok` for data that never reached the disk. Whatever the engine
+/// does with the failure, the commits it acknowledged must survive a power
+/// loss: it has to poison the handle (or never reference the table).
+#[test]
+fn a_failed_wait_for_writeback_never_loses_acknowledged_commits() {
+    use kerno_core::Durability;
+    use kerno_testkit::vfs::{CrashKind, FsyncFailure};
+
+    let mut fired = 0;
+    for nth in 1..=8u64 {
+        let sim = SimVfs::new(nth);
+        sim.set_fsync_failure(FsyncFailure::LinuxDropPages);
+        let vfs = sim.as_vfs();
+        let policy = CompactionConfig { bytes_per_writeback: Some(1), bytes_per_sync: None, ..base_policy() };
+        let cfg = Config { durability: Durability::Sync, ..config(1 << 20, policy) };
+        let db = open(&vfs, &cfg);
+        let mut model = Model::new();
+        sim.fail_when(|op| op.kind == OpKind::WaitWriteback, nth, None);
+        let mut poisoned = false;
+        for round in 0..3u8 {
+            let mut b = WriteBatch::new();
+            for k in keys("k", 0..60) {
+                b.put(k, vec![round; 100]);
+            }
+            if db.commit(&b).is_err() {
+                poisoned = true;
+                break;
+            }
+            apply(&mut model, &b);
+            if db.hooks().flush().is_err() {
+                poisoned = true;
+                break;
+            }
+            if db.hooks().compact_once().is_err() {
+                poisoned = true;
+                break;
+            }
+        }
+        if !sim.fault_injected() {
+            continue;
+        }
+        fired += 1;
+        assert!(poisoned, "nth {nth}: the failed wait was swallowed: no operation failed");
+        let mut b = WriteBatch::new();
+        b.put("after", vec![9]);
+        assert!(db.commit(&b).is_err(), "nth {nth}: the handle is not poisoned");
+        let image = sim.crash_now(CrashKind::PowerLoss);
+        drop(db);
+        let reopened = KernoDb::open(image.as_vfs(), Path::new(DIR), &cfg).unwrap();
+        assert_model(&reopened, &model, &format!("nth {nth}, after a power loss"));
+    }
+    assert!(fired >= 2, "the sweep reached {fired} waits");
+}
