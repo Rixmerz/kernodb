@@ -493,7 +493,7 @@ fn wal(b: &[u8], file: u64, db: [u8; 16], expected_seq: u64) -> R<String> {
         }
         Err((rule, _)) if rule == "HDR-1" || rule == "HDR-3" || (rule == "HDR-2" && !known_magic(&b[0..8])) => {
             // WAL-R6: P = 0, no slot (FRAME_SLOT_ALWAYS is false in v1).
-            let end = wal_tail(b, 0, expected, file).map_err(|_| ("WAL-R6", Class::Corruption))?;
+            let end = wal_tail(b, 0, expected, file, true).map_err(|_| ("WAL-R6", Class::Corruption))?;
             return Ok(format!("wal broken {rule} frames[] end {end}@0 next{expected}"));
         }
         Err(e) => return Err(e),
@@ -506,7 +506,7 @@ fn wal(b: &[u8], file: u64, db: [u8; 16], expected_seq: u64) -> R<String> {
         expected += count;
         p += flen;
     }
-    let end = wal_tail(b, p, expected, file).map_err(|_| ("WAL-R5", Class::Corruption))?;
+    let end = wal_tail(b, p, expected, file, false).map_err(|_| ("WAL-R5", Class::Corruption))?;
     Ok(format!("{} frames[{}] end {end}@{p} next{expected}", head.replacen("header", "wal", 1), frames.join(" / ")))
 }
 
@@ -516,8 +516,9 @@ fn known_magic(m: &[u8]) -> bool {
     all.contains(&m)
 }
 
-/// WAL-R4/R5: `Err` if a candidate frame follows `p`.
-fn wal_tail(b: &[u8], p: usize, expected: u64, file: u64) -> Result<&'static str, ()> {
+/// WAL-R4/R5: `Err` if a candidate frame follows `p`. Under a broken header
+/// (WAL-R6) the `synced_len` conditions do not apply.
+fn wal_tail(b: &[u8], p: usize, expected: u64, file: u64, broken_header: bool) -> Result<&'static str, ()> {
     if p == b.len() {
         return Ok("clean");
     }
@@ -537,7 +538,7 @@ fn wal_tail(b: &[u8], p: usize, expected: u64, file: u64) -> Result<&'static str
         }
         // first_seq ∈ [expected, expected + (q − P)].
         let hi = expected.saturating_add((q - p) as u64);
-        if first < expected || first > hi || synced <= p as u64 || synced > q as u64 {
+        if first < expected || first > hi || (!broken_header && (synced <= p as u64 || synced > q as u64)) {
             continue;
         }
         let f = &b[q..q + flen as usize];

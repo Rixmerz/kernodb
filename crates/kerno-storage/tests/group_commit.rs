@@ -8,7 +8,7 @@
 //! (`queued_bytes_max`), and only then releases the leader.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -65,8 +65,23 @@ fn is_frame_write(op: &HookOp<'_>) -> bool {
     op.kind == HookOpKind::WriteAt && op.point == HookPoint::Before && is_wal(op) && op.offset > 0
 }
 
-fn is_wal_sync(op: &HookOp<'_>) -> bool {
-    op.kind == HookOpKind::SyncData && op.point == HookPoint::Before && is_wal(op)
+/// The `sync_data` of a WAL that follows a frame write. The one that makes a
+/// new header durable (W-1) comes before any frame and is not counted.
+#[derive(Default)]
+struct FrameSyncs {
+    frame_written: AtomicBool,
+}
+
+impl FrameSyncs {
+    fn is_frame_sync(&self, op: &HookOp<'_>) -> bool {
+        if is_frame_write(op) {
+            self.frame_written.store(true, Ordering::SeqCst);
+        }
+        op.kind == HookOpKind::SyncData
+            && op.point == HookPoint::Before
+            && is_wal(op)
+            && self.frame_written.swap(false, Ordering::SeqCst)
+    }
 }
 
 /// Holds the thread that calls [`hold`](Gate::hold) until the test calls
@@ -244,8 +259,9 @@ fn run_failed_group(followers: usize, max_group_commits: usize, crash: Option<Cr
     let gate = Arc::new(Gate::default());
     let syncs = Arc::new(AtomicUsize::new(0));
     let hook_gate = gate.clone();
+    let frame_syncs = FrameSyncs::default();
     let vfs = HookVfs::wrap(disk.as_vfs(), move |op| {
-        if !is_wal_sync(op) {
+        if !frame_syncs.is_frame_sync(op) {
             return HookAction::Proceed;
         }
         match syncs.fetch_add(1, Ordering::SeqCst) {
@@ -381,8 +397,9 @@ fn sync_mode_readers_never_see_undurable_seq() {
     let gate = Arc::new(Gate::default());
     let hook_gate = gate.clone();
     let syncs = Arc::new(AtomicUsize::new(0));
+    let frame_syncs = FrameSyncs::default();
     let vfs = HookVfs::wrap(disk.as_vfs(), move |op| {
-        if is_wal_sync(op) && syncs.fetch_add(1, Ordering::SeqCst) == 1 {
+        if frame_syncs.is_frame_sync(op) && syncs.fetch_add(1, Ordering::SeqCst) == 1 {
             hook_gate.hold();
         }
         HookAction::Proceed
