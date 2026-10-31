@@ -43,4 +43,6 @@ Propuesta mínima, limitada a lo que la Etapa 3 necesita (opción 3 de arriba); 
 3. **CRC-32C provisional** (`alg = 0`), ya disponible en el proyecto y **sin garantía criptográfica**, hasta que esta decisión esté completa; sirve solo para detectar discordancia extremo a extremo.
 4. El hash se verifica en cada lectura de carga útil; una discordancia es `Corruption` (I-08).
 
+**Nota (2026-10-31, E3-02).** El propietario autorizó E3-02 pidiendo explícitamente calcular y verificar `content_hash` con BLAKE3-256. Por eso la dependencia `blake3` (sin funciones por defecto, solo `std`) entró en `kerno-units` antes de aceptar este ADR. Justificación: ni la biblioteca estándar ni el manifiesto tenían un hash criptográfico. El estado sigue **Propuesto** hasta que el propietario lo acepte.
+
 Codificación del campo: [`units-v1.md`](../file-format/units-v1.md) §4.

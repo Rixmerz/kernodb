@@ -123,7 +123,7 @@ Los valores de `REV_META` son inmutables: una clave se escribe una vez (diseño 
 
 ### 3.4 `REV_PAYLOAD` (`0x21`)
 
-El valor es la carga útil **tal cual**: sin `envelope_version`, sin longitud, sin relleno. Su longitud y su integridad no se validan al decodificar el valor aislado: las fijan `payload_len` (≤ 2^26, UNIT-22) y `content_hash` del `REV_META` correspondiente (diseño §2.7), y la capa comprueba ambos al leer la revisión (E3-02). Por eso no hay regla `UNIT-n` de decodificación para él: todo valor, de cualquier longitud que el motor admita, es sintácticamente válido como `REV_PAYLOAD`, y un valor cuya longitud no coincide con `payload_len` es corrupción detectada por esa comprobación cruzada, no por este decodificador.
+El valor es la carga útil **tal cual**: sin `envelope_version`, sin longitud, sin relleno. Su longitud y su integridad no se validan al decodificar el valor aislado: las fijan `payload_len` (≤ 2^26, UNIT-22) y `content_hash` del `REV_META` correspondiente (diseño §2.7), y la capa comprueba ambos al leer la revisión (§5.1, E3-02). Por eso no hay regla `UNIT-n` de decodificación para él: todo valor, de cualquier longitud que el motor admita, es sintácticamente válido como `REV_PAYLOAD`, y un valor cuya longitud no coincide con `payload_len` es corrupción detectada por esa comprobación cruzada, no por este decodificador.
 
 ### 3.5 `CHANGESET` (`0x30`)
 
@@ -153,7 +153,7 @@ Tamaño fijo: 27 B.
 | `0` | CRC-32C provisional, **sin garantía criptográfica** | `crc: u32` big-endian ‖ 28 bytes `0x00` (UNIT-14) |
 | `1` | BLAKE3-256 (ADR-0008, propuesto) | 32 bytes cualesquiera |
 
-El hash cubre `payload_codec ‖ payload`. Cualquier otro `alg` es corrupción (UNIT-13). Este documento no define cómo se calcula el hash ni lo comprueba el decodificador de estructuras: la verificación contra la carga útil es de E3-07.
+El hash cubre `payload_codec ‖ payload` (un byte de códec seguido de la carga útil, sin longitud). Cualquier otro `alg` es corrupción (UNIT-13). Los escritores de esta capa usan `alg = 1`. El decodificador de estructuras no comprueba el hash; lo hace la verificación de carga útil de §5.1 (E3-02, `kerno_units::verify_payload`). El verificador offline de E3-07 la reutiliza.
 
 ## 5. Reglas de validación
 
@@ -186,6 +186,20 @@ Cada regla lleva su clase de error: `Corruption` (los bytes no son lo que un esc
 | UNIT-23 | `REV_META`: `commit_seq = 0` | `Corruption` |
 | UNIT-24 | `CHANGESET`: `member_count > 2^20` | `Corruption` |
 | UNIT-25 | `CS_MEMBER`: `rev_no = 0` | `Corruption` |
+
+### 5.1 Integridad de la carga útil (E3-02)
+
+Al leer una revisión, la capa compara el `REV_PAYLOAD` almacenado (o su ausencia) con los campos `payload_codec`, `payload_len`, `payload_present` y `content_hash` de su `REV_META`. Las reglas se aplican en este orden y se rechaza la primera violada. La longitud se compara antes de calcular el hash, así que un valor truncado o sobredimensionado nunca se procesa.
+
+| Id | Regla | Clase |
+|---|---|---|
+| UNIT-13 | `payload_codec ≠ 0` (repetida aquí porque la declaración puede llegar de otra fuente) | `Corruption` |
+| UNIT-22 | `payload_len > 2^26` (repetida) | `Corruption` |
+| UNIT-26 | `payload_present = 1` sin `REV_PAYLOAD`; `REV_PAYLOAD` presente con `payload_present = 0`; o `payload_present = 0` con `payload_len ≠ 0` | `Corruption` |
+| UNIT-27 | La longitud del `REV_PAYLOAD` difiere de `payload_len` (truncado o extendido) | `Corruption` |
+| UNIT-28 | El hash de `payload_codec ‖ payload` con el `alg` declarado difiere de `content_hash` | `Corruption` |
+
+La verificación es pura: no escribe, no depende de nada fuera de sus argumentos y devuelve el mismo error para la misma entrada. Un rechazo no modifica la base y se puede repetir. Solo una carga útil verificada (`VerifiedPayload`) llega al resto de la capa. Vectores de hash conocidos y pruebas de corrupción: `crates/kerno-units/tests/payload_integrity.rs`.
 
 ## 6. Entrada truncada o corrupta
 
