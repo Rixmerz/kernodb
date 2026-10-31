@@ -30,7 +30,7 @@ Hechos del código en el commit base (comprobados, no supuestos):
 
 Lo que **no** hay y esta etapa no añade: lecturas hacia atrás (los `scan` son hacia delante; se diseña para ello, §3.5), claves compuestas de primera clase (se codifican a mano, §2), tipos de índice (Etapa 4), cifrado (AEAD sigue `Incompatible`, ADR-0006).
 
-Consecuencia de diseño: la capa no necesita nada del motor que ya no exista. Si una necesidad real aparece más adelante, entra por la vía de ADR-0013: bit de característica + vectores + ADR, nunca reescribiendo bytes v1.
+Consecuencia de diseño: la capa no necesita nada del motor que ya no exista, salvo exponer en el trait `Txn` la secuencia leída (`read_seq`, ya presente en `WriteTxn`). Si una necesidad real aparece más adelante, entra por la vía de ADR-0013: bit de característica + vectores + ADR, nunca reescribiendo bytes v1.
 
 ## 2. Modelo de datos y codificación de claves
 
