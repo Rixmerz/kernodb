@@ -2,9 +2,9 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | Propuesto (redactado en WP06; su aceptación por el propietario es requisito de la congelación del formato en WP14 y no bloquea otros paquetes) |
+| Estado | Aceptado (2026-10-31), condicionado a la revisión adversarial de la Fase 1 ([f1-adversarial-review](../testing/f1-adversarial-review.md)), cuyos bloqueantes B1, G1 y M1 quedaron corregidos |
 | Fecha | 2026-10-28 |
-| Decisores | Propietario del proyecto (pendiente) |
+| Decisores | Propietario del proyecto |
 | Relacionado con | ADR-0001, ADR-0002, ADR-0003 (aceptados, que este ADR interpreta sin reemplazar), ADR-0006, ADR-0012; [formato v1](../file-format/v1.md); [diseño de la Fase 1](../architecture/phase1-design.md) §4, §5, §7, §12 y §13; invariantes I-03, I-08, I-09, I-11, I-15, I-16, I-18 |
 
 ## Contexto
@@ -118,9 +118,18 @@ Se adoptan las opciones marcadas en los puntos 1–14 para el formato v1 y el pr
 - **`synced_len` y cabecera rota (punto 4):** la primera trama de cada WAL lleva `synced_len = 0`, porque W-1 no sincroniza la cabecera. Si tras una caída la cabecera del WAL más reciente se daña (no por la caída, sino por un fallo del medio) y ese WAL solo tiene tramas con `synced_len = 0`, WAL-R6 lo trata como un WAL sin tramas, y un commit confirmado en `Sync` puede perderse sin error. Es un caso de daño posterior a la escritura, no de caída; las suites de corrupción del M0 actúan tras un cierre limpio, cuando no queda ningún WAL. La alternativa es sincronizar la cabecera en W-1 (un `sync_data` más por rotación, una vez cada `write_buffer_bytes`), con lo que toda trama llevaría `synced_len ≥ 96` y WAL-R6 podría rechazar cualquier trama válida bajo una cabecera rota. Queda como decisión del propietario (ver Seguimiento). **Cerrado (2026-10-31, M1 de la revisión adversarial):** el escritor sincroniza la cabecera en W-1 y WAL-R6 rechaza cualquier trama válida bajo una cabecera rota.
 - **Precisiones de WP06** (historial de v1.md, sin cambiar ningún archivo válido): la cabecera rota de WAL-R6 incluye ahora HDR-2 con un *magic* desconocido (ni de v1 ni del M0), porque una cabecera nunca sincronizada puede quedar a ceros mientras la primera trama sí llega al disco (el modelo de `SimVfs` lo produce); la tabla de §13.1 fija qué regla informa cada comprobación y en qué orden, que es lo que permite que dos decodificadores independientes coincidan. La revisión de WP06 corrigió la cota de WAL-R5 y WAL-R6 para tramas de grupo (punto 4) y añadió al lector dos límites de §1.4 que no aplicaba (`last_seq` y `edit_seq` ≤ 2^63−1, para que ninguna secuencia derivada desborde); ningún vector existente cambió.
 
+## Qué es inmutable y qué es versionado
+
+Con la aceptación, el propietario fija la frontera:
+
+- **Inmutable mientras exista v1** (cambiarlo exige un `format_version` nuevo, no un bit): el *magic* y la cabecera común de 96 bytes (§3), la codificación de enteros, varints y checksums (§1.1–§1.2), el encapsulado TLV (§1.3), el encapsulado de trama del WAL y de bloque de SST (§6.2, §7.2), el pie de SST (§7.8), el registro del MANIFEST (§8.2) y la semántica de la tabla de recuperación (§9), incluida WAL-R6 endurecida por M1.
+- **Versionado por bits de características** (§4): capacidades nuevas que un lector antiguo puede ignorar (`compat`), abrir solo en lectura (`ro_compat`) o debe rechazar (`incompat`), entre ellas AEAD (punto 5) y la durabilidad por commit (punto 12).
+- **Ajustable sin tocar el formato:** límites de la API (punto 11), parámetros de ajuste (tamaños de bloque y de memtable, `bytes_per_sync`, compactación) y los objetivos de rendimiento T1–T10, que siguen por referencia (punto 14).
+- El bit `DRAFT` (punto 10) se retira en la congelación de WP14; los archivos escritos con él no se garantizan tras ella.
+
 ## Seguimiento
 
 - Antes de la congelación (WP14): aceptación por el propietario, en particular de los puntos 2, 3, 4, 5, 8, 9 y 10 (phase1-design §13, decisión 2), y revisión del modelo de amenazas (R-07).
-- Decidir si W-1 sincroniza la cabecera del WAL (consecuencia del punto 4) antes de WP08, que implementa el protocolo de sesión; si se adopta, WAL-R6 se endurece en el borrador con su entrada de historial.
+- ~~Decidir si W-1 sincroniza la cabecera del WAL~~: adoptado (M1, 2026-10-31).
 - Enlazar aquí la evidencia del motor (WP07–WP14) y la medición de T7 y T8.
 - Registro de cambios de bytes del borrador (v1.md §15): ninguno; los vectores de WP06 son los primeros.
