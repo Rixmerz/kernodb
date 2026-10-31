@@ -223,6 +223,11 @@ pub trait TxnEngine: Engine {
 
 /// A write transaction (see [`TxnEngine`] for the semantics).
 pub trait Txn: Sized {
+    /// The commit sequence of the state the transaction reads: the latest
+    /// commit when it began, and still the latest while it lives. A
+    /// non-empty commit receives `read_seq() + 1`.
+    fn read_seq(&self) -> u64;
+
     /// The value of `key` as the transaction sees it.
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>>;
 

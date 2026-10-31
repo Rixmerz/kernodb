@@ -998,6 +998,10 @@ mod mutants {
     }
 
     impl<const T: bool, const B: bool> Txn for NaiveTxn<'_, T, B> {
+        fn read_seq(&self) -> u64 {
+            self.snap.seq()
+        }
+
         fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
             self.snap.get(key)
         }
@@ -1117,6 +1121,10 @@ mod mutants {
     }
 
     impl<M: Mode> Txn for MutantTxn<'_, M> {
+        fn read_seq(&self) -> u64 {
+            self.txn().read_seq()
+        }
+
         fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
             if M::STALE_READS { self.db.snapshot()?.get(key) } else { self.txn().get(key) }
         }

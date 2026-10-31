@@ -610,6 +610,10 @@ impl Oracle {
 }
 
 impl Txn for OracleTxn<'_> {
+    fn read_seq(&self) -> u64 {
+        self.oracle.seq
+    }
+
     fn get(&self, key: &[u8]) -> spike_core::Result<Option<Vec<u8>>> {
         Ok(self.work.get(key).cloned())
     }

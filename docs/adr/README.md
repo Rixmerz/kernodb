@@ -14,13 +14,13 @@ Reglas:
 | [0001](0001-motor-de-almacenamiento.md) | Motor de almacenamiento físico | **Aceptado**: LSM nivelado (2026-10-28) |
 | [0002](0002-transacciones-y-durabilidad.md) | Modelo de transacciones y durabilidad | **Aceptado** (2026-10-28) |
 | [0003](0003-formato-fisico-y-versionado.md) | Formato físico y versionado | **Aceptado** (2026-10-28; formato concreto se congela al cerrar Fase 1) |
-| [0004](0004-historial-de-revisiones.md) | Historial de revisiones | Pendiente (diseño preliminar disponible) |
+| [0004](0004-historial-de-revisiones.md) | Historial de revisiones | **Aceptado** (2026-10-31; [acta E3-00](../architecture/etapa3-acta-e3-00.md)) |
 | [0005](0005-identificadores-publicos.md) | Identificadores públicos | Propuesto (borrador) |
 | [0006](0006-cifrado-y-gestion-de-claves.md) | Cifrado y gestión de claves | Pendiente |
 | [0007](0007-consistencia-de-indices.md) | Consistencia y reconstrucción de índices | Pendiente |
-| [0008](0008-serializacion-documental-y-hashes.md) | Serialización documental y hashes | Pendiente |
+| [0008](0008-serializacion-documental-y-hashes.md) | Serialización documental y hashes | Propuesto (mínimo: BLAKE3-256 y bytes opacos) |
 | [0009](0009-supresion-retencion-y-backups.md) | Supresión, retención y backups | Pendiente |
-| [0010](0010-api-publica-y-crates.md) | API pública y límites de crates | Pendiente |
+| [0010](0010-api-publica-y-crates.md) | API pública y límites de crates | **Aceptado** (2026-10-31; [acta E3-00](../architecture/etapa3-acta-e3-00.md)) |
 | [0011](0011-vectores-y-recuperacion-hibrida.md) | Perfil de vector y recuperación híbrida | Pendiente |
 | [0012](0012-metodologia-de-benchmarks.md) | Metodología de benchmarks y umbrales de salida | Propuesto (aplicada en M0) |
 | [0013](0013-formato-v1-y-protocolo-del-motor.md) | Formato v1 y protocolo del motor | Propuesto (WP06; se acepta antes de congelar v1 en WP14) |

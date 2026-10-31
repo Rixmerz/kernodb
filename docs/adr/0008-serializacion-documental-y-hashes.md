@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | Pendiente |
+| Estado | **Propuesto** (versión mínima para la Etapa 3, 2026-10-31; el propietario aprobó la dirección en la decisión 7 del [acta E3-00](../architecture/etapa3-acta-e3-00.md), pero el ADR aún no está aceptado) |
 | Fecha | 2026-10-27 (apertura) |
 | Relacionado con | SAD §5.3, §13, RFC 8785 |
 
@@ -36,4 +36,11 @@ Condiciona ADR-0004 (deltas y hashes) y ADR-0003 (versionado del algoritmo).
 
 ## Decisión
 
-Pendiente. No debe codificarse ningún supuesto de este ADR de forma difícil de revertir hasta que se acepte.
+Propuesta mínima, limitada a lo que la Etapa 3 necesita (opción 3 de arriba); la canonicalización estructural (JCS, CBOR) y el diff quedan fuera y se decidirán en un ADR posterior:
+
+1. **Bytes opacos.** La carga útil de una revisión son bytes que la capa no interpreta; `payload_codec = 0`. El hash se calcula sobre `payload_codec ‖ payload` tal como se guarda.
+2. **Hash BLAKE3-256** (32 bytes), identificado por un byte `alg` en el campo `content_hash` (`alg = 1`), para no fijar el algoritmo en el formato de la capa. Añadir la dependencia exige justificar que ni la biblioteca estándar ni el manifiesto actual la cubren, y entra con la aceptación de este ADR, no antes.
+3. **CRC-32C provisional** (`alg = 0`), ya disponible en el proyecto y **sin garantía criptográfica**, hasta que esta decisión esté completa; sirve solo para detectar discordancia extremo a extremo.
+4. El hash se verifica en cada lectura de carga útil; una discordancia es `Corruption` (I-08).
+
+Codificación del campo: [`units-v1.md`](../file-format/units-v1.md) §4.

@@ -217,6 +217,10 @@ impl Drop for WriteTxn<'_> {
 }
 
 impl Txn for WriteTxn<'_> {
+    fn read_seq(&self) -> u64 {
+        WriteTxn::read_seq(self)
+    }
+
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         WriteTxn::get(self, key)
     }
