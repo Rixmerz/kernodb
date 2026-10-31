@@ -298,6 +298,10 @@ impl<S: Snapshot> BasePages<'_, S> {
 }
 
 impl<E: Engine> Txn for EmulatedTxn<'_, E> {
+    fn read_seq(&self) -> u64 {
+        self.snap.seq()
+    }
+
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         if let Some(written) = self.overlay.get(key) {
             return Ok(written.clone());

@@ -1,0 +1,12 @@
+[package]
+name = "kerno-units"
+description = "Kerno units layer (Stage 3): units, revisions and change sets over a transactional engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license.workspace = true
+repository.workspace = true
+
+# No dependencies yet: E3-01 only freezes the byte layout (docs/file-format/units-v1.md)
+# and its vectors; the codecs and the API arrive with E3-02 onwards.

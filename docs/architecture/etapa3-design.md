@@ -1,8 +1,8 @@
 # Diseño de la Etapa 3: unidades, revisiones y procedencia
 
-Estado: borrador para revisión del propietario · Relacionado con: [especificación v0.2.0](../spec/especificacion-arquitectonica-v0.2.0.md) §6.1–6.3 y §16, [SAD §8](SAD.md#8-revision-engine-historial-diferencias-y-procedencia), [ADR-0001](../adr/0001-motor-de-almacenamiento.md), [ADR-0002](../adr/0002-transacciones-y-durabilidad.md), [ADR-0003](../adr/0003-formato-fisico-y-versionado.md), [ADR-0004](../adr/0004-historial-de-revisiones.md) (pendiente), [ADR-0013](../adr/0013-formato-v1-y-protocolo-del-motor.md) (aceptado), [diseño de revisiones de M0](revision-model-design.md), [diseño de la Fase 1](phase1-design.md), [invariantes](invariants.md), [roadmap](../roadmap/README.md#etapa-3--unidades-revisiones-y-procedencia)
+Estado: borrador para revisión del propietario · Relacionado con: [especificación v0.2.0](../spec/especificacion-arquitectonica-v0.2.0.md) §6.1–6.3 y §16, [SAD §8](SAD.md#8-revision-engine-historial-diferencias-y-procedencia), [ADR-0001](../adr/0001-motor-de-almacenamiento.md), [ADR-0002](../adr/0002-transacciones-y-durabilidad.md), [ADR-0003](../adr/0003-formato-fisico-y-versionado.md), [ADR-0004](../adr/0004-historial-de-revisiones.md) (aceptado), [ADR-0013](../adr/0013-formato-v1-y-protocolo-del-motor.md) (aceptado), [diseño de revisiones de M0](revision-model-design.md), [diseño de la Fase 1](phase1-design.md), [invariantes](invariants.md), [roadmap](../roadmap/README.md#etapa-3--unidades-revisiones-y-procedencia)
 
-Este documento es **solo diseño**: no hay código, no se acepta ningún ADR y no se cambia ningún byte del formato v1. Los identificadores de tipos, claves y funciones están en inglés; la prosa, en español. Todo lo que dependa de un ADR todavía pendiente (0004, 0005, 0008, 0010, 0017) se presenta como **propuesta** y se lista en §12 para que el propietario decida.
+Este documento es **solo diseño**: no hay código, no se acepta ningún ADR y no se cambia ningún byte del formato v1. Los identificadores de tipos, claves y funciones están en inglés; la prosa, en español. Todo lo que dependa de un ADR todavía no aceptado (0005, 0008, 0017) se presenta como **propuesta** y se lista en §12 para que el propietario decida.
 
 ## 0. Resumen
 
@@ -521,18 +521,20 @@ Todos son secuenciales salvo donde se indica. «Hecho» incluye: `cargo fmt --ch
 
 Camino crítico: E3-00 → 01 → 02 → 03 → 04; 05, 06, 07 se pueden paralelizar tras 03/04; 08 tras todos; 09 puede empezar tras 06.
 
-## 12. Decisiones abiertas para el propietario
+## 12. Decisiones del propietario
+
+Las decisiones 1–8 quedaron **decididas** el 2026-10-31 ([acta E3-00](etapa3-acta-e3-00.md)), con las condiciones que ahí constan; las 9–13 siguen abiertas.
 
 | # | Decisión | Recomendación de este diseño | Si se elige otra cosa |
 |---|---|---|---|
-| 1 | **Condición de inicio**: la Etapa 3 exige Fase 1 cerrada (formato v1 congelado, ADR-0013 aceptado y WP14 completado). ¿Se empieza con el borrador `DRAFT` o se espera a la congelación? | Esperar: el diseño no depende del formato, pero las bases de prueba creadas con `DRAFT` se rechazan tras congelar | Empezar en paralelo solo con E3-01/E3-02 (puro código y documentación), sin crear bases persistentes |
-| 2 | **Crate y API** (ADR-0010): ¿crate nuevo `kerno-units` genérico sobre `TxnEngine`, o integrar en `kerno-storage`? | Crate nuevo: aísla T1–T10 de la capa y permite probarla sobre `LogEngine` | Integrar: más simple, pero toda la capa queda bajo los objetivos de la Fase 1 |
-| 3 | **Bit de característica**: ¿basta la marca de capa o se reserva un `incompat` «UNITS» para que un motor antiguo no abra la base? | Solo marca de capa mientras `kerno-storage` sea interno; bit si se ofrece acceso KV directo al usuario | Bit en 1..62 con vectores y nota en ADR-0013 (no cambia `format_version`) |
-| 4 | **Snapshots frente a deltas** (ADR-0004/0008): ¿carga útil completa por revisión hasta que haya benchmark? | Sí; `Delta` reservado en `kind` | Delta desde el inicio: exige fijar formato de delta y `K`/`F` antes de medir |
-| 5 | **Duplicar o no la carga útil vigente en la cabeza** (§2.3) | No duplicar (una copia; 2 `get`) | Duplicar: 1 `get`, ~2× bytes de escritura en `versioned` |
-| 6 | **Metadatos versionados**: ¿los `metadata` y la clasificación forman parte de la revisión? | Sí, en `REV_META` | No: pasan a mutar solo en la cabeza y no se auditan |
-| 7 | **Hash**: algoritmo y dependencia (ADR-0008) | BLAKE3-256 con ADR; `alg=0` CRC-32C provisional | SHA-256; o postponer el hash criptográfico a la Etapa 9 |
-| 8 | **`AsOf::Time`** | Fuera de la Etapa 3 (I-26) | Añadirlo con definición documentada que depende del reloj |
+| 1 | **Condición de inicio**: la Etapa 3 exige Fase 1 cerrada (formato v1 congelado, ADR-0013 aceptado y WP14 completado). ¿Se empieza con el borrador `DRAFT` o se espera a la congelación?<br>**Decidido (2026-10-31): satisfecha (congelación hecha).** | Esperar: el diseño no depende del formato, pero las bases de prueba creadas con `DRAFT` se rechazan tras congelar | Empezar en paralelo solo con E3-01/E3-02 (puro código y documentación), sin crear bases persistentes |
+| 2 | **Crate y API** (ADR-0010): ¿crate nuevo `kerno-units` genérico sobre `TxnEngine`, o integrar en `kerno-storage`?<br>**Decidido (2026-10-31): crate nuevo `kerno-units`, separación estricta de `kerno-storage`, sin regresiones en T1–T10.** | Crate nuevo: aísla T1–T10 de la capa y permite probarla sobre `LogEngine` | Integrar: más simple, pero toda la capa queda bajo los objetivos de la Fase 1 |
+| 3 | **Bit de característica**: ¿basta la marca de capa o se reserva un `incompat` «UNITS» para que un motor antiguo no abra la base?<br>**Decidido (2026-10-31): marca de capa en disco, sin bit `incompat` para UNITS mientras `kerno-storage` sea interno.** | Solo marca de capa mientras `kerno-storage` sea interno; bit si se ofrece acceso KV directo al usuario | Bit en 1..62 con vectores y nota en ADR-0013 (no cambia `format_version`) |
+| 4 | **Snapshots frente a deltas** (ADR-0004/0008): ¿carga útil completa por revisión hasta que haya benchmark?<br>**Decidido (2026-10-31): copia completa por revisión, sin deltas hasta que los benchmarks los justifiquen.** | Sí; `Delta` reservado en `kind` | Delta desde el inicio: exige fijar formato de delta y `K`/`F` antes de medir |
+| 5 | **Duplicar o no la carga útil vigente en la cabeza** (§2.3)<br>**Decidido (2026-10-31): una sola copia, se acepta el coste de 2 `get`.** | No duplicar (una copia; 2 `get`) | Duplicar: 1 `get`, ~2× bytes de escritura en `versioned` |
+| 6 | **Metadatos versionados**: ¿los `metadata` y la clasificación forman parte de la revisión?<br>**Decidido (2026-10-31): metadatos y clasificación versionados y auditados en la revisión.** | Sí, en `REV_META` | No: pasan a mutar solo en la cabeza y no se auditan |
+| 7 | **Hash**: algoritmo y dependencia (ADR-0008)<br>**Decidido (2026-10-31): BLAKE3-256 con su ADR (ADR-0008); CRC-32C provisional hasta completar esa decisión.** | BLAKE3-256 con ADR; `alg=0` CRC-32C provisional | SHA-256; o postponer el hash criptográfico a la Etapa 9 |
+| 8 | **`AsOf::Time`**<br>**Decidido (2026-10-31): `AsOf::Time` fuera de la Etapa 3.** | Fuera de la Etapa 3 (I-26) | Añadirlo con definición documentada que depende del reloj |
 | 9 | **Poda de `CHANGESET`**: ¿se conservan siempre (procedencia) hasta ADR-0009? | Sí, ~60 B por revisión | Podarlos con la revisión: pierde procedencia |
 | 10 | **`unit_id`**: UUIDv7 interno inyectable (D-05) y mapeo a IDs públicos en ADR-0005 | UUIDv7 | UUIDv4 o contador por base: pierde localidad temporal de claves (efecto en escritura al LSM a medir) |
 | 11 | **Límite de carga útil**: 1 MiB por defecto, ajustable a 64 MiB; ¿troceado? | Sin troceado en esta etapa | Troceado: nueva etiqueta de clave y reglas de GC |

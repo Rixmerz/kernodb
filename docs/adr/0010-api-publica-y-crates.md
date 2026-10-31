@@ -2,8 +2,8 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | Pendiente |
-| Fecha | 2026-10-27 (apertura) |
+| Estado | **Aceptado** (2026-10-31, por el propietario; [acta E3-00](../architecture/etapa3-acta-e3-00.md)) |
+| Fecha | 2026-10-27 (apertura) · 2026-10-31 (aceptación) |
 | Relacionado con | SAD §6, §9.3, §14 |
 
 ## Contexto
@@ -36,4 +36,11 @@ Depende de ADR-0002 (forma de las transacciones).
 
 ## Decisión
 
-Pendiente. No debe codificarse ningún supuesto de este ADR de forma difícil de revertir hasta que se acepte.
+Se acepta, para la Etapa 3, la separación por crates del [diseño de la Etapa 3](../architecture/etapa3-design.md) (§6), con estas condiciones del propietario:
+
+1. **Crate nuevo `kerno-units`**, genérico sobre `TxnEngine` de `kerno-core`, con separación estricta de `kerno-storage`: no depende de sus módulos internos y no introduce regresiones en los objetivos T1–T10.
+2. **Marca de capa en disco** (`LAYER_META`), sin bit `incompat` para UNITS mientras `kerno-storage` sea interno.
+3. El único cambio permitido fuera de `kerno-units` es `Txn::read_seq` en `kerno-core`, con sus `impl` en `WriteTxn` y `EmulatedTxn`.
+4. `AsOf::Time` queda fuera de la Etapa 3.
+
+La fachada pública única (`kerno`, opción 1) y la política de semver se deciden cuando exista una API pública estable; esta aceptación no las fija.
