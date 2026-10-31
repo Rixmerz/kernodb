@@ -917,7 +917,20 @@ fn negative_header_cases(clean: &Case, dirty: &Case) -> Vec<Case> {
     out.push(with_header_patch(clean, "aead-bit-set", is_sst, Class::Incompatible, |h| {
         or_u64(h, INCOMPAT_AT, features::AEAD);
     }));
+    // A database made by the pre-freeze draft: the bit is refused by name.
+    out.push(draft_v1(clean));
     out
+}
+
+/// Every file as the draft wrote it (`incompat` bit 63): `Incompatible`.
+fn draft_v1(clean: &Case) -> Case {
+    let mut files = clean.files.clone();
+    for (name, bytes) in files.iter_mut() {
+        if is_manifest(name) || is_wal(name) || is_sst(name) {
+            patch_header(bytes, |h| or_u64(h, INCOMPAT_AT, features::DRAFT));
+        }
+    }
+    reject("draft-v1", files, Class::Incompatible)
 }
 
 /// Opens read-only whatever the request says; the contents are those of `base`.
@@ -1096,7 +1109,7 @@ fn dirty_wal_with_synced_frames() -> Case {
 // ---------------------------------------------------------------------------
 // Regeneration and the guard
 
-/// The cases v1.md §13.2 lists (`draft-v1` arrives with the freeze, WP14).
+/// The cases v1.md §13.2 lists
 const REQUIRED: &[&str] = &[
     "empty-clean",
     "basic-clean",
@@ -1118,6 +1131,7 @@ const REQUIRED: &[&str] = &[
     "unknown-incompat-wal",
     "unknown-incompat-sst",
     "aead-bit-set",
+    "draft-v1",
     "unknown-ro-compat",
     "unknown-compat",
     "m0-spike-lsm",

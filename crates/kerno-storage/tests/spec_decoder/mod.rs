@@ -334,7 +334,7 @@ fn header(b: &[u8], kind: FileType, db: Option<[u8; 16]>, file: Option<u64>) -> 
         return bad("HDR-5");
     }
     let incompat = le64(b, 32);
-    if incompat & !(AEAD | DRAFT) != 0 || incompat & AEAD != 0 {
+    if incompat & DRAFT != 0 || incompat & !AEAD != 0 || incompat & AEAD != 0 {
         return incompatible("HDR-6");
     }
     if le32(b, 88) != 0 {
