@@ -67,8 +67,9 @@ fn clean_reopen_costs_two_syncs() {
     let before = io.snapshot();
     let db = open_in(&vfs, &config(Durability::Sync)).unwrap();
     let d = io.snapshot().since(&before);
-    // S-3 creates the WAL (`sync_dir`), S-4 appends SESSION_OPEN (`sync_data`).
-    assert_eq!((d.dir_syncs, d.file_syncs), (1, 1), "{d:?}");
+    // S-3 creates the WAL (`sync_data` of its header, `sync_dir`), S-4 appends
+    // SESSION_OPEN (`sync_data`).
+    assert_eq!((d.dir_syncs, d.file_syncs), (1, 2), "{d:?}");
     drop(db);
 }
 
@@ -96,8 +97,8 @@ fn flush_costs_three_syncs() {
     assert!(flush[0].1.ends_with(".sst"), "{flush:?}");
     assert_eq!(flush[1].0, OpKind::SyncDir);
     assert_eq!((flush[2].0, flush[2].1.as_str()), (OpKind::SyncData, "MANIFEST"));
-    // Rotation costs the directory sync of the new WAL, nothing else.
-    assert_eq!(syncs("rotate").len(), 1);
+    // Rotation costs the header sync and the directory sync of the new WAL.
+    assert_eq!(syncs("rotate").len(), 2);
     let (replay, records) = manifest_of(&disk.dump());
     assert_eq!(replay.header.file_number, 1, "no new generation");
     assert!(matches!(records.last().unwrap().1.edit, Edit::Flush { .. }), "{:?}", records.last());

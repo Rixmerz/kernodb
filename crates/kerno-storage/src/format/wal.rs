@@ -356,7 +356,9 @@ fn header_is_broken(e: &FormatError, prefix: &[u8]) -> bool {
 /// WAL-R5 and WAL-R6: the first offset `q > p` holding a frame with
 /// `payload_len` in range, that fits in the file, with
 /// `first_seq ∈ [expected, expected + (q − p)]`, `p < synced_len ≤ q` and a
-/// valid CRC.
+/// valid CRC. With `any_synced_len` (a broken header, WAL-R6) the `synced_len`
+/// conditions are dropped: the writer syncs the header before it accepts the
+/// first frame, so no frame can be older than a durable header.
 ///
 /// The bound on `first_seq` holds for frames of any number of commits: each
 /// frame lost in `[p, q)` has a 32-byte head and each of its commits at least
@@ -368,6 +370,7 @@ fn find_candidate<S: ByteSource>(
     expected: u64,
     file_number: u64,
     slot: bool,
+    any_synced_len: bool,
 ) -> std::result::Result<Option<u64>, S::Error> {
     let len = w.len();
     let mut q = p + 1;
@@ -380,8 +383,7 @@ fn find_candidate<S: ByteSource>(
         let plausible = (1..=MAX_FRAME_PAYLOAD).contains(&payload_len)
             && flen <= len - q
             && (expected..=expected.saturating_add(q - p)).contains(&first_seq)
-            && p < synced_len
-            && synced_len <= q;
+            && (any_synced_len || (p < synced_len && synced_len <= q));
         if plausible && frame_crc_ok(&w.get(q, flen as usize)?, file_number) {
             return Ok(Some(q));
         }
@@ -399,6 +401,7 @@ fn classify_tail<S: ByteSource>(
     expected: u64,
     file_number: u64,
     slot: bool,
+    any_synced_len: bool,
 ) -> std::result::Result<std::result::Result<End, u64>, S::Error> {
     if p == w.len() {
         return Ok(Ok(End::Clean));
@@ -406,7 +409,7 @@ fn classify_tail<S: ByteSource>(
     if w.all_zero_from(p)? {
         return Ok(Ok(End::ZeroPadded));
     }
-    Ok(match find_candidate(w, p, expected, file_number, slot)? {
+    Ok(match find_candidate(w, p, expected, file_number, slot, any_synced_len)? {
         Some(q) => Err(q),
         None => Ok(End::Torn),
     })
@@ -447,7 +450,7 @@ pub fn scan_wal<S: ByteSource>(
             (h, frame_has_slot(h.incompat), u64::from(h.header_len))
         }
         Err(e) if header_is_broken(&e, &prefix) => {
-            let tail = classify_tail(&mut w, 0, params.expected_seq, params.file_number, FRAME_SLOT_ALWAYS)
+            let tail = classify_tail(&mut w, 0, params.expected_seq, params.file_number, FRAME_SLOT_ALWAYS, true)
                 .map_err(ReadError::Source)?;
             let end = tail.map_err(|q| {
                 FormatError::corruption("WAL-R6", q, "broken header followed by a frame written after a sync")
@@ -486,7 +489,7 @@ pub fn scan_wal<S: ByteSource>(
         commits += n;
         pos += flen;
     }
-    let tail = classify_tail(&mut w, pos, expected, params.file_number, slot).map_err(ReadError::Source)?;
+    let tail = classify_tail(&mut w, pos, expected, params.file_number, slot, false).map_err(ReadError::Source)?;
     let end = tail
         .map_err(|q| FormatError::corruption("WAL-R5", q, "damage followed by a frame written after it was durable"))?;
     Ok(WalScan { header: WalHeaderState::Valid(header), frames, commits, valid_len: pos, end, next_seq: expected })
@@ -649,15 +652,19 @@ mod tests {
             scan_wal(&mut &file[..], &other, |_, _| Ok(())).map_err(ReadError::into_format).unwrap_err().rule,
             "WAL-R1"
         );
-        // A broken header followed by a frame with synced_len > 0 is WAL-R6;
-        // with only synced_len = 0 frames it counts as frameless.
+        // A broken header followed by a valid frame is WAL-R6 whatever its
+        // synced_len (the writer syncs the header before the first frame);
+        // with no frame after it, it counts as frameless.
         let mut broken = file.clone();
         broken[20] ^= 1;
         assert_eq!(scan(&broken).0.unwrap_err().rule, "WAL-R6");
         let mut zeroed = file[..second_at as usize].to_vec();
         zeroed[..96].fill(0);
-        let r = scan(&zeroed).0.unwrap();
-        assert_eq!((r.header, r.frames, r.end), (WalHeaderState::Broken { rule: "HDR-2" }, 0, End::Torn));
+        assert_eq!(scan(&zeroed).0.unwrap_err().rule, "WAL-R6");
+        let mut header_only = file[..96].to_vec();
+        header_only[20] ^= 1;
+        let r = scan(&header_only).0.unwrap();
+        assert_eq!((r.header, r.frames, r.end), (WalHeaderState::Broken { rule: "HDR-3" }, 0, End::Torn));
         // An empty file has a broken header (HDR-1) and no frames.
         let r = scan(&[]).0.unwrap();
         assert_eq!((r.header, r.end), (WalHeaderState::Broken { rule: "HDR-1" }, End::Clean));

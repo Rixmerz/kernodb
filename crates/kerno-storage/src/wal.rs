@@ -94,9 +94,10 @@ pub struct WalWriter {
 
 impl WalWriter {
     /// Creates the log `number`: `CreateNew`, the header (whose first commit
-    /// carries sequence `base_seq`) and `sync_dir` (W-1). The header itself is
-    /// not synced: it becomes durable with the first `sync`, and no frame is
-    /// acknowledged before that.
+    /// carries sequence `base_seq`), `sync_data` and `sync_dir` (W-1). The
+    /// header is durable before the first frame is accepted, so every frame
+    /// records `synced_len >= HEADER_LEN` and a broken header followed by a
+    /// valid frame is media damage (WAL-R6).
     ///
     /// With `preallocate` above the header's size the file is first extended
     /// with zeros to that many bytes and synced, so that the syncs of its
@@ -115,20 +116,22 @@ impl WalWriter {
             write_zeros(&*file, 0, preallocate, &|| false)?;
         }
         file.write_at(&Header::wal(db_id, number, base_seq).encode(), 0)?;
+        file.sync_data()?;
         vfs.sync_dir(dir)?;
-        Ok(WalWriter { file, number, offset: HEADER_LEN as u64, synced_len: 0 })
+        Ok(WalWriter { file, number, offset: HEADER_LEN as u64, synced_len: HEADER_LEN as u64 })
     }
 
     /// Makes the spare WAL (see [`prepare_spare`]) the log `number`: renames
-    /// it, writes the header over its zeros and `sync_dir` (W-1). Same
-    /// durability as [`create`](Self::create): the header is not synced.
+    /// it, writes the header over its zeros, `sync_data` and `sync_dir` (W-1).
+    /// Same durability as [`create`](Self::create).
     pub fn create_from_spare(vfs: &dyn Vfs, dir: &Path, number: u64, db_id: [u8; 16], base_seq: u64) -> Result<Self> {
         let path = dir.join(wal_name(number));
         vfs.rename(&dir.join(SPARE_WAL), &path)?;
         let file = vfs.open(&path, OpenMode::Existing)?;
         file.write_at(&Header::wal(db_id, number, base_seq).encode(), 0)?;
+        file.sync_data()?;
         vfs.sync_dir(dir)?;
-        Ok(WalWriter { file, number, offset: HEADER_LEN as u64, synced_len: 0 })
+        Ok(WalWriter { file, number, offset: HEADER_LEN as u64, synced_len: HEADER_LEN as u64 })
     }
 
     /// The placeholder log of a read-only handle: every entry point that
@@ -368,14 +371,14 @@ mod tests {
     }
 
     #[test]
-    fn creation_writes_the_header_and_syncs_only_the_directory() {
+    fn creation_syncs_the_header_before_any_frame() {
         use kerno_testkit::vfs::CountingVfs;
         let (vfs, io) = CountingVfs::wrap(SimVfs::new(1).as_vfs());
         vfs.create_dir_all(Path::new("/w")).unwrap();
         let before = io.snapshot();
         let w = WalWriter::create(&*vfs, Path::new("/w"), 1, DB, 5, 0).unwrap();
         let after = io.snapshot();
-        assert_eq!(after.file_syncs, before.file_syncs, "the header is not synced (W-1)");
+        assert_eq!(after.file_syncs, before.file_syncs + 1, "the header is synced (W-1)");
         assert_eq!(after.dir_syncs, before.dir_syncs + 1);
         assert_eq!(w.offset, HEADER_LEN as u64);
         assert_eq!(w.number(), 1);
@@ -399,7 +402,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(synced.len(), 3);
-        assert_eq!(synced[0], (HEADER_LEN as u64, 0));
+        assert_eq!(synced[0], (HEADER_LEN as u64, HEADER_LEN as u64));
         assert_eq!(synced[1].1, after_first);
         assert_eq!(synced[2].1, after_first);
     }
@@ -461,7 +464,7 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        assert_eq!(frames, [(HEADER_LEN as u64, 1, 0, 1), (synced, 2, synced, 4)]);
+        assert_eq!(frames, [(HEADER_LEN as u64, 1, HEADER_LEN as u64, 1), (synced, 2, synced, 4)]);
     }
 
     #[test]

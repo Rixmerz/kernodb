@@ -88,7 +88,7 @@ Todo commit no vacío pasa por la cola de commits (`commit_queue.rs`, ver [Group
    - `make_room` **una vez** (un grupo nunca cruza dos WAL): comprueba el *write buffer* y aplica contrapresión (ver abajo). Si la memtable supera `write_buffer_bytes`, cambia de memtable:
      - En modo `Buffered`, primero `sync_data` del WAL viejo (y `durable_seq` pasa a ser la última secuencia confirmada).
      - Una memtable que alcanza 4 096 lápidas de rango también está llena, sea cual sea su tamaño: cada lectura paga por cada lápida de cada memtable que consulta. Un solo commit puede pasarse de ese número; el siguiente cambia de memtable.
-     - Crea el WAL nuevo (cabecera con `base_seq = last_seq + 1`, sin `sync_data`: W-1) y después `sync_dir`.
+     - Crea el WAL nuevo (cabecera con `base_seq = last_seq + 1`, con `sync_data` de la cabecera: W-1) y después `sync_dir`.
      - Publica una `Version` nueva en la que la memtable vieja es inmutable.
 3. Asigna secuencias consecutivas `last + 1 ..= last + n`, codifica **una trama** (`count = n`, `synced_len` vigente) y la escribe con un único `write_at`. Hace `sync_data` en modo `Sync` o si hay una petición `sync()` en el grupo (que fija `synced_len` en los bytes escritos).
 4. Aplica los lotes a la memtable en orden de secuencia: un `crossbeam_skiplist::SkipMap` con clave (clave de usuario ascendente, seq descendente) y lápidas, más la lista de lápidas de rango `(inicio, fin, seq)` de solo anexado tras un `RwLock`. Aplica la forma canónica, así que las claves repetidas dentro de un lote ya se redujeron a la última operación, y los rangos entran antes que los puntos (WAL-C2).
@@ -234,7 +234,7 @@ Primero se **clasifica y valida** todo, sin escribir; solo después se escribe.
 3. Reproduce los WAL `>= log_number` en orden de número, en flujo (lecturas de 1 MiB; el archivo no se carga entero). Cada log empieza en la secuencia siguiente al anterior (`base_seq`, WAL-R1) y las tramas llevan secuencias consecutivas:
    - Una trama que verifica pero tiene una secuencia, un `count`, un `synced_len` o una carga incorrectos es `Corruption` (WAL-R3, WAL-C4).
    - La lectura de un log se detiene en la primera trama incompleta o con CRC incorrecto en `P`. Si desde `P` todo son ceros, es relleno; si no, se buscan tramas posteriores válidas con `P < synced_len ≤ q`: si existe alguna, el daño era duradero → `Corruption`; si no, es una cola rota (WAL-R5).
-   - Una cabecera rota (WAL-R6: HDR-1, HDR-3 o un *magic* desconocido) con una trama posterior que dice haber sido sincronizada es `Corruption`; si no, el log cuenta como vacío (un WAL recién creado cuya cabecera aún no era duradera).
+   - Una cabecera rota (WAL-R6: HDR-1, HDR-3 o un *magic* desconocido) con una trama válida detrás es `Corruption` sea cual sea su `synced_len` (el escritor sincroniza la cabecera antes de la primera trama); si no hay trama, el log cuenta como vacío (una creación que cortó una caída).
    - Qué logs pueden terminar rotos lo decide REC-10 sobre toda la cadena: los anteriores al último con commits están íntegros (cabecera válida, sin cola rota), ese puede tener cola rota y los posteriores no tienen commits.
 4. **Clasifica** (`recovery::classify`, una función pura sobre el listado, la reproducción del MANIFEST y lo que dijo el escaneo de los WAL; v1.md §9.1–§9.3). Con la forma de la base, aplica REC-4..REC-13:
    - REC-5: una SST referenciada y ausente, de otro tamaño, `db_id` o propiedades es `Corruption`.
