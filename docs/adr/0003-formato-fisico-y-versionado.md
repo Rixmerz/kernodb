@@ -2,8 +2,8 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | Propuesto (reglas de versionado e integridad; el formato concreto se congela al cerrar Fase 1) |
-| Fecha | 2026-10-27 |
+| Estado | **Aceptado** (2026-10-28, por el propietario del proyecto): las reglas de versionado e integridad son obligatorias; el formato concreto se congela al cerrar Fase 1 |
+| Fecha | 2026-10-27 (propuesta) · 2026-10-28 (aceptación) |
 | Relacionado con | SAD §13, D-10; ADR-0001, ADR-0002, ADR-0006; [principios de formato](../file-format/README.md); invariantes I-08, I-09, I-15, I-30 |
 
 ## Contexto
@@ -12,7 +12,7 @@ Una vez existan bases de datos reales, cambiar el formato será una migración, 
 
 M0 no congela ningún formato: los dos prototipos tienen formatos propios, versionados solo por *magic* y un número de versión. Lo que sí deja M0 es evidencia de **qué propiedades de formato hacen falta** para pasar las pruebas de integridad y de fallos, y eso es lo que fija este ADR.
 
-## Decisión propuesta
+## Decisión
 
 ### 1. Identificación y versión de cada archivo
 
@@ -86,3 +86,4 @@ Cada versión de formato publica archivos de ejemplo y sus contenidos esperados.
 - Fase 1: especificación del formato v1, vectores de prueba, `kerno verify`.
 - Fase 4: exportación lógica e importación, pruebas de ida y vuelta.
 - Fase 6: fuzzing de lectores de formato; pruebas de compatibilidad entre releases.
+- **Seguimiento de la Fase 1 (WP14, 2026-10-29; sin cambios de decisión).** El formato v1 está especificado en [`docs/file-format/v1.md`](../file-format/v1.md), con vectores de estructura y de directorio, un decodificador independiente y una guardia de regeneración byte a byte; las interpretaciones que el propietario debe revisar están en [ADR-0013](0013-formato-v1-y-protocolo-del-motor.md). La verificación de integridad existe como biblioteca (`verify()`, `inspect()`); la CLI `kerno verify` pasa a la Fase 2. **Estado de la congelación: pendiente.** Exige que el propietario acepte ADR-0013 y que se revise el [modelo de amenazas](../security/threat-model.md) (la revisión R-07 está hecha); mientras tanto todo archivo escrito lleva el bit `DRAFT` (v1.md §4.3) y ninguna base de usuario debe crearse con este formato.

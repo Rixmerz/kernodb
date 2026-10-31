@@ -1,0 +1,35 @@
+[package]
+name = "kerno-storage"
+description = "Kerno storage engine (Phase 1, draft format v1: never for user data)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+kerno-core.workspace = true
+crc32c.workspace = true
+parking_lot.workspace = true
+quick_cache.workspace = true
+crossbeam-skiplist.workspace = true
+
+[features]
+# parking_lot's deadlock detector for the handoff stress test
+# (tests/group_commit.rs); costs bookkeeping on every lock, so it is opt-in.
+deadlock_detection = ["parking_lot/deadlock_detection"]
+
+[dev-dependencies]
+kerno-testkit.workspace = true
+proptest.workspace = true
+# Only to generate the M0 directory vectors (tests/dir_vectors.rs); the
+# normal-dependency guard of CONTRIBUTING.md does not see dev-dependencies.
+spike-lsm.workspace = true
+spike-btree.workspace = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kerno_loom)'] }
+
+[target.'cfg(kerno_loom)'.dev-dependencies]
+loom = "0.7"

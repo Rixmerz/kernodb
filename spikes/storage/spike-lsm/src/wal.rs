@@ -66,6 +66,10 @@ pub fn encode_record(seq: u64, ops: &[Op], synced: bool) -> Result<Vec<u8>> {
                 rec.push(TAG_DELETE);
                 put_bytes(&mut rec, key);
             }
+            // Unreachable: `commit` rejects range deletions at its entry.
+            Op::DeleteRange { .. } => {
+                return Err(Error::InvalidArgument("delete_range not supported by this prototype".into()));
+            }
         }
     }
     let body_len = rec.len() - HEADER_LEN;

@@ -2,8 +2,8 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | Propuesto (borrador con evidencia de M0; pendiente de aprobación junto con ADR-0001) |
-| Fecha | 2026-10-27 |
+| Estado | **Aceptado** (2026-10-28, por el propietario del proyecto, junto con ADR-0001) |
+| Fecha | 2026-10-27 (propuesta) · 2026-10-28 (aceptación) |
 | Relacionado con | SAD §4.2, §6.2, §7.2, §7.3; [matriz de fallos](../architecture/failure-matrix.md); invariantes I-01…I-11; ADR-0001 |
 
 ## Contexto
@@ -27,7 +27,7 @@ El criterio de aprobación (SAD §15) es una **matriz de fallos** con el estado 
 
 Ambas opciones principales se implementaron en M0 y se probaron con la misma matriz de fallos.
 
-## Decisión propuesta
+## Decisión
 
 ### Semántica de commit (independiente del motor)
 
@@ -95,3 +95,4 @@ La CLI (Fase 2) tendrá `kerno verify` (lee todo, valida checksums y estructura,
 
 - Fase 1: transacciones read-modify-write sobre el motor elegido; `sync()` explícito; métricas de snapshots; group commit si los benchmarks lo justifican.
 - Fase 1: semántica Linux de `fsync` fallido y pruebas con dispositivos reales (R-S2).
+- **Seguimiento de la Fase 1 (WP14, 2026-10-29; sin cambios de decisión).** Los dos puntos anteriores están implementados en `kerno-storage`: transacciones read-modify-write pesimistas (`begin_write`, [diseño de la Fase 1 §5.7](../architecture/phase1-design.md)), `sync()`, group commit y métricas de instantáneas; la semántica de Linux tras un `fsync` fallido se prueba con `FsyncFailure::LinuxDropPages` en `SimVfs`. La durabilidad por commit sigue diferida: el formato la admite (`synced_len` por trama). Las decisiones de protocolo que interpretan este ADR están en [ADR-0013](0013-formato-v1-y-protocolo-del-motor.md) y en [el formato v1](../file-format/v1.md); las filas de la matriz de fallos, en [failure-matrix.md §6](../architecture/failure-matrix.md#6-lsm-v1-kerno-storage). Evidencia de salida: `kill -9` real de un escritor con `StdVfs` en `Sync` y `Buffered` (`crates/kerno-storage/tests/process_kill.rs`) y el [informe de la Fase 1](../testing/f1-report.md). La prueba con un dispositivo con pérdida de páginas (LazyFS) sigue **pendiente de su registro** (ver ese informe).

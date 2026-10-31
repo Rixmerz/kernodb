@@ -299,6 +299,9 @@ impl Inner {
     // ---- commit path ----
 
     fn commit(&self, batch: &WriteBatch) -> Result<u64> {
+        if batch.has_range_deletes() {
+            return Err(Error::InvalidArgument("delete_range not supported by this prototype".into()));
+        }
         batch.validate()?;
         let mut w = self.writer.lock();
         self.check_poisoned()?;

@@ -5,7 +5,7 @@
 # Environment overrides (defaults in brackets):
 #   SCALES  [small,medium]   dataset sizes: tiny|small|medium|large|<n>
 #   REPS    [3]              repetitions per combination
-#   ENGINES [btree,lsm,redb,fjall,sqlite]
+#   ENGINES [btree,lsm,kerno,redb,fjall,sqlite]
 #   COLD    [1]              also run read workloads with the OS cache dropped (needs root)
 #   LARGE   [1]              also run LARGE_WORKLOADS at the `large` scale (1M records), LARGE_REPS times
 #   LARGE_WORKLOADS [bulk_load,point_reads,range_scans,small_commits]   LARGE_REPS [1]
@@ -16,7 +16,7 @@ cd "$(dirname "$0")/../.."
 
 SCALES="${SCALES:-small,medium}"
 REPS="${REPS:-3}"
-ENGINES="${ENGINES:-btree,lsm,redb,fjall,sqlite}"
+ENGINES="${ENGINES:-btree,lsm,kerno,redb,fjall,sqlite}"
 COLD="${COLD:-1}"
 LARGE="${LARGE:-1}"
 LARGE_WORKLOADS="${LARGE_WORKLOADS:-bulk_load,point_reads,range_scans,small_commits}"
@@ -24,7 +24,7 @@ LARGE_REPS="${LARGE_REPS:-1}"
 OUT="${OUT:-spikes/storage/results/$(date +%Y-%m-%d)}"
 DATA="${DATA:-bench-data}"
 
-cargo build --release -p spike-bench --features candidates
+cargo build --release -p spike-bench --features candidates,kerno
 BIN=target/release/spike-bench
 
 mkdir -p "$OUT"

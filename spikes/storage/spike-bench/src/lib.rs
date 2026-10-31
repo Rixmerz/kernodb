@@ -4,4 +4,5 @@
 
 pub mod adapters;
 pub mod metrics;
+pub mod walsync;
 pub mod workloads;

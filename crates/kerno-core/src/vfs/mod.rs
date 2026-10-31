@@ -1,0 +1,113 @@
+//! File-system abstraction used by the candidate engines.
+//!
+//! Engines never touch `std::fs` directly. This lets the same engine code run
+//! on the real file system ([`StdVfs`]), on a simulated one that models power
+//! loss and torn writes (`kerno_testkit::vfs::SimVfs`), and under an I/O
+//! accounting wrapper (`kerno_testkit::vfs::CountingVfs`).
+//!
+//! # Durability model (what engines may rely on)
+//!
+//! * `File::write_at` data is durable only after `File::sync_data` on that
+//!   file returns `Ok`.
+//! * Creating, removing and renaming directory entries is durable only after
+//!   `Vfs::sync_dir` on the parent directory returns `Ok`.
+//! * `File::start_writeback` and `File::wait_writeback` guarantee nothing: the
+//!   first only asks the system to begin writing a range back, the second to
+//!   wait for the writeback already under way in a range, and a file system
+//!   that cannot do that ignores them. Writes they cover are as pending
+//!   afterwards as they were before.
+//! * Nothing else is ordered: before a sync, any subset of pending writes may
+//!   reach the disk, in any order, and a single write may be torn at 512-byte
+//!   sector boundaries.
+//! * `rename` atomically replaces the destination (POSIX semantics).
+
+mod std_fs;
+
+use std::any::Any;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+pub use std_fs::StdVfs;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpenMode {
+    /// Open an existing file for reading and writing.
+    Existing,
+    /// Open for reading and writing, creating it (empty) if missing.
+    CreateOrOpen,
+    /// Create a new file; fails if it exists.
+    CreateNew,
+}
+
+#[allow(clippy::len_without_is_empty)]
+pub trait File: Send + Sync {
+    /// Reads exactly `buf.len()` bytes at `offset`
+    /// (`ErrorKind::UnexpectedEof` if the file is shorter).
+    fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<()>;
+    /// Writes all of `buf` at `offset`, extending the file if needed.
+    fn write_at(&self, buf: &[u8], offset: u64) -> io::Result<()>;
+    fn len(&self) -> io::Result<u64>;
+    fn set_len(&self, len: u64) -> io::Result<()>;
+    /// `fdatasync`: makes previous writes and length changes durable.
+    fn sync_data(&self) -> io::Result<()>;
+    /// Asks the system to start writing the `len` bytes at `offset` back to
+    /// the device without waiting for it (`sync_file_range` with
+    /// `SYNC_FILE_RANGE_WRITE` on Linux), so that a later `sync_data` finds
+    /// less dirty data to write. **Advisory and not a durability operation**:
+    /// nothing it covers is durable afterwards, it may do nothing at all
+    /// (the default, and every platform but Linux), and an error from it says
+    /// nothing about the data: it stays recorded for the next `sync_data`.
+    fn start_writeback(&self, _offset: u64, _len: u64) -> io::Result<()> {
+        Ok(())
+    }
+    /// Waits until the writeback already under way in the `len` bytes at
+    /// `offset` has finished (`sync_file_range` with
+    /// `SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WAIT_AFTER` on Linux),
+    /// without starting any. Paired with [`start_writeback`](Self::start_writeback)
+    /// on the next range it keeps the amount of data in flight to a couple of
+    /// ranges, which is what throttles a writer. **Not a durability
+    /// operation** and a no-op by default, but its error is not advisory: on
+    /// Linux it returns the writeback error of the range and consumes it, so
+    /// a later `sync_data` reports `Ok` for data that was lost. Callers must
+    /// treat an error from it as a failed write (only `Unsupported` /
+    /// `InvalidInput`, meaning the platform lacks the call, may be ignored).
+    fn wait_writeback(&self, _offset: u64, _len: u64) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+pub trait Vfs: Send + Sync + 'static {
+    fn create_dir_all(&self, path: &Path) -> io::Result<()>;
+    fn open(&self, path: &Path, mode: OpenMode) -> io::Result<Arc<dyn File>>;
+    fn exists(&self, path: &Path) -> io::Result<bool>;
+    fn remove_file(&self, path: &Path) -> io::Result<()>;
+    /// Atomically renames `from` to `to`, replacing `to` if it exists.
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
+    /// Names (not full paths) of the files directly inside `dir`.
+    fn list(&self, dir: &Path) -> io::Result<Vec<String>>;
+    /// Makes entry creations, removals and renames in `dir` durable.
+    fn sync_dir(&self, dir: &Path) -> io::Result<()>;
+    /// Takes an exclusive advisory lock on `path` (created if missing),
+    /// held until the returned guard is dropped. Fails with
+    /// `ErrorKind::WouldBlock` if someone else holds it.
+    fn lock(&self, path: &Path) -> io::Result<Box<dyn Any + Send + Sync>>;
+}
+
+/// Total size in bytes of the files directly inside `dir`.
+///
+/// Safe to call while an engine's background threads delete or rename
+/// files: an entry that disappears between listing and opening no longer
+/// takes space and is skipped.
+pub fn dir_size(vfs: &dyn Vfs, dir: &Path) -> io::Result<u64> {
+    let mut total = 0;
+    for name in vfs.list(dir)? {
+        let path: PathBuf = dir.join(name);
+        match vfs.open(&path, OpenMode::Existing) {
+            Ok(f) => total += f.len()?,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(total)
+}

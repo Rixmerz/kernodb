@@ -3,7 +3,9 @@
 //!
 //! They ignore the `Vfs` argument and use the real file system directly.
 //! Commit sequence numbers are only tracked in memory (benchmarks do not
-//! reopen and check them).
+//! reopen and check them). They reject range deletions with
+//! `InvalidArgument` before touching the database (the differential test
+//! runs them through `kerno_testkit::emulated::Emulated`).
 
 use std::io;
 use std::ops::Bound;
@@ -17,6 +19,10 @@ use spike_core::{Durability, Engine, Error, Op, Options, Result, Snapshot, Vfs, 
 
 fn err(e: impl std::fmt::Display) -> Error {
     Error::Io(io::Error::other(e.to_string()))
+}
+
+fn range_unsupported() -> Error {
+    Error::InvalidArgument("delete_range not supported by this adapter".into())
 }
 
 // ---------------------------------------------------------------- redb
@@ -54,6 +60,9 @@ impl Engine for RedbEngine {
     }
 
     fn commit(&self, batch: &WriteBatch) -> Result<u64> {
+        if batch.has_range_deletes() {
+            return Err(range_unsupported());
+        }
         let _g = self.lock.lock();
         let mut tx = self.db.begin_write().map_err(err)?;
         tx.set_durability(match self.durability {
@@ -71,6 +80,8 @@ impl Engine for RedbEngine {
                     Op::Delete { key } => {
                         t.remove(key.as_slice()).map_err(err)?;
                     }
+                    // Unreachable: rejected above (the transaction aborts).
+                    Op::DeleteRange { .. } => return Err(range_unsupported()),
                 }
             }
         }
@@ -161,12 +172,17 @@ impl Engine for FjallEngine {
     }
 
     fn commit(&self, batch: &WriteBatch) -> Result<u64> {
+        if batch.has_range_deletes() {
+            return Err(range_unsupported());
+        }
         let _g = self.lock.lock();
         let mut b = self.db.batch().durability(Some(self.mode));
         for op in batch.ops() {
             match op {
                 Op::Put { key, value } => b.insert(&self.ks, key.as_slice(), value.as_slice()),
                 Op::Delete { key } => b.remove(&self.ks, key.as_slice()),
+                // Unreachable: rejected above (the batch is dropped).
+                Op::DeleteRange { .. } => return Err(range_unsupported()),
             }
         }
         b.commit().map_err(err)?;
@@ -269,6 +285,9 @@ impl Engine for SqliteEngine {
     }
 
     fn commit(&self, batch: &WriteBatch) -> Result<u64> {
+        if batch.has_range_deletes() {
+            return Err(range_unsupported());
+        }
         let mut c = self.writer.lock();
         let tx = c.transaction().map_err(err)?;
         {
@@ -282,6 +301,8 @@ impl Engine for SqliteEngine {
                     Op::Delete { key } => {
                         del.execute([key]).map_err(err)?;
                     }
+                    // Unreachable: rejected above (the transaction rolls back).
+                    Op::DeleteRange { .. } => return Err(range_unsupported()),
                 }
             }
         }

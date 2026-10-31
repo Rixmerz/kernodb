@@ -2,12 +2,14 @@
 //! a flat set of metrics. Three are shaped after Kerno's reference use cases
 //! (LiveSpec, Cauce, agent memory); the rest are classic micro-benchmarks.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::ops::Bound;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use kerno_testkit::emulated::Emulated;
+use spike_core::engine::{Txn, TxnEngine};
 use spike_core::rng::Rng;
 use spike_core::vfs::{CountingVfs, IoCounters, IoSnapshot, StdVfs};
 use spike_core::{Durability, Engine, Options, Result, Snapshot, WriteBatch};
@@ -27,6 +29,8 @@ pub const WORKLOADS: &[&str] = &[
     "livespec",
     "cauce",
     "agent_memory",
+    "concurrent_commits",
+    "rmw_counters",
 ];
 
 pub struct Ctx {
@@ -37,6 +41,14 @@ pub struct Ctx {
     pub seed: u64,
     /// Drop the OS page cache before measured read phases (needs root).
     pub cold: bool,
+    /// Writer threads of `concurrent_commits`.
+    pub threads: usize,
+    /// Diagnosis only: read the engine statistics around every measured
+    /// `agent_memory` commit and attribute the slowest 1 % of them to the
+    /// commit phases the engine reports (see [`CommitTrace`]). The extra
+    /// `stats()` calls happen outside the timed region but still load the
+    /// machine; never on for comparisons between engines.
+    pub trace_commits: bool,
 }
 
 struct Db<E: Engine> {
@@ -63,6 +75,18 @@ impl<E: Engine> Db<E> {
         self.db = Some(E::open(vfs, &ctx.dir, &ctx.opts)?);
         self.io = io;
         Ok(())
+    }
+
+    /// Adds every engine statistic as `stat_<name>` (the reference adapters
+    /// report none). Called once per workload, at its end, on the handle
+    /// that ran the measured phase, before it is closed or dropped: for
+    /// `bulk_load` the loading session (before the timed close), for `cauce`
+    /// the session of the steps (before the unclean shutdown); the later
+    /// sessions only reopen and recover.
+    fn record_stats(&self, rep: &mut Report) {
+        for (name, value) in self.get().stats() {
+            rep.num(&format!("stat_{name}"), value as f64);
+        }
     }
 }
 
@@ -113,7 +137,19 @@ pub fn run<E: Engine>(workload: &str, ctx: &Ctx, rep: &mut Report) -> Result<()>
         "livespec" => livespec::<E>(ctx, rep),
         "cauce" => cauce::<E>(ctx, rep),
         "agent_memory" => agent_memory::<E>(ctx, rep),
+        "concurrent_commits" => concurrent_commits::<E>(ctx, rep),
+        // Engines without transactions of their own run it emulated.
+        "rmw_counters" => rmw_counters::<Emulated<E>>(ctx, rep),
         other => panic!("unknown workload {other}"),
+    }
+}
+
+/// [`run`] for an engine with transactions of its own: `rmw_counters` runs on
+/// them natively instead of through `Emulated`.
+pub fn run_with_txns<E: TxnEngine>(workload: &str, ctx: &Ctx, rep: &mut Report) -> Result<()> {
+    match workload {
+        "rmw_counters" => rmw_counters::<E>(ctx, rep),
+        other => run::<E>(other, ctx, rep),
     }
 }
 
@@ -138,6 +174,7 @@ fn bulk_load<E: Engine>(ctx: &Ctx, rep: &mut Report) -> Result<()> {
     rep.num("logical_mb", logical as f64 / 1e6);
     rep.num("write_amp", (w1 - w0) as f64 / logical as f64);
     rep.num("space_amp_open", dir_size(&ctx.dir) as f64 / logical as f64);
+    db.record_stats(rep);
     let t = Instant::now();
     db.close()?;
     rep.num("close_ms", t.elapsed().as_secs_f64() * 1000.0);
@@ -249,6 +286,7 @@ fn point_reads<E: Engine>(ctx: &Ctx, rep: &mut Report) -> Result<()> {
         all.merge(l);
     }
     all.report(rep, "get_4t");
+    db.record_stats(rep);
     Ok(())
 }
 
@@ -268,6 +306,8 @@ fn range_scans<E: Engine>(ctx: &Ctx, rep: &mut Report) -> Result<()> {
     rep.num("scan100_kops", 20.0 / secs);
     rep.num("scan_rows_per_s_k", rows as f64 / secs / 1000.0);
     lat.report(rep, "scan100");
+    drop(s);
+    db.record_stats(rep);
     Ok(())
 }
 
@@ -293,6 +333,7 @@ fn small_commits<E: Engine>(ctx: &Ctx, rep: &mut Report) -> Result<()> {
     lat.report(rep, "commit");
     rep.num("write_amp", (w1 - w0) as f64 / logical as f64);
     io_report(rep, "commit", &db.io.snapshot().since(&io0), commits);
+    db.record_stats(rep);
     Ok(())
 }
 
@@ -330,6 +371,8 @@ fn point_deletes<E: Engine>(ctx: &Ctx, rep: &mut Report) -> Result<()> {
     }
     gone.report(rep, "get_deleted");
     live.report(rep, "get_live");
+    drop(s);
+    db.record_stats(rep);
     Ok(())
 }
 
@@ -373,6 +416,7 @@ fn append_seq<E: Engine>(ctx: &Ctx, rep: &mut Report) -> Result<()> {
     // Expected live bytes: key (20) + mean value (250) per record.
     let live = ctx.n * (20 + 250);
     rep.num("space_amp", dir_size(&ctx.dir) as f64 / live as f64);
+    db.record_stats(rep);
     Ok(())
 }
 
@@ -418,6 +462,7 @@ fn mixed<E: Engine>(ctx: &Ctx, rep: &mut Report) -> Result<()> {
     rep.num("write_fraction", writes.count() as f64 / (reads.count() + writes.count()) as f64);
     reads.report(rep, "read");
     writes.report(rep, "write");
+    db.record_stats(rep);
     Ok(())
 }
 
@@ -478,6 +523,8 @@ fn history_sim<E: Engine>(ctx: &Ctx, rep: &mut Report) -> Result<()> {
     }
     hist.report(rep, "history_scan");
     old.report(rep, "reconstruct");
+    drop(s);
+    db.record_stats(rep);
     Ok(())
 }
 
@@ -530,6 +577,7 @@ fn livespec<E: Engine>(ctx: &Ctx, rep: &mut Report) -> Result<()> {
     get.report(rep, "symbol_get");
     scan.report(rep, "module_scan");
     io_report(rep, "changeset", &db.io.snapshot().since(&io0), steps);
+    db.record_stats(rep);
     Ok(())
 }
 
@@ -583,6 +631,7 @@ fn cauce<E: Engine>(ctx: &Ctx, rep: &mut Report) -> Result<()> {
     commit.report(rep, "step_commit");
     read.report(rep, "step_read");
     io_report(rep, "step", &db.io.snapshot().since(&io0), steps);
+    db.record_stats(rep);
     // Unclean shutdown (no close), then recovery.
     drop(db.db.take());
     let t = Instant::now();
@@ -624,6 +673,7 @@ fn agent_memory<E: Engine>(ctx: &Ctx, rep: &mut Report) -> Result<()> {
     let io0 = db.io.snapshot();
     let (mut write, mut recall, mut recent, mut expire) = (Lat::new(), Lat::new(), Lat::new(), Lat::new());
     let steps = 5_000;
+    let mut trace = ctx.trace_commits.then(CommitTrace::default);
     let t = Instant::now();
     for step in 0..steps {
         let id = new_id(&mut rng);
@@ -631,7 +681,18 @@ fn agent_memory<E: Engine>(ctx: &Ctx, rep: &mut Report) -> Result<()> {
         live_bytes += (m.len() + 3072 + 2 * 36) as i64;
         let mut b = WriteBatch::new();
         b.put(mem(&id), m).put(emb(&id), rng.bytes(3072));
-        write.time(|| db.get().commit(&b))?;
+        match trace.as_mut() {
+            None => write.time(|| db.get().commit(&b)).map(drop)?,
+            Some(trace) => {
+                let before = stats_map(db.get());
+                let t = Instant::now();
+                let r = db.get().commit(&b);
+                let nanos = t.elapsed().as_nanos() as u64;
+                write.record_nanos(nanos);
+                r?;
+                trace.push(step, nanos, &before, &stats_map(db.get()));
+            }
+        }
         ids.push_back(id);
         let s = db.get().snapshot()?;
         for _ in 0..10 {
@@ -663,5 +724,260 @@ fn agent_memory<E: Engine>(ctx: &Ctx, rep: &mut Report) -> Result<()> {
     expire.report(rep, "expire_commit");
     rep.num("space_amp", dir_size(&ctx.dir) as f64 / live_bytes.max(1) as f64);
     io_report(rep, "memory_write", &db.io.snapshot().since(&io0), steps);
+    if let Some(trace) = trace {
+        trace.report(rep, steps);
+    }
+    db.record_stats(rep);
+    Ok(())
+}
+
+/// Durable commits from many threads: `ctx.threads` writers share 20 000
+/// commits of one 200-byte put each, to disjoint keys, on an empty
+/// database. Measures throughput, commit latency and `fsync`s per commit
+/// (through the counting VFS, so only for the engines that use it): group
+/// commit (WP12) is what lets 8 writers share one `fsync`.
+fn concurrent_commits<E: Engine>(ctx: &Ctx, rep: &mut Report) -> Result<()> {
+    const COMMITS: u64 = 20_000;
+    let threads = ctx.threads.max(1) as u64;
+    let mut db = Db::<E>::open(ctx)?;
+    let engine = db.get();
+    let io0 = db.io.snapshot();
+    let t = Instant::now();
+    let lats: Vec<Lat> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..threads)
+            .map(|i| {
+                scope.spawn(move || -> Result<Lat> {
+                    let mut rng = Rng::new(ctx.seed + 2000 + i);
+                    let mut lat = Lat::new();
+                    let commits = COMMITS / threads + u64::from(i < COMMITS % threads);
+                    for j in 0..commits {
+                        let mut b = WriteBatch::new();
+                        b.put(format!("cc/{i:03}/{j:08}").into_bytes(), rng.bytes(200));
+                        lat.time(|| engine.commit(&b))?;
+                    }
+                    Ok(lat)
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect::<Result<Vec<Lat>>>()
+    })?;
+    let secs = t.elapsed().as_secs_f64();
+    let io = db.io.snapshot().since(&io0);
+    rep.num("cc_threads", threads as f64);
+    rep.num("cc_commits_per_s", COMMITS as f64 / secs);
+    let mut all = Lat::new();
+    for l in &lats {
+        all.merge(l);
+    }
+    assert_eq!(all.count(), COMMITS);
+    all.report(rep, "cc_commit");
+    io_report(rep, "cc", &io, COMMITS);
+    db.record_stats(rep);
+    db.close()
+}
+
+/// The engine statistics as a map.
+fn stats_map<E: Engine>(db: &E) -> HashMap<String, u64> {
+    db.stats().into_iter().collect()
+}
+
+/// Statistics the trace reads at the start of the measured phase, reported
+/// as `trace_start_<name>`.
+const TRACE_START_STATS: &[&str] = &[
+    "l0_files",
+    "l1_files",
+    "l1_bytes",
+    "pending_compaction_bytes",
+    "flushes",
+    "compactions",
+    "stall_episodes_l0",
+    "stall_episodes_memtable",
+    "slowdown_commits",
+];
+
+/// Phases of a commit as cumulative engine statistics (microseconds), in
+/// the order of [`CommitTrace::report`]. `make_room_other` and
+/// `engine_other` are derived.
+const TRACE_PHASES: &[(&str, &str)] = &[
+    ("stall_memtable", "stall_micros_memtable"),
+    ("stall_l0", "stall_micros_l0"),
+    ("slowdown", "slowdown_micros"),
+    ("rotation", "memtable_rotation_micros"),
+    ("make_room", "commit_make_room_micros"),
+    ("wal_write", "commit_wal_write_micros"),
+    ("wal_sync", "commit_wal_sync_micros"),
+    ("wal_sync_busy", "commit_wal_sync_busy_count"),
+    ("apply", "commit_apply_micros"),
+    ("total", "commit_total_micros"),
+];
+
+/// Per-commit breakdown of measured commits, from the differences of the
+/// engine's cumulative statistics before and after each commit (commits are
+/// serialized, so the differences belong to that commit alone). Only
+/// engines that report the commit-phase statistics (`kerno`) give a
+/// breakdown.
+#[derive(Default)]
+struct CommitTrace {
+    start: Option<HashMap<String, u64>>,
+    rows: Vec<TracedCommit>,
+}
+
+struct TracedCommit {
+    step: u64,
+    /// Latency measured by the bench.
+    nanos: u64,
+    /// Differences of the statistics of TRACE_PHASES, in that order.
+    deltas: Vec<u64>,
+}
+
+impl CommitTrace {
+    fn push(&mut self, step: u64, nanos: u64, before: &HashMap<String, u64>, after: &HashMap<String, u64>) {
+        if self.start.is_none() {
+            self.start = Some(before.clone());
+        }
+        let delta =
+            |name: &str| after.get(name).copied().unwrap_or(0).saturating_sub(before.get(name).copied().unwrap_or(0));
+        let deltas = TRACE_PHASES.iter().map(|(_, stat)| delta(stat)).collect();
+        self.rows.push(TracedCommit { step, nanos, deltas });
+    }
+
+    /// Reports `attr_tail_*` (the slowest 1 % of the traced commits) and
+    /// `attr_all_*` (all of them): count, mean latency, and the share of
+    /// their total latency spent in each phase, in percent. `named_pct` is
+    /// the share explained by named phases and stalls; `engine_other` is
+    /// time inside the engine outside those phases (argument checks, the
+    /// writer lock), `outside` the time the bench measured beyond the
+    /// engine's own total. Also counts tail commits that stalled, slowed
+    /// down, rotated the memtable, synced while background work was
+    /// writing, or fell in the first fifth of the measured phase.
+    fn report(mut self, rep: &mut Report, steps: u64) {
+        let Some(start) = self.start.take() else { return };
+        if !start.contains_key("commit_total_micros") {
+            return; // the engine reports no commit phases
+        }
+        for name in TRACE_START_STATS {
+            if let Some(v) = start.get(*name) {
+                rep.num(&format!("trace_start_{name}"), *v as f64);
+            }
+        }
+        self.rows.sort_by_key(|r| std::cmp::Reverse(r.nanos));
+        let tail = self.rows.len().div_ceil(100).max(1);
+        let idx = |name: &str| TRACE_PHASES.iter().position(|(n, _)| *n == name).unwrap();
+        let (stall_m, stall_l0, slow, rot, room) =
+            (idx("stall_memtable"), idx("stall_l0"), idx("slowdown"), idx("rotation"), idx("make_room"));
+        let (write, sync, busy, apply, total) =
+            (idx("wal_write"), idx("wal_sync"), idx("wal_sync_busy"), idx("apply"), idx("total"));
+        for (prefix, rows) in [("attr_tail", &self.rows[..tail]), ("attr_all", &self.rows[..])] {
+            let latency_us: f64 = rows.iter().map(|r| r.nanos as f64 / 1000.0).sum();
+            let sum = |i: usize| rows.iter().map(|r| r.deltas[i] as f64).sum::<f64>();
+            let room_parts = sum(stall_m) + sum(stall_l0) + sum(slow) + sum(rot);
+            let phases = sum(room) + sum(write) + sum(sync) + sum(apply);
+            let parts = [
+                ("stall_memtable", sum(stall_m)),
+                ("stall_l0", sum(stall_l0)),
+                ("slowdown", sum(slow)),
+                ("rotation", sum(rot)),
+                ("make_room_other", (sum(room) - room_parts).max(0.0)),
+                ("wal_write", sum(write)),
+                ("wal_sync", sum(sync)),
+                ("apply", sum(apply)),
+            ];
+            let pct = |v: f64| if latency_us > 0.0 { 100.0 * v / latency_us } else { 0.0 };
+            rep.num(&format!("{prefix}_n"), rows.len() as f64);
+            rep.num(&format!("{prefix}_mean_us"), latency_us / rows.len().max(1) as f64);
+            rep.num(&format!("{prefix}_min_us"), rows.iter().map(|r| r.nanos).min().unwrap_or(0) as f64 / 1000.0);
+            for (name, v) in parts {
+                rep.num(&format!("{prefix}_{name}_pct"), pct(v));
+            }
+            rep.num(&format!("{prefix}_named_pct"), pct(parts.iter().map(|p| p.1).sum()));
+            rep.num(&format!("{prefix}_engine_other_pct"), pct((sum(total) - phases).max(0.0)));
+            rep.num(&format!("{prefix}_outside_pct"), pct((latency_us - sum(total)).max(0.0)));
+            let count = |f: &dyn Fn(&TracedCommit) -> bool| rows.iter().filter(|r| f(r)).count() as f64;
+            rep.num(&format!("{prefix}_with_stall"), count(&|r| r.deltas[stall_m] + r.deltas[stall_l0] > 0));
+            rep.num(&format!("{prefix}_with_slowdown"), count(&|r| r.deltas[slow] > 0));
+            rep.num(&format!("{prefix}_with_rotation"), count(&|r| r.deltas[rot] > 0));
+            rep.num(&format!("{prefix}_sync_busy"), count(&|r| r.deltas[busy] > 0));
+            rep.num(&format!("{prefix}_first_fifth"), count(&|r| r.step < steps / 5));
+        }
+    }
+}
+
+/// Threads of `rmw_counters`.
+const RMW_THREADS: u64 = 8;
+
+/// Read-modify-write transactions (T9, the cost of ADR-0002 transactions):
+/// eight threads each read a random counter in a transaction, add one and
+/// write it back. A write transaction owns the engine's only write slot for
+/// its whole life, so the throughput is that of one writer and the latency
+/// includes the wait for the slot; the fsyncs per transaction show what the
+/// engine does for each. Checks that no increment was lost. Engines without
+/// transactions of their own run it through `Emulated<E>`; the product engine
+/// runs it natively (`rmw_counters::<KernoDb>`).
+pub fn rmw_counters<E: TxnEngine>(ctx: &Ctx, rep: &mut Report) -> Result<()> {
+    let counters = (ctx.n / 20).clamp(100, 10_000);
+    let txns = if ctx.opts.durability == Durability::Sync { 4_000 } else { 20_000 };
+    let per_thread = txns / RMW_THREADS;
+    let key = |i: u64| format!("ctr/{i:06}").into_bytes();
+    let read = |v: Option<Vec<u8>>| u64::from_le_bytes(v.expect("counter exists").try_into().expect("8 bytes"));
+    let db = Db::<E>::open(ctx)?;
+    let mut b = WriteBatch::new();
+    for i in 0..counters {
+        b.put(key(i), 0u64.to_le_bytes());
+        if b.len() == 1000 || i + 1 == counters {
+            db.get().commit(&b)?;
+            b = WriteBatch::new();
+        }
+    }
+    let io0 = db.io.snapshot();
+    let engine = db.get();
+    let t = Instant::now();
+    let lats: Vec<Lat> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..RMW_THREADS)
+            .map(|th| {
+                scope.spawn(move || {
+                    let mut rng = Rng::new(ctx.seed + 2000 + th);
+                    let mut lat = Lat::new();
+                    for _ in 0..per_thread {
+                        let k = key(rng.below(counters));
+                        lat.time(|| -> Result<u64> {
+                            let mut txn = engine.begin_write()?;
+                            let v = read(txn.get(&k)?);
+                            txn.put(&k, &(v + 1).to_le_bytes())?;
+                            txn.commit()
+                        })
+                        .unwrap();
+                    }
+                    lat
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let secs = t.elapsed().as_secs_f64();
+    let done = per_thread * RMW_THREADS;
+    let mut all = Lat::new();
+    for l in &lats {
+        all.merge(l);
+    }
+    let io = db.io.snapshot().since(&io0);
+    // No lost update: the counters add up to the increments made.
+    let snap = db.get().snapshot()?;
+    let (mut sum, mut last) = (0, None::<Vec<u8>>);
+    loop {
+        let start = last.as_deref().map_or(Bound::Unbounded, Bound::Excluded);
+        let page = snap.scan(start, Bound::Unbounded, 1000)?;
+        sum += page.iter().map(|(_, v)| read(Some(v.clone()))).sum::<u64>();
+        last = page.last().map(|(k, _)| k.clone());
+        if page.len() < 1000 {
+            break;
+        }
+    }
+    assert_eq!(sum, done, "lost updates: the counters add up to {sum}, {done} increments were committed");
+    db.record_stats(rep);
+    rep.num("rmw_threads", RMW_THREADS as f64);
+    rep.num("rmw_keys", counters as f64);
+    rep.num("rmw_txns_per_s", done as f64 / secs);
+    all.report(rep, "rmw_txn");
+    io_report(rep, "rmw", &io, done);
     Ok(())
 }

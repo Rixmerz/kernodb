@@ -1,0 +1,40 @@
+name: LazyFS
+
+# Scenario A on a LazyFS mount with the unsynced pages thrown away (Phase 1
+# exit item, phase1-design.md §6.6). Manual and weekly: it builds LazyFS from
+# source and needs FUSE, which the other jobs do not.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "43 4 * * 1"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lazyfs:
+    name: scenario A on LazyFS
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: FUSE 3 and the LazyFS build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fuse3 libfuse3-dev cmake g++
+          # LazyFS mounts with allow_other
+          echo user_allow_other | sudo tee -a /etc/fuse.conf
+      # Exit code 2 means the run could not be made (no FUSE, a failed
+      # mount): that fails the job too, so a pending exit item is never green.
+      - name: Run scenario A on LazyFS
+        run: ./spikes/storage/run-lazyfs.sh
+        env:
+          OUT: ${{ runner.temp }}/lazyfs-results
+      - name: Store the run log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lazyfs-log
+          path: ${{ runner.temp }}/lazyfs-results/lazyfs.log

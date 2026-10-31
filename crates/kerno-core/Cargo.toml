@@ -1,0 +1,9 @@
+[package]
+name = "kerno-core"
+description = "Contract, error model, write batches and VFS of the Kerno storage engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true

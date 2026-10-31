@@ -1,8 +1,15 @@
 # Formato físico
 
-Estado: **no congelado.** Ninguna base de datos de usuario debe crearse con los formatos de los prototipos de M0.
+Estado: el formato del motor LSM está especificado en **[`v1.md`](v1.md)**, hoy **candidato a congelación**: todo archivo que escribe `kerno-storage` lleva el bit `incompat` `DRAFT` (v1.md §4.3), de modo que ninguna base creada con el borrador pueda ser leída por la versión congelada. **La congelación está pendiente** a 2026-10-29: la condiciona la aceptación por el propietario de [ADR-0013](../adr/0013-formato-v1-y-protocolo-del-motor.md) (hoy *Propuesto*) y, hecha ya la revisión del [modelo de amenazas](../security/threat-model.md#6-revisión-de-la-fase-1-r-07), se ejecuta con el proceso de [v1.md §15](v1.md#15-proceso-de-cambios-del-borrador-y-congelación). **Ninguna base de datos de usuario debe crearse con este formato ni con los de los prototipos de M0.**
 
-El formato del motor se define en [ADR-0003](../adr/0003-formato-fisico-y-versionado.md) una vez aceptado [ADR-0001](../adr/0001-motor-de-almacenamiento.md). Hasta entonces, este directorio contiene solo los principios que cualquier formato de Kerno debe cumplir, extraídos de SAD §13 y de lo aprendido en M0.
+Contenido del directorio:
+
+| Archivo | Qué es |
+|---|---|
+| [`v1.md`](v1.md) | Especificación normativa del formato v1 (directorio, cabecera común, WAL, SST, MANIFEST, recuperación, semántica, vectores, compatibilidad, historial del borrador) |
+| `crates/kerno-storage/tests/vectors/v1/` | Vectores de estructura y de directorio; una guardia de CI los regenera en memoria y los compara byte a byte ([CONTRIBUTING](../../CONTRIBUTING.md#vectores-del-formato-y-cambios-de-bytes)) |
+
+Los principios siguientes se extrajeron de SAD §13 y de lo aprendido en M0 antes de escribir el formato; `v1.md` los cumple, y siguen siendo los requisitos de cualquier formato futuro de Kerno.
 
 ## Principios obligatorios
 

@@ -1,6 +1,9 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/kerno-core",
+    "crates/kerno-testkit",
+    "crates/kerno-storage",
     "spikes/storage/spike-core",
     "spikes/storage/spike-btree",
     "spikes/storage/spike-lsm",
@@ -12,8 +15,13 @@ version = "0.0.0"
 edition = "2024"
 rust-version = "1.89"
 publish = false
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Rixmerz/kernodb"
 
 [workspace.dependencies]
+kerno-core = { path = "crates/kerno-core" }
+kerno-testkit = { path = "crates/kerno-testkit" }
+kerno-storage = { path = "crates/kerno-storage" }
 spike-core = { path = "spikes/storage/spike-core" }
 spike-btree = { path = "spikes/storage/spike-btree" }
 spike-lsm = { path = "spikes/storage/spike-lsm" }
@@ -21,6 +29,7 @@ crc32c = "0.6"
 parking_lot = "0.12"
 quick_cache = "0.6"
 crossbeam-skiplist = "0.1"
+proptest = { version = "1", default-features = false, features = ["std"] }
 
 [profile.release]
 debug = 1
