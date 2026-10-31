@@ -4,7 +4,7 @@
 |---|---|
 | Estado | Borrador normativo (E3-01); lo fija el propietario al cerrar E3-01 |
 | Versión de la capa | `layer_version = 1`, `envelope_version = 1` |
-| Relacionado con | [diseño de la Etapa 3](../architecture/etapa3-design.md) §2, [acta E3-00](../architecture/etapa3-acta-e3-00.md), [ADR-0004](../adr/0004-historial-de-revisiones.md), [ADR-0008](../adr/0008-serializacion-documental-y-hashes.md) (propuesto), [formato v1 del motor](v1.md) |
+| Relacionado con | [diseño de la Etapa 3](../architecture/etapa3-design.md) §2, [acta E3-00](../architecture/etapa3-acta-e3-00.md), [ADR-0004](../adr/0004-historial-de-revisiones.md), [ADR-0008](../adr/0008-serializacion-documental-y-hashes.md) (aceptado), [formato v1 del motor](v1.md) |
 
 Este documento especifica, byte a byte, las claves y los valores que la capa de unidades guarda como **claves y valores ordinarios** del motor. No cambia ningún byte del formato v1 del motor ([v1.md](v1.md)): para el motor, todo lo de aquí son bytes opacos. Una implementación de la capa y el decodificador independiente de `crates/kerno-units/tests/spec_decoder` se escriben **solo** desde este texto. Las palabras «debe» y «no debe» son normativas.
 
@@ -151,7 +151,7 @@ Tamaño fijo: 27 B.
 | `alg` | Algoritmo | `digest` |
 |---|---|---|
 | `0` | CRC-32C provisional, **sin garantía criptográfica** | `crc: u32` big-endian ‖ 28 bytes `0x00` (UNIT-14) |
-| `1` | BLAKE3-256 (ADR-0008, propuesto) | 32 bytes cualesquiera |
+| `1` | BLAKE3-256 (ADR-0008, aceptado) | 32 bytes cualesquiera |
 
 El hash cubre `payload_codec ‖ payload` (un byte de códec seguido de la carga útil, sin longitud). Cualquier otro `alg` es corrupción (UNIT-13). Los escritores de esta capa usan `alg = 1`. El decodificador de estructuras no comprueba el hash; lo hace la verificación de carga útil de §5.1 (E3-02, `kerno_units::verify_payload`). El verificador offline de E3-07 la reutiliza.
 

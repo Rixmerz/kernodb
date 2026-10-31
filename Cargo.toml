@@ -28,7 +28,8 @@ spike-core = { path = "spikes/storage/spike-core" }
 spike-btree = { path = "spikes/storage/spike-btree" }
 spike-lsm = { path = "spikes/storage/spike-lsm" }
 crc32c = "0.6"
-blake3 = { version = "1.8", default-features = false, features = ["std"] }
+# Pinned exactly (ADR-0008): a change of version is a reviewed change.
+blake3 = { version = "=1.8.7", default-features = false, features = ["std"] }
 parking_lot = "0.12"
 quick_cache = "0.6"
 crossbeam-skiplist = "0.1"

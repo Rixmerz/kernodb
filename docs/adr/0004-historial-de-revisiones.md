@@ -42,6 +42,6 @@ Se acepta el modelo de revisiones del [diseño de la Etapa 3](../architecture/et
 2. **Una sola copia de la carga útil vigente**: vive en `REV_PAYLOAD(unit, head_rev)`, no en la cabeza; leerla cuesta 2 `get`, coste aceptado.
 3. **Metadatos y clasificación versionados y auditados** en la revisión (`REV_META`).
 4. El historial vive en claves propias de la capa, no en el WAL (D-06, I-20); restaurar crea una revisión nueva (I-22).
-5. El hash de contenido y el formato de la carga útil como bytes opacos dependen de ADR-0008 (propuesto).
+5. El hash de contenido y el formato de la carga útil como bytes opacos dependen de ADR-0008 (aceptado el 2026-10-31: BLAKE3-256).
 
 La opción 3 (híbrido con límite de profundidad) del SAD queda como evolución futura, sujeta a medición y a un ADR nuevo.
