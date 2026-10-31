@@ -199,6 +199,8 @@ Al leer una revisión, la capa compara el `REV_PAYLOAD` almacenado (o su ausenci
 | UNIT-27 | La longitud del `REV_PAYLOAD` difiere de `payload_len` (truncado o extendido) | `Corruption` |
 | UNIT-28 | El hash de `payload_codec ‖ payload` con el `alg` declarado difiere de `content_hash` | `Corruption` |
 
+Esta verificación no repite UNIT-14. Con `alg = 0`, un relleno distinto de cero en el `digest` se rechaza aquí como UNIT-28, porque el digest calculado siempre lleva ese relleno a cero. El decodificador de estructuras ya lo rechaza antes como UNIT-14.
+
 La verificación es pura: no escribe, no depende de nada fuera de sus argumentos y devuelve el mismo error para la misma entrada. Un rechazo no modifica la base y se puede repetir. Solo una carga útil verificada (`VerifiedPayload`) llega al resto de la capa. Vectores de hash conocidos y pruebas de corrupción: `crates/kerno-units/tests/payload_integrity.rs`.
 
 ## 6. Entrada truncada o corrupta
