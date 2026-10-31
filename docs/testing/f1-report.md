@@ -8,16 +8,16 @@ Este informe recoge la evidencia de salida de la Fase 1 (SAD §16): primero la *
 
 | Puerta | Resultado | Evidencia |
 |---|---|---|
-| `cargo fmt`, `clippy -D warnings`, `cargo test --workspace --all-features --release` | Verificados en el cierre de este paquete (ver §6) | comandos de §6 |
+| `cargo fmt`, `clippy -D warnings`, `cargo test --workspace --all-features --release` | Verificados en el cierre de este paquete (ver §6); su salida no se archivó entonces | comandos de §6 |
 | `SPIKE_SEEDS=1000 cargo test --workspace --all-features --release -- --nocapture` | **Cumple**: ninguna prueba fallida; `kerno` con 0 «inocuos» y 0 «datos erróneos» | [`tests-seeds1000.log`](../../spikes/storage/results/2026-10-29-f1/tests-seeds1000.log) |
-| `kill -9` real de un escritor (`StdVfs`), `KERNO_KILL_ITERS=200` | **Cumple**: 200 muertes en `Sync` y 200 en `Buffered`, 2 pruebas en verde | §3 |
+| `kill -9` real de un escritor (`StdVfs`), `KERNO_KILL_ITERS=200` | **Cumple**: 200 muertes en `Sync` y 200 en `Buffered`, 2 pruebas en verde; además 4 escritores concurrentes (group commit) con `wal_preallocate` en `Sync` y sin él en `Buffered` | §3, [`process-kill-200.log`](../../spikes/storage/results/2026-10-29-f1/process-kill-200.log) |
 | LazyFS (dispositivo con pérdida de páginas) | **Pendiente**: sin registro de ejecución | §4 |
 | Benchmarks en la máquina objetivo, T1–T10 | **Ejecutados en la clase de VM de M0** (la máquina objetivo, C-09, no está nombrada). **T1 no se cumple**, y hay otros incumplimientos documentados en §5 | [`results.jsonl`](../../spikes/storage/results/2026-10-29-f1/results.jsonl), [`report.md`](../../spikes/storage/results/2026-10-29-f1/report.md), [`env.json`](../../spikes/storage/results/2026-10-29-f1/env.json) |
 | Congelación del formato v1 (ADR-0013 aceptado, bit `DRAFT` retirado) | **Congelación pendiente**: ADR-0013 sigue «Propuesto» | §7 |
 
 ## 2. Correctitud con 1000 semillas
 
-Comando: `SPIKE_SEEDS=1000 cargo test --workspace --all-features --release -- --nocapture 2>&1 | tee spikes/storage/results/2026-10-29-f1/tests-seeds1000.log`, sobre el commit `50583e2`. Todas las líneas `test result:` del log son `ok` y con 0 fallos (el log contiene mensajes de `panicked`, que son los de las autopruebas del arnés que comprueban que un defecto inyectado se detecta; ninguna prueba termina en `FAILED`).
+Comando: `SPIKE_SEEDS=1000 cargo test --workspace --all-features --release -- --nocapture 2>&1 | tee spikes/storage/results/2026-10-29-f1/tests-seeds1000.log`, sobre un árbol de trabajo basado en `50583e2` con `tests/process_kill.rs` y `tests/lazyfs.rs` aún sin confirmar (se añadieron en `474b509`; entre ambos commits solo cambian pruebas y un vector, no el motor). Todas las líneas `test result:` del log son `ok` y con 0 fallos (el log contiene mensajes de `panicked`, que son los de las autopruebas del arnés que comprueban que un defecto inyectado se detecta; ninguna prueba termina en `FAILED`).
 
 **Outcomes de corrupción del motor del producto (`kerno`, 1000 semillas por variante):**
 
@@ -27,6 +27,8 @@ Comando: `SPIKE_SEEDS=1000 cargo test --workspace --all-features --release -- --
 | `kerno-inline` | 1000 · 0 · **0** | 260 · 740 · **0** |
 | `kerno-serial` | 1000 · 0 · **0** | 269 · 731 · **0** |
 | `kerno-m0` (perfil M0) | 1000 · 0 · **0** | 245 · 755 · **0** |
+
+La tabla omite el escenario con fragmentos de rango (`shared_ranges`): `kerno` 279 al abrir · 721 al leer y `kerno-inline` 265 · 735, también con 0 inocuos y 0 datos erróneos (en el log, `tests-seeds1000.log`).
 
 Ningún dato erróneo ni retroceso. En los barridos de vectores de directorio (`damage`), de truncamientos y de bit flips sobre archivos del formato v1 —varios cientos de miles de ejecuciones por escenario— todas las ejecuciones se informaron: 0 inocuas y 0 con datos erróneos (por ejemplo, `bit flips basic-clean: 89880 runs, 89880 reported, 0 harmless, 0 wrong`). El único «inocuo» no nulo del log es el del motor de referencia `log` (9 de 1000), que no es el motor del producto.
 
@@ -41,6 +43,8 @@ process_kill buffered: 200 kills (152 after progress), recovered sequence 89534
 test kill_dash_9_writer_recovers_acked_prefix_buffered ... ok
 test result: ok. 2 passed; 0 failed; 0 ignored
 ```
+
+Después de este informe se añadieron dos pruebas con **4 hilos escritores** (group commit, claves disjuntas por hilo, `Sync` + `wal_preallocate` y `Buffered`) y se archivó la salida completa de las cuatro con 200 iteraciones en [`process-kill-200.log`](../../spikes/storage/results/2026-10-29-f1/process-kill-200.log) (las cifras de secuencia de arriba son las de la primera ejecución, no las del archivo). Siguen sin cubrir `begin_write` ni `compact_range` sobre disco real.
 
 En ambas pruebas, tras cada `SIGKILL` la base se reabre, la secuencia recuperada es ≥ la última confirmada por el escritor y el contenido coincide con el modelo. (En la pasada de 1000 semillas del log se ejecutó con las 20 iteraciones por defecto.)
 
@@ -105,7 +109,7 @@ Se documentan todos; ninguno se corrigió ni se modificaron los objetivos T1–T
 
 ## 6. Verificación de las pruebas del paquete
 
-Los comandos de aceptación que se repiten al cierre son `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings` y `cargo test --workspace --all-features --release`. La pasada de 1000 semillas de §2 se hizo con la salida completa (`--nocapture`) en el commit `50583e2`; esta revisión solo añade documentación y resultados de benchmarks, sin cambios de código del motor.
+Los comandos de aceptación que se repiten al cierre son `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings` y `cargo test --workspace --all-features --release`. La pasada de 1000 semillas de §2 se hizo con la salida completa (`--nocapture`) sobre ese mismo árbol (ver §2); esta revisión solo añade documentación y resultados de benchmarks, sin cambios de código del motor.
 
 ## 7. Congelación del formato: pendiente
 

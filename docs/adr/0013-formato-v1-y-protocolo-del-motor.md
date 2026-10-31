@@ -125,11 +125,12 @@ Con la aceptación, el propietario fija la frontera:
 - **Inmutable mientras exista v1** (cambiarlo exige un `format_version` nuevo, no un bit): el *magic* y la cabecera común de 96 bytes (§3), la codificación de enteros, varints y checksums (§1.1–§1.2), el encapsulado TLV (§1.3), el encapsulado de trama del WAL y de bloque de SST (§6.2, §7.2), el pie de SST (§7.8), el registro del MANIFEST (§8.2) y la semántica de la tabla de recuperación (§9), incluida WAL-R6 endurecida por M1.
 - **Versionado por bits de características** (§4): capacidades nuevas que un lector antiguo puede ignorar (`compat`), abrir solo en lectura (`ro_compat`) o debe rechazar (`incompat`), entre ellas AEAD (punto 5) y la durabilidad por commit (punto 12).
 - **Ajustable sin tocar el formato:** límites de la API (punto 11), parámetros de ajuste (tamaños de bloque y de memtable, `bytes_per_sync`, compactación) y los objetivos de rendimiento T1–T10, que siguen por referencia (punto 14).
-- El bit `DRAFT` (punto 10) se retira en la congelación de WP14; los archivos escritos con él no se garantizan tras ella.
+- El bit `DRAFT` (punto 10) se retiró en la congelación del 2026-10-31; los archivos escritos con él se rechazan con `Incompatible("pre-freeze draft format")`.
 
 ## Seguimiento
 
-- Antes de la congelación (WP14): aceptación por el propietario, en particular de los puntos 2, 3, 4, 5, 8, 9 y 10 (phase1-design §13, decisión 2), y revisión del modelo de amenazas (R-07).
+- ~~Antes de la congelación (WP14): aceptación por el propietario, en particular de los puntos 2, 3, 4, 5, 8, 9 y 10 (phase1-design §13, decisión 2), y revisión del modelo de amenazas (R-07).~~ Hecho: aceptado el 2026-10-31 y R-07 revisada en WP14.
+- ~~Ejecutar la congelación (v1.md §15)~~: ejecutada el 2026-10-31. `WRITE_INCOMPAT` = 0, `DRAFT` fuera de `KNOWN_INCOMPAT` y rechazado por su nombre en HDR-6, todos los vectores regenerados con la guardia, vector negativo `draft-v1` añadido.
 - ~~Decidir si W-1 sincroniza la cabecera del WAL~~: adoptado (M1, 2026-10-31).
 - Enlazar aquí la evidencia del motor (WP07–WP14) y la medición de T7 y T8.
-- Registro de cambios de bytes del borrador (v1.md §15): ninguno; los vectores de WP06 son los primeros.
+- Registro de cambios de bytes del borrador (v1.md §15, tabla «Historial del borrador»): el último es la propia congelación, que cambia el `incompat` de la cabecera (y su CRC) de todo archivo escrito. Desde ella, un cambio de bytes exige `format_version` o un bit nuevo.

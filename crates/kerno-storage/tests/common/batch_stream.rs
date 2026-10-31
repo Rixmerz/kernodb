@@ -22,10 +22,28 @@ pub fn key(i: u64) -> Vec<u8> {
 /// The batch committed with sequence `seq`: 1 to 4 puts or deletes, and now
 /// and then a range deletion.
 pub fn batch_for(seq: u64) -> WriteBatch {
-    let mut rng = Rng::new(seq);
+    build(Rng::new(seq), KEYS, key)
+}
+
+/// Keys per concurrent writer (`batch_for_writer`).
+pub const WRITER_KEYS: u64 = 96;
+
+/// Key `i` of concurrent writer `w`: writers never share a key, so the
+/// contents of one writer's keys depend only on how many of its batches
+/// were applied, whatever the interleaving with the others.
+pub fn writer_key(w: u64, i: u64) -> Vec<u8> {
+    format!("w{w}-k{i:04}").into_bytes()
+}
+
+/// Batch `n` of concurrent writer `w`, confined to that writer's keys.
+pub fn batch_for_writer(w: u64, n: u64) -> WriteBatch {
+    build(Rng::new(n ^ ((w + 1) << 48)), WRITER_KEYS, |i| writer_key(w, i))
+}
+
+fn build(mut rng: Rng, keys: u64, key: impl Fn(u64) -> Vec<u8>) -> WriteBatch {
     let mut b = WriteBatch::new();
     for _ in 0..rng.range(1, 4) {
-        let k = key(rng.below(KEYS));
+        let k = key(rng.below(keys));
         if rng.chance(1, 5) {
             b.delete(k);
         } else {
@@ -34,8 +52,8 @@ pub fn batch_for(seq: u64) -> WriteBatch {
         }
     }
     if rng.chance(1, 40) {
-        let start = rng.below(KEYS);
-        b.delete_range(key(start), key((start + rng.range(1, 24)).min(KEYS)));
+        let start = rng.below(keys);
+        b.delete_range(key(start), key((start + rng.range(1, 24)).min(keys)));
     }
     b
 }

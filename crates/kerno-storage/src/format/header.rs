@@ -188,6 +188,9 @@ pub fn decode_header(prefix: &[u8], file_len: u64, kind: FileKind, expect: &Head
     }
     // HDR-6.
     let incompat = le_u64(b, 32);
+    if incompat & features::DRAFT != 0 {
+        return Err(FormatError::incompatible("HDR-6", 32, "pre-freeze draft format"));
+    }
     if incompat & !KNOWN_INCOMPAT != 0 {
         return Err(FormatError::incompatible("HDR-6", 32, "unknown incompat feature"));
     }
@@ -276,10 +279,10 @@ mod tests {
 
     #[test]
     fn header_roundtrip_matches_spec_example() {
-        // v1.md §13.5: WAL draft header, db_id 00..0f, file 1, base_seq 1.
+        // v1.md §13.5: WAL header, db_id 00..0f, file 1, base_seq 1.
         let h = Header::wal(DB, 1, 1);
         let b = h.encode();
-        assert_eq!(&b[92..], &[0x6d, 0xf6, 0x76, 0xb8]);
+        assert_eq!(&b[92..], &[0x38, 0x8c, 0x41, 0xea]);
         let expect = HeaderExpect { db_id: Some(DB), file_number: Some(1) };
         assert_eq!(decode_header(&b, 96, FileKind::Wal, &expect), Ok(h));
     }
@@ -341,13 +344,18 @@ mod tests {
         assert_eq!(rule(&h.encode(), wal, &foreign), ("HDR-10", true));
         let renamed = HeaderExpect { db_id: Some(DB), file_number: Some(4) };
         assert_eq!(rule(&h.encode(), wal, &renamed), ("HDR-10", true));
-        // HDR-7 and HDR-8 never fail; DRAFT is accepted.
+        // HDR-7 and HDR-8 never fail.
         let b = patched(&h, |b| {
             b[16] = 0xff;
             b[24] = 0x01;
         });
         let got = decode_header(&b, 96, wal, &none).unwrap();
-        assert_eq!((got.compat, got.unknown_ro_compat(), got.incompat), (0xff, 1, DRAFT));
+        assert_eq!((got.compat, got.unknown_ro_compat(), got.incompat), (0xff, 1, 0));
+        // The pre-freeze draft bit is refused by name, before unknown bits.
+        let b = patched(&h, |b| b[39] = 0x80);
+        let e = decode_header(&b, 96, wal, &none).unwrap_err();
+        assert_eq!((e.rule, e.is_corruption()), ("HDR-6", false));
+        assert_eq!(DRAFT, 1 << 63);
     }
 
     #[test]

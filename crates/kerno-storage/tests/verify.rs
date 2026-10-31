@@ -428,9 +428,8 @@ fn inspect_reports_versions_and_bits() {
         let bytes = &image.files[&path(&f.name)];
         assert_eq!(f.len, bytes.len() as u64, "{}", f.name);
         let h = f.header.expect("valid header");
-        // Version 1, the DRAFT bit (no database made now opens under the
-        // frozen format) and nothing else.
-        assert_eq!((h.format_version, h.compat, h.ro_compat, h.incompat), (1, 0, 0, 1 << 63), "{}", f.name);
+        // Version 1 and no feature bits.
+        assert_eq!((h.format_version, h.compat, h.ro_compat, h.incompat), (1, 0, 0, 0), "{}", f.name);
         assert_eq!(h.db_id, DB_ID);
         let expected_number =
             if f.file_type == FileType::Manifest { le_u64(bytes, 56) } else { file_number(&path(&f.name)) };
