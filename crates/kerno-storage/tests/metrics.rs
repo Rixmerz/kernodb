@@ -584,12 +584,15 @@ fn pending_compaction_bytes_reported() {
     // target are pending.
     let gate = GatedVfs::holding_all_files(sim.as_vfs(), &[COMPACT]);
     let vfs: Arc<dyn Vfs> = gate.clone();
-    let small = CompactionConfig { level_base_bytes: Some(8 << 10), level_multiplier: 2, ..cfg.compaction.clone() };
+    let small = CompactionConfig { level_base_bytes: Some(1 << 10), level_multiplier: 1, ..cfg.compaction.clone() };
     let db = open(&vfs, &Config { compaction: small.clone(), ..cfg.clone() });
     let _open = OpenOnDrop(gate.clone());
     let m = db.metrics();
     let pending = m.background.pending_compaction_bytes;
-    assert!(pending > 0);
+    // Trivial moves may have carried the files to the last level, which has no
+    // target; only a file in L1..L5 is guaranteed to be above the 1 KiB one.
+    let l1_to_l5 = m.shape.levels[1..m.shape.levels.len() - 1].iter().map(|l| l.bytes).sum::<u64>();
+    assert_eq!(pending > 0, l1_to_l5 > 0);
     assert_eq!(pending, expected_pending(&m, &small));
     assert!(m.shape.levels[0].files < 4, "L0 is below its trigger after a clean close");
     gate.open_all();
