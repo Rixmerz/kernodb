@@ -145,4 +145,11 @@ Corregidos los hallazgos que bloqueaban la fusión (2026-10-31):
 - **G1** (`555565a`): `SimVfs` con `FsyncFailure::LinuxDropPages` descarta para siempre las escrituras que cubre un `WaitWriteback`/`SyncData` fallido y marca el error como visto. Barrido `write_amp_levers::a_failed_wait_for_writeback_never_loses_acknowledged_commits`: el motor debe envenenar el handle o no referenciar la SST; falla sin el arreglo de B1.
 - **M1** (`772f3fa`, opción b): el escritor sincroniza la cabecera del WAL antes de la primera trama (`synced_len` empieza en 96) y WAL-R6 trata toda trama con CRC válido bajo una cabecera rota como `Corruption`, incluso con `synced_len = 0`. Actualizados `docs/file-format/v1.md`, la matriz de fallos y ADR-0013; vectores nuevos `dirty-wal-one-frame` (positivo) y `wal-one-frame-broken-header` (negativo); vectores de directorio con WAL regenerados.
 
-Pendientes (no bloqueantes): M2, G2, G3 y D1.
+Hallazgos menores corregidos después de la fusión de PR #2:
+
+- **M2**: `StdVfs::lock` recurre, ante `PermissionDenied` o `ReadOnlyFilesystem`, a abrir `LOCK` solo para lectura, o el directorio si `LOCK` no existe, así que `AccessMode::ReadOnly` ya no necesita permiso de escritura ni crea `LOCK`. Prueba `lock_works_in_a_directory_without_write_permission` (directorio 0555; no hace nada como root, y se ejecutó como `nobody`). Límite: sin `LOCK` el bloqueo recae en el directorio y no excluye a un escritor que cree `LOCK` después (marca `ponytail:` en el código).
+- **G2**: **parcial**. No se añadió el barrido de caídas con `Background::Threads`; se reescribió la frase de la matriz para decir que el cierre por defecto no tiene barrido propio y qué lo cubre. Sigue abierto como brecha de prueba.
+- **G3**: dos pruebas nuevas en `process_kill.rs` con 4 hilos escritores (claves disjuntas por hilo; cada hilo debe conservar `n` lotes con `n` entre el último confirmado y uno más), una con `Sync` + `wal_preallocate` y otra con `Buffered`. No cubren `begin_write` ni `compact_range`.
+- **D1**: corregida la procedencia del registro de 1000 semillas, añadida la fila de rangos de §2, quitada la línea en blanco de la matriz y archivada la salida de los `kill -9` (`spikes/storage/results/2026-10-29-f1/process-kill-200.log`). La salida de `fmt`/`clippy`/`test` de §6 sigue sin archivar.
+
+Pendientes (no bloqueantes): G2 (barrido de caídas del cierre por defecto) y el archivo de la salida de §6.
