@@ -273,6 +273,9 @@ fn vectors() -> Vec<Vector> {
     let mut padded = crc_hash(7);
     padded.digest[31] = 1;
     v.push(neg_rec("crc_padding_nonzero", 14, C, Rec::Head(Head { content_hash: padded, ..head() })));
+    let mut padded_first = crc_hash(7);
+    padded_first.digest[4] = 1;
+    v.push(neg_rec("crc_padding_first_nonzero", 14, C, Rec::Head(Head { content_hash: padded_first, ..head() })));
     v.push(neg_rec("layer_version_0", 15, C, Rec::Layer(Layer { layer_version: 0, ..layer() })));
     v.push(neg_rec("layer_version_2", 16, I, Rec::Layer(Layer { layer_version: 2, ..layer() })));
 
@@ -285,6 +288,7 @@ fn vectors() -> Vec<Vector> {
     v.push(neg_rec("update_parent_is_self", 19, C, Rec::RevMeta(rev(2, 2, 2))));
     v.push(neg_rec("update_without_parent", 19, C, Rec::RevMeta(rev(2, 2, 0))));
     v.push(neg_rec("restore_without_source", 20, C, Rec::RevMeta(rev(6, 4, 3))));
+    v.push(neg_rec("restore_from_self", 20, C, Rec::RevMeta(RevMeta { restored_from: 4, ..rev(6, 4, 3) })));
     v.push(neg_rec("update_with_restored_from", 20, C, Rec::RevMeta(RevMeta { restored_from: 1, ..rev(2, 2, 1) })));
     v.push(neg_rec("payload_present_2", 21, C, Rec::RevMeta(RevMeta { payload_present: 2, ..rev(2, 2, 1) })));
     v.push(neg_rec("delete_with_payload", 21, C, Rec::RevMeta(rev(5, 3, 2))));

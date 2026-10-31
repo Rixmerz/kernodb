@@ -123,7 +123,7 @@ Los valores de `REV_META` son inmutables: una clave se escribe una vez (diseño 
 
 ### 3.4 `REV_PAYLOAD` (`0x21`)
 
-El valor es la carga útil **tal cual**: sin `envelope_version`, sin longitud, sin relleno, de 0 a 2^26 B (el motor impone además su propio límite de valor). Su integridad la da `content_hash` de `REV_META` (diseño §2.7), no este formato; por eso no hay regla `UNIT-n` de decodificación para él y todo valor es sintácticamente válido.
+El valor es la carga útil **tal cual**: sin `envelope_version`, sin longitud, sin relleno. Su longitud y su integridad no se validan al decodificar el valor aislado: las fijan `payload_len` (≤ 2^26, UNIT-22) y `content_hash` del `REV_META` correspondiente (diseño §2.7), y la capa comprueba ambos al leer la revisión (E3-02). Por eso no hay regla `UNIT-n` de decodificación para él: todo valor, de cualquier longitud que el motor admita, es sintácticamente válido como `REV_PAYLOAD`, y un valor cuya longitud no coincide con `payload_len` es corrupción detectada por esa comprobación cruzada, no por este decodificador.
 
 ### 3.5 `CHANGESET` (`0x30`)
 
@@ -144,7 +144,7 @@ El valor es la carga útil **tal cual**: sin `envelope_version`, sin longitud, s
 | `rev_no` | `u64` | ≥ 1 (UNIT-25) |
 | `kind` | `u8` | como `REV_META.kind` (UNIT-13) |
 
-Tamaño fijo: 28 B.
+Tamaño fijo: 27 B.
 
 ## 4. `ContentHash`
 
