@@ -3,12 +3,13 @@
 /// `incompat` bit 0: blocks, records and frames are sealed and the AEAD
 /// slots are in use. Defined and not supported in Phase 1 (HDR-6).
 pub const AEAD: u64 = 1 << 0;
-/// `incompat` bit 63: written by the pre-freeze draft (§4.3).
+/// `incompat` bit 63: written by the pre-freeze draft and never by v1; a reader
+/// refuses it by name (§4.3), it is not a known bit.
 pub const DRAFT: u64 = 1 << 63;
 /// `incompat` bits this reader knows (anything else is `Incompatible`).
-pub const KNOWN_INCOMPAT: u64 = AEAD | DRAFT;
-/// `incompat` bits this writer sets on every file.
-pub const WRITE_INCOMPAT: u64 = DRAFT;
+pub const KNOWN_INCOMPAT: u64 = AEAD;
+/// `incompat` bits this writer sets on every file: none since the freeze.
+pub const WRITE_INCOMPAT: u64 = 0;
 /// `ro_compat` bits this reader knows (any other opens read-only, HDR-7).
 pub const KNOWN_RO_COMPAT: u64 = 0;
 /// `compat` bits this reader knows (any other is ignored, HDR-8).

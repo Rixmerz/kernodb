@@ -701,7 +701,7 @@ fn vectors() -> Vec<Vector> {
     let wal_ctx = hctx(FileKind::Wal, Some(DB), Some(1));
     let man_ctx = hctx(FileKind::Manifest, None, None);
     let sst_ctx_h = hctx(FileKind::Sst, Some(DB), Some(42));
-    v.push(pos("hdr_wal_draft_example", wal_ctx.clone(), Value::Header(wal_h)));
+    v.push(pos("hdr_wal_example", wal_ctx.clone(), Value::Header(wal_h)));
     v.push(pos("hdr_manifest", man_ctx.clone(), Value::Header(man_h)));
     v.push(pos("hdr_sst", sst_ctx_h.clone(), Value::Header(sst_h)));
     v.push(pos("hdr_sst_unknown_ro_compat", sst_ctx_h.clone(), Value::Header(Header { ro_compat: 1 << 5, ..sst_h })));
@@ -710,7 +710,6 @@ fn vectors() -> Vec<Vector> {
         hctx(FileKind::Wal, Some(DB), Some(7)),
         Value::Header(Header { compat: 1 << 9, ..Header::wal(DB, 7, 100) }),
     ));
-    v.push(pos("hdr_wal_without_draft_bit", wal_ctx.clone(), Value::Header(Header { incompat: 0, ..wal_h })));
     v.push(neg("neg_hdr1_short", wal_ctx.clone(), wal_h.encode()[..95].to_vec(), "HDR-1", C));
     v.push(neg(
         "neg_hdr2_unknown_magic",
@@ -766,6 +765,7 @@ fn vectors() -> Vec<Vector> {
         C,
     ));
     v.push(neg("neg_hdr6_unknown_incompat", wal_ctx.clone(), patched_header(&wal_h, |b| b[32] |= 1 << 5), "HDR-6", I));
+    v.push(neg("neg_hdr6_draft_bit", wal_ctx.clone(), patched_header(&wal_h, |b| b[39] |= 0x80), "HDR-6", I));
     v.push(neg("neg_hdr6_aead", wal_ctx.clone(), patched_header(&wal_h, |b| b[32] |= AEAD as u8), "HDR-6", I));
     v.push(neg("neg_hdr9_reserved", wal_ctx.clone(), patched_header(&wal_h, |b| b[88] = 1), "HDR-9", C));
     v.push(neg("neg_hdr9_per_type_bytes", wal_ctx.clone(), patched_header(&wal_h, |b| b[72] = 1), "HDR-9", C));

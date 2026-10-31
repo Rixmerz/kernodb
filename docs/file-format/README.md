@@ -1,6 +1,6 @@
 # Formato físico
 
-Estado: el formato del motor LSM está especificado en **[`v1.md`](v1.md)**, hoy **candidato a congelación**: todo archivo que escribe `kerno-storage` lleva el bit `incompat` `DRAFT` (v1.md §4.3), de modo que ninguna base creada con el borrador pueda ser leída por la versión congelada. **La congelación está pendiente** a 2026-10-29: la condiciona la aceptación por el propietario de [ADR-0013](../adr/0013-formato-v1-y-protocolo-del-motor.md) (hoy *Propuesto*) y, hecha ya la revisión del [modelo de amenazas](../security/threat-model.md#6-revisión-de-la-fase-1-r-07), se ejecuta con el proceso de [v1.md §15](v1.md#15-proceso-de-cambios-del-borrador-y-congelación). **Ninguna base de datos de usuario debe crearse con este formato ni con los de los prototipos de M0.**
+Estado: el formato del motor LSM está especificado en **[`v1.md`](v1.md)** y **congelado desde 2026-10-31** ([ADR-0013](../adr/0013-formato-v1-y-protocolo-del-motor.md) aceptado). El bit `incompat` `DRAFT` está retirado: `kerno-storage` ya no lo escribe y una base creada con el borrador se rechaza con `Incompatible("pre-freeze draft format")` (v1.md §4.3). Cambiar un byte exige `format_version` nuevo o un bit de característica, vectores y un ADR (v1.md §15).
 
 Contenido del directorio:
 

@@ -13,7 +13,7 @@ use kerno_core::contract::{Engine, Snapshot};
 use kerno_core::vfs::Vfs;
 use kerno_core::{Durability, Error, Op, Result, WriteBatch};
 use kerno_storage::format::block::reseal_block;
-use kerno_storage::format::features::{AEAD, DRAFT};
+use kerno_storage::format::features::AEAD;
 use kerno_storage::format::header::{
     FORMAT_VERSION, FileKind, HEADER_LEN, Header, HeaderExpect, decode_header, reseal_header,
 };
@@ -217,7 +217,7 @@ fn header_round_trip_all_kinds() {
 }
 
 #[test]
-fn draft_bit_written_on_every_file() {
+fn no_incompat_bit_written_on_any_file() {
     // Flushes, compactions and a live WAL: every kind of file and every
     // reason a table is written for.
     let disk = SimVfs::new(3);
@@ -235,7 +235,7 @@ fn draft_bit_written_on_every_file() {
             _ => continue, // LOCK holds no state
         };
         let h = decode_header(&bytes[..HEADER_LEN], bytes.len() as u64, kind, &HeaderExpect::default()).unwrap();
-        assert_eq!(h.incompat, DRAFT, "{}", file.display());
+        assert_eq!(h.incompat, 0, "{}", file.display());
         assert_eq!(h.db_id, DB_ID, "{}", file.display());
         seen[kind as usize] += 1;
     }
@@ -245,7 +245,7 @@ fn draft_bit_written_on_every_file() {
     let manifest = &closed.files[&path("MANIFEST")];
     let h =
         decode_header(&manifest[..HEADER_LEN], manifest.len() as u64, FileKind::Manifest, &Default::default()).unwrap();
-    assert_eq!(h.incompat, DRAFT);
+    assert_eq!(h.incompat, 0);
 }
 
 #[test]
