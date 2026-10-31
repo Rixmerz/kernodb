@@ -57,7 +57,7 @@ pub trait File: Send + Sync {
     /// less dirty data to write. **Advisory and not a durability operation**:
     /// nothing it covers is durable afterwards, it may do nothing at all
     /// (the default, and every platform but Linux), and an error from it says
-    /// nothing about the data, which only `sync_data` reports on.
+    /// nothing about the data: it stays recorded for the next `sync_data`.
     fn start_writeback(&self, _offset: u64, _len: u64) -> io::Result<()> {
         Ok(())
     }
@@ -66,8 +66,12 @@ pub trait File: Send + Sync {
     /// `SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WAIT_AFTER` on Linux),
     /// without starting any. Paired with [`start_writeback`](Self::start_writeback)
     /// on the next range it keeps the amount of data in flight to a couple of
-    /// ranges, which is what throttles a writer; like it, **not a durability
-    /// operation** and a no-op by default.
+    /// ranges, which is what throttles a writer. **Not a durability
+    /// operation** and a no-op by default, but its error is not advisory: on
+    /// Linux it returns the writeback error of the range and consumes it, so
+    /// a later `sync_data` reports `Ok` for data that was lost. Callers must
+    /// treat an error from it as a failed write (only `Unsupported` /
+    /// `InvalidInput`, meaning the platform lacks the call, may be ignored).
     fn wait_writeback(&self, _offset: u64, _len: u64) -> io::Result<()> {
         Ok(())
     }

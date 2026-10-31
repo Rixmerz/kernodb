@@ -174,12 +174,20 @@ impl Sink {
                 // the device queue never holds more than this range of the
                 // table (starting writeback without waiting only moves the
                 // burst earlier: `spike-bench walsync --writeback true`).
-                // Both are advisory and their errors say nothing about the
-                // data, which the final `sync_data` of `finish_with` reports
-                // on, so a failure is not an engine failure.
+                // Only `start_writeback` is advisory: its error stays
+                // recorded for the final `sync_data`. `wait_writeback`
+                // consumes the writeback error on Linux, so the final sync
+                // would return `Ok` for data that never reached the disk:
+                // its error must fail the table, unless the platform lacks
+                // the call.
                 let (offset, len) = (self.hinted, self.written - self.hinted);
                 let _ = self.file.start_writeback(offset, len);
-                let _ = self.file.wait_writeback(offset, len);
+                match self.file.wait_writeback(offset, len) {
+                    Ok(()) => {}
+                    // ENOSYS / EINVAL: no `sync_file_range` here.
+                    Err(e) if matches!(e.kind(), io::ErrorKind::Unsupported | io::ErrorKind::InvalidInput) => {}
+                    Err(e) => return Err(e.into()),
+                }
                 bump(&self.stats.sst_writeback_hints, 1);
                 self.hinted = self.written;
             }
