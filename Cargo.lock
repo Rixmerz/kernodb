@@ -480,6 +480,8 @@ dependencies = [
  "blake3",
  "crc32c",
  "kerno-core",
+ "kerno-storage",
+ "kerno-testkit",
  "proptest",
 ]
 

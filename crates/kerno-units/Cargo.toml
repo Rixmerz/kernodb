@@ -15,3 +15,8 @@ blake3.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+kerno-testkit.workspace = true
+# Only for tests: the design runs the layer's suites over `KernoDb` as well as
+# `Emulated<LogEngine>` (etapa3-design.md §8, E3-03). The layer itself never
+# depends on it.
+kerno-storage.workspace = true
