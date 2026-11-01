@@ -233,6 +233,11 @@ fn damages(b: &Base) -> Vec<(&'static str, Patch, &'static str)> {
     audit_c1.payload_present = true;
     let mut none_d = UnitHead::decode(&raw[&head_key(d)]).unwrap();
     none_d.oldest_rev = RevNo(1);
+    let mut huge_head = UnitHead::decode(&raw[&head_key(a)]).unwrap();
+    huge_head.head_rev = RevNo(1 << 63);
+    let mut gap_head = UnitHead::decode(&raw[&head_key(a)]).unwrap();
+    gap_head.oldest_rev = RevNo(1);
+    gap_head.head_rev = RevNo(u64::MAX - 1);
     let mut head_env = raw[&head_key(a)].clone();
     head_env[0] = 0;
     let mut head_env2 = raw[&head_key(a)].clone();
@@ -252,6 +257,10 @@ fn damages(b: &Base) -> Vec<(&'static str, Patch, &'static str)> {
         ("REV_META missing", vec![(k(Key::RevMeta { unit: a, rev: RevNo(2) }), None)], "UNIT-31"),
         ("head missing", vec![(head_key(bu), None)], "UNIT-30"),
         ("head disagrees", vec![(head_key(a), Some(head_a.encode().unwrap()))], "UNIT-31"),
+        // A damaged head_rev must cost the verifier the records that exist,
+        // not the range it claims.
+        ("head_rev of 2^63", vec![(head_key(a), Some(huge_head.encode().unwrap()))], "UNIT-31"),
+        ("huge gap below the head", vec![(head_key(a), Some(gap_head.encode().unwrap()))], "UNIT-31"),
         ("REV_META above the head", vec![put_meta(a, 6, &extra_a6)], "UNIT-31"),
         ("commit_seq out of order", vec![put_meta(a, 3, &cs_seq_a3)], "UNIT-32"),
         ("impossible transition", vec![put_meta(a, 4, &kind_a4)], "UNIT-32"),

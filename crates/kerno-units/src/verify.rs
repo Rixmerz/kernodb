@@ -58,9 +58,15 @@
 //!   One broken record produces one finding: records that do not decode are
 //!   left out of the checks between records, so the damage is not reported
 //!   again as "missing".
-//! * **Bounded memory per page.** Keys are read in pages of
-//!   [`VERIFY_PAGE`]; the `REV_META` and `CS_MEMBER` of the whole store are
-//!   kept in memory (tens of bytes each), payloads never.
+//! * **Bounded memory, proportional to the records.** Keys are read in pages
+//!   of [`VERIFY_PAGE`], but every `UNIT_HEAD`, `REV_META`, `CHANGESET` and
+//!   `CS_MEMBER` of the store is kept decoded in full (metadata included, up
+//!   to 4096 B each), plus the key of every `REV_PAYLOAD`; payloads never.
+//!   Worst case, about 4.6 KB per revision and 2.5 KB per change set.
+//!   [`verify_immutable`] also keeps every `REV_META` of the older snapshot
+//!   (encoded) and a 32-byte digest per `REV_PAYLOAD`. Work never depends on
+//!   the numbers a record claims (a damaged `head_rev`), only on the records
+//!   that exist.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -574,15 +580,28 @@ impl State {
                 format!("unit {unit}: {payloads_outside} REV_PAYLOAD outside [{oldest}, {top}]"),
             );
         }
-        let mut missing = 0u64;
-        let mut first_missing = None;
-        for r in oldest.0..=top.0 {
-            let id = (unit, RevNo(r));
-            if !self.metas.contains_key(&id) && !self.bad_metas.contains(&id) {
-                missing += 1;
-                first_missing.get_or_insert(r);
+        // Only the REV_META that exist are walked: a damaged head may claim
+        // a range of up to 2^64 revisions.
+        let mut present: Vec<u64> = self
+            .metas
+            .range((unit, oldest)..=(unit, top))
+            .map(|((_, r), _)| r.0)
+            .chain(self.bad_metas.range((unit, oldest)..=(unit, top)).map(|(_, r)| r.0))
+            .collect();
+        present.sort_unstable();
+        present.dedup();
+        let span = u128::from(top.0) - u128::from(oldest.0) + 1;
+        let missing = span - present.len() as u128;
+        let first_missing = (missing > 0).then(|| {
+            let mut expected = oldest.0;
+            for r in &present {
+                if *r != expected {
+                    break;
+                }
+                expected += 1;
             }
-        }
+            expected
+        });
         if let Some(r) = first_missing {
             self.cross(
                 CrossRule::Unit31,
