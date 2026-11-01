@@ -1,5 +1,4 @@
-//! Reference model of the layer (`etapa3-design.md` §8.1), reduced to what
-//! E3-02 can define without the operations of E3-03.
+//! Reference model of the layer (`etapa3-design.md` §8.1).
 //!
 //! The model stores revisions and change sets **as already decided**: it does
 //! not decide what an operation does (conflicts, which lifecycle an update
@@ -8,12 +7,21 @@
 //! (I-26, IU-3), `parent_rev = rev - 1`, change sets are applied in strictly
 //! increasing `commit_seq` — and answers queries from that history.
 //!
-//! Deferred: history policies (E3-05), retention and `Pruned` (E3-06).
-//! Building revisions from operations stays with the tests that drive it.
+//! History policies (E3-05) are modelled: [`UnitModel::set_policy`] records
+//! a `Maintenance` change set, [`UnitModel::apply`] drops what the policy in
+//! force does not keep of the superseded revisions, and the `read_*` methods
+//! answer as the database does, [`UnitError::HistoryUnavailable`] included
+//! (see [`crate::history`] for the rules). The plain queries
+//! ([`history`](UnitModel::history), [`unit_as_of`](UnitModel::unit_as_of),
+//! …) keep answering from the full logical history.
+//!
+//! Deferred: retention (E3-06). Building revisions from operations stays
+//! with the tests that drive it.
 
 use std::collections::BTreeMap;
 
-use crate::types::{CommitSeq, Lifecycle, Purpose, RevNo, RevisionKind, UnitId};
+use crate::error::UnitError;
+use crate::types::{CommitSeq, HistoryPolicy, Lifecycle, Purpose, RevNo, RevisionKind, UnitId};
 
 /// One revision of a unit, with the unit state it leaves.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,6 +36,10 @@ pub struct ModelRevision {
     pub restored_from: Option<RevNo>,
     pub metadata: Vec<u8>,
     pub payload: Option<Vec<u8>>,
+    /// Whether the layer still stores this revision's payload: `false` once
+    /// an `Audit` policy dropped it (the logical `payload` is kept here so
+    /// tests can compare hashes).
+    pub content_kept: bool,
 }
 
 /// A revision a change set adds to a unit; `rev` is assigned by the model.
@@ -77,16 +89,58 @@ pub enum ModelError {
     BadLifecycle { unit: UnitId, kind: RevisionKind },
 }
 
-/// `BTreeMap<UnitId, Vec<ModelRevision>>` plus the list of change sets.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// `BTreeMap<UnitId, Vec<ModelRevision>>` plus the list of change sets,
+/// the policies and each unit's oldest retained revision.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnitModel {
     units: BTreeMap<UnitId, Vec<ModelRevision>>,
     change_sets: Vec<ModelChangeSet>,
+    default_policy: HistoryPolicy,
+    policies: BTreeMap<String, HistoryPolicy>,
+    oldest: BTreeMap<UnitId, RevNo>,
+}
+
+impl Default for UnitModel {
+    fn default() -> Self {
+        Self::with_default_policy(HistoryPolicy::Versioned)
+    }
 }
 
 impl UnitModel {
+    /// A model whose default policy is `Versioned`.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A model of a database whose layer mark holds `p`.
+    pub fn with_default_policy(p: HistoryPolicy) -> Self {
+        UnitModel {
+            units: BTreeMap::new(),
+            change_sets: Vec::new(),
+            default_policy: p,
+            policies: BTreeMap::new(),
+            oldest: BTreeMap::new(),
+        }
+    }
+
+    /// The policy in force for `unit_type`.
+    pub fn policy(&self, unit_type: &str) -> HistoryPolicy {
+        self.policies.get(unit_type).copied().unwrap_or(self.default_policy)
+    }
+
+    /// A `set_policy` change set: purpose `Maintenance`, no members.
+    pub fn set_policy(&mut self, seq: CommitSeq, unit_type: &str, p: HistoryPolicy) -> Result<(), ModelError> {
+        if seq <= self.last_seq() {
+            return Err(ModelError::SeqNotIncreasing { last: self.last_seq(), got: seq });
+        }
+        self.policies.insert(unit_type.to_owned(), p);
+        self.change_sets.push(ModelChangeSet { seq, purpose: Purpose::Maintenance, members: Vec::new() });
+        Ok(())
+    }
+
+    /// The oldest revision the layer keeps of `unit` (1 when unknown).
+    pub fn oldest(&self, unit: UnitId) -> RevNo {
+        self.oldest.get(&unit).copied().unwrap_or(RevNo(1))
     }
 
     /// Sequence of the last applied change set, 0 when empty.
@@ -132,8 +186,16 @@ impl UnitModel {
         }
         let mut members = Vec::with_capacity(changes.len());
         for c in changes {
+            let policy = self.policy(&c.unit_type);
             let history = self.units.entry(c.unit).or_default();
             let rev = RevNo(history.len() as u64 + 1);
+            match (policy, history.last_mut()) {
+                (HistoryPolicy::Audit, Some(prev)) => prev.content_kept = false,
+                (HistoryPolicy::None, Some(_)) => {
+                    self.oldest.insert(c.unit, rev);
+                }
+                _ => {}
+            }
             members.push((c.unit, rev, c.kind));
             history.push(ModelRevision {
                 rev,
@@ -145,6 +207,7 @@ impl UnitModel {
                 restored_from: c.restored_from,
                 metadata: c.metadata,
                 payload: c.payload,
+                content_kept: true,
             });
         }
         self.change_sets.push(ModelChangeSet { seq, purpose, members });
@@ -195,5 +258,156 @@ impl UnitModel {
     /// Unit ids in key order.
     pub fn unit_ids(&self) -> impl Iterator<Item = UnitId> + '_ {
         self.units.keys().copied()
+    }
+
+    // -------------------------------------------------------- policy-aware reads
+
+    fn unit_policy(&self, unit: UnitId) -> Option<HistoryPolicy> {
+        self.head(unit).map(|h| self.policy(&h.unit_type))
+    }
+
+    fn check_content(r: &ModelRevision) -> Result<(), UnitError> {
+        if !r.content_kept && r.kind != RevisionKind::Delete {
+            return Err(UnitError::HistoryUnavailable { policy: HistoryPolicy::Audit });
+        }
+        Ok(())
+    }
+
+    /// `rev` checked as the database checks it: above the head, then the
+    /// policy, then retention.
+    fn check_bounds(&self, unit: UnitId, rev: RevNo) -> Result<&ModelRevision, UnitError> {
+        let head = self.head(unit).ok_or(UnitError::NotFound { unit })?;
+        if rev.0 == 0 || rev > head.rev {
+            return Err(UnitError::RevisionNotFound { unit, rev });
+        }
+        let policy = self.policy(&head.unit_type);
+        if rev < head.rev && policy != HistoryPolicy::Versioned {
+            return Err(UnitError::HistoryUnavailable { policy });
+        }
+        let oldest = self.oldest(unit);
+        if rev < oldest {
+            return Err(UnitError::Pruned { unit, oldest });
+        }
+        Ok(self.revision(unit, rev).expect("revision within bounds"))
+    }
+
+    /// What `get_revision` (and each side of `compare`) answers.
+    pub fn read_revision(&self, unit: UnitId, rev: RevNo) -> Result<&ModelRevision, UnitError> {
+        let r = self.check_bounds(unit, rev)?;
+        Self::check_content(r)?;
+        Ok(r)
+    }
+
+    /// What `history` answers for revisions `[from, to)` (`None`: the
+    /// oldest retained one / past the head) in ascending order, at most
+    /// `limit` (taken from the low end with `asc`, the high end otherwise),
+    /// returned oldest first.
+    pub fn read_history(
+        &self,
+        unit: UnitId,
+        from: Option<RevNo>,
+        to: Option<RevNo>,
+        asc: bool,
+        limit: usize,
+        with_payload: bool,
+    ) -> Result<Vec<&ModelRevision>, UnitError> {
+        if limit == 0 {
+            return Err(UnitError::InvalidArgument("limit must be at least 1".into()));
+        }
+        let head = self.head(unit).ok_or(UnitError::NotFound { unit })?;
+        match self.policy(&head.unit_type) {
+            HistoryPolicy::None => return Err(UnitError::HistoryUnavailable { policy: HistoryPolicy::None }),
+            HistoryPolicy::Audit if with_payload => {
+                return Err(UnitError::HistoryUnavailable { policy: HistoryPolicy::Audit });
+            }
+            _ => {}
+        }
+        let oldest = self.oldest(unit);
+        let from = from.unwrap_or(oldest);
+        if from.0 == 0 {
+            return Err(UnitError::InvalidArgument("history from revision 0".into()));
+        }
+        if from < oldest {
+            return Err(UnitError::Pruned { unit, oldest });
+        }
+        let end = to.map_or(head.rev.0 + 1, |t| t.0.min(head.rev.0 + 1));
+        if from.0 >= end {
+            return Ok(Vec::new());
+        }
+        let take = (end - from.0).min(limit as u64);
+        let (lo, hi) = if asc { (from.0, from.0 + take) } else { (end - take, end) };
+        let out: Vec<&ModelRevision> = (lo..hi).map(|r| self.revision(unit, RevNo(r)).expect("revision")).collect();
+        if with_payload {
+            for r in &out {
+                Self::check_content(r)?;
+            }
+        }
+        Ok(out)
+    }
+
+    /// What `unit_as_of` answers. `Ok(None)` stands for `UnitAt::Pruned`.
+    pub fn read_as_of(&self, unit: UnitId, seq: CommitSeq) -> Result<Option<ModelUnitAt<'_>>, UnitError> {
+        let Some(policy) = self.unit_policy(unit) else {
+            return Ok(Some(ModelUnitAt::Absent));
+        };
+        let at = self.unit_as_of(unit, seq);
+        let r = match at {
+            ModelUnitAt::Absent => return Ok(Some(at)),
+            ModelUnitAt::Present(r) | ModelUnitAt::DeletedAt(r) => r,
+        };
+        let head = self.head(unit).expect("head");
+        if r.rev < head.rev {
+            if policy != HistoryPolicy::Versioned {
+                return Err(UnitError::HistoryUnavailable { policy });
+            }
+            if r.rev < self.oldest(unit) {
+                return Ok(None);
+            }
+        }
+        Self::check_content(r)?;
+        Ok(Some(at))
+    }
+
+    /// What `state_as_of(seq, after, limit)` answers (`None` in a pair
+    /// stands for `UnitAt::Pruned`).
+    #[allow(clippy::type_complexity)]
+    pub fn read_state_as_of(
+        &self,
+        seq: CommitSeq,
+        after: Option<UnitId>,
+        limit: usize,
+    ) -> Result<Vec<(UnitId, Option<ModelUnitAt<'_>>)>, UnitError> {
+        if limit == 0 {
+            return Err(UnitError::InvalidArgument("limit must be at least 1".into()));
+        }
+        let mut out = Vec::new();
+        for u in self.units.keys().copied().filter(|u| after.is_none_or(|a| *u > a)) {
+            match self.read_as_of(u, seq)? {
+                Some(ModelUnitAt::Absent) => {}
+                at => out.push((u, at)),
+            }
+            if out.len() == limit {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// The source of `restore(unit, from)` as the database checks it, after
+    /// `NotFound`/`Deleted` and the lifecycle (`Active` only).
+    pub fn read_restore_source(&self, unit: UnitId, from: RevNo) -> Result<&ModelRevision, UnitError> {
+        let head = self.head(unit).ok_or(UnitError::NotFound { unit })?;
+        if head.lifecycle == Lifecycle::Deleted {
+            return Err(UnitError::Deleted { unit });
+        }
+        if head.lifecycle != Lifecycle::Active {
+            return Err(UnitError::InvalidArgument(format!("unit {unit} is not Active")));
+        }
+        let r = self.check_bounds(unit, from)?;
+        Self::check_content(r)?;
+        if r.payload.is_none() {
+            return Err(UnitError::InvalidArgument(format!("revision {from} of unit {unit} is a tombstone")));
+        }
+        Ok(r)
     }
 }

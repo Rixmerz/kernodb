@@ -17,6 +17,21 @@
 //!   grow strictly (IU-3), or change-set members that do not match
 //!   `member_count` are `Storage(Corruption)`: damage is never reported as
 //!   `NotFound`, `Absent` or an empty result.
+//! * **Policies are errors, not empty results (E3-05, design §3.4).** The
+//!   policy in force now for the unit's type decides; a read that needs what
+//!   it does not keep is [`UnitError::HistoryUnavailable`]:
+//!   - `get_revision`/`compare`/`restore` of a revision below the head under
+//!     `None` or `Audit` (checked after `RevisionNotFound`, before `Pruned`);
+//!   - `history` under `None` (always), and with `with_payload` under `Audit`
+//!     (always);
+//!   - `unit_as_of`/`state_as_of` at a sequence between a unit's creation and
+//!     its last revision under `None` or `Audit` (before creation is still
+//!     `Absent`, from the last revision on the head answers);
+//!   - under any policy, the payload of a non-tombstone revision that an
+//!     `Audit` period dropped (`payload_present = 0`): `HistoryUnavailable {
+//!     policy: Audit }`.
+//!
+//!   `state_as_of` fails as a whole when one unit of its page fails.
 //! * **Bounded.** `history`, `state_as_of` and `change_sets_since` take an
 //!   explicit `limit >= 1`; no call reads a whole history without one.
 
@@ -25,10 +40,12 @@ use std::ops::Bound;
 use kerno_core::contract::{Engine, Snapshot, TxnEngine};
 
 use crate::codec::{ChangeSetRecord, CsMember, Key, RevisionMeta, TAG_CHANGESET, TAG_CS_MEMBER, UnitHead};
-use crate::db::{GetFn, UnitDb, UnitSnapshot, context, corruption, key};
+use crate::db::{GetFn, UnitDb, UnitSnapshot, context, corruption, key, policy_of};
 use crate::error::UnitError;
 use crate::payload::{ContentHash, verify_payload};
-use crate::types::{ChangeSetId, CommitSeq, Lifecycle, Purpose, RevNo, RevisionId, RevisionKind, Timestamp, UnitId};
+use crate::types::{
+    ChangeSetId, CommitSeq, HistoryPolicy, Lifecycle, Purpose, RevNo, RevisionId, RevisionKind, Timestamp, UnitId,
+};
 
 /// Order of [`HistoryQuery`] results.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -208,10 +225,14 @@ pub(crate) fn read_head(get: &GetFn<'_>, id: UnitId) -> Result<Option<UnitHead>,
     Ok(Some(head))
 }
 
-/// `rev` must be a retained revision: `[oldest_rev, head_rev]`.
-pub(crate) fn check_bounds(head: &UnitHead, id: UnitId, rev: RevNo) -> Result<(), UnitError> {
+/// `rev` must be a retained revision, `[oldest_rev, head_rev]`, whose
+/// content `policy` keeps (only the head's under `None`/`Audit`).
+pub(crate) fn check_bounds(head: &UnitHead, id: UnitId, rev: RevNo, policy: HistoryPolicy) -> Result<(), UnitError> {
     if rev.0 == 0 || rev > head.head_rev {
         return Err(UnitError::RevisionNotFound { unit: id, rev });
+    }
+    if rev < head.head_rev && policy != HistoryPolicy::Versioned {
+        return Err(UnitError::HistoryUnavailable { policy });
     }
     if rev < head.oldest_rev {
         return Err(UnitError::Pruned { unit: id, oldest: head.oldest_rev });
@@ -225,6 +246,14 @@ pub(crate) fn read_meta(get: &GetFn<'_>, id: UnitId, rev: RevNo) -> Result<Revis
         return Err(corruption(format!("unit {id}: REV_META of retained revision {rev} is missing")));
     };
     Ok(RevisionMeta::decode(rev, &raw).map_err(|e| context(e, &format!("REV_META of unit {id} rev {rev}")))?)
+}
+
+/// A revision whose payload an `Audit` period dropped has no content to read.
+pub(crate) fn check_content(meta: &RevisionMeta) -> Result<(), UnitError> {
+    if !meta.payload_present && meta.kind != RevisionKind::Delete {
+        return Err(UnitError::HistoryUnavailable { policy: HistoryPolicy::Audit });
+    }
+    Ok(())
 }
 
 /// The verified payload of a revision (`None` for a tombstone).
@@ -242,7 +271,12 @@ pub(crate) fn read_payload(
 
 fn load_revision(get: &GetFn<'_>, id: UnitId, rev: RevNo, with_payload: bool) -> Result<Revision, UnitError> {
     let meta = read_meta(get, id, rev)?;
-    let payload = if with_payload { read_payload(get, id, rev, &meta)? } else { None };
+    let payload = if with_payload {
+        check_content(&meta)?;
+        read_payload(get, id, rev, &meta)?
+    } else {
+        None
+    };
     Ok(to_revision(id, rev, meta, payload))
 }
 
@@ -261,14 +295,21 @@ fn probe(get: &GetFn<'_>, id: UnitId, rev: RevNo, above: CommitSeq, below: Commi
 /// The unit at sequence `s` (design §3.5): the newest revision with
 /// `commit_seq <= s`, found by binary search over `REV_META` (O(log n)
 /// point reads). `s` must not exceed the snapshot's sequence.
-fn unit_at(get: &GetFn<'_>, id: UnitId, s: CommitSeq) -> Result<UnitAt, UnitError> {
+fn unit_at(get: &GetFn<'_>, id: UnitId, s: CommitSeq, fallback: HistoryPolicy) -> Result<UnitAt, UnitError> {
     let Some(head) = read_head(get, id)? else {
         return Ok(UnitAt::Absent);
     };
-    unit_at_head(get, id, &head, s)
+    let policy = policy_of(get, &head.unit_type, fallback)?;
+    unit_at_head(get, id, &head, s, policy)
 }
 
-fn unit_at_head(get: &GetFn<'_>, id: UnitId, head: &UnitHead, s: CommitSeq) -> Result<UnitAt, UnitError> {
+fn unit_at_head(
+    get: &GetFn<'_>,
+    id: UnitId,
+    head: &UnitHead,
+    s: CommitSeq,
+    policy: HistoryPolicy,
+) -> Result<UnitAt, UnitError> {
     if s < head.created_seq {
         return Ok(UnitAt::Absent);
     }
@@ -281,6 +322,8 @@ fn unit_at_head(get: &GetFn<'_>, id: UnitId, head: &UnitHead, s: CommitSeq) -> R
             )));
         }
         head.head_rev
+    } else if policy != HistoryPolicy::Versioned {
+        return Err(UnitError::HistoryUnavailable { policy });
     } else {
         // created_seq <= s < updated_seq, so head_rev > 1 and the answer is
         // below head_rev. Invariant: cs(lo) <= s < cs(hi).
@@ -352,12 +395,13 @@ impl<E: Engine> UnitSnapshot<E> {
     }
 
     /// One revision with its verified payload. `rev` above the head (or 0)
-    /// is [`UnitError::RevisionNotFound`], below the oldest retained one
-    /// [`UnitError::Pruned`]; an unknown unit is [`UnitError::NotFound`].
+    /// is [`UnitError::RevisionNotFound`], one whose content the policy does
+    /// not keep [`UnitError::HistoryUnavailable`], below the oldest retained
+    /// one [`UnitError::Pruned`]; an unknown unit is [`UnitError::NotFound`].
     pub fn get_revision(&self, id: UnitId, rev: RevNo) -> Result<Revision, UnitError> {
         let get = self.getter();
         let head = read_head(&get, id)?.ok_or(UnitError::NotFound { unit: id })?;
-        check_bounds(&head, id, rev)?;
+        check_bounds(&head, id, rev, policy_of(&get, &head.unit_type, self.fallback)?)?;
         load_revision(&get, id, rev, true)
     }
 
@@ -368,6 +412,13 @@ impl<E: Engine> UnitSnapshot<E> {
         need_limit(q.limit)?;
         let get = self.getter();
         let head = read_head(&get, id)?.ok_or(UnitError::NotFound { unit: id })?;
+        match policy_of(&get, &head.unit_type, self.fallback)? {
+            HistoryPolicy::None => return Err(UnitError::HistoryUnavailable { policy: HistoryPolicy::None }),
+            HistoryPolicy::Audit if q.with_payload => {
+                return Err(UnitError::HistoryUnavailable { policy: HistoryPolicy::Audit });
+            }
+            _ => {}
+        }
         let from = q.from.unwrap_or(head.oldest_rev);
         if from.0 == 0 {
             return Err(UnitError::InvalidArgument("history from revision 0".into()));
@@ -404,7 +455,12 @@ impl<E: Engine> UnitSnapshot<E> {
                 )));
             }
             prev = Some(meta.commit_seq);
-            let payload = if q.with_payload { read_payload(&get, id, rev, &meta)? } else { None };
+            let payload = if q.with_payload {
+                check_content(&meta)?;
+                read_payload(&get, id, rev, &meta)?
+            } else {
+                None
+            };
             out.push(to_revision(id, rev, meta, payload));
         }
         if out.len() as u64 != take {
@@ -421,7 +477,7 @@ impl<E: Engine> UnitSnapshot<E> {
     /// snapshot's is [`UnitError::InvalidArgument`].
     pub fn unit_as_of(&self, id: UnitId, at: AsOf) -> Result<UnitAt, UnitError> {
         let s = self.check_as_of(at)?;
-        unit_at(&self.getter(), id, s)
+        unit_at(&self.getter(), id, s, self.fallback)
     }
 
     /// The state of the units at `at`, in unit id order, starting after
@@ -440,6 +496,7 @@ impl<E: Engine> UnitSnapshot<E> {
         };
         let mut inclusive = after.is_none();
         let mut out = Vec::new();
+        let mut policies: std::collections::BTreeMap<String, HistoryPolicy> = std::collections::BTreeMap::new();
         loop {
             let start = if inclusive { Bound::Included(cursor.as_slice()) } else { Bound::Excluded(cursor.as_slice()) };
             let page = scan_all(&self.snap, start, Bound::Excluded(&end), 256)?;
@@ -452,7 +509,15 @@ impl<E: Engine> UnitSnapshot<E> {
                 if head.oldest_rev.0 == 0 || head.oldest_rev > head.head_rev {
                     return Err(corruption(format!("unit {unit}: oldest_rev outside 1..=head_rev")));
                 }
-                match unit_at_head(&get, unit, &head, s)? {
+                let policy = match policies.get(&head.unit_type) {
+                    Some(p) => *p,
+                    None => {
+                        let p = policy_of(&get, &head.unit_type, self.fallback)?;
+                        policies.insert(head.unit_type.clone(), p);
+                        p
+                    }
+                };
+                match unit_at_head(&get, unit, &head, s, policy)? {
                     UnitAt::Absent => {}
                     state => out.push((unit, state)),
                 }

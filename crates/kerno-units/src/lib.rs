@@ -21,8 +21,8 @@ pub mod types;
 pub use clock::{Clock, CounterIds, FixedClock, SystemClock, UnitIdSource, UuidV7Source};
 pub use codec::{ChangeSetRecord, CsMember, Key, LayerMeta, Record, RevisionMeta, UnitHead};
 pub use db::{
-    ChangeMeta, ChangeSet, CommitInfo, CreatedUnit, DEFAULT_MAX_CHANGESET_OPS, NewUnit, Unit, UnitConfig, UnitDb,
-    UnitSnapshot, UnitUpdate,
+    ChangeMeta, ChangeSet, CommitInfo, CreatedUnit, DEFAULT_MAX_CHANGESET_OPS, MAX_POLICY_UNIT_TYPE_LEN, NewUnit, Unit,
+    UnitConfig, UnitDb, UnitSnapshot, UnitUpdate,
 };
 pub use error::{DecodeError, ErrorClass, UnitError, UnitRule};
 pub use history::{

@@ -813,10 +813,12 @@ fn open_and_mark<E: TxnEngine>() {
     assert_eq!(seq(&db), 0);
     db.close().unwrap();
 
-    // History policies other than Versioned belong to E3-05.
+    // Every history policy is a valid default (E3-05).
     for p in [HistoryPolicy::None, HistoryPolicy::Audit] {
         let c = UnitConfig { default_policy: p, ..cfg() };
-        assert!(matches!(open::<E>(&SimVfs::new(16), &c), Err(UnitError::InvalidArgument(_))));
+        let db = open::<E>(&SimVfs::new(16), &c).expect("open");
+        assert_eq!(db.policy("doc").unwrap(), p);
+        db.close().unwrap();
     }
 }
 
