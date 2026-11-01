@@ -4,11 +4,13 @@
 //! (`docs/file-format/units-v1.md`). E3-02 implements it: the payload
 //! integrity check ([`payload`]), the key and value codecs ([`codec`]), the
 //! layer's errors ([`error`]), the injected clock and id sources ([`clock`])
-//! and the reference model ([`model`]). The operations come with E3-03; this
-//! crate stays separate from `kerno-storage`.
+//! and the reference model ([`model`]). E3-03 adds the database itself
+//! ([`db`]): opening, change sets, create/update/archive/unarchive/delete
+//! and `get_unit`. This crate stays separate from `kerno-storage`.
 
 pub mod clock;
 pub mod codec;
+pub mod db;
 pub mod error;
 pub mod model;
 pub mod payload;
@@ -16,6 +18,10 @@ pub mod types;
 
 pub use clock::{Clock, CounterIds, FixedClock, SystemClock, UnitIdSource, UuidV7Source};
 pub use codec::{ChangeSetRecord, CsMember, Key, LayerMeta, Record, RevisionMeta, UnitHead};
+pub use db::{
+    ChangeMeta, ChangeSet, CommitInfo, CreatedUnit, DEFAULT_MAX_CHANGESET_OPS, NewUnit, Unit, UnitConfig, UnitDb,
+    UnitSnapshot, UnitUpdate,
+};
 pub use error::{DecodeError, ErrorClass, UnitError, UnitRule};
 pub use model::{ModelChange, ModelChangeSet, ModelError, ModelRevision, ModelUnitAt, UnitModel};
 pub use payload::{

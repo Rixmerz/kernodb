@@ -521,6 +521,17 @@ Todos son secuenciales salvo donde se indica. «Hecho» incluye: `cargo fmt --ch
 
 Camino crítico: E3-00 → 01 → 02 → 03 → 04; 05, 06, 07 se pueden paralelizar tras 03/04; 08 tras todos; 09 puede empezar tras 06.
 
+**Nota de E3-03 (ambigüedades resueltas con la opción más conservadora; `crates/kerno-units/src/db.rs`):**
+
+- `UnitConfig` no lleva `kerno_storage::Config`: `kerno-units` no depende de `kerno-storage` (solo como dependencia de desarrollo, para las pruebas sobre `KernoDb`). Lleva `engine: Options` de `kerno-core`, y `UnitDb::from_engine` acepta un motor ya abierto con su configuración propia. Por lo mismo no existe el alias `KernoUnits` ni el parámetro de tipo por defecto `E = KernoDb`.
+- Un `ChangeSet` crea como mucho **una revisión por unidad** (I-26, IU-3): una segunda operación sobre la misma unidad es `InvalidArgument` y deja el `ChangeSet` utilizable.
+- Ciclo de vida: `update` exige `Active` (sobre `Archived` es `InvalidArgument`); `archive` exige `Active`; `unarchive`, `Archived`; `delete` admite `Active` y `Archived`. Orden de comprobación: `NotFound` → `Conflict` (`expected`) → `Deleted` → ciclo de vida.
+- Cada operación valida y codifica todo antes de su primera escritura, así que un rechazo no tiene efecto. Si el motor rechaza una escritura a mitad de operación (límite de lote, E/S), el `ChangeSet` queda roto: devuelve `ChangeSetClosed` y `commit` lo aborta. `InvalidArgument` del motor se traduce a `ChangeSetTooLarge`.
+- `ChangeMeta`: `actor` y `source` se copian también en cada `REV_META`, por lo que su límite es 256 B; `Some` vacío se rechaza (el formato no distingue vacío de ausente); `purpose` solo admite `Application` (los demás son de E3-05/E3-06).
+- `default_policy` solo admite `Versioned` hasta E3-05. Con `create_if_missing = false`, una base vacía se abre y se lee vacía, y `begin_changeset` es `InvalidArgument`.
+- Una lectura del reloj por `ChangeSet`, usada por el registro y todas sus revisiones. `get_unit` compara la cabeza con el `REV_META` de `head_rev` (IU-2) además de `verify_payload`; una discrepancia es `Storage(Corruption)`.
+- Tras una predicción de secuencia fallida el manejador rechaza también las lecturas con `Storage(Poisoned)` hasta reabrir.
+
 ## 12. Decisiones del propietario
 
 Las decisiones 1–8 quedaron **decididas** el 2026-10-31 ([acta E3-00](etapa3-acta-e3-00.md)), con las condiciones que ahí constan; las 9–13 siguen abiertas.
