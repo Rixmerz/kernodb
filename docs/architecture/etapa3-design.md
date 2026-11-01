@@ -600,9 +600,15 @@ Camino crítico: E3-00 → 01 → 02 → 03 → 04; 05, 06, 07 se pueden paralel
 - Semillas: valores por defecto 4 (`changeset_every_point`), 16 (`model_crash`, `torn_write`), 4 (`recovery_reentrant`) y 2 (`fsync_failure`, `enospc`); `SPIKE_SEEDS`, `SPIKE_SEED` y `SPIKE_POINT` funcionan como en los barridos del motor. Comprobación de 1 000 semillas hecha en local: `SPIKE_SEEDS=1000 cargo test --release -p kerno-units --test crash` (27 pruebas en verde en 7 min 21 s de reloj en local, 441 s de ejecución; `torn_write` descartó la trama 1 274 veces y la encontró entera 726 de 2 000) y `KERNO_KILL_ITERS=200 cargo test --release -p kerno-units --test process_kill` (2 pruebas en verde en 2 min 20 s; secuencias recuperadas 818 en `Sync` y 942 en `Buffered`). Con las semillas por defecto, `crash.rs` tarda unos 2–5 s y `process_kill.rs` unos 3–9 s. `retention_every_point` no depende de semillas (escenario fijo). El tiempo cabe holgadamente en un trabajo de 6 h, así que no hace falta dividir en matriz (§8.7).
 - No se mide aquí el coste en bytes de WAL de un `update` (§9, «se contrasta en WP-E3-08»): es una medida de rendimiento y queda para los bancos de E3-09. `retention_every_point` (E3-06) ya ejecutaba `verify_units` tras cada caída y no cambia.
 
+**Nota de E3-09 (`crates/kerno-units/examples/unit_bench.rs`, [informe](../testing/etapa3-report.md), salida bruta en `spikes/storage/results/2026-11-01-e3/`):**
+
+- Umbrales de la decisión 12, fijados antes de medir y no ajustados. Comando: `cargo run --release -p kerno-units --example unit_bench` (completo, ~7,5 min) o `-- --quick` (~3 s, añadido al trabajo `bench-smoke` de CI; informa, no hace fallar el trabajo por un umbral).
+- Resultados (VM de 4 vCPU, `KernoDb` por defecto, `Sync`, `StdVfs`): **U1 cumple** (p99 0,557 ms frente a 0,428 ms, 1,30×); **U2 incumple** (0,1061 ms frente a 0,0580 ms, 1,83×); **U3 aviso** (0,0326 ms frente a 0,0063 ms, 5,13×; 4,37× en otra pasada; no se añade índice invertido); U4: +339 B de WAL por `update` (1 416 B frente a 1 077 B con 1 KiB; 1,01× con 64 KiB), que es la medida aplazada de E3-08; U5: 1 257,7 B por revisión de 1 KiB frente a 1 068,0 B por clave (1,178×); **U6 incumple**: p99 de escritura concurrente de ~2,4 ms antes a 5 693 ms durante la poda (217,7 ms con presupuesto de 25 unidades), porque `run_retention` recorre todas las cabezas dentro de la ranura de escritura en cada llamada.
+- `docs/testing/f1-objetivos-rendimiento.md` sin cambios. Las mejoras de U2 y U6 quedan como trabajo posterior; no se han hecho en este WP.
+
 ## 12. Decisiones del propietario
 
-Las decisiones 1–8 quedaron **decididas** el 2026-10-31 ([acta E3-00](etapa3-acta-e3-00.md)), con las condiciones que ahí constan; las 9–13 siguen abiertas.
+Las decisiones 1–8 quedaron **decididas** el 2026-10-31 ([acta E3-00](etapa3-acta-e3-00.md)), con las condiciones que ahí constan; la 12, el 2026-11-01; las 9–11 y 13 siguen abiertas.
 
 | # | Decisión | Recomendación de este diseño | Si se elige otra cosa |
 |---|---|---|---|
@@ -617,7 +623,7 @@ Las decisiones 1–8 quedaron **decididas** el 2026-10-31 ([acta E3-00](etapa3-a
 | 9 | **Poda de `CHANGESET`**: ¿se conservan siempre (procedencia) hasta ADR-0009? | Sí, ~60 B por revisión | Podarlos con la revisión: pierde procedencia |
 | 10 | **`unit_id`**: UUIDv7 interno inyectable (D-05) y mapeo a IDs públicos en ADR-0005 | UUIDv7 | UUIDv4 o contador por base: pierde localidad temporal de claves (efecto en escritura al LSM a medir) |
 | 11 | **Límite de carga útil**: 1 MiB por defecto, ajustable a 64 MiB; ¿troceado? | Sin troceado en esta etapa | Troceado: nueva etiqueta de clave y reglas de GC |
-| 12 | **Umbrales U1–U6** y si se comparan con SQLite además de con la referencia interna | Aprobar antes de medir (ADR-0012) | — |
+| 12 | **Umbrales U1–U6** y si se comparan con SQLite además de con la referencia interna<br>**Decidido (2026-11-01):** U1 (p99 de commit de un `update` de 1 KiB, `Sync`, frente a un put simple de 1 KiB en `KernoDb`) ≤ 1,5×; U2 (`history(id, 100 rev)` p99 solo metadatos frente a `scan` del mismo nº de claves de 100 B) ≤ 1,5×; ambas con el mismo hardware, carga, calentamiento y configuración, informando latencias absolutas en ms además de razones. U3 (aviso si > 5× un `get`; no se añade el índice invertido solo por superarlo, su coste debe justificarse antes), U4 y U5 informativas pero completas y reproducibles (comandos, configuración, semillas, salida bruta). U6: rendimiento de `run_retention` y p99 de escritura concurrente medidos antes y durante la poda con la misma carga, comparando p99 y rendimiento; T1–T3 no deben empeorar más allá de lo medido en baja carga. Solo referencia interna; SQLite queda para la Etapa 9. T1–T10 sin tocar; nunca se bajan umbrales para declarar éxito. | Aprobar antes de medir (ADR-0012) | — |
 | 13 | **Orden de seguridad frente a IA** (decisión ya pendiente del roadmap): no bloquea la Etapa 3, pero fija si la supresión (ADR-0009) entra antes de que se acumule historial real | Adelantar ADR-0009 a antes de la Etapa 8 | — |
 
 ## 13. Riesgos
