@@ -85,7 +85,7 @@ La **carga útil vigente no está en la cabeza**: está en `REV_PAYLOAD(unit, he
 | `commit_seq` | `u64` | `commit_sequence` (spec §6.2); también la clave de su `ChangeSet` |
 | `created_at` | `i64` µs | |
 | `schema_version` | `u32` | |
-| `content_hash`, `payload_len`, `payload_codec` | como en §2.3 | `payload_len = 0` y hash del vacío en `Delete` y bajo política `audit` |
+| `content_hash`, `payload_len`, `payload_codec` | como en §2.3 | `payload_len = 0` y hash del vacío en `Delete`; bajo política `audit` se conservan hash y longitud con `payload_present = 0` (ver «Nota de E3-05») |
 | `payload_present` | `u8` | `1` si existe `REV_PAYLOAD` para esta revisión (cambia a ausente por política o GC, §3.4/§5) |
 | `restored_from` | `u64` | `0` salvo en `Restore` |
 | `metadata` | bytes ≤ 4 KiB | los metadatos **versionados** con la revisión (decisión 6) |
