@@ -8,9 +8,8 @@
 //! (I-26, IU-3), `parent_rev = rev - 1`, change sets are applied in strictly
 //! increasing `commit_seq` — and answers queries from that history.
 //!
-//! Deferred: building revisions from operations and `expected` revisions
-//! (E3-03), `compare`, `state_as_of` across units and paging (E3-04),
-//! history policies (E3-05), retention and `Pruned` (E3-06).
+//! Deferred: history policies (E3-05), retention and `Pruned` (E3-06).
+//! Building revisions from operations stays with the tests that drive it.
 
 use std::collections::BTreeMap;
 
@@ -174,6 +173,12 @@ impl UnitModel {
             Some(r) if r.lifecycle == Lifecycle::Deleted => ModelUnitAt::DeletedAt(r),
             Some(r) => ModelUnitAt::Present(r),
         }
+    }
+
+    /// Every unit that existed once `seq` committed, in id order, with its
+    /// state then (units created later are left out).
+    pub fn state_as_of(&self, seq: CommitSeq) -> Vec<(UnitId, ModelUnitAt<'_>)> {
+        self.units.keys().map(|&u| (u, self.unit_as_of(u, seq))).filter(|(_, at)| *at != ModelUnitAt::Absent).collect()
     }
 
     /// Up to `limit` change sets with `seq > after`, in commit order.

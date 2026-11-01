@@ -36,9 +36,10 @@
 //!   reading per change set, used for the change set and all its revisions)
 //!   and ids only from the injected [`UnitIdSource`].
 //!
-//! History, as-of reads and restore (E3-04), history policies other than
-//! `Versioned` (E3-05), retention (E3-06) and `verify_units` (E3-07) are not
-//! part of this module.
+//! `restore` (E3-04) lives here because it is a change-set operation; the
+//! history and as-of reads (E3-04) are in [`crate::history`]. History
+//! policies other than `Versioned` (E3-05), retention (E3-06) and
+//! `verify_units` (E3-07) are not part of this module.
 
 use std::collections::BTreeSet;
 use std::ops::Bound;
@@ -275,21 +276,21 @@ fn layer_mark_key() -> Vec<u8> {
     k
 }
 
-fn key(k: Key) -> Result<Vec<u8>, UnitError> {
+pub(crate) fn key(k: Key) -> Result<Vec<u8>, UnitError> {
     k.encode()
 }
 
 /// Adds the record's identity to a decode error, keeping its rule and class.
-fn context(e: DecodeError, what: &str) -> DecodeError {
+pub(crate) fn context(e: DecodeError, what: &str) -> DecodeError {
     DecodeError { detail: format!("{what}: {}", e.detail), ..e }
 }
 
-fn corruption(msg: String) -> UnitError {
+pub(crate) fn corruption(msg: String) -> UnitError {
     UnitError::Storage(kerno_core::Error::Corruption(msg))
 }
 
 /// A point read: a snapshot's or a transaction's `get`.
-type GetFn<'a> = dyn Fn(&[u8]) -> kerno_core::Result<Option<Vec<u8>>> + 'a;
+pub(crate) type GetFn<'a> = dyn Fn(&[u8]) -> kerno_core::Result<Option<Vec<u8>>> + 'a;
 
 /// What the layer mark says (design §2.6).
 enum MarkState {
@@ -480,7 +481,7 @@ impl<E: TxnEngine + SyncEngine> UnitDb<E> {
 
 /// A read view of the units at one commit sequence.
 pub struct UnitSnapshot<E: Engine> {
-    snap: E::Snapshot,
+    pub(crate) snap: E::Snapshot,
 }
 
 impl<E: Engine> UnitSnapshot<E> {
@@ -612,6 +613,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         head: UnitHead,
         kind: RevisionKind,
         payload: Option<&[u8]>,
+        restored_from: Option<RevNo>,
     ) -> Result<Planned, UnitError> {
         let rev = head.head_rev;
         let meta = RevisionMeta {
@@ -623,7 +625,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
             content_hash: head.content_hash,
             payload_len: head.payload_len,
             payload_present: payload.is_some(),
-            restored_from: None,
+            restored_from,
             metadata: head.metadata.clone(),
             actor_ref: self.actor(),
             source_ref: self.source(),
@@ -694,7 +696,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
             payload_len: new.payload.len() as u32,
             metadata: new.metadata,
         };
-        let plan = self.plan(id, head, RevisionKind::Create, Some(&new.payload))?;
+        let plan = self.plan(id, head, RevisionKind::Create, Some(&new.payload), None)?;
         self.apply(plan)?;
         Ok(id)
     }
@@ -720,7 +722,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         if let Some(m) = upd.metadata {
             next.metadata = m;
         }
-        let plan = self.plan(id, next, RevisionKind::Update, Some(&upd.payload))?;
+        let plan = self.plan(id, next, RevisionKind::Update, Some(&upd.payload), None)?;
         self.apply(plan)
     }
 
@@ -743,7 +745,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         };
         let mut next = self.next_head(&head);
         next.lifecycle = to;
-        let plan = self.plan(id, next, kind, Some(&payload))?;
+        let plan = self.plan(id, next, kind, Some(&payload), None)?;
         self.apply(plan)
     }
 
@@ -767,7 +769,40 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         next.lifecycle = Lifecycle::Deleted;
         next.content_hash = ContentHash::blake3(PAYLOAD_CODEC_OPAQUE, &[]);
         next.payload_len = 0;
-        let plan = self.plan(id, next, RevisionKind::Delete, None)?;
+        let plan = self.plan(id, next, RevisionKind::Delete, None, None)?;
+        self.apply(plan)
+    }
+
+    /// Restores revision `from` (design §3.2, I-22): a new `Restore` revision
+    /// whose payload, schema version and metadata are copies of `from`'s;
+    /// every revision after `from` stays as it was. The unit must be
+    /// `Active`; `from` must be a retained revision with a payload (not a
+    /// tombstone). `from` above the head is [`UnitError::RevisionNotFound`],
+    /// below the oldest retained one [`UnitError::Pruned`]. The source payload
+    /// is verified before it is copied.
+    pub fn restore(&mut self, id: UnitId, from: RevNo, expected: Option<RevNo>) -> Result<RevNo, UnitError> {
+        self.admit(Some(id))?;
+        let (head, _, _) = self.current(id, expected)?;
+        if head.lifecycle != Lifecycle::Active {
+            return Err(UnitError::InvalidArgument(format!(
+                "unit {id} is {:?}; only an Active unit is restored",
+                head.lifecycle
+            )));
+        }
+        let txn = self.txn()?;
+        let get = |k: &[u8]| txn.get(k);
+        crate::history::check_bounds(&head, id, from)?;
+        let source = crate::history::read_meta(&get, id, from)?;
+        let Some(payload) = crate::history::read_payload(&get, id, from, &source)? else {
+            return Err(UnitError::InvalidArgument(format!("revision {from} of unit {id} is a tombstone")));
+        };
+        let mut next = self.next_head(&head);
+        next.lifecycle = Lifecycle::Active;
+        next.content_hash = source.content_hash;
+        next.payload_len = source.payload_len;
+        next.schema_version = source.schema_version;
+        next.metadata = source.metadata;
+        let plan = self.plan(id, next, RevisionKind::Restore, Some(&payload), Some(from))?;
         self.apply(plan)
     }
 
