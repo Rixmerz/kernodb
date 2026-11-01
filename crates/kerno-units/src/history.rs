@@ -448,9 +448,14 @@ impl<E: Engine> UnitSnapshot<E> {
         let page = scan_all(&self.snap, Bound::Included(&start), Bound::Excluded(&stop), take as usize)?;
         let mut out = Vec::with_capacity(page.len());
         let mut prev: Option<CommitSeq> = None;
+        // The key each entry must have: the start key with its revision
+        // bumped in place (bytes compared, nothing decoded).
+        let mut want = start;
         for (i, (k, v)) in page.into_iter().enumerate() {
             let rev = RevNo(lo + i as u64);
-            if Key::decode(&k)? != (Key::RevMeta { unit: id, rev }) {
+            let at = want.len() - 8;
+            want[at..].copy_from_slice(&rev.0.to_be_bytes());
+            if k != want {
                 return Err(corruption(format!("unit {id}: REV_META of retained revision {rev} is missing")));
             }
             let meta =

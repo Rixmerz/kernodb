@@ -66,7 +66,8 @@ use std::collections::BTreeSet;
 use std::ops::Bound;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use kerno_core::contract::{Engine, Options, Snapshot, SyncEngine, Txn, TxnEngine};
 use kerno_core::vfs::Vfs;
@@ -285,6 +286,12 @@ pub struct UnitDb<E: TxnEngine> {
     engine: E,
     cfg: UnitConfig,
     poisoned: AtomicBool,
+    /// Where an incomplete retention pass resumes (see
+    /// [`crate::retention`]); the lock also serializes retention calls.
+    pub(crate) retention: Mutex<Option<crate::retention::RetentionCursor>>,
+    /// Bumped before every commit that may change a history policy: a
+    /// retention cursor taken under another value is not resumed.
+    pub(crate) policy_epoch: AtomicU64,
 }
 
 fn layer_mark_key() -> Vec<u8> {
@@ -432,7 +439,13 @@ impl<E: TxnEngine> UnitDb<E> {
             read_mark(&|k| snap.get(k), &|| Ok(!snap.scan(Bound::Unbounded, Bound::Unbounded, 1)?.is_empty()))
         });
         match checked {
-            Ok(_) => Ok(UnitDb { engine, cfg: cfg.clone(), poisoned: AtomicBool::new(false) }),
+            Ok(_) => Ok(UnitDb {
+                engine,
+                cfg: cfg.clone(),
+                poisoned: AtomicBool::new(false),
+                retention: Mutex::new(None),
+                policy_epoch: AtomicU64::new(0),
+            }),
             Err(e) => {
                 let _ = engine.close();
                 Err(e)
@@ -468,6 +481,16 @@ impl<E: TxnEngine> UnitDb<E> {
     /// that already holds one deadlocks, as `begin_write` does) and predicts
     /// its commit sequence.
     pub fn begin_changeset(&self, meta: ChangeMeta) -> Result<ChangeSet<'_, E>, UnitError> {
+        self.begin_changeset_at(meta, None)
+    }
+
+    /// [`begin_changeset`](Self::begin_changeset) with the clock reading
+    /// `now` taken by the caller (`None`: read it after taking the slot).
+    pub(crate) fn begin_changeset_at(
+        &self,
+        meta: ChangeMeta,
+        now: Option<Timestamp>,
+    ) -> Result<ChangeSet<'_, E>, UnitError> {
         self.check_poisoned()?;
         meta.validate()?;
         let txn = self.engine.begin_write()?;
@@ -484,7 +507,7 @@ impl<E: TxnEngine> UnitDb<E> {
             .read_seq()
             .checked_add(1)
             .ok_or_else(|| UnitError::InvalidArgument("the commit sequence is exhausted".into()))?;
-        let now = self.cfg.clock.now();
+        let now = now.unwrap_or_else(|| self.cfg.clock.now());
         Ok(ChangeSet {
             db: self,
             txn: Some(txn),
@@ -668,7 +691,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
     }
 
     /// Writes one engine operation; on an engine error the change set is broken.
-    fn write(&mut self, w: &Write) -> Result<(), UnitError> {
+    pub(crate) fn write(&mut self, w: &Write) -> Result<(), UnitError> {
         let Some(txn) = self.txn.as_mut() else {
             return Err(UnitError::ChangeSetClosed);
         };
@@ -990,6 +1013,11 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
             }
             return Ok(CommitInfo { change_set: current, commit_seq: current, revisions: Vec::new(), durable });
         }
+        if self.need_mark || self.maintenance {
+            // The policies may change with this commit: no retention pass
+            // resumes across it.
+            self.db.policy_epoch.fetch_add(1, Ordering::SeqCst);
+        }
         if self.need_mark {
             let mark = LayerMeta { layer_version: LAYER_VERSION, history_policy: self.db.cfg.default_policy };
             let v = mark.encode()?;
@@ -1024,15 +1052,10 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
     }
 
     /// A retention change set (purpose `Retention`, no caller provenance).
-    pub(crate) fn begin_retention(db: &'db UnitDb<E>) -> Result<Self, UnitError> {
-        let mut cs = db.begin_changeset(ChangeMeta::default())?;
+    pub(crate) fn begin_retention(db: &'db UnitDb<E>, now: Timestamp) -> Result<Self, UnitError> {
+        let mut cs = db.begin_changeset_at(ChangeMeta::default(), Some(now))?;
         cs.meta.purpose = Purpose::Retention;
         Ok(cs)
-    }
-
-    /// The clock reading of this change set.
-    pub(crate) fn now(&self) -> Timestamp {
-        self.now
     }
 
     /// Writes what retention does to `unit` plus its member `(unit, rev,

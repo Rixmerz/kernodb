@@ -9,11 +9,11 @@ Este informe mide U1–U6 con los umbrales que el propietario aprobó **antes** 
 | Id | Umbral (decisión 12) | Capa | Referencia | Razón | Resultado |
 |---|---|---|---|---|---|
 | U1 | p99 ≤ 1,5× | `update` 1 KiB `Sync`: p99 **0,557 ms** (p50 0,221) | put 1 KiB `Sync`: p99 **0,428 ms** (p50 0,175) | **1,30×** | **Cumple** (pasada completa); en la pasada rápida 1,82× (100 muestras, sin valor estadístico) |
-| U2 | p99 ≤ 1,5× | `history(id, 100 rev)` solo metadatos: p99 **0,1061 ms** (p50 0,048) | snapshot + `scan` de 100 claves de 100 B: p99 **0,0580 ms** (p50 0,017) | **1,83×** | **Incumple** |
+| U2 | p99 ≤ 1,5× | `history(id, 100 rev)` solo metadatos: antes p99 0,1061 ms (p50 0,048); **después p99 0,0541 ms** (p50 0,028) | snapshot + `scan` de 100 claves de 100 B: antes 0,0580 ms; después **0,0367 ms** (p50 0,017) | antes 1,83×; **después 1,47×** (repetición: 1,53×) | **En el límite**: cumple en la pasada completa, incumple por poco en la repetición (ver §3) |
 | U3 | se informa; aviso si > 5× un `get` | `unit_as_of` con 1 000 revisiones: p99 **0,0326 ms** | snapshot + `get` 1 KiB: p99 **0,0063 ms** | **5,13×** | **Aviso** (> 5×). En una pasada anterior idéntica salió 4,37×: está en el límite |
 | U4 | se informa | ver §4 | | | Informativo |
 | U5 | se informa | 1 257,7 B por revisión de 1 KiB | 1 068,0 B por clave de 1 KiB | 1,178× | Informativo |
-| U6 | p99 y rendimiento de escritura durante la poda no peores que antes, con la misma carga | p99 escritura durante: **5 693 ms** (presupuesto por defecto) / **217,7 ms** (25 unidades) | antes: **2,38 ms** / **2,19 ms**; baja carga 0,58 / 0,79 ms | 2 393× / 99× (p99); rendimiento 0,00× / 0,01× | **Incumple** (ambos presupuestos) |
+| U6 | p99 y rendimiento de escritura durante la poda no peores que antes, con la misma carga | p99 escritura durante: antes del arreglo 5 693 ms / 217,7 ms; **después 2,373 ms** (presupuesto por defecto) / **3,324 ms** (25 unidades) | ventanas «antes»: 2,069 ms / 2,096 ms | después: 1,15× / 1,59× (p99 escritura); rendimiento 1,14× / 0,76×; p99 lectura 1,87× / 6,07× | **Incumple** (ambos presupuestos), aunque el p99 de escritura baja ~2 400× |
 
 Coste en bytes de WAL de un `update` (pendiente de E3-08): **1 416 B** por `update` de 1 KiB frente a **1 077 B** por put de 1 KiB (+339 B, 1,31×); con 64 KiB, 65 929 B frente a 65 590 B (+339 B, 1,01×). El sobrecoste es fijo por `update` (claves `10`, `20`, `21`, `31`, `30` y sus cabeceras).
 
@@ -45,7 +45,14 @@ Tamaños de la pasada completa: U1 1 000 unidades/claves, 5 × 1 000 operaciones
 
 U1 por ronda (p99 en ms, `update` / put): 0,448/0,504 · 0,548/0,466 · 0,529/0,466 · 1,232/0,393 · 0,449/0,393. El p99 agregado cumple (1,30×), pero una ronda (3) supera 1,5× por sí sola: el margen no es amplio y depende de la varianza del `fdatasync` de la VM. La media es 0,245 ms frente a 0,195 ms (1,25×).
 
-U2 incumple: `history` hace snapshot, lee la cabeza y la política (`get`), escanea 100 `REV_META` y decodifica y valida cada uno (orden de `commit_seq`, IU-3); la referencia solo escanea. p50 2,8×, p99 1,83×. No se baja el umbral; las causas probables (lecturas previas al `scan`, decodificación con comprobaciones) son candidatas a optimizar en un WP posterior.
+U2 (antes del arreglo): `history` hacía snapshot, leía la cabeza y la política (`get`), escaneaba 100 `REV_META` (ya era un único `scan`, sin lecturas puntuales por revisión) y decodificaba y validaba cada uno; p50 2,8×, p99 1,83×.
+
+Perfil (callgrind y cronometraje por fases, 100 revisiones): `scan` del motor ≈ 15–17 µs (igual que la referencia), decodificación de `REV_META` ≈ 10 µs (≈ 100 ns por registro con el lector campo a campo), `Key::decode` por entrada ≈ 1 µs, cabeza + política ≈ 1,6 µs. Cambios (sin tocar el formato en disco):
+
+- `RevisionMeta::decode` tiene una vía rápida de desplazamientos fijos que acepta solo lo que acepta el decodificador comprobado, con el mismo resultado; ante cualquier anomalía devuelve al decodificador comprobado, que nombra la regla exacta (prueba `rev_meta_fast_path_agrees_with_checked` con 20 000 valores válidos y mutados). Decodificar 100 registros pasa de ≈ 10 µs a ≈ 3,6 µs.
+- `history` compara los bytes de la clave esperada en lugar de decodificar cada clave.
+
+Después: p50 0,028 ms frente a 0,017 ms (1,65×), p99 **0,0541 frente a 0,0367 ms = 1,47×** en la pasada completa; en una repetición inmediata de U1/U2, 0,0597 frente a 0,0389 ms = **1,53×**; en cinco pasadas sueltas de U2 previas, 1,28×–1,54× (cuatro de cinco cumplen). Es decir, U2 queda **en el límite**, no cumple con margen. Lo que queda por encima de la referencia es estructural: decodificar y validar 100 `REV_META`, construir 100 `Revision` (224 B cada una) y dos lecturas previas al `scan`. El umbral no se baja.
 
 U3: 5,13× un `get` en esta pasada (4,37× en una pasada previa igual), 0,0326 ms absolutos. Se marca el aviso. **No se añade el índice invertido** (§3.5): antes hay que justificar su coste (escritura y espacio extra por revisión, formato bajo `layer_version`) frente a una latencia absoluta de decenas de µs. Como contexto, `get_unit` (cabeza) p99 0,0075 ms.
 
@@ -77,12 +84,35 @@ Carga idéntica en las tres ventanas: 2 hilos escritores en bucle cerrado (`upda
 | | antes A / B | 1,940 / 2,193 | 0,663 / 0,601 | 2 748 / 2 963 | 0,0234 / 0,0072 |
 | | **durante** | **217,7** | 74,4 | **24,6** | 0,1255 |
 
-Rendimiento de la retención: 7 083 revisiones/s (327 unidades/s) con el presupuesto por defecto y 6 681 revisiones/s con 25 unidades. **Incumple** con ambos presupuestos: la escritura concurrente queda casi bloqueada durante la poda.
+Rendimiento de la retención (antes del arreglo): 7 083 revisiones/s con el presupuesto por defecto y 6 681 con 25 unidades; la escritura concurrente quedaba casi bloqueada. Causa: `run_retention` tomaba la ranura de escritura al empezar y, dentro, recorría **todas** las cabezas desde el principio en cada llamada (las búsquedas dentro de una transacción con miles de borrados de rango pendientes son además cuadráticas).
 
-Causa (de la lectura de `retention.rs`, no medida aparte): `run_retention` toma la ranura de escritura única al empezar y, dentro de ella, recorre **todas** las cabezas `UNIT_HEAD` desde el principio en cada llamada, incluidas las ya podadas; el presupuesto solo limita las unidades que se escriben, no el recorrido. Con 10 100 unidades cada llamada retiene la ranura segundos, y reducir el presupuesto multiplica las llamadas sin acortar el recorrido. Mitigaciones posibles, a decidir en otro WP: reanudar desde un cursor devuelto por la llamada anterior, limitar también las unidades examinadas, o planificar fuera de la ranura y validar dentro. Nada de esto se ha cambiado aquí. T1–T3 no se han vuelto a medir en este WP; este resultado indica que, mientras se ejecute la retención con carga, los commits concurrentes empeoran mucho más allá de lo medido en baja carga.
+### 6.1 Arreglo (en este WP)
+
+- **Planificación fuera de la ranura**: cada llamada lee cabezas y `REV_META` en un snapshot, sin ranura. Bajo la ranura solo comprueba que la cabeza de cada unidad planificada (bytes idénticos) y la política de su tipo siguen igual, vuelve a planificar en la transacción las que cambiaron, y escribe. Si la cabeza no cambió, sus revisiones retenidas tampoco (toda escritura de la capa que las toca reescribe la cabeza); `set_policy` incrementa una época que invalida el cursor.
+- **Cursor reanudable en memoria**: una pasada incompleta continúa en la primera unidad no terminada (misma política, sin `KeepFor`, sin cambio de política). Una pasada completa, un error o una reapertura vuelven a empezar desde la primera unidad. Tras una caída no hay nada que recuperar (la poda de cada unidad sigue siendo una sola confirmación del motor, I-21/IU-7).
+- **Trabajo de recorrido acotado**: una llamada lee como mucho 4 096 cabezas sin trabajo; puede devolver `complete = false` sin conjunto de cambios.
+- **Rangos primero**: el conjunto de cambios escribe todos los borrados de rango antes que los puntos (cabezas, miembros, `REV_META` reescritos), que nunca caen en esos rangos; el resultado es el mismo y el motor no reexamina los puntos ya escritos con cada rango nuevo.
+
+Las pruebas existentes (incluidas las comparaciones con el modelo de `policies.rs`, `retention.rs` y los barridos de caídas de `tests/harness/units.rs`) pasan sin cambios.
+
+### 6.2 Después del arreglo (pasada completa, `unit_bench-full-after.txt`)
+
+| Presupuesto | Ventana | p99 escritura (ms) | p50 escritura (ms) | Rendimiento (ops/s) | p99 lectura (ms) |
+|---|---|---|---|---|---|
+| por defecto | baja carga | 0,647 | — | — | — |
+| | antes A / B | 2,069 / 1,725 | 0,622 / 0,571 | 2 839 / 3 128 | 0,0222 / 0,0135 |
+| | **durante** | **2,373** (antes 5 693) | 0,510 | **3 232** (antes 1,1) | 0,0415 |
+| 25 u./100 ops | baja carga | 0,493 | — | — | — |
+| | antes A / B | 1,606 / 2,096 | 0,575 / 0,581 | 3 123 / 3 026 | 0,0140 / 0,0118 |
+| | **durante** | **3,324** (antes 217,7) | 0,741 | **2 290** (antes 24,6) | 0,0852 |
+
+Retención: 18 163 revisiones/s (por defecto) y 19 294 (25 unidades), frente a 7 083 / 6 681. **U6 sigue incumpliendo** con ambos presupuestos: por defecto, el rendimiento ya cumple (1,14×) pero el p99 de escritura es 1,15× el peor «antes» y el p99 de lectura 1,87×; con 25 unidades, p99 1,59×, rendimiento 0,76× y lectura 6,07× (2 020 llamadas, cada una con su `fsync`).
+
+Causa restante (medida): la lectura y el recorrido sufren el coste del motor con muchos rangos en el memtable (`Memtable::covering_seq` lineal en hasta 4 096 rangos por `get`, y `Memtable::fragments` recalculado en cada `scan`; ambos marcados `ponytail` en `kerno-storage`). Experimento **no incluido** en el commit (§9.5 del diseño exige un WP propio con comparación de T1–T10 para tocar `kerno-storage`): con una caché de fragmentos en el memtable, el p99 de lectura durante la poda quedó en 1,12× y la retención subió a ≈ 235 000–388 000 revisiones/s, pero entonces la retención, al ir tan rápido en bucle cerrado, ocupa la ranura buena parte del tiempo (≈ 50 ms por conjunto de 1 000 unidades) y el p99 de escritura empeoró a 30–76 ms (`unit_bench-u6-experiment-engine-fragcache.txt`). Cumplir U6 tal como está definido (retención en bucle cerrado sin efecto en p99) exige además ritmo de la retención o conjuntos de cambios más cortos en tiempo de ranura; no se ha hecho porque cambiaría el contrato de la API (un conjunto de cambios por llamada) o la metodología del banco.
 
 ## 7. Pendiente e incertidumbres
 
-- U2 y U6 incumplen; U3 está en el límite de 5× con varianza entre pasadas; U1 cumple con margen moderado (una ronda de cinco > 1,5×).
+- U6 incumple (mucho menos que antes); U2 está en el límite (1,47× / 1,53× en dos pasadas); U3 está en el límite de 5× con varianza entre pasadas (4,85× en la pasada posterior); U1 cumple (1,25× / 1,43×).
+- Salida bruta posterior al arreglo: `unit_bench-full-after.txt`, `unit_bench-u1u2-after-rerun.txt`; la anterior se conserva en `unit_bench-full.txt`.
 - Una sola máquina (VM con disco virtual); la máquina objetivo sigue sin nombrar (C-09).
 - `docs/testing/f1-objetivos-rendimiento.md` (T1–T10) no se ha modificado.
