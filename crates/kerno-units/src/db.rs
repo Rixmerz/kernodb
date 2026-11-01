@@ -116,9 +116,13 @@ impl UnitConfig {
                 self.max_changeset_ops
             )));
         }
-        if self.max_payload_len > MAX_PAYLOAD_LEN as usize {
+        // The engine refuses values above MAX_VALUE_LEN; a larger limit would
+        // turn an oversized payload into a broken change set instead of
+        // PayloadTooLarge (design §4).
+        let limit = (MAX_PAYLOAD_LEN as usize).min(kerno_core::MAX_VALUE_LEN);
+        if self.max_payload_len > limit {
             return Err(UnitError::InvalidArgument(format!(
-                "max_payload_len {} exceeds {MAX_PAYLOAD_LEN}",
+                "max_payload_len {} exceeds {limit}",
                 self.max_payload_len
             )));
         }

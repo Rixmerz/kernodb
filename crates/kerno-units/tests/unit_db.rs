@@ -616,7 +616,11 @@ fn payload_limits<E: TxnEngine>() {
     assert_eq!(seq(&db), 1);
     assert_eq!(db.get_unit(a).unwrap().unwrap().head, RevNo(1));
     // Configuration limits.
-    for bad in [UnitConfig { max_payload_len: (1 << 26) + 1, ..cfg() }, UnitConfig { max_changeset_ops: 0, ..cfg() }] {
+    for bad in [
+        UnitConfig { max_payload_len: (1 << 26) + 1, ..cfg() },
+        UnitConfig { max_payload_len: (1 << 20) + 1, ..cfg() },
+        UnitConfig { max_changeset_ops: 0, ..cfg() },
+    ] {
         assert!(matches!(open::<E>(&SimVfs::new(0), &bad), Err(UnitError::InvalidArgument(_))));
     }
     db.close().unwrap();
