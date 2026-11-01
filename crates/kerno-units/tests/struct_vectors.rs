@@ -393,6 +393,148 @@ fn single_byte_flips_never_panic() {
     }
 }
 
+/// The production decoder (`kerno_units::Record`) as plain test data, so it
+/// can be compared with the table. Only this test touches production code;
+/// `spec_decoder` stays independent of it.
+fn production_decode(key: &[u8], value: &[u8]) -> Result<Rec, Reject> {
+    use kerno_units::{ContentHash, ErrorClass, Record};
+    let hash = |h: &ContentHash| Hash { alg: h.alg.to_byte(), digest: h.digest };
+    let rec = Record::decode(key, value).map_err(|e| Reject {
+        rule: e.rule.number(),
+        class: match e.class() {
+            ErrorClass::Corruption => C,
+            ErrorClass::IncompatibleLayer => I,
+        },
+    })?;
+    Ok(match rec {
+        Record::LayerMeta { name, meta } => Rec::Layer(Layer {
+            name: name.into_bytes(),
+            layer_version: meta.layer_version,
+            history_policy: meta.history_policy.to_byte(),
+        }),
+        Record::UnitHead { unit, head } => Rec::Head(Head {
+            unit_id: unit.0,
+            unit_type: head.unit_type.into_bytes(),
+            schema_version: head.schema_version,
+            lifecycle: head.lifecycle.to_byte(),
+            head_rev: head.head_rev.0,
+            oldest_rev: head.oldest_rev.0,
+            created_seq: head.created_seq.0,
+            updated_seq: head.updated_seq.0,
+            created_at: head.created_at.0,
+            updated_at: head.updated_at.0,
+            content_hash: hash(&head.content_hash),
+            payload_len: head.payload_len,
+            payload_codec: 0,
+            metadata: head.metadata,
+        }),
+        Record::RevMeta { unit, rev, meta } => Rec::RevMeta(RevMeta {
+            unit_id: unit.0,
+            rev_no: rev.0,
+            kind: meta.kind.to_byte(),
+            parent_rev: meta.parent_rev.map_or(0, |r| r.0),
+            commit_seq: meta.commit_seq.0,
+            created_at: meta.created_at.0,
+            schema_version: meta.schema_version,
+            content_hash: hash(&meta.content_hash),
+            payload_len: meta.payload_len,
+            payload_codec: 0,
+            payload_present: u8::from(meta.payload_present),
+            restored_from: meta.restored_from.map_or(0, |r| r.0),
+            metadata: meta.metadata,
+            actor_ref: meta.actor_ref,
+            source_ref: meta.source_ref,
+        }),
+        Record::RevPayload { unit, rev, payload } => {
+            Rec::RevPayload(RevPayload { unit_id: unit.0, rev_no: rev.0, payload })
+        }
+        Record::ChangeSet { seq, record } => Rec::ChangeSet(ChangeSet {
+            commit_seq: seq.0,
+            created_at: record.created_at.0,
+            member_count: record.member_count,
+            purpose: record.purpose.to_byte(),
+            reason: record.reason,
+            actor_ref: record.actor_ref,
+            source_ref: record.source_ref,
+            correlation: record.correlation,
+        }),
+        Record::CsMember { seq, ordinal, member } => Rec::Member(Member {
+            commit_seq: seq.0,
+            ordinal,
+            unit_id: member.unit.0,
+            rev_no: member.rev_no.0,
+            kind: member.kind.to_byte(),
+        }),
+    })
+}
+
+/// Production compatibility (E3-02): every committed vector file decodes with
+/// the production decoder to the table's fields or rule and class, and the
+/// production encoder reproduces every positive vector byte for byte.
+#[test]
+fn production_codec_matches_committed_vectors() {
+    for v in vectors() {
+        let file = std::fs::read(dir().join(format!("{}.bin", v.name))).expect("committed vector");
+        let (len, rest) = file.split_at(4);
+        let key_len = u32::from_be_bytes(len.try_into().expect("4 bytes")) as usize;
+        let (key, value) = rest.split_at(key_len);
+        let got = production_decode(key, value);
+        match &v.expect {
+            Expect::Ok(rec) => {
+                assert_eq!(got.as_ref(), Ok(rec), "{}", v.name);
+                let decoded = kerno_units::Record::decode(key, value).expect("positive vector");
+                let (k, val) = decoded.encode().expect("a decoded record encodes");
+                assert!(k == key && val == value, "{}: production encoding differs from the vector", v.name);
+            }
+            Expect::Reject(r) => assert_eq!(got.as_ref(), Err(r), "{}", v.name),
+        }
+    }
+}
+
+/// Every truncation of a positive value is UNIT-9 for the production decoder too.
+#[test]
+fn production_truncations_are_unit_9() {
+    for v in vectors() {
+        let Expect::Ok(rec) = &v.expect else { continue };
+        if matches!(rec, Rec::RevPayload(_)) {
+            continue;
+        }
+        for cut in 0..v.value.len() {
+            assert_eq!(
+                production_decode(&v.key, &v.value[..cut]),
+                Err(Reject { rule: 9, class: C }),
+                "{} cut {cut}",
+                v.name
+            );
+        }
+    }
+}
+
+/// On any single-byte flip the production decoder and the independent
+/// decoder agree (same fields or same rule and class).
+#[test]
+fn production_and_spec_decoder_agree_on_flips() {
+    for v in vectors() {
+        for at in 0..v.value.len().min(300) {
+            for x in [0x01, 0x80, 0xFF] {
+                let mut value = v.value.clone();
+                value[at] ^= x;
+                assert_eq!(
+                    production_decode(&v.key, &value),
+                    spec_decoder::decode(&v.key, &value),
+                    "{} at {at}",
+                    v.name
+                );
+            }
+        }
+        for at in 0..v.key.len() {
+            let mut key = v.key.clone();
+            key[at] ^= 0xFF;
+            assert_eq!(production_decode(&key, &v.value), spec_decoder::decode(&key, &v.value), "{} key {at}", v.name);
+        }
+    }
+}
+
 #[test]
 #[ignore = "writes the committed vectors"]
 fn regenerate_struct_vectors() {

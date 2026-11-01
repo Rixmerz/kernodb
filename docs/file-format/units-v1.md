@@ -213,6 +213,8 @@ Un decodificador recibe el par `(key, value)` y devuelve los campos o **un** rec
 4. No «reparar», rellenar ni ignorar nada. Un rechazo no modifica la base (I-18 si es de solo lectura).
 5. Un tag con nibble alto `0x4..=0xF` (UNIT-2) o `envelope_version`/`layer_version` mayores (UNIT-7, UNIT-16) se rechaza como `IncompatibleLayer` **sin interpretar el resto**.
 
+Los códecs de producción (E3-02) están en `crates/kerno-units/src/codec.rs` (`Key`, `Record` y un tipo por valor) y siguen este orden; los errores, con la regla y su clase, en `src/error.rs`. La prueba `production_codec_matches_committed_vectors` de `tests/struct_vectors.rs` exige que decodifiquen cada vector de §7 como indica la tabla y que reproduzcan byte a byte los positivos; `spec_decoder` sigue sin depender de ellos.
+
 ## 7. Vectores
 
 `crates/kerno-units/tests/vectors/v1/structs/<name>.bin` guarda cada vector como `key_len: u32` (big-endian) ‖ `key` ‖ `value`. Los positivos se llaman `<estructura>_<caso>.bin`; los negativos, `neg_unit<n>_<caso>.bin`, y hay al menos uno por regla `UNIT-n`. La tabla de campos esperados (positivos) y de regla y clase esperadas (negativos) vive en `tests/struct_vectors.rs`; cambiar un byte de un vector existente sigue [v1.md §15](v1.md) en espíritu: versión de la capa nueva y ADR. Para regenerar:
