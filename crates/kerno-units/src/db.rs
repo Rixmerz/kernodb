@@ -66,7 +66,8 @@ use std::collections::BTreeSet;
 use std::ops::Bound;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use kerno_core::contract::{Engine, Options, Snapshot, SyncEngine, Txn, TxnEngine};
 use kerno_core::vfs::Vfs;
@@ -110,6 +111,8 @@ pub struct UnitConfig {
     pub clock: Arc<dyn Clock>,
     /// Source of new unit ids.
     pub ids: Arc<dyn UnitIdSource>,
+    /// How [`UnitDb::run_retention`] shares the write slot (E3-09b).
+    pub retention_pacing: crate::retention::RetentionPacing,
 }
 
 impl UnitConfig {
@@ -123,10 +126,14 @@ impl UnitConfig {
             max_payload_len: MAX_VALUE_LEN,
             clock,
             ids,
+            retention_pacing: crate::retention::RetentionPacing::default(),
         }
     }
 
     fn validate(&self) -> Result<(), UnitError> {
+        if self.retention_pacing.units_per_change_set == 0 {
+            return Err(UnitError::InvalidArgument("retention_pacing.units_per_change_set must be >= 1".into()));
+        }
         if self.max_changeset_ops == 0 || self.max_changeset_ops > MAX_MEMBER_COUNT as usize {
             return Err(UnitError::InvalidArgument(format!(
                 "max_changeset_ops {} is outside 1..={MAX_MEMBER_COUNT}",
@@ -163,6 +170,7 @@ impl std::fmt::Debug for UnitConfig {
             .field("default_policy", &self.default_policy)
             .field("max_changeset_ops", &self.max_changeset_ops)
             .field("max_payload_len", &self.max_payload_len)
+            .field("retention_pacing", &self.retention_pacing)
             .finish_non_exhaustive()
     }
 }
@@ -285,6 +293,15 @@ pub struct UnitDb<E: TxnEngine> {
     engine: E,
     cfg: UnitConfig,
     poisoned: AtomicBool,
+    /// Where an incomplete retention pass resumes (see
+    /// [`crate::retention`]); the lock also serializes retention calls.
+    pub(crate) retention: Mutex<Option<crate::retention::RetentionCursor>>,
+    /// Bumped before and after every commit that may change a history
+    /// policy (odd while one is in flight): a retention cursor taken under
+    /// another value is not resumed, and the policy cache is per value.
+    pub(crate) policy_epoch: AtomicU64,
+    /// See [`PolicyCache`].
+    pub(crate) policy_cache: Arc<PolicyCache>,
 }
 
 fn layer_mark_key() -> Vec<u8> {
@@ -432,7 +449,14 @@ impl<E: TxnEngine> UnitDb<E> {
             read_mark(&|k| snap.get(k), &|| Ok(!snap.scan(Bound::Unbounded, Bound::Unbounded, 1)?.is_empty()))
         });
         match checked {
-            Ok(_) => Ok(UnitDb { engine, cfg: cfg.clone(), poisoned: AtomicBool::new(false) }),
+            Ok(_) => Ok(UnitDb {
+                engine,
+                cfg: cfg.clone(),
+                poisoned: AtomicBool::new(false),
+                retention: Mutex::new(None),
+                policy_epoch: AtomicU64::new(0),
+                policy_cache: Arc::default(),
+            }),
             Err(e) => {
                 let _ = engine.close();
                 Err(e)
@@ -468,6 +492,16 @@ impl<E: TxnEngine> UnitDb<E> {
     /// that already holds one deadlocks, as `begin_write` does) and predicts
     /// its commit sequence.
     pub fn begin_changeset(&self, meta: ChangeMeta) -> Result<ChangeSet<'_, E>, UnitError> {
+        self.begin_changeset_at(meta, None)
+    }
+
+    /// [`begin_changeset`](Self::begin_changeset) with the clock reading
+    /// `now` taken by the caller (`None`: read it after taking the slot).
+    pub(crate) fn begin_changeset_at(
+        &self,
+        meta: ChangeMeta,
+        now: Option<Timestamp>,
+    ) -> Result<ChangeSet<'_, E>, UnitError> {
         self.check_poisoned()?;
         meta.validate()?;
         let txn = self.engine.begin_write()?;
@@ -484,7 +518,7 @@ impl<E: TxnEngine> UnitDb<E> {
             .read_seq()
             .checked_add(1)
             .ok_or_else(|| UnitError::InvalidArgument("the commit sequence is exhausted".into()))?;
-        let now = self.cfg.clock.now();
+        let now = now.unwrap_or_else(|| self.cfg.clock.now());
         Ok(ChangeSet {
             db: self,
             txn: Some(txn),
@@ -517,7 +551,11 @@ impl<E: TxnEngine> UnitDb<E> {
     /// A consistent read view (I-05).
     pub fn snapshot(&self) -> Result<UnitSnapshot<E>, UnitError> {
         self.check_poisoned()?;
-        Ok(UnitSnapshot { snap: self.engine.snapshot()?, fallback: self.cfg.default_policy })
+        let before = self.policy_epoch.load(Ordering::SeqCst);
+        let snap = self.engine.snapshot()?;
+        let stable = before.is_multiple_of(2) && self.policy_epoch.load(Ordering::SeqCst) == before;
+        let policies = stable.then(|| (before, self.policy_cache.clone()));
+        Ok(UnitSnapshot { snap, fallback: self.cfg.default_policy, policies })
     }
 
     /// The history policy in force for `unit_type` (see the [module
@@ -561,11 +599,31 @@ impl<E: TxnEngine + SyncEngine> UnitDb<E> {
     }
 }
 
+/// Bumps the policy epoch when dropped: the second half of the pair around
+/// a commit that may change a policy.
+struct EpochBump<'a>(&'a AtomicU64);
+
+impl Drop for EpochBump<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// History policies read by snapshots, valid for one policy epoch: every
+/// snapshot taken while the epoch held the same even value sees the same
+/// policy records (only commits that bump the epoch write them), so what
+/// one of them read answers for the others (E3-09b, `history` fixed cost).
+#[derive(Default)]
+pub(crate) struct PolicyCache(Mutex<(u64, std::collections::HashMap<String, HistoryPolicy>)>);
+
 /// A read view of the units at one commit sequence.
 pub struct UnitSnapshot<E: Engine> {
     pub(crate) snap: E::Snapshot,
     /// The policy of a database without a layer mark.
     pub(crate) fallback: HistoryPolicy,
+    /// The policy cache and the epoch this snapshot may use it under;
+    /// `None` when a policy commit was in flight while it was taken.
+    pub(crate) policies: Option<(u64, Arc<PolicyCache>)>,
 }
 
 impl<E: Engine> UnitSnapshot<E> {
@@ -575,7 +633,25 @@ impl<E: Engine> UnitSnapshot<E> {
 
     /// The history policy in force for `unit_type` at this snapshot.
     pub fn policy(&self, unit_type: &str) -> Result<HistoryPolicy, UnitError> {
-        policy_of(&|k| self.snap.get(k), unit_type, self.fallback)
+        if let Some((epoch, cache)) = &self.policies {
+            let g = cache.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if g.0 == *epoch
+                && let Some(p) = g.1.get(unit_type)
+            {
+                return Ok(*p);
+            }
+        }
+        let p = policy_of(&|k| self.snap.get(k), unit_type, self.fallback)?;
+        if let Some((epoch, cache)) = &self.policies {
+            let mut g = cache.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if g.0 <= *epoch {
+                if g.0 != *epoch {
+                    *g = (*epoch, std::collections::HashMap::new());
+                }
+                g.1.insert(unit_type.to_owned(), p);
+            }
+        }
+        Ok(p)
     }
 
     /// The unit at this snapshot (see [`UnitDb::get_unit`]).
@@ -668,7 +744,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
     }
 
     /// Writes one engine operation; on an engine error the change set is broken.
-    fn write(&mut self, w: &Write) -> Result<(), UnitError> {
+    pub(crate) fn write(&mut self, w: &Write) -> Result<(), UnitError> {
         let Some(txn) = self.txn.as_mut() else {
             return Err(UnitError::ChangeSetClosed);
         };
@@ -990,6 +1066,15 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
             }
             return Ok(CommitInfo { change_set: current, commit_seq: current, revisions: Vec::new(), durable });
         }
+        // The policies may change with this commit: no retention pass
+        // resumes across it, and no snapshot taken while it is in flight
+        // uses the policy cache (the epoch is odd until it ends, whatever
+        // the outcome).
+        let db = self.db;
+        let _epoch = (self.need_mark || self.maintenance).then(|| {
+            db.policy_epoch.fetch_add(1, Ordering::SeqCst);
+            EpochBump(&db.policy_epoch)
+        });
         if self.need_mark {
             let mark = LayerMeta { layer_version: LAYER_VERSION, history_policy: self.db.cfg.default_policy };
             let v = mark.encode()?;
@@ -1024,15 +1109,10 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
     }
 
     /// A retention change set (purpose `Retention`, no caller provenance).
-    pub(crate) fn begin_retention(db: &'db UnitDb<E>) -> Result<Self, UnitError> {
-        let mut cs = db.begin_changeset(ChangeMeta::default())?;
+    pub(crate) fn begin_retention(db: &'db UnitDb<E>, now: Timestamp) -> Result<Self, UnitError> {
+        let mut cs = db.begin_changeset_at(ChangeMeta::default(), Some(now))?;
         cs.meta.purpose = Purpose::Retention;
         Ok(cs)
-    }
-
-    /// The clock reading of this change set.
-    pub(crate) fn now(&self) -> Timestamp {
-        self.now
     }
 
     /// Writes what retention does to `unit` plus its member `(unit, rev,

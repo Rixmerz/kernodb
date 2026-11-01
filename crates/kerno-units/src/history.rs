@@ -144,6 +144,7 @@ fn lifecycle_after(kind: RevisionKind) -> Lifecycle {
     }
 }
 
+#[inline(always)]
 fn to_revision(unit: UnitId, rev: RevNo, meta: RevisionMeta, payload: Option<Vec<u8>>) -> Revision {
     Revision {
         id: RevisionId { unit, rev },
@@ -403,7 +404,7 @@ impl<E: Engine> UnitSnapshot<E> {
     pub fn get_revision(&self, id: UnitId, rev: RevNo) -> Result<Revision, UnitError> {
         let get = self.getter();
         let head = read_head(&get, id)?.ok_or(UnitError::NotFound { unit: id })?;
-        check_bounds(&head, id, rev, policy_of(&get, &head.unit_type, self.fallback)?)?;
+        check_bounds(&head, id, rev, self.policy(&head.unit_type)?)?;
         load_revision(&get, id, rev, true)
     }
 
@@ -414,7 +415,7 @@ impl<E: Engine> UnitSnapshot<E> {
         need_limit(q.limit)?;
         let get = self.getter();
         let head = read_head(&get, id)?.ok_or(UnitError::NotFound { unit: id })?;
-        match policy_of(&get, &head.unit_type, self.fallback)? {
+        match self.policy(&head.unit_type)? {
             HistoryPolicy::None => return Err(UnitError::HistoryUnavailable { policy: HistoryPolicy::None }),
             HistoryPolicy::Audit if q.with_payload => {
                 return Err(UnitError::HistoryUnavailable { policy: HistoryPolicy::Audit });
@@ -446,36 +447,71 @@ impl<E: Engine> UnitSnapshot<E> {
         let (_, unit_end) = Key::unit_rev_range(crate::codec::TAG_REV_META, id);
         let stop = if hi > head.head_rev.0 { unit_end } else { key(Key::RevMeta { unit: id, rev: RevNo(hi) })? };
         let page = scan_all(&self.snap, Bound::Included(&start), Bound::Excluded(&stop), take as usize)?;
+        if page.len() as u64 != take {
+            // Find the first missing revision for the error (below).
+            let mut want = start.clone();
+            for (i, (k, _)) in page.iter().enumerate() {
+                let at = want.len() - 8;
+                want[at..].copy_from_slice(&(lo + i as u64).to_be_bytes());
+                if *k != want {
+                    return Err(corruption(format!(
+                        "unit {id}: REV_META of retained revision {} is missing",
+                        lo + i as u64
+                    )));
+                }
+            }
+            let missing = RevNo(lo + page.len() as u64);
+            return Err(corruption(format!("unit {id}: REV_META of retained revision {missing} is missing")));
+        }
+        // Built directly in the order asked for (no reversal afterwards);
+        // the checks are the same either way: each entry has the key of its
+        // revision (bytes compared in place, nothing decoded), and
+        // `commit_seq` grows strictly with the revision, up to the head's.
         let mut out = Vec::with_capacity(page.len());
-        let mut prev: Option<CommitSeq> = None;
-        for (i, (k, v)) in page.into_iter().enumerate() {
+        let mut want = start;
+        let at = want.len() - 8;
+        let entry = |i: usize, k: &[u8], v: &[u8], want: &mut Vec<u8>| -> Result<Revision, UnitError> {
             let rev = RevNo(lo + i as u64);
-            if Key::decode(&k)? != (Key::RevMeta { unit: id, rev }) {
+            want[at..].copy_from_slice(&rev.0.to_be_bytes());
+            if k != want.as_slice() {
                 return Err(corruption(format!("unit {id}: REV_META of retained revision {rev} is missing")));
             }
             let meta =
-                RevisionMeta::decode(rev, &v).map_err(|e| context(e, &format!("REV_META of unit {id} rev {rev}")))?;
-            if prev.is_some_and(|p| meta.commit_seq <= p) || meta.commit_seq > head.updated_seq {
-                return Err(corruption(format!(
-                    "unit {id}: revision {rev} has commit_seq {} out of order (IU-3)",
-                    meta.commit_seq
-                )));
-            }
-            prev = Some(meta.commit_seq);
+                RevisionMeta::decode(rev, v).map_err(|e| context(e, &format!("REV_META of unit {id} rev {rev}")))?;
             let payload = if q.with_payload {
                 check_content(&meta)?;
                 read_payload(&get, id, rev, &meta)?
             } else {
                 None
             };
-            out.push(to_revision(id, rev, meta, payload));
-        }
-        if out.len() as u64 != take {
-            let missing = RevNo(lo + out.len() as u64);
-            return Err(corruption(format!("unit {id}: REV_META of retained revision {missing} is missing")));
-        }
-        if q.order == Order::Desc {
-            out.reverse();
+            Ok(to_revision(id, rev, meta, payload))
+        };
+        let out_of_order = |r: &Revision| {
+            corruption(format!("unit {id}: revision {} has commit_seq {} out of order (IU-3)", r.id.rev, r.commit_seq))
+        };
+        match q.order {
+            Order::Asc => {
+                let mut prev: Option<CommitSeq> = None;
+                for (i, (k, v)) in page.iter().enumerate() {
+                    let r = entry(i, k, v, &mut want)?;
+                    if prev.is_some_and(|p| r.commit_seq <= p) || r.commit_seq > head.updated_seq {
+                        return Err(out_of_order(&r));
+                    }
+                    prev = Some(r.commit_seq);
+                    out.push(r);
+                }
+            }
+            Order::Desc => {
+                let mut next = CommitSeq(head.updated_seq.0.saturating_add(1));
+                for (i, (k, v)) in page.iter().enumerate().rev() {
+                    let r = entry(i, k, v, &mut want)?;
+                    if r.commit_seq >= next {
+                        return Err(out_of_order(&r));
+                    }
+                    next = r.commit_seq;
+                    out.push(r);
+                }
+            }
         }
         Ok(out)
     }

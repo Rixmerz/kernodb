@@ -504,7 +504,87 @@ impl RevisionMeta {
         Ok(w.0)
     }
 
+    #[inline]
     pub fn decode(rev_no: RevNo, value: &[u8]) -> Res<Self> {
+        if let Some(m) = Self::decode_valid(rev_no, value) {
+            return Ok(m);
+        }
+        Self::decode_checked(rev_no, value)
+    }
+
+    /// The fast path of [`decode`](Self::decode) (history pages decode one
+    /// per revision): fixed offsets, no error values. It accepts only what
+    /// [`decode_checked`](Self::decode_checked) accepts, with the same
+    /// result, and answers `None` for anything else so that the checked
+    /// decoder reports the exact rule.
+    #[inline(always)]
+    fn decode_valid(rev_no: RevNo, v: &[u8]) -> Option<Self> {
+        const FIXED: usize = 78;
+        let f: &[u8; FIXED] = v.get(..FIXED)?.try_into().ok()?;
+        if f[0] != ENVELOPE_VERSION || f[1] != 0 {
+            return None;
+        }
+        let u32_at = |at: usize| u32::from_be_bytes([f[at], f[at + 1], f[at + 2], f[at + 3]]);
+        let u64_at = |at: usize| u64::from_be_bytes(arr(&f[at..at + 8]));
+        let kind = RevisionKind::from_byte(f[2])?;
+        let (parent_rev, commit_seq, created_at) = (u64_at(3), u64_at(11), u64_at(19) as i64);
+        let schema_version = u32_at(27);
+        let alg = HashAlg::from_byte(f[31])?;
+        let digest: [u8; 32] = arr(&f[32..64]);
+        let payload_len = u32_at(64);
+        let (codec, present, restored_from) = (f[68], f[69], u64_at(70));
+        if commit_seq == 0
+            || (alg == HashAlg::Crc32cProvisional && digest[4..].iter().any(|b| *b != 0))
+            || payload_len > MAX_PAYLOAD_LEN
+            || codec != PAYLOAD_CODEC_OPAQUE
+            || present > 1
+        {
+            return None;
+        }
+        fn field<'v>(v: &'v [u8], at: &mut usize, max: u32) -> Option<&'v [u8]> {
+            let len = u32::from_be_bytes(arr(v.get(*at..*at + 4)?));
+            if len > max {
+                return None;
+            }
+            let body = v.get(*at + 4..*at + 4 + len as usize)?;
+            *at += 4 + len as usize;
+            Some(body)
+        }
+        // Empty fields (the common case) need no allocator call.
+        let owned = |b: &[u8]| if b.is_empty() { Vec::new() } else { b.to_vec() };
+        let mut at = FIXED;
+        let metadata = owned(field(v, &mut at, MAX_METADATA_LEN)?);
+        let actor_ref = owned(field(v, &mut at, MAX_REV_REF_LEN)?);
+        let source_ref = owned(field(v, &mut at, MAX_REV_REF_LEN)?);
+        if at != v.len() {
+            return None;
+        }
+        let rev = rev_no.0;
+        let parent_ok = if kind == RevisionKind::Create { parent_rev == 0 } else { (1..rev).contains(&parent_rev) };
+        let restored_ok =
+            if kind == RevisionKind::Restore { (1..rev).contains(&restored_from) } else { restored_from == 0 };
+        let delete_ok = kind != RevisionKind::Delete || (present == 0 && payload_len == 0);
+        if !(parent_ok && restored_ok && delete_ok) {
+            return None;
+        }
+        Some(RevisionMeta {
+            kind,
+            parent_rev: (parent_rev != 0).then_some(RevNo(parent_rev)),
+            commit_seq: CommitSeq(commit_seq),
+            created_at: Timestamp(created_at),
+            schema_version,
+            content_hash: ContentHash { alg, digest },
+            payload_len,
+            payload_present: present == 1,
+            restored_from: (restored_from != 0).then_some(RevNo(restored_from)),
+            metadata,
+            actor_ref,
+            source_ref,
+        })
+    }
+
+    /// The field-by-field decoder, which names the rule a value breaks.
+    fn decode_checked(rev_no: RevNo, value: &[u8]) -> Res<Self> {
         let mut r = Reader::new(value, "REV_META");
         r.envelope()?;
         let kind = r.enumeration("kind", RevisionKind::from_byte)?;
@@ -723,5 +803,71 @@ impl Record {
             Key::ChangeSet { seq } => Record::ChangeSet { seq, record: ChangeSetRecord::decode(value)? },
             Key::CsMember { seq, ordinal } => Record::CsMember { seq, ordinal, member: CsMember::decode(value)? },
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The fast `REV_META` decoder accepts a subset of what the checked one
+    /// accepts, with the same result, on valid values and on mutations of
+    /// them (bytes changed, cut, extended).
+    #[test]
+    fn rev_meta_fast_path_agrees_with_checked() {
+        let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let kinds = RevisionKind::ALL;
+        let mut accepted = 0;
+        for i in 0..20_000u64 {
+            let kind = kinds[(next() % kinds.len() as u64) as usize];
+            let rev = RevNo(if kind == RevisionKind::Create { 1 } else { 2 + next() % 5 });
+            let alg = if next() % 2 == 0 { HashAlg::Blake3 } else { HashAlg::Crc32cProvisional };
+            let mut digest = [0u8; 32];
+            digest[..4].copy_from_slice(&(next() as u32).to_be_bytes());
+            if alg == HashAlg::Blake3 {
+                digest.iter_mut().for_each(|b| *b = next() as u8);
+            }
+            let deleted = kind == RevisionKind::Delete;
+            let meta = RevisionMeta {
+                kind,
+                parent_rev: (kind != RevisionKind::Create).then_some(RevNo(rev.0 - 1)),
+                commit_seq: CommitSeq(1 + next() % 1000),
+                created_at: Timestamp(next() as i64),
+                schema_version: next() as u32,
+                content_hash: ContentHash { alg, digest },
+                payload_len: if deleted { 0 } else { (next() % 5000) as u32 },
+                payload_present: !deleted && next() % 2 == 0,
+                restored_from: (kind == RevisionKind::Restore).then_some(RevNo(1)),
+                metadata: vec![7; (next() % 3) as usize * 5],
+                actor_ref: vec![8; (next() % 2) as usize * 3],
+                source_ref: vec![9; (next() % 2) as usize],
+            };
+            let mut v = meta.encode(rev).expect("encode");
+            match i % 4 {
+                0 => {}
+                1 => {
+                    let at = (next() % v.len() as u64) as usize;
+                    v[at] = next() as u8;
+                }
+                2 => v.truncate((next() % v.len() as u64) as usize),
+                _ => v.push(next() as u8),
+            }
+            let fast = RevisionMeta::decode_valid(rev, &v);
+            let checked = RevisionMeta::decode_checked(rev, &v);
+            if let Some(m) = &fast {
+                accepted += 1;
+                assert_eq!(Some(m), checked.as_ref().ok(), "value {v:?}");
+            }
+            if i % 4 == 0 {
+                assert_eq!(fast, Some(meta), "a valid value takes the fast path");
+            }
+        }
+        assert!(accepted > 5_000);
     }
 }

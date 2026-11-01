@@ -1,0 +1,24 @@
+# unit_bench mode=full seed=0xe309 dir=/tmp engine=KernoDb options=Options { durability: Sync, cache_bytes: 67108864, write_buffer_bytes: 8388608 } vfs=StdVfs rounds=5
+## U1: Sync commit of one 1 KiB update vs one 1 KiB put
+raw U1 round 0 update: n=1000 p50_ms=0.1974 p99_ms=0.4178 max_ms=2.2410 mean_ms=0.2123
+raw U1 round 0 put: n=1000 p50_ms=0.1498 p99_ms=0.3707 max_ms=3.8298 mean_ms=0.1800
+raw U1 round 1 put: n=1000 p50_ms=0.1502 p99_ms=0.3472 max_ms=0.9128 mean_ms=0.1710
+raw U1 round 1 update: n=1000 p50_ms=0.2095 p99_ms=0.4316 max_ms=1.2905 mean_ms=0.2354
+raw U1 round 2 update: n=1000 p50_ms=0.2405 p99_ms=0.5826 max_ms=2.4232 mean_ms=0.2717
+raw U1 round 2 put: n=1000 p50_ms=0.1375 p99_ms=0.3537 max_ms=2.3450 mean_ms=0.1598
+raw U1 round 3 put: n=1000 p50_ms=0.1647 p99_ms=0.3967 max_ms=1.3634 mean_ms=0.1863
+raw U1 round 3 update: n=1000 p50_ms=0.2133 p99_ms=1.1780 max_ms=9.8447 mean_ms=0.2668
+raw U1 round 4 update: n=1000 p50_ms=0.2178 p99_ms=0.5424 max_ms=2.1805 mean_ms=0.2445
+raw U1 round 4 put: n=1000 p50_ms=0.1803 p99_ms=0.5661 max_ms=5.2977 mean_ms=0.2200
+raw U1 update (all rounds): n=5000 p50_ms=0.2149 p99_ms=0.5704 max_ms=9.8447 mean_ms=0.2461
+raw U1 put (all rounds): n=5000 p50_ms=0.1586 p99_ms=0.3997 max_ms=5.2977 mean_ms=0.1834
+verdict U1: PASS p99 update 0.570 ms / put 0.400 ms = 1.43x (threshold <= 1.5x)
+time U1: 2.6 s
+## U2: history(id, latest(100)) metadata only vs scan of 100 keys of 100 B
+raw U2 history: n=25000 p50_ms=0.0279 p99_ms=0.0597 max_ms=0.1835 mean_ms=0.0301
+raw U2 scan: n=25000 p50_ms=0.0165 p99_ms=0.0389 max_ms=0.5388 mean_ms=0.0177
+verdict U2: FAIL p99 history 0.0597 ms / scan 0.0389 ms = 1.53x (threshold <= 1.5x)
+time U2: 1.6 s
+# summary
+U1 PASS p99 update 0.570 ms / put 0.400 ms = 1.43x (threshold <= 1.5x)
+U2 FAIL p99 history 0.0597 ms / scan 0.0389 ms = 1.53x (threshold <= 1.5x)
