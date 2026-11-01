@@ -63,10 +63,8 @@ impl FixedClock {
 impl Clock for FixedClock {
     fn now(&self) -> Timestamp {
         let step = self.step;
-        let prev = self
-            .now
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |t| Some(t.wrapping_add(step)))
-            .unwrap_or_else(|t| t);
+        // `fetch_add` wraps on overflow, like `wrapping_add`.
+        let prev = self.now.fetch_add(step, Ordering::SeqCst);
         Timestamp(prev)
     }
 }
