@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | **Propuesto** (versión mínima para la Etapa 3, 2026-10-31; el propietario aprobó la dirección en la decisión 7 del [acta E3-00](../architecture/etapa3-acta-e3-00.md), pero el ADR aún no está aceptado) |
+| Estado | **Aceptado** (2026-10-31, por el propietario al cerrar E3-02; versión mínima para la Etapa 3) |
 | Fecha | 2026-10-27 (apertura) |
 | Relacionado con | SAD §5.3, §13, RFC 8785 |
 
@@ -42,5 +42,12 @@ Propuesta mínima, limitada a lo que la Etapa 3 necesita (opción 3 de arriba); 
 2. **Hash BLAKE3-256** (32 bytes), identificado por un byte `alg` en el campo `content_hash` (`alg = 1`), para no fijar el algoritmo en el formato de la capa. Añadir la dependencia exige justificar que ni la biblioteca estándar ni el manifiesto actual la cubren, y entra con la aceptación de este ADR, no antes.
 3. **CRC-32C provisional** (`alg = 0`), ya disponible en el proyecto y **sin garantía criptográfica**, hasta que esta decisión esté completa; sirve solo para detectar discordancia extremo a extremo.
 4. El hash se verifica en cada lectura de carga útil; una discordancia es `Corruption` (I-08).
+
+**Aceptación (2026-10-31).** El propietario aceptó este ADR con estas condiciones:
+
+- BLAKE3-256 (`alg = 1`) es el hash de integridad de `REV_PAYLOAD`. Ni la biblioteca estándar ni el manifiesto tenían un hash criptográfico, y por eso la dependencia `blake3` (sin funciones por defecto, solo `std`) entró en `kerno-units` con E3-02.
+- La versión está fijada de forma exacta en el manifiesto del espacio de trabajo (`blake3 = "=1.8.7"`) y en `Cargo.lock`. Cambiarla es un cambio revisado.
+- Los vectores oficiales de BLAKE3 de `crates/kerno-units/tests/payload_integrity.rs` son pruebas de compatibilidad y no se modifican.
+- CRC-32C (`alg = 0`) sigue siendo provisional, sin garantía criptográfica, y no sustituye a BLAKE3-256.
 
 Codificación del campo: [`units-v1.md`](../file-format/units-v1.md) §4.

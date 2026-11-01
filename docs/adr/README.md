@@ -18,7 +18,7 @@ Reglas:
 | [0005](0005-identificadores-publicos.md) | Identificadores públicos | Propuesto (borrador) |
 | [0006](0006-cifrado-y-gestion-de-claves.md) | Cifrado y gestión de claves | Pendiente |
 | [0007](0007-consistencia-de-indices.md) | Consistencia y reconstrucción de índices | Pendiente |
-| [0008](0008-serializacion-documental-y-hashes.md) | Serialización documental y hashes | Propuesto (mínimo: BLAKE3-256 y bytes opacos) |
+| [0008](0008-serializacion-documental-y-hashes.md) | Serialización documental y hashes | Aceptado (mínimo: BLAKE3-256 y bytes opacos) |
 | [0009](0009-supresion-retencion-y-backups.md) | Supresión, retención y backups | Pendiente |
 | [0010](0010-api-publica-y-crates.md) | API pública y límites de crates | **Aceptado** (2026-10-31; [acta E3-00](../architecture/etapa3-acta-e3-00.md)) |
 | [0011](0011-vectores-y-recuperacion-hibrida.md) | Perfil de vector y recuperación híbrida | Pendiente |

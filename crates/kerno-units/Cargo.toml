@@ -8,5 +8,10 @@ publish = false
 license.workspace = true
 repository.workspace = true
 
-# No dependencies yet: E3-01 only freezes the byte layout (docs/file-format/units-v1.md)
-# and its vectors; the codecs and the API arrive with E3-02 onwards.
+[dependencies]
+kerno-core.workspace = true
+crc32c.workspace = true
+blake3.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
