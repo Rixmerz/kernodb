@@ -203,6 +203,22 @@ Esta verificación no repite UNIT-14. Con `alg = 0`, un relleno distinto de cero
 
 La verificación es pura: no escribe, no depende de nada fuera de sus argumentos y devuelve el mismo error para la misma entrada. Un rechazo no modifica la base y se puede repetir. Solo una carga útil verificada (`VerifiedPayload`) llega al resto de la capa. Vectores de hash conocidos y pruebas de corrupción: `crates/kerno-units/tests/payload_integrity.rs`.
 
+### 5.2 Reglas entre registros (E3-07)
+
+El verificador offline (`verify_units`, `crates/kerno-units/src/verify.rs`) recorre todas las claves de una instantánea y, además de UNIT-1..UNIT-28, comprueba estas reglas entre registros. No cambian ningún byte: describen qué combinaciones de registros válidos por separado produce un escritor de esta capa. Todas son `Corruption`. Un registro que no decodifica se informa una sola vez (por su regla de §5) y se excluye de estas comprobaciones, para no informarlo de nuevo como «ausente».
+
+| Id | Regla | Invariante |
+|---|---|---|
+| UNIT-29 | Un almacén con claves no tiene la marca `LAYER_META` `layer`, o un nombre de `LAYER_META` no es `layer` ni `policy/<unit_type>` (1..=57 B) | §2.6 del diseño |
+| UNIT-30 | Registro huérfano: `REV_META`/`REV_PAYLOAD` sin `UNIT_HEAD`, `REV_PAYLOAD` sin su `REV_META`, `CS_MEMBER` sin su `CHANGESET` | IU-2, IU-4 |
+| UNIT-31 | Cabeza incoherente: falta un `REV_META` en `[oldest_rev, head_rev]`, hay `REV_META`/`REV_PAYLOAD` fuera de ese rango, la cabeza difiere del `REV_META` de `head_rev` (hash, longitud, esquema, metadatos, `updated_seq = commit_seq`, ciclo de vida deducido de `kind`), la revisión vigente no lápida no tiene carga útil, o `created_seq` no es el `commit_seq` de la revisión 1 (si está retenida; si no, es menor que el de `oldest_rev`) | IU-2 |
+| UNIT-32 | Cadena imposible: `Create` fuera de la revisión 1 o revisión 1 que no es `Create`, `parent_rev ≠ rev_no − 1`, `commit_seq` no estrictamente creciente o posterior a la instantánea, transición de ciclo de vida que ningún escritor produce (`Update`/`Archive`/`Restore` sobre no `Active`, `Unarchive` sobre no `Archived`, nada tras `Delete`), o `Archive`/`Unarchive`/`Restore` cuyo hash, longitud, esquema o metadatos difieren de los de su origen retenido | IU-3 |
+| UNIT-33 | Procedencia: un `REV_META` sin `CHANGESET` en su `commit_seq`, con un `CHANGESET` cuyo `purpose` no es `Application`, o sin un `CS_MEMBER` de ese `ChangeSet` que lo nombre (`unit_id`, `rev_no`, `kind`); miembros que no son exactamente los ordinales `0..member_count`; una unidad nombrada dos veces en un `ChangeSet`; `Application`/`Retention` sin miembros o `Maintenance` con miembros; un miembro de `Application` que nombra una unidad inexistente, una revisión posterior a la cabeza, o una revisión retenida con otro `commit_seq` u otro `kind`. Los miembros de `Retention` solo se comprueban en el sentido `REV_META → miembro` (nombran la primera revisión retenida, no una que escribieran) | IU-4 |
+| UNIT-34 | Política no aplicada, solo donde la política vigente al escribir se conoce (revisiones confirmadas después del último `ChangeSet` `Maintenance`): bajo `none`, `oldest_rev ≠ head_rev`; bajo `audit`, una revisión sustituida que conserva `payload_present = 1` | IU-9 |
+| UNIT-35 | Entre dos instantáneas, una clave `REV_META`/`REV_PAYLOAD` presente en ambas cambió de valor, salvo el paso de `payload_present` de 1 a 0 que hace una política (`verify_immutable`) | IU-1 |
+
+Para la integridad de la carga útil el verificador aplica §5.1 a cada `REV_META`, con una excepción: una revisión no lápida con `payload_present = 0` es una que un periodo `audit` vació conservando hash y longitud (nota de E3-05 del diseño); para ella solo se exige que no exista `REV_PAYLOAD` (UNIT-26) y no se aplica la parte «`payload_present = 0` con `payload_len ≠ 0`» de UNIT-26.
+
 ## 6. Entrada truncada o corrupta
 
 Un decodificador recibe el par `(key, value)` y devuelve los campos o **un** rechazo `(UNIT-n, clase)`. Debe:

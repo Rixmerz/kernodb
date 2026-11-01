@@ -86,7 +86,7 @@ pub struct PayloadDecl {
 }
 
 /// The payload rules of `units-v1.md` §5.1, plus the field rules they repeat.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PayloadRule {
     /// `payload_codec ≠ 0`.
     Unit13Codec,
