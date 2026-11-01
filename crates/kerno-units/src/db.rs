@@ -37,8 +37,9 @@
 //!   and ids only from the injected [`UnitIdSource`].
 //!
 //! `restore` (E3-04) lives here because it is a change-set operation; the
-//! history and as-of reads (E3-04) are in [`crate::history`]. Retention
-//! (E3-06) and `verify_units` (E3-07) are not part of this module.
+//! history and as-of reads (E3-04) are in [`crate::history`], retention and
+//! `compact` (E3-06) in [`crate::retention`]; `verify_units` (E3-07) is not
+//! part of this module.
 //!
 //! # History policies (design §3.4, E3-05)
 //!
@@ -181,7 +182,7 @@ pub struct ChangeMeta {
     pub correlation: Option<Vec<u8>>,
     /// Only [`Purpose::Application`] for a change set; [`UnitDb::set_policy`]
     /// also accepts `Maintenance` (and records `Maintenance` either way).
-    /// `Retention` belongs to E3-06.
+    /// `Retention` is written only by [`UnitDb::run_retention`].
     pub purpose: Purpose,
 }
 
@@ -448,7 +449,7 @@ impl<E: TxnEngine> UnitDb<E> {
         &self.cfg
     }
 
-    fn check_poisoned(&self) -> Result<(), UnitError> {
+    pub(crate) fn check_poisoned(&self) -> Result<(), UnitError> {
         if self.poisoned.load(Ordering::SeqCst) {
             return Err(UnitError::Storage(kerno_core::Error::Poisoned(
                 "a change set committed with a sequence other than the predicted one; reopen".into(),
@@ -603,7 +604,7 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
 }
 
 /// One engine write of a planned operation.
-enum Write {
+pub(crate) enum Write {
     Put(Vec<u8>, Vec<u8>),
     Delete(Vec<u8>),
     DeleteRange(Vec<u8>, Vec<u8>),
@@ -622,7 +623,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         self.seq
     }
 
-    fn txn(&self) -> Result<&E::Txn<'db>, UnitError> {
+    pub(crate) fn txn(&self) -> Result<&E::Txn<'db>, UnitError> {
         match &self.txn {
             Some(t) if !self.broken => Ok(t),
             _ => Err(UnitError::ChangeSetClosed),
@@ -717,7 +718,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
     }
 
     /// The history policy in force for `unit_type`, as this change set sees it.
-    fn policy(&self, unit_type: &str) -> Result<HistoryPolicy, UnitError> {
+    pub(crate) fn policy(&self, unit_type: &str) -> Result<HistoryPolicy, UnitError> {
         let txn = self.txn()?;
         policy_of(&|k| txn.get(k), unit_type, self.db.cfg.default_policy)
     }
@@ -937,7 +938,8 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
     /// below the head under `None`/`Audit`, or one whose payload an `Audit`
     /// period dropped, [`UnitError::HistoryUnavailable`]; below the oldest
     /// retained one [`UnitError::Pruned`]. The source payload is verified
-    /// before it is copied.
+    /// before it is copied, and it must fit the [`UnitConfig::max_payload_len`]
+    /// in force now ([`UnitError::PayloadTooLarge`] otherwise).
     pub fn restore(&mut self, id: UnitId, from: RevNo, expected: Option<RevNo>) -> Result<RevNo, UnitError> {
         self.admit(Some(id))?;
         let (head, _, _) = self.current(id, expected)?;
@@ -956,6 +958,10 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         let Some(payload) = crate::history::read_payload(&get, id, from, &source)? else {
             return Err(UnitError::InvalidArgument(format!("revision {from} of unit {id} is a tombstone")));
         };
+        // The restored content is a new revision: it obeys the limit in force
+        // now, like `update` (E3-06 note), even if it was written under a
+        // larger one.
+        self.check_payload(&payload)?;
         let mut next = self.next_head(&head);
         next.lifecycle = Lifecycle::Active;
         next.content_hash = source.content_hash;
@@ -1015,6 +1021,40 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
             revisions: self.members.iter().map(|(r, _)| *r).collect(),
             durable,
         })
+    }
+
+    /// A retention change set (purpose `Retention`, no caller provenance).
+    pub(crate) fn begin_retention(db: &'db UnitDb<E>) -> Result<Self, UnitError> {
+        let mut cs = db.begin_changeset(ChangeMeta::default())?;
+        cs.meta.purpose = Purpose::Retention;
+        Ok(cs)
+    }
+
+    /// The clock reading of this change set.
+    pub(crate) fn now(&self) -> Timestamp {
+        self.now
+    }
+
+    /// Writes what retention does to `unit` plus its member `(unit, rev,
+    /// kind)` (the first retained revision); on an engine error the change
+    /// set is broken.
+    pub(crate) fn retain(
+        &mut self,
+        unit: UnitId,
+        rev: RevNo,
+        kind: RevisionKind,
+        mut writes: Vec<Write>,
+    ) -> Result<(), UnitError> {
+        self.txn()?;
+        if self.touched.contains(&unit) {
+            return Err(UnitError::InvalidArgument(format!("unit {unit} already retained in this change set")));
+        }
+        let ordinal = u32::try_from(self.members.len())
+            .map_err(|_| UnitError::ChangeSetTooLarge { ops: self.members.len() + 1, bytes: self.bytes })?;
+        let member = CsMember { unit, rev_no: rev, kind };
+        writes.push(Write::Put(key(Key::CsMember { seq: self.seq, ordinal })?, member.encode()?));
+        self.apply(Planned { writes, rev: RevisionId { unit, rev }, kind })?;
+        Ok(())
     }
 
     /// Discards the change set (same as dropping it).

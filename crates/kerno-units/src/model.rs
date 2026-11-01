@@ -15,13 +15,16 @@
 //! ([`history`](UnitModel::history), [`unit_as_of`](UnitModel::unit_as_of),
 //! …) keep answering from the full logical history.
 //!
-//! Deferred: retention (E3-06). Building revisions from operations stays
-//! with the tests that drive it.
+//! Retention (E3-06) is modelled by [`UnitModel::retain`], which decides
+//! independently of the database what an unbounded `run_retention` does
+//! (see [`crate::retention`] for the rules). Building revisions from
+//! operations stays with the tests that drive it.
 
 use std::collections::BTreeMap;
 
 use crate::error::UnitError;
-use crate::types::{CommitSeq, HistoryPolicy, Lifecycle, Purpose, RevNo, RevisionKind, UnitId};
+use crate::retention::{RetentionBudget, RetentionPolicy, RetentionRule};
+use crate::types::{CommitSeq, HistoryPolicy, Lifecycle, Purpose, RevNo, RevisionKind, Timestamp, UnitId};
 
 /// One revision of a unit, with the unit state it leaves.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -214,6 +217,109 @@ impl UnitModel {
         Ok(self.change_sets.last())
     }
 
+    /// What one unbounded `run_retention(policy)` does, at clock reading
+    /// `now`, with `created_at(seq)` the clock reading of change set `seq`
+    /// (see [`retain_within`](Self::retain_within)).
+    pub fn retain(
+        &mut self,
+        seq: CommitSeq,
+        policy: &RetentionPolicy,
+        now: Timestamp,
+        created_at: impl Fn(CommitSeq) -> Timestamp,
+    ) -> Result<Option<&ModelChangeSet>, ModelError> {
+        let budget = RetentionBudget { max_units: usize::MAX, max_ops: usize::MAX };
+        Ok(self.retain_within(seq, policy, budget, now, created_at)?.0)
+    }
+
+    /// What one `run_retention(policy, budget)` does: records a `Retention`
+    /// change set `seq` (when some unit changes) whose members are `(unit,
+    /// first retained revision, its kind)`, moves each unit's oldest
+    /// revision and marks the payloads `Audit` drops. Units are visited in id
+    /// order; a unit costs 4 writes when it loses revisions (two range
+    /// deletions, head, member), else 1 (member), plus 2 per dropped
+    /// payload; the call stops (returning `false`) at the first unit that
+    /// does not fit, after taking the payload drops that fit.
+    pub fn retain_within(
+        &mut self,
+        seq: CommitSeq,
+        policy: &RetentionPolicy,
+        budget: RetentionBudget,
+        now: Timestamp,
+        created_at: impl Fn(CommitSeq) -> Timestamp,
+    ) -> Result<(Option<&ModelChangeSet>, bool), ModelError> {
+        let mut members = Vec::new();
+        let mut plans = Vec::new();
+        let (mut ops, mut complete) = (0usize, true);
+        for (&unit, history) in &self.units {
+            let head = history.last().expect("a unit has a revision");
+            let hp = self.policy(&head.unit_type);
+            let oldest = self.oldest(unit);
+            let retained = &history[oldest.0 as usize - 1..];
+            let mut k = match (hp, policy.rule(&head.unit_type)) {
+                (HistoryPolicy::None, _) => head.rev,
+                (_, RetentionRule::KeepAll) => oldest,
+                (_, RetentionRule::KeepLast(n)) => RevNo(head.rev.0.saturating_sub(n.saturating_sub(1))),
+                (_, RetentionRule::KeepSince(s)) => {
+                    retained.iter().rev().find(|r| r.commit_seq <= s).map_or(oldest, |r| r.rev)
+                }
+                (_, RetentionRule::KeepFor(d)) => {
+                    let cutoff = now.0.saturating_sub(i64::try_from(d.as_micros()).unwrap_or(i64::MAX));
+                    retained
+                        .iter()
+                        .find(|r| created_at(r.commit_seq).0 >= cutoff)
+                        .map_or(head.rev, |r| RevNo(r.rev.0 - 1))
+                }
+            };
+            if hp != HistoryPolicy::None && head.kind == RevisionKind::Delete && head.rev.0 > 1 {
+                k = k.min(RevNo(head.rev.0 - 1));
+            }
+            let k = k.max(oldest).min(head.rev);
+            let mut drops: Vec<RevNo> = if hp == HistoryPolicy::Audit {
+                history[k.0 as usize - 1..history.len() - 1]
+                    .iter()
+                    .filter(|r| r.content_kept && r.payload.is_some())
+                    .map(|r| r.rev)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            if k == oldest && drops.is_empty() {
+                continue;
+            }
+            let base = if k > oldest { 4 } else { 1 };
+            let room = budget.max_ops - ops;
+            if members.len() == budget.max_units || room < base + if drops.is_empty() { 0 } else { 2 } {
+                complete = false;
+                break;
+            }
+            let take = drops.len().min((room - base) / 2);
+            let partial = take < drops.len();
+            drops.truncate(take);
+            ops += base + 2 * take;
+            members.push((unit, k, history[k.0 as usize - 1].kind));
+            plans.push((unit, k, drops));
+            if partial {
+                complete = false;
+                break;
+            }
+        }
+        if members.is_empty() {
+            return Ok((None, complete));
+        }
+        if seq <= self.last_seq() {
+            return Err(ModelError::SeqNotIncreasing { last: self.last_seq(), got: seq });
+        }
+        for (unit, k, drops) in plans {
+            self.oldest.insert(unit, k);
+            let history = self.units.get_mut(&unit).expect("unit");
+            for r in drops {
+                history[r.0 as usize - 1].content_kept = false;
+            }
+        }
+        self.change_sets.push(ModelChangeSet { seq, purpose: Purpose::Retention, members });
+        Ok((self.change_sets.last(), complete))
+    }
+
     /// The current revision of a unit (including a tombstone).
     pub fn head(&self, unit: UnitId) -> Option<&ModelRevision> {
         self.units.get(&unit).and_then(|h| h.last())
@@ -323,6 +429,9 @@ impl UnitModel {
             _ => {}
         }
         let oldest = self.oldest(unit);
+        if from.is_none() && oldest.0 > 1 && to.is_some_and(|t| t <= oldest) {
+            return Err(UnitError::Pruned { unit, oldest });
+        }
         let from = from.unwrap_or(oldest);
         if from.0 == 0 {
             return Err(UnitError::InvalidArgument("history from revision 0".into()));

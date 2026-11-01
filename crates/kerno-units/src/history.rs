@@ -64,7 +64,9 @@ pub enum Order {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HistoryQuery {
     /// First revision, inclusive; `None` is the oldest retained one. A
-    /// revision below the oldest retained one is [`UnitError::Pruned`].
+    /// revision below the oldest retained one is [`UnitError::Pruned`], and
+    /// so is `None` with a `to` at or below the oldest retained revision
+    /// when retention has pruned something (`oldest > 1`).
     pub from: Option<RevNo>,
     /// End revision, exclusive; `None` (or anything past the head) is "up to
     /// the head".
@@ -418,6 +420,11 @@ impl<E: Engine> UnitSnapshot<E> {
                 return Err(UnitError::HistoryUnavailable { policy: HistoryPolicy::Audit });
             }
             _ => {}
+        }
+        // A range that ends at or below the oldest retained revision asks
+        // only for pruned revisions: `Pruned`, not an empty page (E3-06).
+        if q.from.is_none() && head.oldest_rev.0 > 1 && q.to.is_some_and(|t| t <= head.oldest_rev) {
+            return Err(UnitError::Pruned { unit: id, oldest: head.oldest_rev });
         }
         let from = q.from.unwrap_or(head.oldest_rev);
         if from.0 == 0 {
