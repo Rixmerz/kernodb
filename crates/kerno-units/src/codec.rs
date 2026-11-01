@@ -504,6 +504,7 @@ impl RevisionMeta {
         Ok(w.0)
     }
 
+    #[inline]
     pub fn decode(rev_no: RevNo, value: &[u8]) -> Res<Self> {
         if let Some(m) = Self::decode_valid(rev_no, value) {
             return Ok(m);
@@ -516,6 +517,7 @@ impl RevisionMeta {
     /// [`decode_checked`](Self::decode_checked) accepts, with the same
     /// result, and answers `None` for anything else so that the checked
     /// decoder reports the exact rule.
+    #[inline(always)]
     fn decode_valid(rev_no: RevNo, v: &[u8]) -> Option<Self> {
         const FIXED: usize = 78;
         let f: &[u8; FIXED] = v.get(..FIXED)?.try_into().ok()?;

@@ -99,13 +99,11 @@ impl Version {
         let mut children: Vec<Box<dyn InternalIterator + '_>> = Vec::new();
         // The fragments of every source the scan may meet; none at all is
         // the common case and costs nothing per key.
-        let mut fragments: Vec<Cow<'_, [Fragment]>> = Vec::new();
+        let mem_fragments: Vec<_> =
+            std::iter::once(&self.mem).chain(&self.imms).filter_map(|mem| mem.fragments(seq)).collect();
+        let mut fragments: Vec<Cow<'_, [Fragment]>> = mem_fragments.iter().map(|l| Cow::Borrowed(&l[..])).collect();
         for mem in std::iter::once(&self.mem).chain(&self.imms) {
             children.push(Box::new(mem.iter(seq)));
-            let list = mem.fragments(seq);
-            if !list.is_empty() {
-                fragments.push(Cow::Owned(list));
-            }
         }
         for t in &self.levels[0] {
             if table_in_range(t, start, end) {

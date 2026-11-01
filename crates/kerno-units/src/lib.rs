@@ -37,7 +37,7 @@ pub use model::{ModelChange, ModelChangeSet, ModelError, ModelRevision, ModelUni
 pub use payload::{
     ContentHash, HashAlg, MAX_PAYLOAD_LEN, PayloadDecl, PayloadError, PayloadRule, VerifiedPayload, verify_payload,
 };
-pub use retention::{CompactReport, RetentionBudget, RetentionPolicy, RetentionReport, RetentionRule};
+pub use retention::{CompactReport, RetentionBudget, RetentionPacing, RetentionPolicy, RetentionReport, RetentionRule};
 pub use types::{
     ChangeKind, ChangePurpose, ChangeSetId, CommitSeq, HistoryPolicy, Lifecycle, Purpose, RevNo, RevisionId,
     RevisionKind, Timestamp, UnitId,

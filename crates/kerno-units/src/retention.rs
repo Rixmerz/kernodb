@@ -24,8 +24,10 @@
 //!   retained revisions and keep, besides the revisions they name, the
 //!   revision in force at their cut-off point, so that as-of reads from the
 //!   cut-off on keep answering.
-//! * **Bounded and resumable.** One call is one change set bounded by
-//!   [`RetentionBudget`]. A call plans on a snapshot without the write
+//! * **Bounded, paced and resumable.** One call is bounded by
+//!   [`RetentionBudget`] and writes it in one or more change sets of at most
+//!   [`RetentionPacing::units_per_change_set`] units, pausing between them
+//!   (E3-09b; before, one call was exactly one change set). A call plans on a snapshot without the write
 //!   slot, then, under the slot, checks that each planned unit's head (and
 //!   the policy of its type) is unchanged, plans again in the transaction
 //!   the units that changed, and writes. An incomplete pass resumes at the
@@ -124,11 +126,39 @@ impl Default for RetentionBudget {
     }
 }
 
+/// How [`UnitDb::run_retention`] shares the write slot with other writers
+/// (E3-09b, design decision 12b): a call writes its budget in change sets of
+/// at most `units_per_change_set` units, and after each one pauses
+/// `pause_ratio` times as long as the work since the previous pause took
+/// (planning on the snapshot and time under the slot). Each unit is still
+/// pruned whole in one change set (I-21, IU-7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RetentionPacing {
+    /// Most units in one `Retention` change set, `>= 1`.
+    pub units_per_change_set: usize,
+    /// Pause after each change set, as a multiple of the work time since the
+    /// previous pause (0: none).
+    pub pause_ratio: u32,
+}
+
+impl Default for RetentionPacing {
+    /// 16 units per change set, pause 9× the work time (retention busy
+    /// ~10 % of the time; values measured with `unit_bench` U6, E3-09b).
+    fn default() -> Self {
+        RetentionPacing { units_per_change_set: 16, pause_ratio: 9 }
+    }
+}
+
 /// What [`UnitDb::run_retention`] did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RetentionReport {
-    /// The `Retention` change set, `None` when there was nothing to do.
+    /// The last `Retention` change set of the call, `None` when there was
+    /// nothing to do.
     pub change_set: Option<CommitInfo>,
+    /// Every `Retention` change set of the call, in commit order (several
+    /// when the budget covers more than [`RetentionPacing::units_per_change_set`]
+    /// units).
+    pub change_sets: Vec<CommitInfo>,
     /// Units whose head was read.
     pub units_examined: u64,
     /// Units the change set touched (its members).
@@ -357,6 +387,9 @@ impl<E: TxnEngine> UnitDb<E> {
         // (design §4): cap the batch, the caller resumes on `complete = false`.
         let budget = RetentionBudget { max_units: budget.max_units.min(self.config().max_changeset_ops), ..budget };
         let mut cursor = self.retention.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Pacing counts all the work of the call (planning on the snapshot
+        // included), not only the time under the slot.
+        let mut busy = std::time::Instant::now();
         let taken = cursor.take();
         let mut report = RetentionReport { complete: true, ..RetentionReport::default() };
         // The policy epoch before the snapshot: a policy committed after it
@@ -434,10 +467,17 @@ impl<E: TxnEngine> UnitDb<E> {
         }
         drop(snap);
 
-        // Phase 2, under the write slot: check that every planned unit (and
-        // the policy of its type) is what the snapshot showed, plan again in
-        // the transaction the units that changed, then write.
-        if !planned.is_empty() {
+        // Phase 2, under the write slot, in change sets of at most
+        // `units_per_change_set` units (E3-09b): for each, check that every
+        // planned unit (and the policy of its type) is what the snapshot
+        // showed, plan again in the transaction the units that changed, then
+        // write; between change sets, give the slot back for a while.
+        let pacing = self.config().retention_pacing;
+        let mut ops = 0usize;
+        let mut units = 0usize;
+        let mut queue = planned.into_iter().peekable();
+        'chunks: while queue.peek().is_some() {
+            let mut chunk: Vec<Planned> = queue.by_ref().take(pacing.units_per_change_set).collect();
             let mut cs = ChangeSet::begin_retention(self, now)?;
             let mut policy_moved = false;
             for (t, p) in &policies {
@@ -448,7 +488,7 @@ impl<E: TxnEngine> UnitDb<E> {
             let mut stale = Vec::new();
             {
                 let txn = cs.txn()?;
-                for (i, p) in planned.iter().enumerate() {
+                for (i, p) in chunk.iter().enumerate() {
                     let raw = txn.get(&key(Key::UnitHead { unit: p.unit })?)?;
                     if policy_moved || raw.as_deref() != Some(p.raw_head.as_slice()) {
                         stale.push((i, raw));
@@ -457,35 +497,38 @@ impl<E: TxnEngine> UnitDb<E> {
             }
             let mut drop_units = Vec::new();
             for (i, raw) in stale {
-                let unit = planned[i].unit;
+                let unit = chunk[i].unit;
                 let raw = raw.ok_or_else(|| corruption(format!("unit {unit}: UNIT_HEAD disappeared")))?;
                 let (_, head) = decode_head(&key(Key::UnitHead { unit })?, &raw)?;
                 let hp = cs.policy(&head.unit_type)?;
                 let txn = cs.txn()?;
                 let txn_scan = |a: Bound<&[u8]>, b: Bound<&[u8]>, n: usize| txn.scan(a, b, n);
                 match plan_unit(&txn_scan, unit, &head, hp, policy.rule(&head.unit_type), now)? {
-                    Some(plan) => planned[i] = Planned { unit, raw_head: raw, head, plan },
+                    Some(plan) => chunk[i] = Planned { unit, raw_head: raw, head, plan },
                     None => drop_units.push(i),
                 }
             }
             for i in drop_units.into_iter().rev() {
-                planned.remove(i);
+                chunk.remove(i);
             }
             // The budget again, in case a unit planned again needs more.
-            let mut ops = 0usize;
-            let mut accepted: Vec<(&Planned, usize)> = Vec::with_capacity(planned.len());
-            for p in &planned {
-                let Some(take) = fits(&p.plan, accepted.len(), ops, budget) else {
+            let mut accepted: Vec<(&Planned, usize)> = Vec::with_capacity(chunk.len());
+            let mut budget_stop = false;
+            for p in &chunk {
+                let Some(take) = fits(&p.plan, units + accepted.len(), ops, budget) else {
                     stop = Some(key(Key::UnitHead { unit: p.unit })?);
+                    budget_stop = true;
                     break;
                 };
                 ops += plan_ops(&p.plan, take);
                 accepted.push((p, take));
                 if take < p.plan.drops.len() {
                     stop = Some(key(Key::UnitHead { unit: p.unit })?);
+                    budget_stop = true;
                     break;
                 }
             }
+            units += accepted.len();
             // Every range deletion first, then the points: the ranges cover
             // only revisions below each new `oldest_rev`, which no point of
             // this change set touches, so the result is the same, and the
@@ -500,17 +543,31 @@ impl<E: TxnEngine> UnitDb<E> {
                 }
                 rest.push(points);
             }
+            let mut retained = 0;
             for ((p, take), points) in accepted.iter().zip(rest) {
                 cs.retain(p.unit, p.plan.keep_from, p.plan.keep_kind, points)?;
-                report.units_retained += 1;
+                retained += 1;
                 report.revisions_pruned += p.plan.pruned;
                 report.payloads_dropped += *take as u64;
                 report.bytes_logically_freed += p.plan.pruned_bytes
                     + p.plan.drops.iter().take(*take).map(|(_, m)| REV_KEY_LEN + u64::from(m.payload_len)).sum::<u64>();
             }
             let info = cs.commit()?;
-            if report.units_retained > 0 {
-                report.change_set = Some(info);
+            if retained > 0 {
+                report.units_retained += retained;
+                report.change_set = Some(info.clone());
+                report.change_sets.push(info);
+                // Pacing: pause `pause_ratio` times the work since the last
+                // pause, so that writers waiting for the slot go first and
+                // retention's CPU and I/O stay a fraction of the machine
+                // (also after the last one: callers loop on `complete = false`).
+                if pacing.pause_ratio > 0 {
+                    std::thread::sleep(busy.elapsed() * pacing.pause_ratio);
+                    busy = std::time::Instant::now();
+                }
+            }
+            if budget_stop {
+                break 'chunks;
             }
         }
         if let Some(k) = stop {

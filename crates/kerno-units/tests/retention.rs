@@ -418,12 +418,16 @@ fn every_point_policy() -> RetentionPolicy {
 }
 
 /// IU-7: a crash before every mutating I/O operation of `run_retention`
-/// (and of the close after it) recovers exactly the store before it or the one after it (the retention
-/// is one engine commit), and every unit keeps its head.
-fn retention_every_point<E: TxnEngine>(kind: CrashKind, durability: Durability) {
+/// (and of the close after it) recovers exactly the store before it or the
+/// one after one of its change sets (each unit is pruned in one engine
+/// commit), and every unit keeps its head. `per_cs` is
+/// [`RetentionPacing::units_per_change_set`] (E3-09b): with 1, the call
+/// writes one change set per unit and a crash may keep any prefix of them.
+fn retention_every_point<E: TxnEngine>(kind: CrashKind, durability: Durability, per_cs: usize) {
     let config = || {
         let mut c = cfg();
         c.engine.durability = durability;
+        c.retention_pacing = RetentionPacing { units_per_change_set: per_cs, pause_ratio: 0 };
         c
     };
     let disk = SimVfs::new(9);
@@ -434,7 +438,21 @@ fn retention_every_point<E: TxnEngine>(kind: CrashKind, durability: Durability) 
     let start = disk.mutating_ops();
     let r = db.run_retention(&every_point_policy(), RetentionBudget::default()).unwrap();
     assert!(r.change_set.is_some() && r.revisions_pruned > 0 && r.payloads_dropped > 0, "{r:?}");
+    assert_eq!(r.change_sets.len(), (r.units_retained as usize).div_ceil(per_cs), "{r:?}");
+    assert_eq!(r.change_set.as_ref(), r.change_sets.last());
     let after = raw(&db);
+    // The store after the first `k` change sets: a call whose budget stops
+    // after `k * per_cs` units (same clock reading and sequences).
+    let mut states = vec![before.clone()];
+    for k in 1..r.change_sets.len() {
+        let disk = SimVfs::new(9);
+        let db = open::<E>(&disk, &config());
+        every_point_setup(&db);
+        let budget = RetentionBudget { max_units: k * per_cs, ..RetentionBudget::default() };
+        db.run_retention(&every_point_policy(), budget).unwrap();
+        states.push(raw(&db));
+    }
+    states.push(after.clone());
     // The sweep covers the retention commit and the close that writes it to
     // tables (flush of the range deletions), so that both the WAL frame and
     // the table files are cut at every point.
@@ -457,7 +475,7 @@ fn retention_every_point<E: TxnEngine>(kind: CrashKind, durability: Durability) 
         let got = raw(&db);
         verified(&db, &ctx);
         let whole = got == after;
-        assert!(whole || got == before, "{ctx}: retention is half applied");
+        assert!(states.contains(&got), "{ctx}: a unit's retention is half applied");
         if acked && durability == Durability::Sync {
             assert!(whole, "{ctx}: an acknowledged Sync retention was lost");
         }
@@ -560,11 +578,19 @@ macro_rules! engine_tests {
             }
             #[test]
             fn retention_every_point_power_loss_sync() {
-                super::retention_every_point::<E>(CrashKind::PowerLoss, Durability::Sync);
+                super::retention_every_point::<E>(CrashKind::PowerLoss, Durability::Sync, 32);
+            }
+            #[test]
+            fn retention_every_point_paced_power_loss_sync() {
+                super::retention_every_point::<E>(CrashKind::PowerLoss, Durability::Sync, 1);
+            }
+            #[test]
+            fn retention_every_point_paced_process_kill_buffered() {
+                super::retention_every_point::<E>(CrashKind::ProcessKill, Durability::Buffered, 1);
             }
             #[test]
             fn retention_every_point_process_kill_buffered() {
-                super::retention_every_point::<E>(CrashKind::ProcessKill, Durability::Buffered);
+                super::retention_every_point::<E>(CrashKind::ProcessKill, Durability::Buffered, 32);
             }
         }
     };

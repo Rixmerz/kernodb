@@ -129,6 +129,10 @@ pub fn unit_config(ids: &StepIds, durability: Durability) -> UnitConfig {
     let mut c = UnitConfig::with_sources(Arc::new(FixedClock::new(T0)), Arc::new(ids.clone()));
     c.engine = Options::small_for_tests();
     c.engine.durability = durability;
+    // Each step is exactly one change set with a predicted sequence, so a
+    // `Retention` step must not split into several (E3-09b pacing); the
+    // paced, multi-change-set call has its own sweeps in `tests/retention.rs`.
+    c.retention_pacing = RetentionPacing { units_per_change_set: usize::MAX, pause_ratio: 0 };
     c
 }
 
