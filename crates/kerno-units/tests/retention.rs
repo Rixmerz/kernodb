@@ -56,6 +56,13 @@ fn meta() -> ChangeMeta {
     ChangeMeta::default()
 }
 
+/// `verify_units` (E3-07) finds nothing.
+#[track_caller]
+fn verified<E: TxnEngine>(db: &UnitDb<E>, ctx: &str) {
+    let r = db.verify_units().unwrap_or_else(|e| panic!("{ctx}: verify_units: {e}"));
+    assert!(r.is_clean(), "{ctx}: verify_units found {:?}", r.findings);
+}
+
 fn new_unit(t: &str, payload: &[u8]) -> NewUnit {
     NewUnit { unit_type: t.into(), schema_version: 1, metadata: b"m".to_vec(), payload: payload.to_vec() }
 }
@@ -262,6 +269,7 @@ fn retention_rules<E: TxnEngine>() {
         db.begin_changeset(ChangeMeta { purpose: Purpose::Retention, ..meta() }),
         Err(UnitError::InvalidArgument(_))
     ));
+    verified(&db, "retention_rules");
     db.close().unwrap();
 }
 
@@ -318,6 +326,7 @@ fn retention_cleans_policies<E: TxnEngine>() {
     db.set_policy("non", HistoryPolicy::Versioned, meta()).unwrap();
     assert!(matches!(db.get_revision(n, RevNo(2)), Err(UnitError::Pruned { oldest: RevNo(3), .. })));
     assert_eq!(db.get_unit(n).unwrap().unwrap().payload.as_deref(), Some(&[3u8; 10][..]));
+    verified(&db, "retention_cleans_policies");
     db.close().unwrap();
 }
 
@@ -356,6 +365,7 @@ fn restore_payload_limit<E: TxnEngine>() {
     // Reading it, and restoring one that fits, still work.
     assert_eq!(db.get_revision(a, RevNo(1)).unwrap().payload_len, 100);
     db.restore(a, RevNo(2), None, meta()).unwrap();
+    verified(&db, "restore_payload_limit");
     db.close().unwrap();
 }
 
@@ -382,6 +392,7 @@ fn retention_respects_changeset_limit<E: TxnEngine>() {
     }
     assert_eq!(retained.iter().sum::<u64>() as usize, 7, "{retained:?}");
     assert_eq!(run(&db, &p).units_retained, 0);
+    verified(&db, "retention_respects_changeset_limit");
     db.close().unwrap();
 }
 
@@ -444,6 +455,7 @@ fn retention_every_point<E: TxnEngine>(kind: CrashKind, durability: Durability) 
         let db = UnitDb::<E>::open(image.as_vfs(), Path::new(DIR), &after_cfg)
             .unwrap_or_else(|e| panic!("{ctx}: reopen: {e}"));
         let got = raw(&db);
+        verified(&db, &ctx);
         let whole = got == after;
         assert!(whole || got == before, "{ctx}: retention is half applied");
         if acked && durability == Durability::Sync {
@@ -464,6 +476,7 @@ fn retention_every_point<E: TxnEngine>(kind: CrashKind, durability: Durability) 
         let mut want = after.clone();
         want.retain(|(k, _)| k[0] != 0x30 && k[0] != 0x31);
         assert!(done == want, "{ctx}: retention after recovery differs");
+        verified(&db, &format!("{ctx}, retention after recovery"));
         drop(db);
     }
 }
@@ -510,6 +523,7 @@ fn history_sim_reclaims_space() {
     for id in &ids {
         assert_eq!(db.get_unit(*id).unwrap().unwrap().payload.unwrap().len(), 4096);
     }
+    verified(&db, "history_sim_reclaims_space");
     db.close().unwrap();
 }
 

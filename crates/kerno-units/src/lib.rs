@@ -8,7 +8,8 @@
 //! ([`db`]): opening, change sets, create/update/archive/unarchive/delete
 //! and `get_unit`. E3-04 adds history, as-of reads, change-set listing,
 //! `compare` and `restore` ([`history`]). E3-05 adds history policies and
-//! E3-06 retention and GC ([`retention`]). This crate stays separate from
+//! E3-06 retention and GC ([`retention`]),
+//! and E3-07 the offline verifier `verify_units` ([`verify`]). This crate stays separate from
 //! `kerno-storage`.
 
 pub mod clock;
@@ -20,6 +21,7 @@ pub mod model;
 pub mod payload;
 pub mod retention;
 pub mod types;
+pub mod verify;
 
 pub use clock::{Clock, CounterIds, FixedClock, SystemClock, UnitIdSource, UuidV7Source};
 pub use codec::{ChangeSetRecord, CsMember, Key, LayerMeta, Record, RevisionMeta, UnitHead};
@@ -39,4 +41,8 @@ pub use retention::{CompactReport, RetentionBudget, RetentionPolicy, RetentionRe
 pub use types::{
     ChangeKind, ChangePurpose, ChangeSetId, CommitSeq, HistoryPolicy, Lifecycle, Purpose, RevNo, RevisionId,
     RevisionKind, Timestamp, UnitId,
+};
+pub use verify::{
+    CrossRule, UnitVerifyReport, VerifyCounts, VerifyFinding, VerifyRule, verify_engine, verify_immutable,
+    verify_snapshot,
 };

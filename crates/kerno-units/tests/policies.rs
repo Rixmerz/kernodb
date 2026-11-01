@@ -52,6 +52,13 @@ fn meta() -> ChangeMeta {
     ChangeMeta::default()
 }
 
+/// `verify_units` (E3-07) finds nothing.
+#[track_caller]
+fn verified<E: TxnEngine>(db: &UnitDb<E>, ctx: &str) {
+    let r = db.verify_units().unwrap_or_else(|e| panic!("{ctx}: verify_units: {e}"));
+    assert!(r.is_clean(), "{ctx}: verify_units found {:?}", r.findings);
+}
+
 fn unit(t: &str, payload: &[u8]) -> NewUnit {
     NewUnit { unit_type: t.into(), schema_version: 1, metadata: b"m".to_vec(), payload: payload.to_vec() }
 }
@@ -327,11 +334,13 @@ fn policy_matrix_one<E: TxnEngine>(p: HistoryPolicy, seed: u64) {
     assert_eq!(db.get_unit(u).unwrap().unwrap().oldest, RevNo(8));
 
     // Policies persist across a reopen.
+    verified(&db, "policy_matrix_one");
     db.close().unwrap();
     let db = open::<E>(&disk, &c);
     assert_eq!(db.policy("doc").unwrap(), HistoryPolicy::None);
     assert_eq!(db.policy("other").unwrap(), other);
     assert_eq!(db.get_unit(u).unwrap().unwrap().payload.as_deref(), Some(&b"v8"[..]));
+    verified(&db, "policy_matrix_one after reopen");
     db.close().unwrap();
 }
 
@@ -387,6 +396,7 @@ fn policy_matrix<E: TxnEngine>() {
         .unwrap();
     let cs = db.change_set(info.change_set).unwrap().unwrap();
     assert_eq!((cs.purpose, cs.reason.as_deref()), (Purpose::Maintenance, Some("r")));
+    verified(&db, "policy_matrix");
     db.close().unwrap();
 }
 
@@ -516,6 +526,7 @@ fn compare_reads<E: Engine>(snap: &UnitSnapshot<E>, model: &UnitModel, rng: &mut
 /// IU-9: the stored `REV_META` are exactly `[oldest, head]` and the stored
 /// `REV_PAYLOAD` exactly those revisions whose content the model keeps.
 fn check_stored<E: TxnEngine>(db: &UnitDb<E>, model: &UnitModel, ctx: &str) {
+    verified(db, ctx);
     let st = stored(db);
     for id in model.unit_ids() {
         let head = model.head(id).unwrap().rev.0;
@@ -655,10 +666,12 @@ fn policy_model<E: TxnEngine>() {
             compare_reads(snap, m, &mut rng, &format!("seed {seed} kept snapshot {i}"));
         }
         drop(kept);
+        verified(&db, "policy_model");
         db.close().unwrap();
         let db = open::<E>(&disk, &c);
         compare_reads(&db.snapshot().unwrap(), &model, &mut rng, &format!("seed {seed} reopened"));
         check_stored(&db, &model, &format!("seed {seed} reopened"));
+        verified(&db, "policy_model after reopen");
         db.close().unwrap();
     }
     assert!(UNAVAILABLE.load(AtomicOrdering::Relaxed) > before, "the workload never met a policy error");

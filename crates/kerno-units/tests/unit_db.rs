@@ -74,6 +74,13 @@ fn meta() -> ChangeMeta {
     ChangeMeta::default()
 }
 
+/// `verify_units` (E3-07) finds nothing.
+#[track_caller]
+fn verified<E: TxnEngine>(db: &UnitDb<E>, ctx: &str) {
+    let r = db.verify_units().unwrap_or_else(|e| panic!("{ctx}: verify_units: {e}"));
+    assert!(r.is_clean(), "{ctx}: verify_units found {:?}", r.findings);
+}
+
 fn new_unit(t: &str, payload: &[u8]) -> NewUnit {
     NewUnit { unit_type: t.into(), schema_version: 1, metadata: b"m".to_vec(), payload: payload.to_vec() }
 }
@@ -301,6 +308,8 @@ fn model_ops<E: TxnEngine>() {
             }
             let snap = db.snapshot().expect("snapshot");
             compare(&snap, &model, &ctx);
+            let r = snap.verify_units().unwrap_or_else(|e| panic!("{ctx}: verify_units: {e}"));
+            assert!(r.is_clean(), "{ctx}: verify_units found {:?}", r.findings);
             if rng.chance(1, 5) {
                 kept.push((snap, model.clone()));
             }
@@ -312,6 +321,7 @@ fn model_ops<E: TxnEngine>() {
         db.close().expect("close");
         db = open::<E>(&disk, &c).expect("reopen");
         compare(&db.snapshot().expect("snapshot"), &model, &format!("seed {seed} after reopen"));
+        verified(&db, &format!("seed {seed} after reopen"));
         db.close().expect("close");
     }
 }
@@ -514,12 +524,14 @@ fn changeset_every_point<E: TxnEngine>(kind: CrashKind, durability: Durability) 
         let s = seq(&db) as usize;
         assert!(s >= acked && s <= (acked + 1).min(4), "{ctx}: recovered {s} change sets, {acked} acknowledged");
         assert!(raw(&db) == prefixes[s], "{ctx}: the store is not the one after {s} whole change sets");
+        verified(&db, &ctx);
         for n in 1..=4 {
             db.get_unit(id(n)).unwrap_or_else(|e| panic!("{ctx}: get_unit: {e}"));
         }
         // And the database keeps working.
         db.create_unit(new_unit("doc", b"after"), meta())
             .unwrap_or_else(|e| panic!("{ctx}: write after recovery: {e}"));
+        verified(&db, &format!("{ctx}, after a write"));
         drop(db);
     }
 }

@@ -38,8 +38,8 @@
 //!
 //! `restore` (E3-04) lives here because it is a change-set operation; the
 //! history and as-of reads (E3-04) are in [`crate::history`], retention and
-//! `compact` (E3-06) in [`crate::retention`]; `verify_units` (E3-07) is not
-//! part of this module.
+//! `compact` (E3-06) in [`crate::retention`], and `verify_units` (E3-07) in
+//! [`crate::verify`].
 //!
 //! # History policies (design §3.4, E3-05)
 //!

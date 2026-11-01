@@ -55,6 +55,13 @@ fn meta() -> ChangeMeta {
     ChangeMeta::default()
 }
 
+/// `verify_units` (E3-07) finds nothing.
+#[track_caller]
+fn verified<E: TxnEngine>(db: &UnitDb<E>, ctx: &str) {
+    let r = db.verify_units().unwrap_or_else(|e| panic!("{ctx}: verify_units: {e}"));
+    assert!(r.is_clean(), "{ctx}: verify_units found {:?}", r.findings);
+}
+
 fn new_unit(payload: &[u8]) -> NewUnit {
     NewUnit { unit_type: "doc".into(), schema_version: 1, metadata: b"m".to_vec(), payload: payload.to_vec() }
 }
@@ -350,9 +357,11 @@ fn model_as_of<E: TxnEngine>() {
             compare_reads(snap, m, &mut rng, &format!("seed {seed} kept snapshot {i}"));
         }
         drop(kept);
+        verified(&db, "model_as_of");
         db.close().expect("close");
         let db = open::<E>(&disk, &cfg());
         compare_reads(&db.snapshot().expect("snapshot"), &model, &mut rng, &format!("seed {seed} reopened"));
+        verified(&db, "model_as_of after reopen");
         db.close().expect("close");
     }
 }
@@ -430,6 +439,7 @@ fn restore_keeps_later<E: TxnEngine>() {
     assert!(matches!(db.restore(b, RevNo(1), None, meta()).unwrap_err(), UnitError::Deleted { .. }));
     let (c, _) = db.create_unit(new_unit(b"c1"), meta()).unwrap();
     assert!(matches!(db.restore(c, RevNo(1), None, meta()), Ok((RevNo(2), _))));
+    verified(&db, "restore_keeps_later");
     db.close().unwrap();
 }
 
@@ -492,6 +502,7 @@ fn ordering_ignores_clock<E: TxnEngine>() {
     assert!(cs[..5].windows(2).all(|w| w[0].created_at > w[1].created_at));
     let state = db.state_as_of(AsOf::Seq(seqs[1]), None, 10).unwrap();
     assert_eq!(state.iter().map(|(u, _)| *u).collect::<Vec<_>>(), vec![a, b]);
+    verified(&db, "ordering_ignores_clock");
     db.close().unwrap();
 }
 
@@ -553,6 +564,7 @@ fn snapshot_vs_retention<E: TxnEngine>() {
     assert_eq!(cs[0].purpose, Purpose::Retention);
     assert!(snap.change_sets_since(CommitSeq(0), 100).unwrap().iter().all(|c| c.purpose == Purpose::Application));
     drop((snap, now, pruned));
+    verified(&db, "snapshot_vs_retention");
     db.close().unwrap();
 }
 
@@ -598,6 +610,7 @@ fn history_errors<E: TxnEngine>() {
         info.members,
         vec![ChangeSetMember { revision: RevisionId { unit: a, rev: RevNo(1) }, kind: RevisionKind::Create }]
     );
+    verified(&db, "history_errors");
     db.close().unwrap();
 }
 
