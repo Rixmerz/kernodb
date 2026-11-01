@@ -84,7 +84,16 @@ impl CounterIds {
 
 impl UnitIdSource for CounterIds {
     fn next_id(&self) -> UnitId {
-        let n = self.next.fetch_add(1, Ordering::SeqCst);
+        // Never wraps: an exhausted counter is a broken precondition, not a
+        // repeated id.
+        let mut n = self.next.load(Ordering::SeqCst);
+        loop {
+            let next = n.checked_add(1).expect("CounterIds exhausted: no id after u64::MAX");
+            match self.next.compare_exchange(n, next, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => break,
+                Err(cur) => n = cur,
+            }
+        }
         let mut id = [0u8; 16];
         id[8..].copy_from_slice(&n.to_be_bytes());
         UnitId(id)
@@ -153,8 +162,9 @@ impl std::fmt::Debug for UuidV7Source {
 
 impl UnitIdSource for UuidV7Source {
     fn next_id(&self) -> UnitId {
-        // Pre-epoch times clamp to 0; times past 2^48 ms wrap per RFC 9562.
-        let now_ms = (self.clock.now().0.max(0) / 1000) as u64 & MS_MASK;
+        // Pre-epoch times clamp to 0; times past 2^48 ms saturate so ids never
+        // wrap around and lose their order.
+        let now_ms = ((self.clock.now().0.max(0) / 1000) as u64).min(MS_MASK);
         let mut s = self.state.lock().unwrap_or_else(|p| p.into_inner());
         if now_ms > s.last_ms {
             s.last_ms = now_ms;
@@ -163,7 +173,8 @@ impl UnitIdSource for UuidV7Source {
         } else if s.counter < COUNTER_MAX {
             s.counter += 1;
         } else {
-            s.last_ms = (s.last_ms + 1) & MS_MASK;
+            assert!(s.last_ms < MS_MASK, "UuidV7Source exhausted at the largest 48-bit millisecond");
+            s.last_ms += 1;
             s.counter = 0;
         }
         let rand_b = splitmix64(&mut s.rng);

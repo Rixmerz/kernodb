@@ -396,7 +396,11 @@ fn every_rule_is_rejected_with_its_class() {
             | (kerno_core::Error::Incompatible(m), ErrorClass::IncompatibleLayer) => assert_eq!(m, err.to_string()),
             (other, _) => panic!("UNIT-{want} mapped to {other:?}"),
         }
-        assert!(matches!(UnitError::from(err), UnitError::Storage(_)));
+        match UnitError::from(err) {
+            UnitError::IncompatibleLayer { .. } => assert_eq!(want, 16),
+            UnitError::Storage(_) => assert_ne!(want, 16),
+            other => panic!("UNIT-{want} mapped to {other:?}"),
+        }
     }
     assert_eq!(seen.len(), 25);
     assert_eq!(UnitRule::ALL.iter().map(|r| r.number()).collect::<Vec<_>>(), (1..=25).collect::<Vec<_>>());
@@ -499,8 +503,12 @@ fn unit_model_applies_and_answers_as_of() {
     .unwrap();
     m.apply(CommitSeq(5), Purpose::Application, vec![change(a, RevisionKind::Update, Lifecycle::Active, b"a2")])
         .unwrap();
-    m.apply(CommitSeq(8), Purpose::Application, vec![change(a, RevisionKind::Delete, Lifecycle::Deleted, b"")])
-        .unwrap();
+    m.apply(
+        CommitSeq(8),
+        Purpose::Application,
+        vec![ModelChange { payload: None, ..change(a, RevisionKind::Delete, Lifecycle::Deleted, b"") }],
+    )
+    .unwrap();
     let restore =
         ModelChange { restored_from: Some(RevNo(1)), ..change(a, RevisionKind::Restore, Lifecycle::Active, b"a1") };
     m.apply(CommitSeq(9), Purpose::Application, vec![restore]).unwrap();
@@ -554,4 +562,61 @@ fn unit_model_applies_and_answers_as_of() {
     assert_eq!(m.change_set(CommitSeq(3)).unwrap().members.len(), 2);
     assert!(m.change_set(CommitSeq(4)).is_none());
     assert_eq!(m.unit_ids().collect::<Vec<_>>(), [a, b]);
+}
+
+// ------------------------------------------------- review regressions
+
+#[test]
+#[should_panic(expected = "CounterIds exhausted")]
+fn counter_ids_never_wrap() {
+    let ids = CounterIds::new(u64::MAX);
+    let _ = ids.next_id();
+    let _ = ids.next_id();
+}
+
+#[test]
+fn uuid_v7_saturates_at_the_largest_millisecond() {
+    let top = ((1i64 << 48) - 1) * 1000;
+    let clock = Arc::new(FixedClock::new(Timestamp(top + 5_000_000)));
+    let src = UuidV7Source::with_seed(clock, 1);
+    let mut prev = src.next_id();
+    assert_eq!(&prev.0[..6], &[0xFF; 6]);
+    for _ in 0..2000 {
+        let id = src.next_id();
+        assert!(id > prev);
+        prev = id;
+    }
+}
+
+#[test]
+fn model_rejects_delete_with_payload_and_mismatched_lifecycle() {
+    let a = UnitId([1; 16]);
+    let mut m = UnitModel::new();
+    let bad_create = change(a, RevisionKind::Create, Lifecycle::Deleted, b"x");
+    assert!(matches!(
+        m.apply(CommitSeq(1), Purpose::from_byte(0).unwrap(), vec![bad_create]),
+        Err(ModelError::BadLifecycle { .. })
+    ));
+    m.apply(
+        CommitSeq(1),
+        Purpose::from_byte(0).unwrap(),
+        vec![change(a, RevisionKind::Create, Lifecycle::Active, b"x")],
+    )
+    .unwrap();
+    let del_payload = change(a, RevisionKind::Delete, Lifecycle::Deleted, b"x");
+    let del_active = ModelChange { payload: None, ..change(a, RevisionKind::Delete, Lifecycle::Active, b"") };
+    for c in [del_payload, del_active] {
+        assert!(matches!(
+            m.apply(CommitSeq(2), Purpose::from_byte(0).unwrap(), vec![c]),
+            Err(ModelError::BadLifecycle { .. })
+        ));
+    }
+    let ok = ModelChange { payload: None, ..change(a, RevisionKind::Delete, Lifecycle::Deleted, b"") };
+    m.apply(CommitSeq(2), Purpose::from_byte(0).unwrap(), vec![ok]).unwrap();
+}
+
+#[test]
+fn newer_layer_version_is_incompatible_layer() {
+    let e: UnitError = LayerMeta::decode(&[1, 0, 0, 0, 0, 2, 0]).unwrap_err().into();
+    assert!(matches!(e, UnitError::IncompatibleLayer { found: 2, supported: 1 }), "{e:?}");
 }

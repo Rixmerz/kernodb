@@ -120,11 +120,14 @@ impl fmt::Display for UnitRule {
 pub struct DecodeError {
     pub rule: UnitRule,
     pub detail: String,
+    /// For UNIT-16: the `layer_version` found, so callers get
+    /// [`UnitError::IncompatibleLayer`] with the exact number.
+    pub found_layer_version: Option<u32>,
 }
 
 impl DecodeError {
     pub fn new(rule: UnitRule, detail: impl Into<String>) -> Self {
-        DecodeError { rule, detail: detail.into() }
+        DecodeError { rule, detail: detail.into(), found_layer_version: None }
     }
 
     pub fn class(&self) -> ErrorClass {
@@ -245,6 +248,9 @@ impl From<kerno_core::Error> for UnitError {
 
 impl From<DecodeError> for UnitError {
     fn from(e: DecodeError) -> Self {
+        if let (UnitRule::Unit16, Some(found)) = (e.rule, e.found_layer_version) {
+            return UnitError::IncompatibleLayer { found, supported: crate::codec::LAYER_VERSION };
+        }
         UnitError::Storage(e.into())
     }
 }

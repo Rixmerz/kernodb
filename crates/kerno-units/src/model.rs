@@ -73,6 +73,9 @@ pub enum ModelError {
     BadRestore { unit: UnitId },
     /// The same unit twice in one change set (one revision per unit per commit, I-26).
     DuplicateUnit { unit: UnitId },
+    /// `Delete` with a payload (UNIT-21), or `lifecycle = Deleted` on a kind
+    /// other than `Delete` (or the reverse).
+    BadLifecycle { unit: UnitId, kind: RevisionKind },
 }
 
 /// `BTreeMap<UnitId, Vec<ModelRevision>>` plus the list of change sets.
@@ -114,6 +117,10 @@ impl UnitModel {
             let next = self.units.get(&c.unit).map_or(1, |h| h.len() as u64 + 1);
             if (c.kind == RevisionKind::Create) != (next == 1) {
                 return Err(ModelError::BadKind { unit: c.unit, kind: c.kind });
+            }
+            let is_delete = c.kind == RevisionKind::Delete;
+            if (is_delete && c.payload.is_some()) || (is_delete != (c.lifecycle == Lifecycle::Deleted)) {
+                return Err(ModelError::BadLifecycle { unit: c.unit, kind: c.kind });
             }
             let restore_ok = match (c.kind, c.restored_from) {
                 (RevisionKind::Restore, Some(r)) => r.0 >= 1 && r.0 < next,

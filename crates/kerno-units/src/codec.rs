@@ -357,7 +357,11 @@ impl LayerMeta {
         match layer_version {
             0 => return reject(UnitRule::Unit15, "LAYER_META.layer_version 0"),
             LAYER_VERSION => {}
-            v => return reject(UnitRule::Unit16, format!("LAYER_META.layer_version {v} is newer than 1")),
+            v => {
+                let mut e = DecodeError::new(UnitRule::Unit16, format!("LAYER_META.layer_version {v} is newer than 1"));
+                e.found_layer_version = Some(v);
+                return Err(e);
+            }
         }
         let history_policy = r.enumeration("history_policy", HistoryPolicy::from_byte)?;
         r.finish()?;
