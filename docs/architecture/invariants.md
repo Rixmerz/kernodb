@@ -40,8 +40,8 @@ I-16 a I-19 las propuso [phase1-design.md §8](phase1-design.md) y WP14 las prom
 
 | ID | Invariante | Origen | Se verificará en |
 |---|---|---|---|
-| I-20 | El historial de revisiones no depende del journal/WAL de recuperación; compactar o truncar el WAL nunca borra revisiones. | D-06, SAD §7.3 | Fase 3 |
-| I-21 | Contenido, revisión e índices transaccionales de un mismo cambio se confirman en la misma frontera atómica. | SAD §6.2, §9.2 | Fases 2–3 |
+| I-20 | El historial de revisiones no depende del journal/WAL de recuperación; compactar o truncar el WAL nunca borra revisiones. | D-06, SAD §7.3 | **verificada** (Etapa 3, E3-08) en `kerno-units`: `wal_independence_{deleted,recycled}_wals` (historial y `get_revision` idénticos tras flush, rotación, borrado o reciclado del WAL, `compact`, reapertura y corte de energía); [matriz de fallos §7](failure-matrix.md) fila U8 |
+| I-21 | Contenido, revisión e índices transaccionales de un mismo cambio se confirman en la misma frontera atómica. | SAD §6.2, §9.2 | **verificada** (Etapa 3, E3-08) para los registros de la capa de unidades (cabeza, `REV_META`, `REV_PAYLOAD`, `CHANGESET`, `CS_MEMBER`): `changeset_every_point`, `model_crash`, `recovery_reentrant`, `fsync_failure`, `enospc`, `torn_write` y `kill -9` real exigen tras cada caída el almacén byte a byte de un prefijo de `ChangeSet` completos y `verify_units` sin hallazgos; matriz de fallos §7, filas U1–U10. Los índices derivados aún no existen (Fase 5) |
 | I-22 | Restaurar una revisión crea una revisión nueva; nunca reescribe ni borra revisiones posteriores. | SAD §8.3 | Fase 3 |
 | I-23 | Un índice derivado expone su estado (`ready`/`building`/`stale`/`failed`) y su watermark; una consulta no declara frescura que no tiene. | SAD §9.2 | Fase 5 |
 | I-24 | Un índice reconstruido produce los mismos resultados que uno nuevo sobre los mismos datos. | ADR-0007 | Fase 5 |

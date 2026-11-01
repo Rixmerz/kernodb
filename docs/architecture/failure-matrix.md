@@ -183,3 +183,34 @@ Protocolo de commit (`Sync`, un grupo): el líder toma `writer` y el grupo FIFO 
 | `loom_leader_handoff`, `loom_poison_fanout`, `loom_txn_gate_drain`, `loom_backpressure` (`--cfg kerno_loom`) | el protocolo de la cola |
 
 Los vectores de directorio `dirty-group-frame` y `dirty-buffered-synced-len` pasan a WP11 (que genera los vectores de directorio).
+
+## 7. Capa de unidades (`kerno-units`, Etapa 3)
+
+E3-08 aporta las filas de la capa ([etapa3-design.md §8.2–§8.3](etapa3-design.md)). Notación: `N` = último `ChangeSet` confirmado (`commit`, `set_policy` o `run_retention` devolvió `Ok`); `N+1` = el `ChangeSet` en curso. Un `ChangeSet` es **una** `Txn` del motor y, por tanto, **una** trama del WAL: cabeza (`UNIT_HEAD`), `REV_META`, `REV_PAYLOAD`, `CHANGESET`, `CS_MEMBER` y, en su caso, `LAYER_META` viajan juntos. Tras cada reapertura se exige que el almacén sea **byte a byte** el que deja una ejecución sin fallos tras exactamente `s` `ChangeSet` (oráculo `Emulated<LogEngine>`), que `verify_units` no dé hallazgos y que la base siga funcionando (un `ChangeSet` más, cierre limpio, corte de energía, mismo estado).
+
+| # | Punto de fallo | Muerte del proceso | Corte de energía | Por qué |
+|---|---|---|---|---|
+| U1 | Mientras se construye el `ChangeSet` (lecturas de cabezas y escrituras en la `Txn`, que no tocan el disco) | `N` | `N` | Nada del `ChangeSet` llegó al WAL. |
+| U2 | Durante la escritura de la trama del `ChangeSet` o antes de su `fsync` | `N` o `N+1` | `N` o `N+1` (`Sync`) | Una trama con un solo CRC: «caída entre la cabeza y el `CHANGESET`» **no es un punto observable**; ninguna imagen de caída contiene una familia de registros sin las demás (I-21). |
+| U3 | Trama grande (varias cargas útiles de 8–24 KB) rota por el corte de energía, a 512 B o a cualquier byte | — | `N` o `N+1` | La trama rota es la cola rota del WAL más nuevo y se descarta entera (WAL-R); nunca un `ChangeSet` a medias. |
+| U4 | `fsync` fallido en cualquier `sync_data` del escenario (WAL, SST, MANIFEST), con `KeepPending` y `LinuxDropPages` | `N` o `N+1` | `N` o `N+1` | El `ChangeSet` recibe `Storage(Io)`; los siguientes, `Storage(Poisoned)` sin E/S. Tras reabrir, entero o ausente (I-10). |
+| U5 | Disco lleno en cualquier operación mutante, o con espacio solo para la cabecera de 96 B de un WAL nuevo y algo más | `N` o `N+1` (al liberar espacio y reabrir) | — | `Storage(Io(StorageFull))` y después `Poisoned`; la capa no deja una cabeza sin su revisión ni miembros sin `CHANGESET`. |
+| U6 | Caída en cualquier operación mutante de la recuperación de una base cuyos `ChangeSet` solo están en el WAL | `N` | `N` | La segunda recuperación da el mismo almacén que una recuperación sin caídas (I-11). |
+| U7 | Caída en cualquier punto de un `ChangeSet` `Retention` y del cierre que lo vuelca a tablas | `N` o `N+1` | `N` o `N+1` | Cada unidad queda podada entera o sin podar (IU-7, `retention_every_point`, E3-06). |
+| U8 | Flush, rotación, borrado o reciclado (`wal_preallocate`) del WAL que contenía el historial; `compact` | historial idéntico | historial idéntico | El historial vive en las tablas como cualquier clave del motor; retirar el WAL no borra revisiones (I-20). |
+| U9 | Corte de energía en `Buffered` | — | prefijo ≥ último cierre limpio | Solo lo sincronizado sobrevive; el prefijo recuperado es siempre de `ChangeSet` completos. |
+| U10 | `kill -9` real de un proceso que confirma `ChangeSet` en bucle (`StdVfs`, hilos de fondo, `Sync` y `Buffered`) | `N` o `N+1` | — | Lo confirmado está en la caché del SO; `verify()` del motor y `verify_units` limpios tras cada muerte. |
+
+**Cómo se verifica** (`crates/kerno-units/tests/crash.rs`, `process_kill.rs` y `retention.rs`; arnés `tests/harness/units.rs`).
+
+| Prueba | Filas |
+|---|---|
+| `{emulated_log,kerno}::changeset_every_point_{power_loss,process_kill}_{sync,buffered}` (caída antes de cada operación mutante de un escenario con 12 `ChangeSet`, cierre limpio y cierre sucio; desgarro a 1 B en los puntos impares) | U1, U2, U9 |
+| `{emulated_log,kerno}::model_crash_*` (5 rondas por semilla con caída aleatoria, también durante la recuperación, continuando sobre la imagen recuperada) | U1, U2, U6, U9 |
+| `{emulated_log,kerno}::recovery_reentrant_{power_loss,process_kill}` | U6 |
+| `torn_write_large_change_set` | U3 |
+| `fsync_failure_{keep_pending,linux_drop_pages}` | U4 |
+| `enospc_fill_disk_every_point`, `enospc_space_limit_after_wal_header` | U5 |
+| `retention::retention_every_point` (E3-06) | U7 |
+| `wal_independence_{deleted,recycled}_wals` | U8 |
+| `process_kill::kill_dash_9_changeset_writer_{sync,buffered}` | U10 |
