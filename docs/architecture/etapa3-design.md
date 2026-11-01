@@ -85,7 +85,7 @@ La **carga útil vigente no está en la cabeza**: está en `REV_PAYLOAD(unit, he
 | `commit_seq` | `u64` | `commit_sequence` (spec §6.2); también la clave de su `ChangeSet` |
 | `created_at` | `i64` µs | |
 | `schema_version` | `u32` | |
-| `content_hash`, `payload_len`, `payload_codec` | como en §2.3 | `payload_len = 0` y hash del vacío en `Delete` y bajo política `audit` |
+| `content_hash`, `payload_len`, `payload_codec` | como en §2.3 | `payload_len = 0` y hash del vacío en `Delete`; bajo política `audit` se conservan hash y longitud con `payload_present = 0` (ver «Nota de E3-05») |
 | `payload_present` | `u8` | `1` si existe `REV_PAYLOAD` para esta revisión (cambia a ausente por política o GC, §3.4/§5) |
 | `restored_from` | `u64` | `0` salvo en `Restore` |
 | `metadata` | bytes ≤ 4 KiB | los metadatos **versionados** con la revisión (decisión 6) |
@@ -528,7 +528,7 @@ Camino crítico: E3-00 → 01 → 02 → 03 → 04; 05, 06, 07 se pueden paralel
 - Ciclo de vida: `update` exige `Active` (sobre `Archived` es `InvalidArgument`); `archive` exige `Active`; `unarchive`, `Archived`; `delete` admite `Active` y `Archived`. Orden de comprobación: `NotFound` → `Conflict` (`expected`) → `Deleted` → ciclo de vida.
 - Cada operación valida y codifica todo antes de su primera escritura, así que un rechazo no tiene efecto. Si el motor rechaza una escritura a mitad de operación (límite de lote, E/S), el `ChangeSet` queda roto: devuelve `ChangeSetClosed` y `commit` lo aborta. `InvalidArgument` del motor se traduce a `ChangeSetTooLarge`.
 - `ChangeMeta`: `actor` y `source` se copian también en cada `REV_META`, por lo que su límite es 256 B; `Some` vacío se rechaza (el formato no distingue vacío de ausente); `purpose` solo admite `Application` (los demás son de E3-05/E3-06).
-- `default_policy` solo admite `Versioned` hasta E3-05. Con `create_if_missing = false`, una base vacía se abre y se lee vacía, y `begin_changeset` es `InvalidArgument`.
+- `default_policy` solo admite `Versioned` hasta E3-05 (levantado en E3-05, ver su nota). Con `create_if_missing = false`, una base vacía se abre y se lee vacía, y `begin_changeset` es `InvalidArgument`.
 - Una lectura del reloj por `ChangeSet`, usada por el registro y todas sus revisiones. `get_unit` compara la cabeza con el `REV_META` de `head_rev` (IU-2) además de `verify_payload`; una discrepancia es `Storage(Corruption)`.
 - Tras una predicción de secuencia fallida el manejador rechaza también las lecturas con `Storage(Poisoned)` hasta reabrir.
 
@@ -542,6 +542,16 @@ Camino crítico: E3-00 → 01 → 02 → 03 → 04; 05, 06, 07 se pueden paralel
 - `change_set(id)` devuelve `Option` (`None` si no hay registro con esa secuencia) en lugar de un error nuevo. `change_set`/`change_sets_since` comprueban que haya exactamente `member_count` miembros con ordinales `0..n`; `reason` no UTF-8 es `Corruption`.
 - `compare` devuelve ambas revisiones con carga útil verificada y `same_content` (hash y bytes iguales); sin diff estructural (ADR-0008).
 - `snapshot_vs_retention` es parcial: comprueba que una `UnitSnapshot` antigua sigue leyendo su historial mientras confirman otros `ChangeSet` (incluidas restauraciones y borrados); la mitad de retención llega con E3-06.
+
+**Nota de E3-05 (ambigüedades resueltas con la opción más conservadora; `crates/kerno-units/src/db.rs`, `src/history.rs`, `src/model.rs`, `tests/policies.rs`):**
+
+- Se levanta la restricción de E3-03: `default_policy` admite las tres políticas. Es la política escrita en la marca de capa por el primer `ChangeSet`; después cuenta la de la marca (reabrir con otra `default_policy` no la cambia). La política de un tipo es su registro `LAYER_META` `policy/<unit_type>` (valor `LayerMeta`, mismo formato que la marca) y, si no lo tiene, la de la marca.
+- El nombre de `LAYER_META` mide como mucho 64 B, así que solo los tipos de 1..=57 B (`MAX_POLICY_UNIT_TYPE_LEN`) admiten `set_policy`; uno más largo es `InvalidArgument` y sigue la política por defecto.
+- `set_policy` es un `ChangeSet` `Maintenance` sin miembros (`member_count = 0`) que solo escribe ese registro; acepta `purpose` `Application` o `Maintenance` (registra `Maintenance`), rechaza `Retention`, y fijar la política vigente también confirma. No reescribe revisiones.
+- La política vigente al escribir una revisión decide qué pasa con las anteriores, en el mismo lote: `audit` reescribe la `REV_META` de la cabeza sustituida con `payload_present = 0` **conservando hash y longitud** (se sigue §3.4, «historial de metadatos y hashes», y no la nota de §2.4 que pedía hash del vacío) y borra su `REV_PAYLOAD`; `none` borra con dos `delete_range` todas las `REV_META`/`REV_PAYLOAD` de la unidad por debajo de la nueva y pone `oldest_rev` en la nueva revisión. Las cargas útiles de un periodo `versioned` anterior a un cambio a `audit` no se borran (solo la cabeza sustituida); quedan inaccesibles por la regla de lectura y las recogerá la retención (E3-06). Así IU-9 se cumple para toda revisión sustituida bajo `none`/`audit`.
+- Las lecturas consultan la política vigente **ahora** del tipo. `HistoryUnavailable { policy }`: `get_revision`/`compare`/`restore` de una revisión por debajo de la cabeza bajo `none`/`audit` (tras `RevisionNotFound` y antes de `Pruned`); `history` siempre bajo `none`, y con `with_payload` siempre bajo `audit` (sin metadatos sí funciona); `unit_as_of`/`state_as_of` entre la creación y la última revisión bajo `none`/`audit` (antes de la creación sigue siendo `Absent`; desde la última revisión responde la cabeza). `state_as_of` falla entera si falla una unidad de su página. Bajo cualquier política, leer el contenido de una revisión no lápida con `payload_present = 0` es `HistoryUnavailable { policy: Audit }`.
+- Tras volver de `none` a `versioned`, las revisiones borradas quedan por debajo de `oldest_rev` y se informan como `Pruned` (no se distingue de la retención). La cabeza siempre puede restaurarse (copia la vigente) bajo cualquier política.
+- `UnitModel` modela las políticas (`with_default_policy`, `set_policy`, `oldest`, `ModelRevision::content_kept`) y responde las lecturas con política (`read_revision`, `read_history`, `read_as_of`, `read_state_as_of`, `read_restore_source`); las consultas anteriores siguen respondiendo desde la historia lógica completa.
 
 ## 12. Decisiones del propietario
 

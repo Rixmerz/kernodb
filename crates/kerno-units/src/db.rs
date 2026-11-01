@@ -37,9 +37,29 @@
 //!   and ids only from the injected [`UnitIdSource`].
 //!
 //! `restore` (E3-04) lives here because it is a change-set operation; the
-//! history and as-of reads (E3-04) are in [`crate::history`]. History
-//! policies other than `Versioned` (E3-05), retention (E3-06) and
-//! `verify_units` (E3-07) are not part of this module.
+//! history and as-of reads (E3-04) are in [`crate::history`]. Retention
+//! (E3-06) and `verify_units` (E3-07) are not part of this module.
+//!
+//! # History policies (design §3.4, E3-05)
+//!
+//! Each unit type has a [`HistoryPolicy`]: the record `LAYER_META`
+//! `policy/<unit_type>` written by [`UnitDb::set_policy`], or else the one in
+//! the layer mark (the [`UnitConfig::default_policy`] in force when the mark
+//! was written). The policy in force when a revision is written decides what
+//! happens to the revision it supersedes, in the same change set:
+//!
+//! * `Versioned`: nothing; every revision is kept.
+//! * `Audit`: the superseded head loses its `REV_PAYLOAD` and its `REV_META`
+//!   is rewritten with `payload_present = 0` (hash and length are kept: a
+//!   history of metadata and hashes).
+//! * `None`: every `REV_META` and `REV_PAYLOAD` of the unit below the new
+//!   revision is deleted (two range deletions) and `oldest_rev` becomes the
+//!   new revision.
+//!
+//! Changing the policy rewrites nothing. Reads check the policy in force
+//! *now* and answer [`UnitError::HistoryUnavailable`] instead of an empty
+//! result whenever they would need what that policy does not keep (see
+//! [`crate::history`]).
 
 use std::collections::BTreeSet;
 use std::ops::Bound;
@@ -76,8 +96,9 @@ pub struct UnitConfig {
     /// layer mark (design §2.6). When `false`, an empty database opens and
     /// reads as empty, and [`UnitDb::begin_changeset`] refuses to write.
     pub create_if_missing: bool,
-    /// The history policy written in the layer mark. Only
-    /// [`HistoryPolicy::Versioned`] is accepted until E3-05 defines the others.
+    /// The history policy written in the layer mark by the first change set
+    /// of a new database: the policy of every unit type without its own
+    /// [`UnitDb::set_policy`]. Once the mark exists, it is what counts.
     pub default_policy: HistoryPolicy,
     /// Most operations in one change set (design §4), `1..=2^20`.
     pub max_changeset_ops: usize,
@@ -105,12 +126,6 @@ impl UnitConfig {
     }
 
     fn validate(&self) -> Result<(), UnitError> {
-        if self.default_policy != HistoryPolicy::Versioned {
-            return Err(UnitError::InvalidArgument(format!(
-                "history policy {:?} is not available yet; only Versioned is",
-                self.default_policy
-            )));
-        }
         if self.max_changeset_ops == 0 || self.max_changeset_ops > MAX_MEMBER_COUNT as usize {
             return Err(UnitError::InvalidArgument(format!(
                 "max_changeset_ops {} is outside 1..={MAX_MEMBER_COUNT}",
@@ -164,8 +179,9 @@ pub struct ChangeMeta {
     pub source: Option<Vec<u8>>,
     /// At most 1024 bytes.
     pub correlation: Option<Vec<u8>>,
-    /// Only [`Purpose::Application`]: the other purposes belong to the
-    /// layer's own maintenance (E3-05, E3-06).
+    /// Only [`Purpose::Application`] for a change set; [`UnitDb::set_policy`]
+    /// also accepts `Maintenance` (and records `Maintenance` either way).
+    /// `Retention` belongs to E3-06.
     pub purpose: Purpose,
 }
 
@@ -274,6 +290,38 @@ fn layer_mark_key() -> Vec<u8> {
     let mut k = vec![crate::codec::TAG_LAYER_META];
     k.extend_from_slice(LAYER_MARK_NAME.as_bytes());
     k
+}
+
+/// Prefix of the `LAYER_META` name of a unit type's policy.
+const POLICY_PREFIX: &str = "policy/";
+
+/// Longest unit type that can carry its own policy: the `LAYER_META` name
+/// `policy/<unit_type>` is at most 64 bytes.
+pub const MAX_POLICY_UNIT_TYPE_LEN: usize = crate::codec::MAX_LAYER_NAME_LEN - POLICY_PREFIX.len();
+
+fn policy_key(unit_type: &str) -> Option<Vec<u8>> {
+    if unit_type.is_empty() || unit_type.len() > MAX_POLICY_UNIT_TYPE_LEN {
+        return None;
+    }
+    let mut k = vec![crate::codec::TAG_LAYER_META];
+    k.extend_from_slice(POLICY_PREFIX.as_bytes());
+    k.extend_from_slice(unit_type.as_bytes());
+    Some(k)
+}
+
+/// The policy in force for `unit_type`: its own record, else the layer
+/// mark's, else (no mark yet) `fallback`.
+pub(crate) fn policy_of(get: &GetFn<'_>, unit_type: &str, fallback: HistoryPolicy) -> Result<HistoryPolicy, UnitError> {
+    if let Some(k) = policy_key(unit_type)
+        && let Some(v) = get(&k)?
+    {
+        let m = LayerMeta::decode(&v).map_err(|e| context(e, &format!("LAYER_META \"policy/{unit_type}\"")))?;
+        return Ok(m.history_policy);
+    }
+    match get(&layer_mark_key())? {
+        Some(v) => Ok(LayerMeta::decode(&v).map_err(|e| context(e, "LAYER_META \"layer\""))?.history_policy),
+        None => Ok(fallback),
+    }
 }
 
 pub(crate) fn key(k: Key) -> Result<Vec<u8>, UnitError> {
@@ -446,6 +494,7 @@ impl<E: TxnEngine> UnitDb<E> {
             members: Vec::new(),
             touched: BTreeSet::new(),
             broken: false,
+            maintenance: false,
             writes: 0,
             bytes: 0,
         })
@@ -467,7 +516,39 @@ impl<E: TxnEngine> UnitDb<E> {
     /// A consistent read view (I-05).
     pub fn snapshot(&self) -> Result<UnitSnapshot<E>, UnitError> {
         self.check_poisoned()?;
-        Ok(UnitSnapshot { snap: self.engine.snapshot()? })
+        Ok(UnitSnapshot { snap: self.engine.snapshot()?, fallback: self.cfg.default_policy })
+    }
+
+    /// The history policy in force for `unit_type` (see the [module
+    /// documentation](self)).
+    pub fn policy(&self, unit_type: &str) -> Result<HistoryPolicy, UnitError> {
+        self.snapshot()?.policy(unit_type)
+    }
+
+    /// Sets the history policy of `unit_type` (design §3.4): one change set
+    /// with purpose `Maintenance`, no members, that writes the `LAYER_META`
+    /// record `policy/<unit_type>`. Existing revisions are not rewritten; the
+    /// policy applies to the revisions written from now on and to every read.
+    /// `unit_type` must be 1..=57 bytes ([`MAX_POLICY_UNIT_TYPE_LEN`]); a
+    /// longer type always follows the default policy. `meta.purpose` must be
+    /// `Application` or `Maintenance`. Setting the policy already in force
+    /// still commits (the change set records who asked).
+    pub fn set_policy(&self, unit_type: &str, p: HistoryPolicy, meta: ChangeMeta) -> Result<CommitInfo, UnitError> {
+        let Some(k) = policy_key(unit_type) else {
+            return Err(UnitError::InvalidArgument(format!(
+                "unit_type of {} bytes is outside 1..={MAX_POLICY_UNIT_TYPE_LEN} for a policy",
+                unit_type.len()
+            )));
+        };
+        if meta.purpose == Purpose::Retention {
+            return Err(UnitError::InvalidArgument("set_policy with purpose Retention".into()));
+        }
+        let mut cs = self.begin_changeset(ChangeMeta { purpose: Purpose::Application, ..meta })?;
+        cs.meta.purpose = Purpose::Maintenance;
+        let v = LayerMeta { layer_version: LAYER_VERSION, history_policy: p }.encode()?;
+        cs.put(&k, &v)?;
+        cs.maintenance = true;
+        cs.commit()
     }
 }
 
@@ -482,11 +563,18 @@ impl<E: TxnEngine + SyncEngine> UnitDb<E> {
 /// A read view of the units at one commit sequence.
 pub struct UnitSnapshot<E: Engine> {
     pub(crate) snap: E::Snapshot,
+    /// The policy of a database without a layer mark.
+    pub(crate) fallback: HistoryPolicy,
 }
 
 impl<E: Engine> UnitSnapshot<E> {
     pub fn seq(&self) -> CommitSeq {
         CommitSeq(self.snap.seq())
+    }
+
+    /// The history policy in force for `unit_type` at this snapshot.
+    pub fn policy(&self, unit_type: &str) -> Result<HistoryPolicy, UnitError> {
+        policy_of(&|k| self.snap.get(k), unit_type, self.fallback)
     }
 
     /// The unit at this snapshot (see [`UnitDb::get_unit`]).
@@ -507,14 +595,23 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     members: Vec<(RevisionId, RevisionKind)>,
     touched: BTreeSet<UnitId>,
     broken: bool,
+    /// A `set_policy` change set: commits without members.
+    maintenance: bool,
     /// Engine writes and their key + value bytes so far.
     writes: usize,
     bytes: usize,
 }
 
+/// One engine write of a planned operation.
+enum Write {
+    Put(Vec<u8>, Vec<u8>),
+    Delete(Vec<u8>),
+    DeleteRange(Vec<u8>, Vec<u8>),
+}
+
 /// Records of one operation, encoded before any is written.
 struct Planned {
-    writes: Vec<(Vec<u8>, Vec<u8>)>,
+    writes: Vec<Write>,
     rev: RevisionId,
     kind: RevisionKind,
 }
@@ -566,11 +663,25 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
 
     /// Writes one put; on an engine error the change set is broken.
     fn put(&mut self, k: &[u8], v: &[u8]) -> Result<(), UnitError> {
+        self.write(&Write::Put(k.to_vec(), v.to_vec()))
+    }
+
+    /// Writes one engine operation; on an engine error the change set is broken.
+    fn write(&mut self, w: &Write) -> Result<(), UnitError> {
         let Some(txn) = self.txn.as_mut() else {
             return Err(UnitError::ChangeSetClosed);
         };
-        let (writes, bytes) = (self.writes + 1, self.bytes + k.len() + v.len());
-        match txn.put(k, v) {
+        let len = match w {
+            Write::Put(k, v) | Write::DeleteRange(k, v) => k.len() + v.len(),
+            Write::Delete(k) => k.len(),
+        };
+        let (writes, bytes) = (self.writes + 1, self.bytes + len);
+        let r = match w {
+            Write::Put(k, v) => txn.put(k, v),
+            Write::Delete(k) => txn.delete(k),
+            Write::DeleteRange(s, e) => txn.delete_range(s, e),
+        };
+        match r {
             Ok(()) => {
                 self.writes = writes;
                 self.bytes = bytes;
@@ -589,8 +700,8 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
     }
 
     fn apply(&mut self, plan: Planned) -> Result<RevNo, UnitError> {
-        for (k, v) in &plan.writes {
-            self.put(k, v)?;
+        for w in &plan.writes {
+            self.write(w)?;
         }
         self.touched.insert(plan.rev.unit);
         self.members.push((plan.rev, plan.kind));
@@ -605,16 +716,61 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         self.meta.source.clone().unwrap_or_default()
     }
 
-    /// The records of a new revision `rev` of `unit`: head, `REV_META`,
-    /// `REV_PAYLOAD` (when there is a payload) and `CS_MEMBER`.
+    /// The history policy in force for `unit_type`, as this change set sees it.
+    fn policy(&self, unit_type: &str) -> Result<HistoryPolicy, UnitError> {
+        let txn = self.txn()?;
+        policy_of(&|k| txn.get(k), unit_type, self.db.cfg.default_policy)
+    }
+
+    /// What the policy does to the revisions `head` supersedes (see the
+    /// [module documentation](self)); may move `head.oldest_rev`.
+    fn supersede(&self, unit: UnitId, head: &mut UnitHead) -> Result<Vec<Write>, UnitError> {
+        let rev = head.head_rev;
+        if rev.0 == 1 {
+            return Ok(Vec::new());
+        }
+        match self.policy(&head.unit_type)? {
+            HistoryPolicy::Versioned => Ok(Vec::new()),
+            HistoryPolicy::Audit => {
+                let prev = RevNo(rev.0 - 1);
+                let txn = self.txn()?;
+                let mut meta = crate::history::read_meta(&|k| txn.get(k), unit, prev)?;
+                if !meta.payload_present {
+                    return Ok(Vec::new());
+                }
+                meta.payload_present = false;
+                Ok(vec![
+                    Write::Put(key(Key::RevMeta { unit, rev: prev })?, meta.encode(prev)?),
+                    Write::Delete(key(Key::RevPayload { unit, rev: prev })?),
+                ])
+            }
+            HistoryPolicy::None => {
+                head.oldest_rev = rev;
+                let mut out = Vec::with_capacity(2);
+                for (tag, k) in [
+                    (crate::codec::TAG_REV_META, Key::RevMeta { unit, rev }),
+                    (crate::codec::TAG_REV_PAYLOAD, Key::RevPayload { unit, rev }),
+                ] {
+                    let (start, _) = Key::unit_rev_range(tag, unit);
+                    out.push(Write::DeleteRange(start, key(k)?));
+                }
+                Ok(out)
+            }
+        }
+    }
+
+    /// The records of a new revision `rev` of `unit`: what its policy drops
+    /// of the superseded revisions, head, `REV_META`, `REV_PAYLOAD` (when
+    /// there is a payload) and `CS_MEMBER`.
     fn plan(
         &self,
         unit: UnitId,
-        head: UnitHead,
+        mut head: UnitHead,
         kind: RevisionKind,
         payload: Option<&[u8]>,
         restored_from: Option<RevNo>,
     ) -> Result<Planned, UnitError> {
+        let mut writes = self.supersede(unit, &mut head)?;
         let rev = head.head_rev;
         let meta = RevisionMeta {
             kind,
@@ -633,12 +789,12 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         let ordinal = u32::try_from(self.members.len())
             .map_err(|_| UnitError::ChangeSetTooLarge { ops: self.members.len() + 1, bytes: self.bytes })?;
         let member = CsMember { unit, rev_no: rev, kind };
-        let mut writes =
-            vec![(key(Key::UnitHead { unit })?, head.encode()?), (key(Key::RevMeta { unit, rev })?, meta.encode(rev)?)];
+        writes.push(Write::Put(key(Key::UnitHead { unit })?, head.encode()?));
+        writes.push(Write::Put(key(Key::RevMeta { unit, rev })?, meta.encode(rev)?));
         if let Some(p) = payload {
-            writes.push((key(Key::RevPayload { unit, rev })?, p.to_vec()));
+            writes.push(Write::Put(key(Key::RevPayload { unit, rev })?, p.to_vec()));
         }
-        writes.push((key(Key::CsMember { seq: self.seq, ordinal })?, member.encode()?));
+        writes.push(Write::Put(key(Key::CsMember { seq: self.seq, ordinal })?, member.encode()?));
         Ok(Planned { writes, rev: RevisionId { unit, rev }, kind })
     }
 
@@ -777,9 +933,11 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
     /// whose payload, schema version and metadata are copies of `from`'s;
     /// every revision after `from` stays as it was. The unit must be
     /// `Active`; `from` must be a retained revision with a payload (not a
-    /// tombstone). `from` above the head is [`UnitError::RevisionNotFound`],
-    /// below the oldest retained one [`UnitError::Pruned`]. The source payload
-    /// is verified before it is copied.
+    /// tombstone). `from` above the head is [`UnitError::RevisionNotFound`];
+    /// below the head under `None`/`Audit`, or one whose payload an `Audit`
+    /// period dropped, [`UnitError::HistoryUnavailable`]; below the oldest
+    /// retained one [`UnitError::Pruned`]. The source payload is verified
+    /// before it is copied.
     pub fn restore(&mut self, id: UnitId, from: RevNo, expected: Option<RevNo>) -> Result<RevNo, UnitError> {
         self.admit(Some(id))?;
         let (head, _, _) = self.current(id, expected)?;
@@ -789,10 +947,12 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
                 head.lifecycle
             )));
         }
+        let policy = self.policy(&head.unit_type)?;
         let txn = self.txn()?;
         let get = |k: &[u8]| txn.get(k);
-        crate::history::check_bounds(&head, id, from)?;
+        crate::history::check_bounds(&head, id, from, policy)?;
         let source = crate::history::read_meta(&get, id, from)?;
+        crate::history::check_content(&source)?;
         let Some(payload) = crate::history::read_payload(&get, id, from, &source)? else {
             return Err(UnitError::InvalidArgument(format!("revision {from} of unit {id} is a tombstone")));
         };
@@ -817,7 +977,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
     pub fn commit(mut self) -> Result<CommitInfo, UnitError> {
         self.txn()?;
         let durable = self.db.cfg.engine.durability == Durability::Sync;
-        if self.members.is_empty() {
+        if self.members.is_empty() && !self.maintenance {
             let current = CommitSeq(self.seq.0 - 1);
             if let Some(t) = self.txn.take() {
                 t.abort();
