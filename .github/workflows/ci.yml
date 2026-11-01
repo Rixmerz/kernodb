@@ -39,13 +39,17 @@ jobs:
 
   # The tests run as two parallel jobs (phase1-design.md §6.7): everything
   # but the engine (spikes, kerno-core, kerno-testkit and its reference
-  # engine, the differential test), and the engine with all its profiles.
+  # engine, the differential test, and kerno-units with its crash sweeps and
+  # kill -9 test), and the engine with all its profiles.
   test-spikes:
     name: spikes, testkit, reference engine and differential test
     runs-on: ubuntu-latest
     env:
       # Empty means "each suite's default"; the weekly run uses 1000 seeds.
       SPIKE_SEEDS: ${{ github.event_name == 'schedule' && '1000' || '' }}
+      # Iterations of the kill -9 test of kerno-units
+      # (crates/kerno-units/tests/process_kill.rs); empty means 20.
+      KERNO_KILL_ITERS: ${{ github.event_name == 'schedule' && '200' || '' }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
