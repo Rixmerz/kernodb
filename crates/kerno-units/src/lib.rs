@@ -7,7 +7,9 @@
 //! and the reference model ([`model`]). E3-03 adds the database itself
 //! ([`db`]): opening, change sets, create/update/archive/unarchive/delete
 //! and `get_unit`. E3-04 adds history, as-of reads, change-set listing,
-//! `compare` and `restore` ([`history`]). This crate stays separate from `kerno-storage`.
+//! `compare` and `restore` ([`history`]). E3-05 adds history policies and
+//! E3-06 retention and GC ([`retention`]). This crate stays separate from
+//! `kerno-storage`.
 
 pub mod clock;
 pub mod codec;
@@ -16,6 +18,7 @@ pub mod error;
 pub mod history;
 pub mod model;
 pub mod payload;
+pub mod retention;
 pub mod types;
 
 pub use clock::{Clock, CounterIds, FixedClock, SystemClock, UnitIdSource, UuidV7Source};
@@ -32,6 +35,7 @@ pub use model::{ModelChange, ModelChangeSet, ModelError, ModelRevision, ModelUni
 pub use payload::{
     ContentHash, HashAlg, MAX_PAYLOAD_LEN, PayloadDecl, PayloadError, PayloadRule, VerifiedPayload, verify_payload,
 };
+pub use retention::{CompactReport, RetentionBudget, RetentionPolicy, RetentionReport, RetentionRule};
 pub use types::{
     ChangeKind, ChangePurpose, ChangeSetId, CommitSeq, HistoryPolicy, Lifecycle, Purpose, RevNo, RevisionId,
     RevisionKind, Timestamp, UnitId,

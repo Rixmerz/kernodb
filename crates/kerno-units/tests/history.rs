@@ -9,9 +9,9 @@
 //!   byte for byte as it was.
 //! * `ordering_ignores_clock` (I-26) — a clock that goes backwards changes
 //!   nothing in the order of history, as-of reads or change sets.
-//! * `snapshot_vs_retention` (partial, IU-8) — an old `UnitSnapshot` keeps
-//!   reading its history while new change sets commit. The retention half
-//!   belongs to E3-06.
+//! * `snapshot_vs_retention` (IU-8) — an old `UnitSnapshot` keeps reading
+//!   its history while new change sets and retention (E3-06) commit, also
+//!   across a compaction on `KernoDb`.
 //! * `history_reads_verify` — damaged revisions and change sets are
 //!   `Corruption`, never `NotFound`, `Absent` or an empty result.
 
@@ -497,9 +497,8 @@ fn ordering_ignores_clock<E: TxnEngine>() {
 
 // ------------------------------------------------------------ snapshot_vs_retention (partial)
 
-/// IU-8, the part E3-04 can check: an old snapshot keeps reading the history
-/// of its sequence while later change sets (updates, restores, deletes)
-/// commit. The retention half (pruning under an open snapshot) is E3-06's.
+/// IU-8: an old snapshot keeps reading the history of its sequence while
+/// later change sets (updates, restores, deletes) and retention commit.
 fn snapshot_vs_retention<E: TxnEngine>() {
     let disk = SimVfs::new(43);
     let db = open::<E>(&disk, &cfg());
@@ -537,7 +536,23 @@ fn snapshot_vs_retention<E: TxnEngine>() {
     assert_eq!(now.history(a, all(10)).unwrap().len(), 8);
     assert!(matches!(now.unit_as_of(b, AsOf::Seq(now.seq())).unwrap(), UnitAt::DeletedAt(_)));
     assert_eq!(read(&now).0[..2], before.0[..], "the history before s is unchanged");
-    drop((snap, now));
+    // Retention prunes everything below each head while both snapshots are
+    // open: they keep reading what they read (E3-06).
+    let at_now = read(&now);
+    let r = db.run_retention(&RetentionPolicy::all(RetentionRule::KeepLast(1)), RetentionBudget::default()).unwrap();
+    // `a` keeps its head (8 of 8); `b` keeps its tombstone and revision 1.
+    assert_eq!(r.revisions_pruned, 7, "{r:?}");
+    assert_eq!(read(&snap), before, "the old snapshot still sees its history after retention");
+    assert_eq!(read(&now), at_now, "so does the snapshot taken just before retention");
+    let pruned = db.snapshot().unwrap();
+    assert!(matches!(pruned.get_revision(a, RevNo(2)), Err(UnitError::Pruned { .. })));
+    assert!(matches!(pruned.unit_as_of(a, AsOf::Seq(s)).unwrap(), UnitAt::Pruned { .. }));
+    assert!(matches!(pruned.history(a, HistoryQuery { to: Some(RevNo(3)), ..all(10) }), Err(UnitError::Pruned { .. })));
+    let cs = pruned.change_sets_since(now.seq(), 10).unwrap();
+    assert_eq!(cs.len(), 1);
+    assert_eq!(cs[0].purpose, Purpose::Retention);
+    assert!(snap.change_sets_since(CommitSeq(0), 100).unwrap().iter().all(|c| c.purpose == Purpose::Application));
+    drop((snap, now, pruned));
     db.close().unwrap();
 }
 

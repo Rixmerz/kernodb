@@ -7,7 +7,11 @@
 //! * `policy_model`: random workloads with random `set_policy` calls over
 //!   several unit types, every policy-aware read compared with
 //!   [`UnitModel`] and the stored revisions compared with what the model
-//!   says each policy keeps (IU-9).
+//!   says each policy keeps (IU-9). E3-06 adds random `run_retention`
+//!   rounds (random rules per type, sometimes a small budget run to
+//!   completion) checked against [`UnitModel::retain`]: retention under
+//!   `Audit` drops the payloads a `Versioned` period left, and under `None`
+//!   everything below the head.
 //!
 //! A policy error is always `HistoryUnavailable`, never an empty result,
 //! `NotFound` or `Absent` in its place.
@@ -531,7 +535,8 @@ fn policy_model<E: TxnEngine>() {
         let mut rng = Rng::new(seed);
         let disk = SimVfs::new(seed);
         let default = POLICIES[rng.below(3) as usize];
-        let c = cfg(default);
+        let mut c = cfg(default);
+        c.clock = Arc::new(FixedClock::stepping(T0, 1_000_000));
         let db = open::<E>(&disk, &c);
         let mut model = UnitModel::with_default_policy(default);
         let mut kept: Vec<(UnitSnapshot<E>, UnitModel)> = Vec::new();
@@ -637,6 +642,10 @@ fn policy_model<E: TxnEngine>() {
                 model.apply(info.commit_seq, Purpose::Application, changes).expect("model");
             }
             check_stored(&db, &model, &ctx);
+            if rng.chance(1, 4) {
+                retention_round(&db, &mut model, &mut rng, &ctx);
+                check_stored(&db, &model, &format!("{ctx} after retention"));
+            }
             if rng.chance(1, 6) {
                 kept.push((db.snapshot().expect("snapshot"), model.clone()));
             }
@@ -653,6 +662,87 @@ fn policy_model<E: TxnEngine>() {
         db.close().unwrap();
     }
     assert!(UNAVAILABLE.load(AtomicOrdering::Relaxed) > before, "the workload never met a policy error");
+    for (name, n) in
+        [("retention change sets", &RETAINED), ("audit payload drops", &DROPPED), ("pruned revisions", &PRUNED)]
+    {
+        assert!(n.load(AtomicOrdering::Relaxed) > 0, "the workload produced no {name}");
+    }
+}
+
+/// Retention change sets, payloads dropped under `Audit` and revisions
+/// pruned that the workload produced.
+static RETAINED: AtomicUsize = AtomicUsize::new(0);
+static DROPPED: AtomicUsize = AtomicUsize::new(0);
+static PRUNED: AtomicUsize = AtomicUsize::new(0);
+
+/// A random retention rule.
+fn random_rule(rng: &mut Rng, last: CommitSeq) -> RetentionRule {
+    match rng.below(4) {
+        0 => RetentionRule::KeepAll,
+        1 => RetentionRule::KeepLast(rng.range(1, 4)),
+        2 => RetentionRule::KeepFor(std::time::Duration::from_secs(rng.below(last.0 + 2))),
+        _ => RetentionRule::KeepSince(CommitSeq(rng.below(last.0 + 2))),
+    }
+}
+
+/// One `run_retention` (with the default budget, or a small one repeated
+/// until complete), each call checked against [`UnitModel::retain_within`].
+fn retention_round<E: TxnEngine>(db: &UnitDb<E>, model: &mut UnitModel, rng: &mut Rng, ctx: &str) {
+    let last = model.last_seq();
+    let small = rng.chance(1, 3);
+    let rule = |rng: &mut Rng| match random_rule(rng, last) {
+        // A small budget runs several change sets, each with its own clock
+        // reading, which the test cannot see when one writes nothing.
+        RetentionRule::KeepFor(_) if small => RetentionRule::KeepLast(2),
+        r => r,
+    };
+    let mut policy = RetentionPolicy::all(rule(rng));
+    for t in TYPES {
+        if rng.chance(1, 2) {
+            policy = policy.with_type(t, rule(rng));
+        }
+    }
+    let budget = if small {
+        RetentionBudget { max_units: rng.range(1, 3) as usize, max_ops: rng.range(4, 9) as usize }
+    } else {
+        RetentionBudget::default()
+    };
+    for call in 0.. {
+        assert!(call < 1000, "{ctx}: retention never completes");
+        let c = format!("{ctx}: retention call {call} {policy:?} {budget:?}");
+        let r = db.run_retention(&policy, budget).unwrap_or_else(|e| panic!("{c}: {e}"));
+        let snap = db.snapshot().unwrap();
+        let created = |s: CommitSeq| snap.change_set(s).unwrap().expect("change set").created_at;
+        match &r.change_set {
+            Some(info) => {
+                let now = snap.change_set(info.commit_seq).unwrap().unwrap().created_at;
+                let (want, complete) =
+                    model.retain_within(info.commit_seq, &policy, budget, now, created).expect("model retain");
+                let want = want.expect("the model retains too");
+                assert_eq!(r.units_retained as usize, want.members.len(), "{c}");
+                assert_eq!(r.complete, complete, "{c}");
+                let got = snap.change_set(info.commit_seq).unwrap().unwrap();
+                assert_eq!(got.purpose, Purpose::Retention, "{c}");
+                RETAINED.fetch_add(1, AtomicOrdering::Relaxed);
+                DROPPED.fetch_add(r.payloads_dropped as usize, AtomicOrdering::Relaxed);
+                PRUNED.fetch_add(r.revisions_pruned as usize, AtomicOrdering::Relaxed);
+            }
+            None => {
+                assert!(r.complete, "{c}: an empty call is complete");
+                if policy.default != RetentionRule::KeepAll
+                    && !matches!(policy.default, RetentionRule::KeepFor(_))
+                    && !policy.by_type.values().any(|r| matches!(r, RetentionRule::KeepFor(_)))
+                {
+                    let mut m = model.clone();
+                    let (want, _) = m.retain_within(CommitSeq(u64::MAX), &policy, budget, T0, created).unwrap();
+                    assert!(want.is_none(), "{c}: the model would retain");
+                }
+            }
+        }
+        if r.complete {
+            break;
+        }
+    }
 }
 
 macro_rules! engine_tests {
