@@ -532,6 +532,17 @@ Camino crítico: E3-00 → 01 → 02 → 03 → 04; 05, 06, 07 se pueden paralel
 - Una lectura del reloj por `ChangeSet`, usada por el registro y todas sus revisiones. `get_unit` compara la cabeza con el `REV_META` de `head_rev` (IU-2) además de `verify_payload`; una discrepancia es `Storage(Corruption)`.
 - Tras una predicción de secuencia fallida el manejador rechaza también las lecturas con `Storage(Poisoned)` hasta reabrir.
 
+**Nota de E3-04 (ambigüedades resueltas con la opción más conservadora; `crates/kerno-units/src/history.rs` y `ChangeSet::restore` en `db.rs`):**
+
+- `restore(id, from, expected)` exige una unidad `Active` (sobre `Archived` es `InvalidArgument`, sobre `Deleted` es `Deleted`; no «desborra»), con el mismo orden de comprobación que E3-03. `from` debe estar en `[oldest_rev, head_rev]` (`RevisionNotFound` por encima o con `0`, `Pruned` por debajo) y tener carga útil: restaurar una lápida es `InvalidArgument`. Se admite restaurar la propia cabeza o una revisión `Restore`. La revisión nueva copia carga útil, `schema_version` y `metadata` de `from` (decisión 6) y deja la unidad `Active`; la carga útil de origen se verifica antes de copiarla.
+- `Revision` lleva además `lifecycle` (deducido de `kind`: `Archive` → `Archived`, `Delete` → `Deleted`, el resto → `Active`), `payload_len` y `metadata`.
+- `history`: `from` inclusivo, `to` exclusivo (§3.5); un `to` más allá de la cabeza se recorta, pero un `from` por debajo de `oldest_rev` es `Pruned` y no se recorta en silencio. `limit = 0` es `InvalidArgument` en `history`, `state_as_of` y `change_sets_since`. Cada página comprueba que las `REV_META` sean contiguas y con `commit_seq` estrictamente creciente (IU-3); si no, `Storage(Corruption)`.
+- `unit_as_of`: búsqueda binaria por `commit_seq`; cada sonda comprueba que su `commit_seq` esté estrictamente entre las de sus vecinas conocidas y que la cabeza coincida con `REV_META(head_rev)` (y con la revisión 1 si no hubo poda). Una `REV_META` ausente dentro del rango retenido es `Corruption`, nunca `Absent`. `UnitAt::Pruned` es un resultado, no un error.
+- `state_as_of(at, after, limit)` se pagina por `unit_id` y **omite** las unidades aún no creadas en `at` (no las devuelve como `Absent`).
+- `change_set(id)` devuelve `Option` (`None` si no hay registro con esa secuencia) en lugar de un error nuevo. `change_set`/`change_sets_since` comprueban que haya exactamente `member_count` miembros con ordinales `0..n`; `reason` no UTF-8 es `Corruption`.
+- `compare` devuelve ambas revisiones con carga útil verificada y `same_content` (hash y bytes iguales); sin diff estructural (ADR-0008).
+- `snapshot_vs_retention` es parcial: comprueba que una `UnitSnapshot` antigua sigue leyendo su historial mientras confirman otros `ChangeSet` (incluidas restauraciones y borrados); la mitad de retención llega con E3-06.
+
 ## 12. Decisiones del propietario
 
 Las decisiones 1–8 quedaron **decididas** el 2026-10-31 ([acta E3-00](etapa3-acta-e3-00.md)), con las condiciones que ahí constan; las 9–13 siguen abiertas.
