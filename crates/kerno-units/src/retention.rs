@@ -318,6 +318,9 @@ impl<E: TxnEngine> UnitDb<E> {
                 "retention budget {budget:?} needs max_units >= 1 and max_ops >= 4"
             )));
         }
+        // A Retention change set obeys the same member limit as any other
+        // (design §4): cap the batch, the caller resumes on `complete = false`.
+        let budget = RetentionBudget { max_units: budget.max_units.min(self.config().max_changeset_ops), ..budget };
         let mut report = RetentionReport { complete: true, ..RetentionReport::default() };
         {
             let snap = self.engine().snapshot()?;

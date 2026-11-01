@@ -359,6 +359,32 @@ fn restore_payload_limit<E: TxnEngine>() {
     db.close().unwrap();
 }
 
+// ------------------------------------------------------------ change-set limit
+
+fn retention_respects_changeset_limit<E: TxnEngine>() {
+    let disk = SimVfs::new(64);
+    let mut c = cfg();
+    c.max_changeset_ops = 3;
+    let db = open::<E>(&disk, &c);
+    for _ in 0..7 {
+        let (id, _) = db.create_unit(new_unit("doc", b"a"), meta()).unwrap();
+        update(&db, id, b"b");
+    }
+    let p = RetentionPolicy::all(RetentionRule::KeepLast(1));
+    let mut retained = Vec::new();
+    loop {
+        let r = run(&db, &p);
+        assert!(r.units_retained <= 3, "{r:?}");
+        retained.push(r.units_retained);
+        if r.complete {
+            break;
+        }
+    }
+    assert_eq!(retained.iter().sum::<u64>() as usize, 7, "{retained:?}");
+    assert_eq!(run(&db, &p).units_retained, 0);
+    db.close().unwrap();
+}
+
 // ------------------------------------------------------------ retention_every_point
 
 /// Units with long histories under several policies, a deleted one and
@@ -509,6 +535,10 @@ macro_rules! engine_tests {
             #[test]
             fn retention_detects_damage() {
                 super::retention_detects_damage::<E>();
+            }
+            #[test]
+            fn retention_respects_changeset_limit() {
+                super::retention_respects_changeset_limit::<E>();
             }
             #[test]
             fn restore_payload_limit() {
