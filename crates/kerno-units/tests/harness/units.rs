@@ -12,9 +12,18 @@
 //!   `Emulated<LogEngine>` and keeps the raw store after each change set. A
 //!   recovered store must equal one of them **byte for byte** (every key of
 //!   every record family: head, `REV_META`, `REV_PAYLOAD`, `CHANGESET`,
-//!   `CS_MEMBER`, `LAYER_META`), which is I-21: a change set is all there or
-//!   not at all.
-//! * [`check_store`] also requires `verify_units` without findings and a
+//!   `CS_MEMBER`, `LAYER_META`). That proves the recovered store is one an
+//!   undisturbed run of the *same* layer code writes at a change-set
+//!   boundary (the engines are interchangeable and a change set is all there
+//!   or not at all, I-21), but not that the layer wrote the right thing:
+//!   both sides run the same `UnitDb`, so a layer bug is on both.
+//! * The model check ([`check_model`]) closes that gap: the oracle also
+//!   drives the independent [`UnitModel`] with the acknowledged operations
+//!   (revisions built here from the script, not read back from the layer),
+//!   and the recovered database's public reads (unit ids, every head with
+//!   its payload and lifecycle, every retained revision, every change set
+//!   and its members, the policies) must answer what the model says.
+//! * [`check_store`] runs both, and also requires `verify_units` without findings and a
 //!   readable head for every unit; [`keeps_working`] commits once more,
 //!   closes, loses power and checks again.
 
@@ -33,6 +42,7 @@ use kerno_testkit::reference::LogEngine;
 use kerno_testkit::rng::Rng;
 use kerno_testkit::vfs::{CrashKind, SimVfs};
 use kerno_units::codec::{Key, UnitHead};
+use kerno_units::payload::PAYLOAD_CODEC_OPAQUE;
 use kerno_units::*;
 
 pub const DIR: &str = "/db";
@@ -341,6 +351,10 @@ pub struct Oracle {
     db: UnitDb<Emulated<LogEngine>>,
     _disk: SimVfs,
     dumps: Vec<Dump>,
+    /// The model after the last change set run, and its copy after each
+    /// one (freed with the dumps).
+    model: UnitModel,
+    models: Vec<UnitModel>,
 }
 
 impl Oracle {
@@ -350,7 +364,9 @@ impl Oracle {
         let db = open_units::<Emulated<LogEngine>>(disk.as_vfs(), &unit_config(&ids, Durability::Sync))
             .expect("open the oracle");
         let dumps = vec![raw(&db)];
-        Oracle { seed, ids, db, _disk: disk, dumps }
+        let model = UnitModel::new();
+        let models = vec![model.clone()];
+        Oracle { seed, ids, db, _disk: disk, dumps, model, models }
     }
 
     pub fn seed(&self) -> u64 {
@@ -362,17 +378,142 @@ impl Oracle {
         for d in self.dumps.iter_mut().take(seq as usize) {
             *d = Dump::new();
         }
+        for m in self.models.iter_mut().take(seq as usize) {
+            *m = UnitModel::new();
+        }
     }
 
     /// The store after exactly `seq` change sets.
     pub fn expected(&mut self, seq: u64) -> &Dump {
+        self.run_to(seq);
+        &self.dumps[seq as usize]
+    }
+
+    /// The model after exactly `seq` change sets.
+    pub fn model(&mut self, seq: u64) -> &UnitModel {
+        self.run_to(seq);
+        &self.models[seq as usize]
+    }
+
+    fn run_to(&mut self, seq: u64) {
         while self.dumps.len() as u64 <= seq {
             let k = self.dumps.len() as u64;
-            let (acked, err) = run_steps(&self.db, &self.ids, self.seed, k - 1, k);
-            assert!(err.is_none() && acked == k, "the oracle failed at step {k}: {err:?}");
+            let h = heads(&self.db).expect("oracle heads");
+            let script = script_for(self.seed, k, &h);
+            if let Err(e) = run_script(&self.db, &self.ids, k, &script) {
+                panic!("the oracle failed at step {k}: {e}");
+            }
+            model_step(&mut self.model, k, &script);
             self.dumps.push(raw(&self.db));
+            self.models.push(self.model.clone());
         }
-        &self.dumps[seq as usize]
+    }
+}
+
+/// Id of the `n`-th (from 1) unit change set `seq` creates ([`StepIds`]).
+fn step_id(seq: u64, n: u64) -> UnitId {
+    let mut id = [0u8; 16];
+    id[8..].copy_from_slice(&((seq << 16) + n).to_be_bytes());
+    UnitId(id)
+}
+
+fn new_unit_change(id: UnitId, unit_type: &str, metadata: Vec<u8>, payload: Vec<u8>) -> ModelChange {
+    ModelChange {
+        unit: id,
+        kind: RevisionKind::Create,
+        unit_type: unit_type.into(),
+        schema_version: 1,
+        lifecycle: Lifecycle::Active,
+        restored_from: None,
+        metadata,
+        payload: Some(payload),
+    }
+}
+
+/// Applies the change set `script` commits as `seq` to `m`, deciding each
+/// revision from the operation and the model's own state (never from the
+/// layer's records).
+pub fn model_step(m: &mut UnitModel, seq: u64, script: &Script) {
+    let cs = CommitSeq(seq);
+    let filler = |m: &mut UnitModel| {
+        let ch = new_unit_change(step_id(seq, 1), "doc", Vec::new(), b"filler".to_vec());
+        m.apply(cs, Purpose::Application, vec![ch]).expect("model filler");
+    };
+    match script {
+        Script::Policy(t, p) => m.set_policy(cs, t, *p).expect("model set_policy"),
+        Script::Retention(n) => {
+            let policy = RetentionPolicy::all(RetentionRule::KeepLast(*n));
+            if m.retain(cs, &policy, T0, |_| T0).expect("model retain").is_none() {
+                filler(m);
+            }
+        }
+        Script::Changes(actions) => {
+            let mut created = 0;
+            let mut changes = Vec::new();
+            for a in actions {
+                let head = |id: &UnitId| m.head(*id).cloned().expect("model head");
+                let ch = match a {
+                    Action::Create { unit_type, payload } => {
+                        created += 1;
+                        new_unit_change(
+                            step_id(seq, created),
+                            unit_type,
+                            format!("m{seq}").into_bytes(),
+                            payload.clone(),
+                        )
+                    }
+                    Action::Update { id, payload, schema } => {
+                        let h = head(id);
+                        ModelChange {
+                            unit: *id,
+                            kind: RevisionKind::Update,
+                            unit_type: h.unit_type,
+                            schema_version: schema.unwrap_or(h.schema_version),
+                            lifecycle: Lifecycle::Active,
+                            restored_from: None,
+                            metadata: h.metadata,
+                            payload: Some(payload.clone()),
+                        }
+                    }
+                    Action::Archive(id) => keep(*id, head(id), RevisionKind::Archive, Lifecycle::Archived),
+                    Action::Unarchive(id) => keep(*id, head(id), RevisionKind::Unarchive, Lifecycle::Active),
+                    Action::Delete(id) => {
+                        let mut c = keep(*id, head(id), RevisionKind::Delete, Lifecycle::Deleted);
+                        c.payload = None;
+                        c
+                    }
+                    Action::Restore(id, from) => {
+                        let src = m.read_restore_source(*id, *from).expect("model restore source").clone();
+                        ModelChange {
+                            unit: *id,
+                            kind: RevisionKind::Restore,
+                            unit_type: src.unit_type,
+                            schema_version: src.schema_version,
+                            lifecycle: Lifecycle::Active,
+                            restored_from: Some(*from),
+                            metadata: src.metadata,
+                            payload: src.payload,
+                        }
+                    }
+                };
+                changes.push(ch);
+            }
+            m.apply(cs, Purpose::Application, changes).expect("model apply");
+        }
+    }
+}
+
+/// A revision that keeps the head's content and moves its lifecycle.
+fn keep(id: UnitId, h: ModelRevision, kind: RevisionKind, lifecycle: Lifecycle) -> ModelChange {
+    ModelChange {
+        unit: id,
+        kind,
+        unit_type: h.unit_type,
+        schema_version: h.schema_version,
+        lifecycle,
+        restored_from: None,
+        metadata: h.metadata,
+        payload: h.payload,
     }
 }
 
@@ -421,8 +562,11 @@ pub fn verified<E: TxnEngine>(db: &UnitDb<E>, ctx: &str) {
 }
 
 /// The recovered sequence `s` is in `lo..=hi`, the store is byte for byte the
-/// one after exactly `s` change sets (I-21), `verify_units` finds nothing and
-/// every head reads (payload hash included). Returns `s`.
+/// one the same layer code leaves after exactly `s` change sets on the
+/// reference engine (I-21 at the engine boundary), `verify_units` finds
+/// nothing, and the public reads agree with the independent [`UnitModel`]
+/// after the same `s` acknowledged change sets ([`check_model`], which also
+/// reads every head and so checks its payload hash). Returns `s`.
 #[track_caller]
 pub fn check_store<E: TxnEngine>(db: &UnitDb<E>, oracle: &mut Oracle, lo: u64, hi: u64, ctx: &str) -> u64 {
     let s = seq(db);
@@ -435,10 +579,62 @@ pub fn check_store<E: TxnEngine>(db: &UnitDb<E>, oracle: &mut Oracle, lo: u64, h
         first_difference(want, &got)
     );
     verified(db, ctx);
-    for (id, _) in heads(db).unwrap_or_else(|e| panic!("{ctx}: heads: {e}")) {
-        db.get_unit(id).unwrap_or_else(|e| panic!("{ctx}: get_unit {id}: {e}"));
-    }
+    check_model(db, oracle.model(s), ctx);
     s
+}
+
+/// The database's public reads answer what `model` says: the same unit ids;
+/// each head (type, schema, lifecycle, revision, oldest retained revision,
+/// metadata, payload); every revision from the oldest retained to the head
+/// through `get_revision` (kind, sequence, lifecycle, restore source,
+/// metadata, content hash, payload or the same refusal); every change set
+/// with its purpose and members; the policy of every type.
+#[track_caller]
+pub fn check_model<E: TxnEngine>(db: &UnitDb<E>, model: &UnitModel, ctx: &str) {
+    let snap = db.snapshot().unwrap_or_else(|e| panic!("{ctx}: snapshot: {e}"));
+    let got_ids: Vec<UnitId> =
+        heads(db).unwrap_or_else(|e| panic!("{ctx}: heads: {e}")).into_iter().map(|(id, _)| id).collect();
+    let want_ids: Vec<UnitId> = model.unit_ids().collect();
+    assert_eq!(got_ids, want_ids, "{ctx}: model: unit ids");
+    for t in TYPES {
+        assert_eq!(snap.policy(t).unwrap(), model.policy(t), "{ctx}: model: policy of {t}");
+    }
+    for id in want_ids {
+        let h = model.head(id).expect("model head");
+        let u = snap
+            .get_unit(id)
+            .unwrap_or_else(|e| panic!("{ctx}: get_unit {id}: {e}"))
+            .unwrap_or_else(|| panic!("{ctx}: get_unit {id}: missing"));
+        assert_eq!(
+            (&u.unit_type, u.schema_version, u.lifecycle, u.head, u.oldest, &u.metadata, &u.payload),
+            (&h.unit_type, h.schema_version, h.lifecycle, h.rev, model.oldest(id), &h.metadata, &h.payload),
+            "{ctx}: model: head of {id}"
+        );
+        for r in model.oldest(id).0..=h.rev.0 {
+            let c = format!("{ctx}: model: revision {id} {r}");
+            match (snap.get_revision(id, RevNo(r)), model.read_revision(id, RevNo(r))) {
+                (Ok(g), Ok(w)) => {
+                    assert_eq!(
+                        (g.id.rev, g.kind, g.commit_seq, g.lifecycle, g.restored_from, &g.metadata),
+                        (w.rev, w.kind, w.commit_seq, w.lifecycle, w.restored_from, &w.metadata),
+                        "{c}"
+                    );
+                    let bytes = w.payload.as_deref().unwrap_or(&[]);
+                    assert_eq!(g.content_hash, ContentHash::blake3(PAYLOAD_CODEC_OPAQUE, bytes), "{c}: hash");
+                    assert_eq!(g.payload, w.payload, "{c}: payload");
+                }
+                (Err(g), Err(w)) => assert_eq!(format!("{g:?}"), format!("{w:?}"), "{c}"),
+                (g, w) => panic!("{c}: got {g:?}, want {w:?}"),
+            }
+        }
+    }
+    let got = snap.change_sets_since(CommitSeq(0), usize::MAX).unwrap_or_else(|e| panic!("{ctx}: change sets: {e}"));
+    let want = model.change_sets_since(CommitSeq(0), usize::MAX);
+    assert_eq!(got.len(), want.len(), "{ctx}: model: number of change sets");
+    for (g, w) in got.iter().zip(want) {
+        let members: Vec<_> = g.members.iter().map(|m| (m.revision.unit, m.revision.rev, m.kind)).collect();
+        assert_eq!((g.id.0, g.purpose, &members), (w.seq.0, w.purpose, &w.members), "{ctx}: model: change set");
+    }
 }
 
 /// The end of a sweep point: the recovered handle commits the next change
