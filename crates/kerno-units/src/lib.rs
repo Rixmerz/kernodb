@@ -9,7 +9,8 @@
 //! and `get_unit`. E3-04 adds history, as-of reads, change-set listing,
 //! `compare` and `restore` ([`history`]). E3-05 adds history policies and
 //! E3-06 retention and GC ([`retention`]),
-//! and E3-07 the offline verifier `verify_units` ([`verify`]). This crate stays separate from
+//! and E3-07 the offline verifier `verify_units` ([`verify`]). E4-01 adds the
+//! index-free reference query path ([`reference`]). This crate stays separate from
 //! `kerno-storage`.
 
 pub mod clock;
@@ -19,6 +20,7 @@ pub mod error;
 pub mod history;
 pub mod model;
 pub mod payload;
+pub mod reference;
 pub mod retention;
 pub mod types;
 pub mod verify;
