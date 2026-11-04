@@ -329,7 +329,7 @@ fn describe(k: &Key) -> String {
 }
 
 /// The lifecycle a revision of `kind` leaves its unit in.
-fn lifecycle_after(kind: RevisionKind) -> Lifecycle {
+pub(crate) fn lifecycle_after(kind: RevisionKind) -> Lifecycle {
     match kind {
         RevisionKind::Archive => Lifecycle::Archived,
         RevisionKind::Delete => Lifecycle::Deleted,

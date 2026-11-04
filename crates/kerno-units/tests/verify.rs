@@ -589,6 +589,126 @@ fn kerno_read_only_verify_untouched() {
     kerno_read_only_untouched();
 }
 
+// ------------------------------------------------------------ no content (IU-10)
+
+const SENTINEL: &str = "SENTINEL-7f3a";
+
+/// The text a caller can see of a value (`Display` and `Debug`) must not
+/// hold the sentinel, as text or as a `Debug` byte list.
+#[track_caller]
+fn no_sentinel(what: &str, text: &str) {
+    let bytes = format!("{:?}", &SENTINEL.as_bytes()[..6]);
+    let bytes = &bytes[1..bytes.len() - 1];
+    assert!(!text.contains(SENTINEL) && !text.contains(bytes), "{what} leaks content: {text}");
+}
+
+#[track_caller]
+fn err_text(what: &str, e: &UnitError) {
+    no_sentinel(what, &format!("{e} {e:?}"));
+}
+
+/// IU-10 (`sentinel_no_content`, design §7): errors, verify findings and
+/// reports never carry payloads, metadata or provenance. Every user field
+/// holds a sentinel; each kind of damage and refusal is then provoked and
+/// what the caller sees is searched for it.
+fn sentinel_no_content<E: TxnEngine>() {
+    let disk = SimVfs::new(97);
+    let db = UnitDb::<E>::open(disk.as_vfs(), Path::new(DIR), &cfg()).expect("open");
+    let s = SENTINEL.as_bytes().to_vec();
+    let m = ChangeMeta {
+        reason: Some(SENTINEL.into()),
+        actor: Some(s.clone()),
+        source: Some(s.clone()),
+        correlation: Some(s.clone()),
+        purpose: Purpose::Application,
+    };
+    let unit = || NewUnit { unit_type: "doc".into(), schema_version: 1, metadata: s.clone(), payload: s.clone() };
+    let (a, _) = db.create_unit(unit(), m.clone()).unwrap();
+    for i in 0..3u8 {
+        let mut cs = db.begin_changeset(m.clone()).unwrap();
+        let mut p = s.clone();
+        p.push(i);
+        cs.update(a, UnitUpdate { payload: p, schema_version: None, metadata: Some(s.clone()) }, None).unwrap();
+        cs.commit().unwrap();
+    }
+
+    // Refusals before any write.
+    let mut too_long = SENTINEL.repeat(200);
+    too_long.truncate(1025);
+    let refused = [
+        db.begin_changeset(ChangeMeta { reason: Some(too_long), ..m.clone() }).map(|_| ()).unwrap_err(),
+        db.begin_changeset(ChangeMeta { actor: Some(s.repeat(40)), ..m.clone() }).map(|_| ()).unwrap_err(),
+        db.create_unit(NewUnit { metadata: s.repeat(10_000), ..unit() }, m.clone()).map(|_| ()).unwrap_err(),
+        db.create_unit(NewUnit { unit_type: String::new(), ..unit() }, m.clone()).map(|_| ()).unwrap_err(),
+    ];
+    for e in &refused {
+        err_text("refusal", e);
+    }
+    let report = db.run_retention(&RetentionPolicy::all(RetentionRule::KeepLast(2)), RetentionBudget::default());
+    no_sentinel("retention report", &format!("{:?}", report.unwrap()));
+
+    // Damage, one record at a time, read back through the API and verify.
+    let raw = raw_of(&db.engine().snapshot().unwrap());
+    let rev = |r: u64| k(Key::RevMeta { unit: a, rev: RevNo(r) });
+    let pay = |r: u64| k(Key::RevPayload { unit: a, rev: RevNo(r) });
+    let hk = k(Key::UnitHead { unit: a });
+    let head = UnitHead::decode(&raw[&hk]).unwrap();
+    let cs_key = raw.keys().find(|k| k[0] == 0x30).unwrap().clone();
+    let mut flipped = raw[&pay(4)].clone();
+    *flipped.last_mut().unwrap() ^= 1;
+    let mut trailing = raw[&cs_key].clone();
+    trailing.push(0);
+    let mut head_trailing = raw[&hk].clone();
+    head_trailing.push(0);
+    let other_hash = ContentHash::blake3(0, b"other");
+    let other_meta = UnitHead { content_hash: other_hash, ..head.clone() }.encode().unwrap();
+    let damages: Vec<Patch> = vec![
+        vec![(pay(4), Some(flipped))],
+        vec![(pay(3), Some(raw[&pay(3)][..4].to_vec()))],
+        vec![(pay(4), None)],
+        vec![(rev(3), None)],
+        vec![(hk.clone(), Some(other_meta))],
+        vec![(hk.clone(), Some(head_trailing))],
+        vec![(cs_key.clone(), Some(trailing))],
+    ];
+    for patch in &damages {
+        let mut undo: Patch = patch.iter().map(|(k, _)| (k.clone(), raw.get(k).cloned())).collect();
+        apply(db.engine(), patch);
+        let snap = db.snapshot().unwrap();
+        let reads = [
+            db.get_unit(a).map(|_| ()),
+            snap.get_revision(a, RevNo(3)).map(|_| ()),
+            snap.get_revision(a, RevNo(4)).map(|_| ()),
+            snap.history(a, HistoryQuery::oldest(10)).map(|_| ()),
+            snap.unit_as_of(a, AsOf::Seq(CommitSeq(3))).map(|_| ()),
+            snap.change_sets_since(CommitSeq(0), 10).map(|_| ()),
+            snap.compare(a, RevNo(3), RevNo(4)).map(|_| ()),
+        ];
+        for e in reads.iter().filter_map(|r| r.as_ref().err()) {
+            err_text("read error", e);
+        }
+        let mut cs = db.begin_changeset(m.clone()).unwrap();
+        if let Err(e) = cs.restore(a, RevNo(3), None) {
+            err_text("write error", &e);
+        }
+        cs.abort();
+        let report = db.verify_units().unwrap();
+        assert!(!report.is_clean(), "{patch:?}");
+        for f in &report.findings {
+            no_sentinel("finding", &format!("{f} {f:?}"));
+        }
+        no_sentinel("report", &format!("{report:?}"));
+        if let Err(e) = report.into_result() {
+            err_text("into_result", &e);
+        }
+        drop(snap);
+        undo.reverse();
+        apply(db.engine(), &undo);
+        assert!(db.verify_units().unwrap().is_clean());
+    }
+    db.close().unwrap();
+}
+
 #[test]
 fn report_api() {
     let f = VerifyRule::Cross(CrossRule::Unit33);
@@ -620,6 +740,10 @@ macro_rules! engine_tests {
             #[test]
             fn verify_writes_nothing() {
                 super::verify_writes_nothing::<E>();
+            }
+            #[test]
+            fn sentinel_no_content() {
+                super::sentinel_no_content::<E>();
             }
         }
     };

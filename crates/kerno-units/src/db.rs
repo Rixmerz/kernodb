@@ -402,7 +402,7 @@ fn load_unit(get: &GetFn<'_>, id: UnitId) -> Result<Option<Loaded>, UnitError> {
         && meta.schema_version == head.schema_version
         && meta.commit_seq == head.updated_seq
         && meta.metadata == head.metadata
-        && (meta.kind == RevisionKind::Delete) == (head.lifecycle == Lifecycle::Deleted);
+        && crate::verify::lifecycle_after(meta.kind) == head.lifecycle;
     if !consistent {
         return Err(corruption(format!("unit {id}: UNIT_HEAD disagrees with the REV_META of revision {rev}")));
     }
