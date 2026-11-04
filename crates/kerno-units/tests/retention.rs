@@ -448,17 +448,27 @@ fn retention_every_point<E: TxnEngine>(kind: CrashKind, durability: Durability, 
     let before = raw(&db);
     let heads: Vec<Unit> = ids.iter().map(|id| db.get_unit(*id).unwrap().unwrap()).collect();
     let start = disk.mutating_ops();
-    let wal_syncs = |db: &UnitDb<E>| {
-        kerno_core::contract::Engine::stats(db.engine()).into_iter().find(|(n, _)| n == "wal_syncs").map(|(_, v)| v)
+    let stat = |db: &UnitDb<E>, name: &str| {
+        kerno_core::contract::Engine::stats(db.engine()).into_iter().find(|(n, _)| n == name).map(|(_, v)| v)
     };
-    let syncs = wal_syncs(&db);
+    let (syncs, rotations) = (stat(&db, "wal_syncs"), stat(&db, "memtable_rotations"));
     let r = db.run_retention(&every_point_policy(), RetentionBudget::default()).unwrap();
     assert!(r.change_set.is_some() && r.revisions_pruned > 0 && r.payloads_dropped > 0, "{r:?}");
     assert_eq!(r.change_sets.len(), (r.units_retained as usize).div_ceil(per_cs), "{r:?}");
     assert_eq!(r.change_set.as_ref(), r.change_sets.last());
     if deferred {
         assert!(r.change_sets.iter().all(|c| !c.durable), "retention change sets are deferred: {r:?}");
-        assert_eq!(wal_syncs(&db), syncs, "deferred retention change sets do not sync");
+        // No `fsync` of their own. Only a WAL rotation during the call
+        // (here, while writing them) syncs the log, which makes the change
+        // sets before it durable (decision 12c); `wal_syncs` counts that
+        // sync in `Sync` mode only, once per rotation.
+        let rotated = stat(&db, "memtable_rotations").unwrap() - rotations.unwrap();
+        let expected = if durability == Durability::Sync { rotated } else { 0 };
+        assert_eq!(
+            stat(&db, "wal_syncs").unwrap() - syncs.unwrap(),
+            expected,
+            "deferred retention change sets do not sync"
+        );
     } else {
         let durable = durability == Durability::Sync;
         assert!(r.change_sets.iter().all(|c| c.durable == durable), "{r:?}");
