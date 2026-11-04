@@ -93,8 +93,27 @@ impl Version {
         end: Bound<&[u8]>,
         limit: usize,
     ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        let mut out = Vec::new();
+        self.scan_with(seq, start, end, limit, |k, v| {
+            out.push((k.to_vec(), v.to_vec()));
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
+    /// [`scan`](Self::scan) that hands each entry to `visit`, borrowed,
+    /// instead of copying it (decision 12c of `etapa3-design.md`). Returns
+    /// how many entries it visited; an error of `visit` stops the scan.
+    pub fn scan_with(
+        &self,
+        seq: u64,
+        start: Bound<&[u8]>,
+        end: Bound<&[u8]>,
+        limit: usize,
+        mut visit: impl FnMut(&[u8], &[u8]) -> Result<()>,
+    ) -> Result<usize> {
         if limit == 0 || range_is_empty(start, end) {
-            return Ok(Vec::new());
+            return Ok(0);
         }
         let mut children: Vec<Box<dyn InternalIterator + '_>> = Vec::new();
         // The fragments of every source the scan may meet; none at all is
@@ -136,8 +155,8 @@ impl Version {
                 cover.seek(k);
             }
         }
-        let mut out = Vec::new();
-        while it.valid() && out.len() < limit {
+        let mut seen = 0;
+        while it.valid() && seen < limit {
             let k = it.key();
             let past_end = match end {
                 Bound::Included(e) => k > e,
@@ -154,11 +173,12 @@ impl Version {
                 && let Some(v) = it.value()
                 && cover.covering(k) <= it.seq()
             {
-                out.push((k.to_vec(), v.to_vec()));
+                visit(k, v)?;
+                seen += 1;
             }
             it.next()?;
         }
-        Ok(out)
+        Ok(seen)
     }
 }
 

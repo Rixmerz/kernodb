@@ -15,8 +15,11 @@
 //!
 //! * U1: p99 of a `Sync` change set with one 1 KiB `update` against the p99
 //!   of a `Sync` commit of one 1 KiB put. Threshold <= 1.5x.
-//! * U2: p99 of `history(id, latest(100))` (metadata only) against the p99 of
-//!   a snapshot + `scan` of 100 keys of 100 B. Threshold <= 1.5x.
+//! * U2: p99 of `history(id, latest(100))` (metadata only) against the p99
+//!   of a snapshot + `scan` of 100 keys of 100 B. Threshold <= 1.5x. The
+//!   lightweight view `history_page` (decision 12c: same checks, no
+//!   `Revision` built per entry) is measured after both in each round with
+//!   its own random stream and reported, not judged.
 //! * U3: p99 of `unit_as_of` on units with 1 000 revisions against the p99 of
 //!   a snapshot + `get` of a 1 KiB key. Reported; flagged above 5x.
 //! * U4: WAL, flush and compaction bytes per `update` of 1 KiB and 64 KiB
@@ -413,10 +416,15 @@ fn u2(a: &Args, z: &Sizes, out: &mut Vec<Verdict>) -> Res<()> {
     }
     settle(units.engine())?;
     settle(&plain)?;
-    let (mut su, mut sp) = (Vec::new(), Vec::new());
+    // Judged: `history` against the reference scan, alternated round by
+    // round, same random stream as before decision 12c. `history_page`
+    // (decision 12c) is measured after both in each round, with its own
+    // random stream, and reported, not judged.
+    let mut rv = Rng::new(a.seed ^ 0x2C);
+    let (mut su, mut sp, mut sv) = (Vec::new(), Vec::new(), Vec::new());
     let warm = z.u2_queries / 10;
     for round in 0..z.rounds {
-        for side in [round % 2, 1 - round % 2] {
+        for side in [round % 2, 1 - round % 2, 2] {
             for i in 0..warm + z.u2_queries {
                 let ns = if side == 0 {
                     let id = ids[rng.below(ids.len() as u64) as usize];
@@ -424,6 +432,15 @@ fn u2(a: &Args, z: &Sizes, out: &mut Vec<Verdict>) -> Res<()> {
                         let h = units.history(id, HistoryQuery::latest(REVS))?;
                         if h.len() != REVS {
                             return Err(format!("history returned {} revisions", h.len()).into());
+                        }
+                        Ok(())
+                    })?
+                } else if side == 2 {
+                    let id = ids[rv.below(ids.len() as u64) as usize];
+                    timed(|| {
+                        let h = units.history_page(id, HistoryQuery::latest(REVS))?;
+                        if h.len() != REVS {
+                            return Err(format!("history_page returned {} revisions", h.len()).into());
                         }
                         Ok(())
                     })?
@@ -439,19 +456,30 @@ fn u2(a: &Args, z: &Sizes, out: &mut Vec<Verdict>) -> Res<()> {
                     })?
                 };
                 if i >= warm {
-                    if side == 0 { su.push(ns) } else { sp.push(ns) }
+                    match side {
+                        0 => su.push(ns),
+                        1 => sp.push(ns),
+                        _ => sv.push(ns),
+                    }
                 }
             }
         }
     }
-    let (lu, lp) = (lat(&su), lat(&sp));
+    let (lu, lp, lv) = (lat(&su), lat(&sp), lat(&sv));
     show("U2 history", &lu);
     show("U2 scan", &lp);
+    show("U2 history_page (informative)", &lv);
     let ratio = lu.p99 / lp.p99;
     verdict(
         out,
         "U2",
-        format!("p99 history {:.4} ms / scan {:.4} ms = {ratio:.2}x (threshold <= 1.5x)", lu.p99, lp.p99),
+        format!(
+            "p99 history {:.4} ms / scan {:.4} ms = {ratio:.2}x (threshold <= 1.5x); history_page {:.4} ms = {:.2}x (informative)",
+            lu.p99,
+            lp.p99,
+            lv.p99,
+            lv.p99 / lp.p99
+        ),
         Some(ratio <= 1.5),
     );
     units.close()?;

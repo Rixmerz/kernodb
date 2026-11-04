@@ -470,6 +470,24 @@ pub struct RevisionMeta {
     pub source_ref: Vec<u8>,
 }
 
+/// The fields of a valid `REV_META` value without its variable-length
+/// fields, which stay in the value: `fields` are the byte ranges of
+/// `metadata`, `actor_ref` and `source_ref` in it
+/// ([`RevisionMeta::decode_fixed`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct MetaFixed {
+    pub kind: RevisionKind,
+    pub parent_rev: Option<RevNo>,
+    pub commit_seq: CommitSeq,
+    pub created_at: Timestamp,
+    pub schema_version: u32,
+    pub content_hash: ContentHash,
+    pub payload_len: u32,
+    pub payload_present: bool,
+    pub restored_from: Option<RevNo>,
+    pub fields: [(u32, u32); 3],
+}
+
 impl RevisionMeta {
     /// What this revision declares about its payload, for [`crate::verify_payload`].
     pub fn payload_decl(&self) -> PayloadDecl {
@@ -519,6 +537,32 @@ impl RevisionMeta {
     /// decoder reports the exact rule.
     #[inline(always)]
     fn decode_valid(rev_no: RevNo, v: &[u8]) -> Option<Self> {
+        let f = Self::decode_fixed(rev_no, v)?;
+        // Empty fields (the common case) need no allocator call.
+        let owned = |(a, b): (u32, u32)| if a == b { Vec::new() } else { v[a as usize..b as usize].to_vec() };
+        Some(RevisionMeta {
+            kind: f.kind,
+            parent_rev: f.parent_rev,
+            commit_seq: f.commit_seq,
+            created_at: f.created_at,
+            schema_version: f.schema_version,
+            content_hash: f.content_hash,
+            payload_len: f.payload_len,
+            payload_present: f.payload_present,
+            restored_from: f.restored_from,
+            metadata: owned(f.fields[0]),
+            actor_ref: owned(f.fields[1]),
+            source_ref: owned(f.fields[2]),
+        })
+    }
+
+    /// Validates a `REV_META` value exactly like [`decode`](Self::decode)
+    /// accepts it, without copying anything: the fixed fields, and where
+    /// `metadata`, `actor_ref` and `source_ref` lie in `v`. `None` for any
+    /// value `decode` rejects (or that only its checked path would accept,
+    /// which is none: both accept the same values).
+    #[inline(always)]
+    pub(crate) fn decode_fixed(rev_no: RevNo, v: &[u8]) -> Option<MetaFixed> {
         const FIXED: usize = 78;
         let f: &[u8; FIXED] = v.get(..FIXED)?.try_into().ok()?;
         if f[0] != ENVELOPE_VERSION || f[1] != 0 {
@@ -541,21 +585,22 @@ impl RevisionMeta {
         {
             return None;
         }
-        fn field<'v>(v: &'v [u8], at: &mut usize, max: u32) -> Option<&'v [u8]> {
+        fn field(v: &[u8], at: &mut usize, max: u32) -> Option<(u32, u32)> {
             let len = u32::from_be_bytes(arr(v.get(*at..*at + 4)?));
             if len > max {
                 return None;
             }
-            let body = v.get(*at + 4..*at + 4 + len as usize)?;
-            *at += 4 + len as usize;
-            Some(body)
+            let (a, b) = (*at + 4, *at + 4 + len as usize);
+            v.get(a..b)?;
+            *at = b;
+            Some((a as u32, b as u32))
         }
-        // Empty fields (the common case) need no allocator call.
-        let owned = |b: &[u8]| if b.is_empty() { Vec::new() } else { b.to_vec() };
         let mut at = FIXED;
-        let metadata = owned(field(v, &mut at, MAX_METADATA_LEN)?);
-        let actor_ref = owned(field(v, &mut at, MAX_REV_REF_LEN)?);
-        let source_ref = owned(field(v, &mut at, MAX_REV_REF_LEN)?);
+        let fields = [
+            field(v, &mut at, MAX_METADATA_LEN)?,
+            field(v, &mut at, MAX_REV_REF_LEN)?,
+            field(v, &mut at, MAX_REV_REF_LEN)?,
+        ];
         if at != v.len() {
             return None;
         }
@@ -567,7 +612,7 @@ impl RevisionMeta {
         if !(parent_ok && restored_ok && delete_ok) {
             return None;
         }
-        Some(RevisionMeta {
+        Some(MetaFixed {
             kind,
             parent_rev: (parent_rev != 0).then_some(RevNo(parent_rev)),
             commit_seq: CommitSeq(commit_seq),
@@ -577,9 +622,7 @@ impl RevisionMeta {
             payload_len,
             payload_present: present == 1,
             restored_from: (restored_from != 0).then_some(RevNo(restored_from)),
-            metadata,
-            actor_ref,
-            source_ref,
+            fields,
         })
     }
 

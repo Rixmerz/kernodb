@@ -280,8 +280,11 @@ pub struct CommitInfo {
     pub commit_seq: CommitSeq,
     /// The revisions the change set created, in operation order.
     pub revisions: Vec<RevisionId>,
-    /// Whether the engine's durability is `Sync` (otherwise durable after
-    /// [`UnitDb::sync`]).
+    /// Whether the change set was durable when `commit` returned: the
+    /// engine's durability is `Sync` and the commit was not deferred.
+    /// Otherwise it is durable after [`UnitDb::sync`] or, for a deferred
+    /// `Retention` change set (decision 12c), also after the next durable
+    /// change set returns.
     pub durable: bool,
 }
 
@@ -532,6 +535,7 @@ impl<E: TxnEngine> UnitDb<E> {
             maintenance: false,
             writes: 0,
             bytes: 0,
+            deferred: false,
         })
     }
 
@@ -677,6 +681,9 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     /// Engine writes and their key + value bytes so far.
     writes: usize,
     bytes: usize,
+    /// A retention change set: committed with deferred durability
+    /// (decision 12c), see [`UnitDb::run_retention`].
+    deferred: bool,
 }
 
 /// One engine write of a planned operation.
@@ -1092,7 +1099,12 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         let v = record.encode()?;
         self.put(&key(Key::ChangeSet { seq: self.seq })?, &v)?;
         let txn = self.txn.take().ok_or(UnitError::ChangeSetClosed)?;
-        let got = txn.commit()?;
+        let (got, durable) = if self.deferred {
+            let (got, waited) = txn.commit_deferred()?;
+            (got, durable && waited)
+        } else {
+            (txn.commit()?, durable)
+        };
         if got != self.seq.0 {
             self.db.poisoned.store(true, Ordering::SeqCst);
             return Err(UnitError::Storage(kerno_core::Error::Poisoned(format!(
@@ -1112,6 +1124,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
     pub(crate) fn begin_retention(db: &'db UnitDb<E>, now: Timestamp) -> Result<Self, UnitError> {
         let mut cs = db.begin_changeset_at(ChangeMeta::default(), Some(now))?;
         cs.meta.purpose = Purpose::Retention;
+        cs.deferred = true;
         Ok(cs)
     }
 

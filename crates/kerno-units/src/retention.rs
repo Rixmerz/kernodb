@@ -38,6 +38,12 @@
 //!   `false` with no change set. Units written behind the cursor during a
 //!   pass are left for the next pass, as if written after it. Repeating a
 //!   call is idempotent and a crash leaves nothing to recover.
+//! * **Deferred durability (decision 12c).** Retention change sets do not
+//!   `fsync` on their own: they become durable with the next durable commit,
+//!   [`UnitDb::sync`], a log rotation or `close`. The engine recovers a
+//!   prefix of its commits, so a crash can only lose a tail of retention
+//!   change sets, which a new pass redoes; it never loses a change set that
+//!   was durable when it returned.
 //! * **Snapshots keep reading (IU-8).** Pruning is a commit like any other:
 //!   a [`crate::UnitSnapshot`] taken before it keeps its whole history.
 //!   Logical deletion is not physical deletion (§5.3): the bytes stay until
@@ -371,6 +377,17 @@ impl<E: TxnEngine> UnitDb<E> {
     /// [module documentation](self)) to at most `budget` units in one change
     /// set with purpose `Retention`. An empty database, or one with nothing
     /// to prune, writes nothing. Call again while `complete` is `false`.
+    ///
+    /// **Durability (decision 12c).** Retention change sets are committed
+    /// with deferred durability: no `fsync` of their own, even with
+    /// `Durability::Sync` (their [`CommitInfo::durable`] is `false`). They
+    /// become durable with the next durable change set, [`UnitDb::sync`],
+    /// a log rotation or `close`. A crash can only take back a tail of
+    /// them, never a change set the caller saw durable, and the store is
+    /// then a prefix of the commits: running retention again redoes what
+    /// was lost (it is idempotent).
+    ///
+    /// [`CommitInfo::durable`]: crate::CommitInfo::durable
     pub fn run_retention(
         &self,
         policy: &RetentionPolicy,

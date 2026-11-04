@@ -31,7 +31,8 @@ pub use db::{
 };
 pub use error::{DecodeError, ErrorClass, UnitError, UnitRule};
 pub use history::{
-    AsOf, ChangeSetInfo, ChangeSetMember, Comparison, HistoryQuery, Order, Provenance, Revision, UnitAt, UnitStates,
+    AsOf, ChangeSetInfo, ChangeSetMember, Comparison, HistoryPage, HistoryQuery, Order, Provenance, Revision,
+    RevisionView, UnitAt, UnitStates,
 };
 pub use model::{ModelChange, ModelChangeSet, ModelError, ModelRevision, ModelUnitAt, UnitModel};
 pub use payload::{

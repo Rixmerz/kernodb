@@ -177,3 +177,39 @@ U1 no se tocó en este WP; su incumplimiento en la pasada 1 es variación del p9
 
 - **`policy_model` (semilla 39, `SPIKE_SEEDS=1000`): retención que no avanza.** No era el escaneo acotado ni el ritmo de E3-09b: con `RetentionBudget { max_units: 1, max_ops: 5 }` (válido: el diseño exige `max_ops ≥ 4` y una retención reanudable), una unidad `Audit` que necesitaba podar (4 operaciones) y además soltar algún contenido (2 por cada uno) no cabía nunca, porque `fits` (y la misma regla en `UnitModel::retain_within`) exigían poda + al menos un contenido. Cada llamada devolvía `complete = false` sin conjunto de cambios, para siempre; el modelo daba la misma respuesta, así que la prueba lo detectó por su regla «una llamada vacía está completa». Arreglo en código y modelo por igual: una poda sola (los contenidos para la llamada siguiente) es progreso suficiente; sin poda, el mínimo sigue siendo un contenido. La regla de la prueba no cambia.
 - **«scenario A on LazyFS».** El fallo no es del motor: el ejecutor trae CMake 4, que ya no acepta `cmake_minimum_required` < 3.5, y la dependencia `toml` que descarga LazyFS lo declara, así que `libpcache` no compilaba (`RESULT: PENDING`, salida 2). `run-lazyfs.sh` exporta `CMAKE_POLICY_VERSION_MINIMUM=3.5` (CMake 4 lo lee del entorno; versiones anteriores lo ignoran). No se pudo ejecutar el escenario completo aquí: el proxy de este entorno devuelve 403 a las descargas de dependencias de LazyFS (`spdlog`), así que queda pendiente de la próxima ejecución en CI.
+
+## 9. WP E3-09c: retención con durabilidad diferida y vista ligera del historial
+
+Aprobado por el propietario en el PR #13 (decisión 12c del diseño). Umbrales, T1–T10 y metodología de `unit_bench` sin cambios. **Resultado: U1 cumple en 3 de 3; U2 (definido sobre `history`) cumple en 2 de 3 (1,50× en la pasada 1, sobre el límite); U6 sigue incumpliendo en las 3.**
+
+### 9.1 Cambios
+
+- **Contrato (`kerno-core`):** `Txn::commit_deferred` (por defecto `commit`) y `Snapshot::scan_visit` (por defecto `scan`); ningún motor existente cambia de comportamiento.
+- **`kerno-storage` (WP propio según §9.5 del diseño):** `WriteTxn::commit_deferred`; el líder del grupo omite el `fsync` si todos los commits aceptados del grupo son diferidos, y `durable_seq` solo avanza tras un `fsync` (también se corrigió que un grupo sin commits aceptados ni `sync()` lo marcara duradero). La rotación sincroniza el WAL anterior si tiene tramas sin sincronizar, también en `Sync`; `sync()` hace un `fsync` si hay tramas diferidas pendientes. `Version::scan_with` sirve `scan_visit` sin copiar cada entrada. Sin cambio de formato.
+- **`kerno-units`:** los conjuntos de cambios `Retention` se confirman diferidos (`CommitInfo::durable = false`); `history_page` / `HistoryPage` / `RevisionView` (mismas comprobaciones y errores que `history`; `history` no cambia). `unit_bench` U2 sigue juzgando `history`; `history_page` se mide en la misma pasada, después de los dos lados juzgados y con su propio flujo aleatorio, y se informa sin veredicto.
+- **Pruebas:** `kerno-storage/tests/deferred.rs` (contabilidad de `fsync`/`durable_seq`; caída antes de cada E/S mutante con commits diferidos y duraderos mezclados y rotaciones con tramas sin sincronizar, en `Sync`/`Buffered`, pérdida de energía y muerte del proceso: siempre un prefijo que contiene todo commit duradero reconocido). En `kerno-units`, el arnés registra el último paso reconocido duradero y `changeset_every_point`, `model_crash`, `recovery_reentrant`, `fsync_failure` y `torn_write` aceptan perder solo los pasos de retención posteriores; `retention_every_point` añade un conjunto de usuario tras la retención (duradero y con él toda la retención previa) y comprueba que la retención no hace `fsync`. Equivalencia `history_page` = `history` en `history_model` (páginas en ambos órdenes) y en los casos de error y corrupción. Todo verde con `SPIKE_SEEDS=1000`, `KERNO_KILL_ITERS=200`.
+
+### 9.2 T1–T10 antes y después (`spikes/storage/results/2026-11-04-e3/t1-t10-e3-09c/`)
+
+Mismo método que §8.2 (binarios intercalados, `medium`, `Sync`, 3 repeticiones, semillas 42–44, `concurrent_commits` con 8 y con 1 hilo, `bulk_load` `large` 1 repetición), «antes» = `4be9053`. Para no gastar más tiempo de máquina del necesario **no se repitieron las referencias** (`lsm`/`btree`/`fjall`): la comparación es solo `kerno` antes/después. Medianas (después/antes): T1 `agent_memory` p99 escritura 2 345 → 2 281 µs (0,97); T2 LiveSpec 2 869 → 2 869 µs (1,00), Cauce 886 → 976 µs (1,10), `append_seq` inserción/actualización 1 570/3 348 → 1 863/2 783 µs (1,19/0,83), `history_sim` 5 288 → 4 809 µs (0,91); T3 module-scan/symbol-get 565/32,5 → 577/31,1 µs; T5 `bulk_load` 150 → 181 kops, `point_reads` 1h/4h 216/774 → 228/690 kops, `range_scans` 11,6 → 11,9 kops, `small_commits` 5 636 → 5 702/s, `mixed` 76,7 → 79,4 kops, `rmw_counters` 4 770 → 4 556 txn/s; T6 `fsync`/commit 1,00 y 0,216 sin cambio, `cc` 8 hilos 15 540 → 15 680/s, 1 hilo 6 163 → 6 162/s; T7 sin cambio (1,17 / 3,30–3,33); T8 reapertura/recuperación `bulk_load` 3,64/8,77 → 4,35/8,06 ms; T9 `rmw_counters` p99 3 234 → 3 189 µs. Los tres que más se movieron se repitieron 6 veces más por lado (semillas 45–50, `recheck-*.jsonl`): `small_commits` p99 469 → 401 µs (0,85), `point_deletes` reapertura 3,61 → 3,22 ms (0,89), `append_seq` inserción p99 1 846 → 1 695 µs (0,92). **Conclusión: ninguna regresión de T1–T10 por encima del ruido entre repeticiones.**
+
+### 9.3 `unit_bench` completo, 3 pasadas (`unit_bench-full-e3-09c-run{1,2,3}.txt`)
+
+Las tres pasadas se repitieron enteras porque una primera tanda coincidió con una compilación (`clippy`) en la misma máquina; solo constan las pasadas en máquina quieta.
+
+| Id | Pasada 1 | Pasada 2 | Pasada 3 |
+|---|---|---|---|
+| U1 (≤ 1,5×) | 0,505 / 0,481 ms = 1,05× | 0,554 / 0,506 = 1,09× | 0,491 / 0,447 = 1,10× |
+| U2 `history` (≤ 1,5×) | 0,0520 / 0,0346 ms = **1,50× incumple** (1,503) | 0,0607 / 0,0479 = 1,27× | 0,0505 / 0,0533 = 0,95× |
+| `history_page` (informativo) | 0,0313 ms = 0,90× | 0,0422 = 0,88× | 0,0310 = 0,58× |
+| U3 (aviso > 5×) | 5,03× aviso | 4,66× | 4,78× |
+| U4 / U5 | sin cambios (+339 B; 1,178×) | igual | igual |
+| U6 por defecto: p99 escr. / rend. / p99 lect. | 1,18× / 0,89× / 1,28× | 1,09× / 0,93× / 0,43× | 1,12× / 0,92× / 2,54× |
+| U6 25 u.: p99 escr. / rend. / p99 lect. | 1,12× / 0,94× / 1,22× | 1,07× / 1,06× / 0,36× | 1,05× / 0,94× / 1,08× |
+| U6 veredicto | incumple ×2 | incumple ×2 | incumple ×2 |
+| Retención (rev/s, por defecto / 25 u.) | 21 808 / 18 757 | 27 719 / 19 021 | 26 378 / 19 121 |
+
+### 9.4 Lectura
+
+- **U2.** La vista ligera queda en 0,58–0,90× del `scan` de referencia, es decir, la capa ya no añade coste propio cuando no se materializan `Revision`; `history` sigue oscilando alrededor de 1,5× por la construcción de 100 `Revision` (≈ 10 µs) y la variación del p99 de la referencia. Juzgar U2 sobre `history_page` sería un cambio de la definición de la decisión 12 y queda para el propietario.
+- **U6.** Sin `fsync` propio la retención es ~30–50 % más rápida (21 800–27 700 rev/s frente a 16 100–18 900 en §8.3) y el p99 de escritura durante la poda queda en 1,05–1,18×, pero el rendimiento del escritor sigue en 0,89–0,94× (1,06× una vez) y el p99 del lector oscila 0,36–2,54× con ventanas «antes» que varían 2–3× entre sí. Lo que queda es el trabajo de fondo que la poda genera (rotaciones por rangos, vaciados, compactaciones), no el `fsync`; no se ha cambiado ningún umbral.

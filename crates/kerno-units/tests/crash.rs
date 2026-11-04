@@ -78,12 +78,16 @@ struct Run {
     /// Last sequence made durable by a clean close (what a power loss cannot
     /// take back in `Buffered`).
     closed: u64,
+    /// Last sequence acknowledged as durable in `Sync` mode: deferred
+    /// `Retention` steps after it may be lost to a power loss (decision 12c).
+    durable: u64,
 }
 
 /// Runs the scenario until the device fails (every error must come from a
 /// crash or an injected fault) and closes at the end.
 fn run_scenario<E: Target>(disk: &SimVfs, cfg: &UnitConfig, ids: &StepIds, seed: u64) -> Run {
-    let mut run = Run { acked: 0, attempted: 0, closed: 0 };
+    let mut run = Run { acked: 0, attempted: 0, closed: 0, durable: 0 };
+    ids.set_durable(0);
     let Ok(mut db) = open_units::<E>(disk.as_vfs(), cfg) else { return run };
     for step in SCENARIO {
         match step {
@@ -91,6 +95,7 @@ fn run_scenario<E: Target>(disk: &SimVfs, cfg: &UnitConfig, ids: &StepIds, seed:
                 let (acked, err) = run_steps(&db, ids, seed, run.acked, run.acked + n);
                 run.acked = acked;
                 run.attempted = acked;
+                run.durable = ids.durable();
                 if err.is_some() {
                     run.attempted = acked + 1;
                     return run;
@@ -109,6 +114,9 @@ fn run_scenario<E: Target>(disk: &SimVfs, cfg: &UnitConfig, ids: &StepIds, seed:
                     Ok(db) => db,
                     Err(_) => return run,
                 };
+                // Recovery makes durable what it found (or close did).
+                ids.set_durable(run.acked);
+                run.durable = run.acked;
             }
         }
     }
@@ -136,8 +144,11 @@ fn changeset_every_point<E: Target>(kind: CrashKind, durability: Durability) {
             disk.crash_after(point, kind);
             let run = run_scenario::<E>(&disk, &cfg, &ids, seed);
             let image = disk.take_crash_image().unwrap_or_else(|| disk.crash_now(kind));
-            let lo =
-                if kind == CrashKind::PowerLoss && durability == Durability::Buffered { run.closed } else { run.acked };
+            let lo = match (kind, durability) {
+                (CrashKind::PowerLoss, Durability::Buffered) => run.closed,
+                (CrashKind::PowerLoss, Durability::Sync) => run.durable.max(run.closed),
+                _ => run.acked,
+            };
             let db = open_units::<E>(image.as_vfs(), &cfg).unwrap_or_else(|e| panic!("{ctx}: recovery: {e}"));
             let s = check_store(&db, oracle, lo, run.attempted, &ctx);
             keeps_working(db, &image, &cfg, &ids, oracle, s, &ctx);
@@ -187,6 +198,7 @@ fn model_crash_seed<E: Target>(seed: u64, kind: CrashKind, durability: Durabilit
         assert!(s >= base, "{ctx}: recovered {s}, older than the verified {base}");
         base = s;
         disk.crash_after(rng.range(1, CHANGE_SETS_PER_ROUND * ops_per_change_set), kind);
+        ids.set_durable(s);
         let before = disk.mutating_ops();
         let (acked, err) = run_steps(&db, &ids, seed, s, s + CHANGE_SETS_PER_ROUND);
         if let Some(e) = &err {
@@ -198,7 +210,13 @@ fn model_crash_seed<E: Target>(seed: u64, kind: CrashKind, durability: Durabilit
         let image = disk.take_crash_image().unwrap_or_else(|| disk.crash_now(kind));
         drop(db);
         disk = image;
-        lo = if kind == CrashKind::PowerLoss && durability == Durability::Buffered { base } else { acked };
+        lo = match (kind, durability) {
+            (CrashKind::PowerLoss, Durability::Buffered) => base,
+            // Deferred `Retention` steps after the last durable one may be
+            // lost (decision 12c).
+            (CrashKind::PowerLoss, Durability::Sync) => ids.durable().max(base),
+            _ => acked,
+        };
         hi = if err.is_some() { acked + 1 } else { acked };
     }
     let ctx = format!("model_crash {} seed {seed}, final", E::NAME);
@@ -210,15 +228,19 @@ fn model_crash_seed<E: Target>(seed: u64, kind: CrashKind, durability: Durabilit
 // ------------------------------------------------------------ recovery_reentrant
 
 /// A database whose last `n` change sets are only in the WAL, crashed with
-/// `kind`; returns the image.
-fn wal_only_image<E: Target>(seed: u64, n: u64, cfg: &UnitConfig, ids: &StepIds, kind: CrashKind) -> SimVfs {
+/// `kind`; returns the image and the last change set acknowledged durable
+/// (deferred `Retention` steps after it may be lost to a power loss,
+/// decision 12c).
+fn wal_only_image<E: Target>(seed: u64, n: u64, cfg: &UnitConfig, ids: &StepIds, kind: CrashKind) -> (SimVfs, u64) {
     let disk = SimVfs::new(seed);
     let db = open_units::<E>(disk.as_vfs(), cfg).expect("open");
+    ids.set_durable(0);
     let (acked, err) = run_steps(&db, ids, seed, 0, n);
     assert!(err.is_none() && acked == n);
+    let durable = if kind == CrashKind::PowerLoss { ids.durable() } else { n };
     let image = disk.crash_now(kind);
     drop(db);
-    image
+    (image, durable)
 }
 
 fn recovery_reentrant<E: Target>(kind: CrashKind) {
@@ -230,12 +252,13 @@ fn recovery_reentrant<E: Target>(kind: CrashKind) {
         // Fewer than LARGE_EVERY change sets: nothing is flushed, every
         // change set is in the WAL.
         let n = LARGE_EVERY - 1;
-        let base = wal_only_image::<E>(seed, n, &cfg, &ids, kind).dump();
+        let (image, durable) = wal_only_image::<E>(seed, n, &cfg, &ids, kind);
+        let base = image.dump();
         // The undisturbed recovery: its operations and its result.
         let reference = SimVfs::restore(&base);
         let db = open_units::<E>(reference.as_vfs(), &cfg).expect("recovery");
         let ops = reference.mutating_ops();
-        check_store(&db, &mut oracle, n, n, &format!("{name} seed {seed}: undisturbed recovery"));
+        let n = check_store(&db, &mut oracle, durable, n, &format!("{name} seed {seed}: undisturbed recovery"));
         let want = raw(&db);
         drop(db);
         assert!(ops > 0 || E::NAME != "kerno", "{name}: recovery wrote nothing; the sweep would prove nothing");
@@ -269,6 +292,7 @@ fn recovery_reentrant<E: Target>(kind: CrashKind) {
 /// Scenario of the fault sweeps: open, `n` change sets, clean close. Returns
 /// (acked, attempted, first error, whether the handle was poisoned after it).
 fn fault_run(disk: &SimVfs, cfg: &UnitConfig, ids: &StepIds, seed: u64, n: u64) -> (u64, u64, Option<UnitError>) {
+    ids.set_durable(0);
     let db = match open_units::<KernoDb>(disk.as_vfs(), cfg) {
         Ok(db) => db,
         Err(e) => return (0, 0, Some(e)),
@@ -324,7 +348,11 @@ fn fsync_failure(mode: FsyncFailure) {
             let kind = if nth % 2 == 0 { CrashKind::PowerLoss } else { CrashKind::ProcessKill };
             let image = disk.crash_now(kind);
             let db = open_units::<KernoDb>(image.as_vfs(), &cfg).unwrap_or_else(|e| panic!("{ctx}: reopen: {e}"));
-            let s = check_store(&db, oracle, acked, attempted, &format!("{ctx}, {kind:?}"));
+            // A failed sync may drop the unsynced frames of deferred
+            // `Retention` steps acknowledged before it (decision 12c).
+            let lo = ids.durable();
+            assert!(lo <= acked, "{ctx}: durable {lo} after acknowledged {acked}");
+            let s = check_store(&db, oracle, lo, attempted, &format!("{ctx}, {kind:?}"));
             keeps_working(db, &image, &cfg, &ids, oracle, s, &ctx);
         });
     });
@@ -448,16 +476,20 @@ fn torn_write() {
             let disk = SimVfs::new(seed);
             disk.set_tear_unit(unit);
             let db = open_units::<KernoDb>(disk.as_vfs(), &cfg).expect("open");
+            ids.set_durable(0);
             let (acked, err) = run_steps(&db, &ids, seed, 0, LARGE_EVERY - 1);
             assert!(err.is_none() && acked == LARGE_EVERY - 1);
+            // Deferred `Retention` steps after the last durable one share the
+            // large change set's unsynced tail (decision 12c).
+            let durable = ids.durable();
             disk.crash_after(after_frame + 1, CrashKind::PowerLoss);
             let (acked, err) = run_steps(&db, &ids, seed, LARGE_EVERY - 1, LARGE_EVERY);
             assert!(err.is_some() && acked == LARGE_EVERY - 1, "{ctx}: the large change set must not be acknowledged");
             let image = disk.take_crash_image().expect("crash image");
             drop(db);
             let db = open_units::<KernoDb>(image.as_vfs(), &cfg).unwrap_or_else(|e| panic!("{ctx}: recovery: {e}"));
-            let s = check_store(&db, &mut oracle, LARGE_EVERY - 1, LARGE_EVERY, &ctx);
-            outcomes.borrow_mut()[(s - (LARGE_EVERY - 1)) as usize] += 1;
+            let s = check_store(&db, &mut oracle, durable, LARGE_EVERY, &ctx);
+            outcomes.borrow_mut()[usize::from(s == LARGE_EVERY)] += 1;
             keeps_working(db, &image, &cfg, &ids, &mut oracle, s, &ctx);
         }
     });

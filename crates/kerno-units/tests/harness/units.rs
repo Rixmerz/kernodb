@@ -102,8 +102,13 @@ pub fn open_units<E: Target>(vfs: Arc<dyn Vfs>, cfg: &UnitConfig) -> Result<Unit
 
 /// Ids reset per step: change set `k` mints `k·2^16 + 1, + 2, …`, so a
 /// change set redone after a crash gets the ids it got the first time.
+///
+/// It also tracks the last step acknowledged as durable (decision 12c): a
+/// `Retention` step on an engine that defers its durability is not, and
+/// becomes durable with the next step that is. A power loss in `Sync` mode
+/// may take back the deferred steps after it, never it.
 #[derive(Clone, Debug, Default)]
-pub struct StepIds(Arc<AtomicU64>);
+pub struct StepIds(Arc<AtomicU64>, Arc<AtomicU64>);
 
 impl StepIds {
     pub fn new() -> Self {
@@ -111,6 +116,20 @@ impl StepIds {
     }
     pub fn start_step(&self, seq: u64) {
         self.0.store(seq << 16, Ordering::SeqCst);
+    }
+    /// The last step acknowledged as durable (see the type).
+    pub fn durable(&self) -> u64 {
+        self.1.load(Ordering::SeqCst)
+    }
+    /// Starts tracking from `seq`, known durable (a recovered or closed
+    /// store).
+    pub fn set_durable(&self, seq: u64) {
+        self.1.store(seq, Ordering::SeqCst);
+    }
+    fn acked(&self, seq: u64, durable: bool) {
+        if durable {
+            self.1.store(seq, Ordering::SeqCst);
+        }
     }
 }
 
@@ -277,12 +296,21 @@ pub fn run_script<E: TxnEngine>(db: &UnitDb<E>, ids: &StepIds, seq: u64, script:
                 }
             }
             check_seq(cs.commit()?.commit_seq, seq);
+            ids.acked(seq, true);
         }
-        Script::Policy(t, p) => check_seq(db.set_policy(t, *p, meta(seq))?.commit_seq, seq),
+        Script::Policy(t, p) => {
+            check_seq(db.set_policy(t, *p, meta(seq))?.commit_seq, seq);
+            ids.acked(seq, true);
+        }
         Script::Retention(n) => {
             let policy = RetentionPolicy::all(RetentionRule::KeepLast(*n));
             match db.run_retention(&policy, RetentionBudget::default())?.change_set {
-                Some(info) => check_seq(info.commit_seq, seq),
+                Some(info) => {
+                    check_seq(info.commit_seq, seq);
+                    // Deferred on an engine with `commit_deferred` (KernoDb):
+                    // `durable` is false even in `Sync` mode.
+                    ids.acked(seq, info.durable || db.config().engine.durability != Durability::Sync);
+                }
                 None => {
                     let mut cs = db.begin_changeset(meta(seq))?;
                     cs.create(NewUnit {
@@ -292,6 +320,7 @@ pub fn run_script<E: TxnEngine>(db: &UnitDb<E>, ids: &StepIds, seq: u64, script:
                         payload: b"filler".to_vec(),
                     })?;
                     check_seq(cs.commit()?.commit_seq, seq);
+                    ids.acked(seq, true);
                 }
             }
         }
