@@ -7,7 +7,7 @@ El plan completo, con objetivos y salidas por fase, está en [SAD §16](../archi
 | 0 / M0 | Spike de almacenamiento, harness, ADR iniciales, invariantes, matriz de fallos | **Cerrada** (2026-10-28): ADR-0001/0002/0003 aceptados — ver checklist |
 | 1 | Núcleo persistente | **En curso** |
 | 2 | Transacciones y documentos | — |
-| 3 | Versionado (Revision Engine) | — |
+| 3 | Versionado (Revision Engine) | **Cerrada** (Etapa 3, 2026-11-04): riesgos abiertos K-E3-8 y K-E3-9 ([cierre](../architecture/etapa3-cierre.md)) |
 | 4 | Seguridad y ciclo de vida | — |
 | 5 | Búsqueda e IA | — |
 | 6 | Beta endurecida | — |
@@ -61,7 +61,7 @@ La tarea de cierre de la Fase 1 (revisión adversarial, benchmarks, documentaci�
 
 ## Etapas 3–9 (especificación v0.2.0)
 
-Después de la Fase 1 el trabajo se organiza por las etapas de la [especificación v0.2.0](../spec/especificacion-arquitectonica-v0.2.0.md) §16; la [correspondencia con las fases del SAD](../spec/README.md) está en `docs/spec/`. Ninguna etapa ha empezado. Una etapa ya implementada y probada se salta (spec §16).
+Después de la Fase 1 el trabajo se organiza por las etapas de la [especificación v0.2.0](../spec/especificacion-arquitectonica-v0.2.0.md) §16; la [correspondencia con las fases del SAD](../spec/README.md) está en `docs/spec/`. La **Etapa 3 está cerrada** (aprobada por el propietario el 2026-11-04). La **Etapa 4 tiene su acta pendiente de aprobación** del propietario ([acta](../architecture/etapa4-acta.md)); el resto no ha empezado. Una etapa ya implementada y probada se salta (spec §16).
 
 | Etapa | Depende de | Condición de inicio | ADR que se deciden |
 |---|---|---|---|
@@ -77,9 +77,11 @@ Después de la Fase 1 el trabajo se organiza por las etapas de la [especificaci�
 
 - **Entregables:** tipos `Unit`, `Revision` y `ChangeSet` (spec §6.1–6.3) sobre `kerno-storage`; CRUD transaccional y archivado; listar, comparar y restaurar revisiones; políticas de historial `none`/`audit`/`versioned` (SAD §8); serialización y hashes (ADR-0008); primera API pública tipada (ADR-0010).
 - **Aceptación:** se reconstruye la evolución de una unidad y se restaura sin destruir revisiones posteriores (I-22); el historial no depende del WAL (I-20); contenido y revisión se confirman en la misma frontera atómica (I-21), también en la matriz de fallos.
+- **Estado: cerrada** el 2026-11-04 ([cierre de la Etapa 3](../architecture/etapa3-cierre.md)). Los criterios de aceptación se cumplen; IU-1…IU-10 quedan promovidas. Dos métricas incumplen sus umbrales y el propietario lo aceptó como riesgo abierto, sin rebajar ningún umbral: **K-E3-8** (U2: `history` llega a 1,50× de la referencia en una pasada de tres) y **K-E3-9** (U6: con retención concurrente, p99 de escritura 1,05–1,18× y rendimiento 0,89–0,94×, 1,06× en una pasada). **K-E3-7** (las lecturas comprueban menos que `verify_units`) queda aceptado por diseño, con revisión recomendada en la Etapa 9.
 
 ### Etapa 4 — Relaciones e índices
 
+- **Estado:** acta pendiente de aprobación del propietario ([etapa4-acta.md](../architecture/etapa4-acta.md)). Hereda los riesgos K-E3-8 y K-E3-9 de la Etapa 3.
 - **Entregables:** relaciones tipadas declaradas (ADR-0014); índice primario y filtros básicos; índices secundarios solo con un workload que los justifique; ruta de referencia para todas las consultas.
 - **Aceptación:** los resultados por índice coinciden con la ruta de referencia (I-32 aplicado a índices); índices reconstruidos equivalentes a nuevos (I-24); estado de frescura expuesto (I-23); una relación declarada nunca se confunde con una inferida (I-39).
 

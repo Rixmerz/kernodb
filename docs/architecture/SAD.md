@@ -267,6 +267,8 @@ Estos sistemas pueden compartir secuencias de commit o metadatos, pero no compar
 
 ## 8. Revision Engine: historial, diferencias y procedencia
 
+> **Estado (2026-11-04):** implementado en la Etapa 3, en el crate `kerno-units` y no en `kerno-storage`. La etapa está cerrada ([cierre de la Etapa 3](etapa3-cierre.md)). Lo construido: revisiones de copia completa (§8.2 y §8.3; los deltas no se implementan, decisión 4 de la Etapa 3), `restore` que añade una revisión nueva (§8.3, I-22), políticas `none`/`audit`/`versioned` por tipo (§8.4) y retención por lotes dentro de la política. Quedan fuera la supresión física (ADR-0009, K-E3-6) y la diferencia estructural (ADR-0008). Riesgos abiertos: **K-E3-8** (U2: `history` llega a 1,50× de la referencia en una pasada de tres) y **K-E3-9** (U6: p99 de escritura y rendimiento con poda concurrente). Ambos son incumplimientos documentados que el propietario aceptó el 2026-11-04, sin rebajar umbrales.
+
 ### 8.1 Objetivo
 
 Permitir reconstruir versiones anteriores de los datos, comparar dos revisiones y registrar el contexto de cambios sin convertir el journal de recuperación en un historial permanente.

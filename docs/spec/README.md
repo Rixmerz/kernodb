@@ -17,8 +17,8 @@ La especificación numera el trabajo en etapas 0–9; el SAD, en fases 0–6. La
 | 0 Diagnóstico | Fase 0 / M0 | Cerrada |
 | 1 Contratos mínimos | Fase 0 (ADR-0001…0013) | Parcial: contratos de almacenamiento y transacción definidos; unidad, revisión y relación pendientes (pasan a la Etapa 3) |
 | 2 Persistencia y transacciones | Fase 1 | En curso |
-| 3 Unidades, revisiones y procedencia | Fases 2 y 3 | — |
-| 4 Relaciones e índices | Fase 2 (índice primario, filtros) y Fase 5 (índices secundarios) | — |
+| 3 Unidades, revisiones y procedencia | Fases 2 y 3 | Cerrada (2026-11-04); riesgos abiertos K-E3-8 y K-E3-9 ([cierre](../architecture/etapa3-cierre.md)) |
+| 4 Relaciones e índices | Fase 2 (índice primario, filtros) y Fase 5 (índices secundarios) | Acta pendiente de aprobación del propietario ([acta](../architecture/etapa4-acta.md)) |
 | 5 Planificador y observabilidad | sin equivalente en el SAD | — |
 | 6 Primera plasticidad operacional | sin equivalente en el SAD | — |
 | 7 Memoria asociativa | Fase 5 (vectores exactos, ranking híbrido) | — |
