@@ -172,6 +172,7 @@ fn compare_reads<E: Engine>(snap: &UnitSnapshot<E>, model: &UnitModel, rng: &mut
         loop {
             let q = HistoryQuery { to: desc.last().map(|r| r.id.rev), ..HistoryQuery::latest(limit) };
             let page = snap.history(id, q).expect("history desc");
+            same_page(snap, id, q, &page, ctx);
             let n = page.len();
             desc.extend(page);
             if n < limit {
@@ -186,6 +187,7 @@ fn compare_reads<E: Engine>(snap: &UnitSnapshot<E>, model: &UnitModel, rng: &mut
         loop {
             let q = HistoryQuery { from: asc.last().map(|r| RevNo(r.id.rev.0 + 1)), ..HistoryQuery::oldest(limit) };
             let page = snap.history(id, q).expect("history asc");
+            same_page(snap, id, q, &page, ctx);
             let n = page.len();
             asc.extend(page);
             if n < limit {
@@ -568,6 +570,19 @@ fn snapshot_vs_retention<E: TxnEngine>() {
     db.close().unwrap();
 }
 
+/// E3-09c: `history_page` returns what `history` returns without payloads,
+/// field by field through its views.
+fn same_page<E: Engine>(snap: &UnitSnapshot<E>, id: UnitId, q: HistoryQuery, want: &[Revision], ctx: &str) {
+    let q = HistoryQuery { with_payload: false, ..q };
+    let want: Vec<Revision> = want.iter().map(|r| Revision { payload: None, ..r.clone() }).collect();
+    let page = snap.history_page(id, q).unwrap_or_else(|e| panic!("{ctx}: history_page: {e}"));
+    assert_eq!(page.len(), want.len(), "{ctx}: history_page length");
+    assert_eq!(page.to_revisions(), want, "{ctx}: history_page of {id}");
+    for (v, r) in page.iter().zip(&want) {
+        assert_eq!((v.id(), v.kind(), v.commit_seq(), v.metadata()), (r.id, r.kind, r.commit_seq, &r.metadata[..]));
+    }
+}
+
 // ------------------------------------------------------------ errors and limits
 
 fn history_errors<E: TxnEngine>() {
@@ -587,6 +602,12 @@ fn history_errors<E: TxnEngine>() {
         cs.commit().unwrap();
     }
     assert!(matches!(db.history(a, all(0)), Err(UnitError::InvalidArgument(_))));
+    let snap = db.snapshot().unwrap();
+    assert!(matches!(snap.history_page(unknown, HistoryQuery::latest(5)), Err(UnitError::NotFound { .. })));
+    assert!(matches!(snap.history_page(a, HistoryQuery::latest(0)), Err(UnitError::InvalidArgument(_))));
+    assert!(matches!(snap.history_page(a, all(5)), Err(UnitError::InvalidArgument(_))), "with_payload");
+    assert_eq!(snap.history_page(a, HistoryQuery::latest(10)).unwrap().len(), 5);
+    drop(snap);
     assert!(matches!(db.state_as_of(AsOf::Seq(c.commit_seq), None, 0), Err(UnitError::InvalidArgument(_))));
     assert!(matches!(db.change_sets_since(CommitSeq(0), 0), Err(UnitError::InvalidArgument(_))));
     assert!(matches!(
@@ -646,6 +667,7 @@ fn history_reads_verify<E: TxnEngine>() {
     assert!(is_corruption(&db.get_revision(a, RevNo(1)).unwrap_err(), "UNIT-28"));
     assert!(is_corruption(&db.history(a, all(10)).unwrap_err(), "UNIT-28"));
     assert_eq!(db.history(a, HistoryQuery::oldest(10)).unwrap().len(), 3, "metadata alone is intact");
+    assert_eq!(db.snapshot().unwrap().history_page(a, HistoryQuery::oldest(10)).unwrap().len(), 3);
     assert!(is_corruption(&db.compare(a, RevNo(1), RevNo(2)).unwrap_err(), "UNIT-28"));
     assert!(is_corruption(&at(seqs[0]).unwrap_err(), "UNIT-28"));
     assert!(is_corruption(&db.state_as_of(AsOf::Seq(seqs[0]), None, 10).unwrap_err(), "UNIT-28"));
@@ -661,6 +683,8 @@ fn history_reads_verify<E: TxnEngine>() {
     assert!(is_corruption(&db.get_revision(a, RevNo(2)).unwrap_err(), "missing"));
     assert!(is_corruption(&db.history(a, HistoryQuery::oldest(10)).unwrap_err(), "missing"));
     assert!(is_corruption(&db.history(a, HistoryQuery::latest(10)).unwrap_err(), "missing"));
+    assert!(is_corruption(&db.snapshot().unwrap().history_page(a, HistoryQuery::oldest(10)).unwrap_err(), "missing"));
+    assert!(is_corruption(&db.snapshot().unwrap().history_page(a, HistoryQuery::latest(10)).unwrap_err(), "missing"));
     assert!(is_corruption(&at(seqs[1]).unwrap_err(), "missing"), "never Absent");
 
     // A chain whose commit_seq does not grow (IU-3).
@@ -668,6 +692,7 @@ fn history_reads_verify<E: TxnEngine>() {
     m.commit_seq = CommitSeq(seqs[2].0 + 1);
     put(&rm2, Some(&m.encode(RevNo(2)).unwrap()));
     assert!(is_corruption(&db.history(a, HistoryQuery::oldest(10)).unwrap_err(), "IU-3"));
+    assert!(is_corruption(&db.snapshot().unwrap().history_page(a, HistoryQuery::oldest(10)).unwrap_err(), "IU-3"));
     assert!(is_corruption(&at(seqs[1]).unwrap_err(), "commit_seq"));
     put(&rm2, Some(&good_meta));
     assert!(matches!(at(seqs[1]).unwrap(), UnitAt::Present(r) if r.id.rev == RevNo(2)));

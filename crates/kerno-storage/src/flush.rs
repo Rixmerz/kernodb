@@ -86,10 +86,10 @@ fn fill(
     tables: &mut Vec<Table>,
     builder: &mut Option<TableBuilder>,
 ) -> Result<()> {
-    let fragments = mem.fragments(u64::MAX);
+    let fragments = mem.fragments(u64::MAX).unwrap_or_default();
     let mut cover = CoverCursor::new(vec![Cow::Borrowed(&fragments[..])]);
     cover.seek(&[]);
-    let mut splitter = FragmentSplitter::new(fragments.clone());
+    let mut splitter = FragmentSplitter::new(fragments.to_vec());
     let mut it = MergeIter::new(vec![Box::new(mem.iter(u64::MAX))]);
     let mut split = SplitPoints::new(l1);
     let mut prev: Vec<u8> = Vec::new();

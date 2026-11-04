@@ -31,13 +31,14 @@ pub use db::{
 };
 pub use error::{DecodeError, ErrorClass, UnitError, UnitRule};
 pub use history::{
-    AsOf, ChangeSetInfo, ChangeSetMember, Comparison, HistoryQuery, Order, Provenance, Revision, UnitAt, UnitStates,
+    AsOf, ChangeSetInfo, ChangeSetMember, Comparison, HistoryPage, HistoryQuery, Order, Provenance, Revision,
+    RevisionView, UnitAt, UnitStates,
 };
 pub use model::{ModelChange, ModelChangeSet, ModelError, ModelRevision, ModelUnitAt, UnitModel};
 pub use payload::{
     ContentHash, HashAlg, MAX_PAYLOAD_LEN, PayloadDecl, PayloadError, PayloadRule, VerifiedPayload, verify_payload,
 };
-pub use retention::{CompactReport, RetentionBudget, RetentionPolicy, RetentionReport, RetentionRule};
+pub use retention::{CompactReport, RetentionBudget, RetentionPacing, RetentionPolicy, RetentionReport, RetentionRule};
 pub use types::{
     ChangeKind, ChangePurpose, ChangeSetId, CommitSeq, HistoryPolicy, Lifecycle, Purpose, RevNo, RevisionId,
     RevisionKind, Timestamp, UnitId,

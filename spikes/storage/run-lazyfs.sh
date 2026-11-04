@@ -82,6 +82,10 @@ fi
 git -C "$LAZYFS_SRC" checkout --quiet --detach "$LAZYFS_REF"
 [[ "$(git -C "$LAZYFS_SRC" rev-parse HEAD)" == "$LAZYFS_REF" ]] || { echo "LazyFS checkout is not $LAZYFS_REF"; exit 1; }
 echo "lazyfs commit: $LAZYFS_REF"
+# CMake 4 removed compatibility with cmake_minimum_required < 3.5, which the
+# toml dependency LazyFS fetches still declares; CMake 4 reads this variable
+# from the environment. Older CMake ignores it.
+export CMAKE_POLICY_VERSION_MINIMUM=3.5
 (cd "$LAZYFS_SRC/libs/libpcache" && ./build.sh) || pending "libpcache did not build"
 (cd "$LAZYFS_SRC/lazyfs" && ./build.sh) || pending "lazyfs did not build"
 
