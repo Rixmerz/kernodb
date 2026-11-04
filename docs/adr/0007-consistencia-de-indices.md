@@ -2,8 +2,8 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | Pendiente |
-| Fecha | 2026-10-27 (apertura) |
+| Estado | Aceptado |
+| Fecha | 2026-10-27 (apertura); 2026-11-04 (aceptado por el propietario, E4-00) |
 | Relacionado con | SAD §9, D-07, invariantes I-21, I-23, I-24 |
 
 ## Contexto
@@ -37,3 +37,7 @@ Depende de ADR-0002 (secuencia de commit como watermark).
 ## Decisión
 
 Pendiente. No debe codificarse ningún supuesto de este ADR de forma difícil de revertir hasta que se acepte.
+
+## Decisión (2026-11-04)
+
+Aceptada la opción recomendada: el índice primario es consistente con el commit; los índices secundarios son derivados asíncronos con estado (`ready`/`building`/`stale`/`failed`) y watermark de secuencia. I-23 e I-24 se promueven en E4-03.
