@@ -602,7 +602,12 @@ fn decode_head(k: &[u8], v: &[u8]) -> Result<(UnitId, UnitHead), UnitError> {
 fn fits(plan: &UnitPlan, units: usize, ops: usize, budget: RetentionBudget) -> Option<usize> {
     let base = if plan.pruned > 0 { 4 } else { 1 };
     let room = budget.max_ops - ops;
-    if units == budget.max_units || room < base + if plan.drops.is_empty() { 0 } else { 2 } {
+    // The least a unit can make progress with: its prune alone (the drops
+    // left for the next call), or one payload drop when nothing is pruned.
+    // Asking for a prune plus a drop starved a unit needing both under
+    // max_ops 4 or 5 (valid budgets): no call ever wrote it (E3-09c fix).
+    let least = if plan.pruned > 0 || plan.drops.is_empty() { base } else { base + 2 };
+    if units == budget.max_units || room < least {
         return None;
     }
     Some(plan.drops.len().min((room - base) / 2))
