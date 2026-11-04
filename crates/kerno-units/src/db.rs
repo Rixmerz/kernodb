@@ -1071,6 +1071,14 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
             if let Some(t) = self.txn.take() {
                 t.abort();
             }
+            // A deferred retention commit (decision 12c) may have left
+            // `current` not yet synced: durable only if the engine says so.
+            // An engine that reports no `durable_seq` syncs every commit.
+            let durable = durable
+                && kerno_core::contract::Engine::stats(&self.db.engine)
+                    .into_iter()
+                    .find(|(n, _)| n == "durable_seq")
+                    .is_none_or(|(_, v)| v >= current.0);
             return Ok(CommitInfo { change_set: current, commit_seq: current, revisions: Vec::new(), durable });
         }
         // The policies may change with this commit: no retention pass

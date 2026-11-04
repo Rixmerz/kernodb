@@ -622,6 +622,28 @@ fn kerno_history_sim_reclaims_space() {
     history_sim_reclaims_space();
 }
 
+/// An empty change set after a deferred retention commit (decision 12c)
+/// reports `durable` only once the engine has synced that commit.
+#[test]
+fn kerno_empty_changeset_after_deferred_retention() {
+    let disk = SimVfs::new(5);
+    let mut c = cfg();
+    c.engine.durability = Durability::Sync;
+    let db = open::<KernoDb>(&disk, &c);
+    let ids = every_point_setup(&db);
+    assert!(!ids.is_empty());
+    let r = db.run_retention(&every_point_policy(), RetentionBudget::default()).unwrap();
+    let last = r.change_set.clone().expect("retention committed a change set");
+    assert!(!last.durable, "{r:?}");
+    let empty = db.begin_changeset(meta()).unwrap().commit().unwrap();
+    assert_eq!(empty.commit_seq, last.commit_seq);
+    assert!(!empty.durable, "the deferred retention commit is not synced yet");
+    db.sync().unwrap();
+    let empty = db.begin_changeset(meta()).unwrap().commit().unwrap();
+    assert!(empty.durable, "synced by UnitDb::sync");
+    db.close().unwrap();
+}
+
 macro_rules! engine_tests {
     ($m:ident, $e:ty) => {
         mod $m {

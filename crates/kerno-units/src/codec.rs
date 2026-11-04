@@ -485,7 +485,7 @@ pub(crate) struct MetaFixed {
     pub payload_len: u32,
     pub payload_present: bool,
     pub restored_from: Option<RevNo>,
-    pub fields: [(u32, u32); 3],
+    pub fields: [(usize, usize); 3],
 }
 
 impl RevisionMeta {
@@ -539,7 +539,7 @@ impl RevisionMeta {
     fn decode_valid(rev_no: RevNo, v: &[u8]) -> Option<Self> {
         let f = Self::decode_fixed(rev_no, v)?;
         // Empty fields (the common case) need no allocator call.
-        let owned = |(a, b): (u32, u32)| if a == b { Vec::new() } else { v[a as usize..b as usize].to_vec() };
+        let owned = |(a, b): (usize, usize)| if a == b { Vec::new() } else { v[a..b].to_vec() };
         Some(RevisionMeta {
             kind: f.kind,
             parent_rev: f.parent_rev,
@@ -585,7 +585,7 @@ impl RevisionMeta {
         {
             return None;
         }
-        fn field(v: &[u8], at: &mut usize, max: u32) -> Option<(u32, u32)> {
+        fn field(v: &[u8], at: &mut usize, max: u32) -> Option<(usize, usize)> {
             let len = u32::from_be_bytes(arr(v.get(*at..*at + 4)?));
             if len > max {
                 return None;
@@ -593,7 +593,7 @@ impl RevisionMeta {
             let (a, b) = (*at + 4, *at + 4 + len as usize);
             v.get(a..b)?;
             *at = b;
-            Some((a as u32, b as u32))
+            Some((a, b))
         }
         let mut at = FIXED;
         let fields = [

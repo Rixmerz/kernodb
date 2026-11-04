@@ -197,7 +197,7 @@ pub struct RevisionView<'a> {
 impl<'a> RevisionView<'a> {
     fn field(&self, i: usize) -> &'a [u8] {
         let (a, b) = self.fixed.fields[i];
-        &self.buf[a as usize..b as usize]
+        &self.buf[a..b]
     }
 
     pub fn id(&self) -> RevisionId {
@@ -708,7 +708,7 @@ impl<E: Engine> UnitSnapshot<E> {
         // value appended to one buffer (its range noted).
         let take = take as usize;
         let mut buf = Vec::with_capacity(take * 96);
-        let mut spans: Vec<(u32, u32)> = Vec::with_capacity(take);
+        let mut spans: Vec<(usize, usize)> = Vec::with_capacity(take);
         let mut gap: Option<u64> = None;
         let mut want = start.clone();
         let at = want.len() - 8;
@@ -718,9 +718,9 @@ impl<E: Engine> UnitSnapshot<E> {
             if gap.is_none() && k != want.as_slice() {
                 gap = Some(rev);
             }
-            let from = buf.len() as u32;
+            let from = buf.len();
             buf.extend_from_slice(v);
-            spans.push((from, buf.len() as u32));
+            spans.push((from, buf.len()));
             Ok(())
         })?;
         if let Some(rev) = gap {
@@ -735,7 +735,7 @@ impl<E: Engine> UnitSnapshot<E> {
         let decode = |i: usize| -> Result<MetaFixed, UnitError> {
             let rev = RevNo(lo + i as u64);
             let (a, b) = spans[i];
-            let v = &buf[a as usize..b as usize];
+            let v = &buf[a..b];
             match RevisionMeta::decode_fixed(rev, v) {
                 Some(mut f) => {
                     for r in &mut f.fields {
