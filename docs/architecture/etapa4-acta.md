@@ -9,7 +9,7 @@
 
 ## 0. Estado
 
-Esta acta **no autoriza ningún paquete de trabajo**. E4-00 no empieza hasta que el propietario apruebe el alcance, los paquetes y los puntos de la §7. Ningún WP posterior arranca antes que el anterior, como en la Etapa 3.
+Esta acta fue **aprobada por el propietario el 2026-11-04** (ver §8). Ningún WP posterior arranca antes que el anterior, como en la Etapa 3.
 
 ## 1. Condición de inicio
 
@@ -94,4 +94,11 @@ Esta acta **no propone umbrales** para la Etapa 4. Los objetivos T1–T10 de [f1
 
 | Fecha | Decisión | Notas |
 |---|---|---|
-| — | **Pendiente de aprobación del propietario** | El propietario aprueba o ajusta el alcance (§2), los paquetes (§3), los criterios (§4) y los puntos de §7 antes de que E4-00 empiece |
+| 2026-11-04 | **Aprobada** (E4-00 cerrado) | El propietario aprueba o ajusta el alcance (§2), los paquetes (§3), los criterios (§4) y los puntos de §7 antes de que E4-00 empiece |
+
+### Decisiones del propietario sobre la §7 (2026-11-04)
+
+1. ADR-0007 **Aceptado**; ADR-0014 sigue *Propuesto* hasta E4-02.
+2. I-32 se promueve en **E4-03** (aplicada a índices).
+3. I-23 e I-24 se promueven en **E4-03**.
+4. Unidades archivadas o borradas con relaciones: **rechazo**.
