@@ -890,6 +890,25 @@ fn corruption_detected<E: TxnEngine>() {
     other.content_hash = ContentHash::blake3(PAYLOAD_CODEC_OPAQUE, b"other");
     put(&hk, Some(&other.encode().unwrap()));
     assert!(is_corruption(&db.get_unit(a).unwrap_err(), "disagrees"));
+    // IU-2 covers every mirrored field (E3-10 review): the metadata, and the
+    // lifecycle the head revision's kind implies (`Create` → `Active`), not
+    // only "deleted or not". Reads and writes over such a head refuse.
+    let good = UnitHead::decode(&good_head).unwrap();
+    let wrong_metadata = UnitHead { metadata: b"other".to_vec(), ..good.clone() };
+    let wrong_lifecycle = UnitHead { lifecycle: Lifecycle::Archived, ..good.clone() };
+    for (what, h) in [("metadata", wrong_metadata), ("lifecycle", wrong_lifecycle)] {
+        put(&hk, Some(&h.encode().unwrap()));
+        let e = db.get_unit(a).unwrap_err();
+        assert!(is_corruption(&e, "disagrees"), "{what}: {e}");
+        let mut cs = db.begin_changeset(meta()).unwrap();
+        let e = cs.unarchive(a, None).unwrap_err();
+        assert!(is_corruption(&e, "disagrees"), "{what}: {e}");
+        cs.abort();
+        let r = db.verify_units().unwrap();
+        assert!(r.rules().contains("UNIT-31"), "{what}: {:?}", r.findings);
+    }
+    put(&hk, Some(&good_head));
+    assert_eq!(db.get_unit(a).unwrap().unwrap().lifecycle, Lifecycle::Active);
     db.close().unwrap();
 }
 

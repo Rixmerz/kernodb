@@ -551,6 +551,17 @@ fn policy_model<E: TxnEngine>() {
         let db = open::<E>(&disk, &c);
         let mut model = UnitModel::with_default_policy(default);
         let mut kept: Vec<(UnitSnapshot<E>, UnitModel)> = Vec::new();
+        // IU-1 across every writer (policy changes, `Audit` rewrites,
+        // `None` range deletions, retention): no revision present in two
+        // consecutive engine snapshots changes, except `payload_present`
+        // 1 → 0 (E3-10 review: the sweep the design calls `immutability_sweep`).
+        let mut prev = db.engine().snapshot().expect("engine snapshot");
+        let mut immutable = |db: &UnitDb<E>, ctx: &str| {
+            let now = db.engine().snapshot().expect("engine snapshot");
+            let changed = verify_immutable(&prev, &now).expect("verify_immutable");
+            assert!(changed.is_empty(), "{ctx}: IU-1 {changed:?}");
+            prev = now;
+        };
         for round in 0..30 {
             let ctx = format!("seed {seed} round {round}");
             if rng.chance(1, 4) {
@@ -653,14 +664,17 @@ fn policy_model<E: TxnEngine>() {
                 model.apply(info.commit_seq, Purpose::Application, changes).expect("model");
             }
             check_stored(&db, &model, &ctx);
+            immutable(&db, &ctx);
             if rng.chance(1, 4) {
                 retention_round(&db, &mut model, &mut rng, &ctx);
                 check_stored(&db, &model, &format!("{ctx} after retention"));
+                immutable(&db, &format!("{ctx} after retention"));
             }
             if rng.chance(1, 6) {
                 kept.push((db.snapshot().expect("snapshot"), model.clone()));
             }
         }
+        drop(prev);
         compare_reads(&db.snapshot().unwrap(), &model, &mut rng, &format!("seed {seed}"));
         for (i, (snap, m)) in kept.iter().enumerate() {
             compare_reads(snap, m, &mut rng, &format!("seed {seed} kept snapshot {i}"));
