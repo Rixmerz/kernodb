@@ -288,7 +288,9 @@ impl UnitModel {
             }
             let base = if k > oldest { 4 } else { 1 };
             let room = budget.max_ops - ops;
-            if members.len() == budget.max_units || room < base + if drops.is_empty() { 0 } else { 2 } {
+            // A prune alone is progress (its drops wait for the next call).
+            let least = if k > oldest || drops.is_empty() { base } else { base + 2 };
+            if members.len() == budget.max_units || room < least {
                 complete = false;
                 break;
             }

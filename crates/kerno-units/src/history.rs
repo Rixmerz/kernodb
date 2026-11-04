@@ -39,7 +39,7 @@ use std::ops::Bound;
 
 use kerno_core::contract::{Engine, Snapshot, TxnEngine};
 
-use crate::codec::{ChangeSetRecord, CsMember, Key, RevisionMeta, TAG_CHANGESET, TAG_CS_MEMBER, UnitHead};
+use crate::codec::{ChangeSetRecord, CsMember, Key, MetaFixed, RevisionMeta, TAG_CHANGESET, TAG_CS_MEMBER, UnitHead};
 use crate::db::{GetFn, UnitDb, UnitSnapshot, context, corruption, key, policy_of};
 use crate::error::UnitError;
 use crate::payload::{ContentHash, verify_payload};
@@ -136,6 +136,144 @@ pub struct Revision {
     pub payload: Option<Vec<u8>>,
 }
 
+/// A page of a unit's history, metadata only, returned by
+/// [`UnitSnapshot::history_page`]: the engine entries it read, already
+/// checked, viewed without copies through [`RevisionView`]s, in the order
+/// the query asked for.
+#[derive(Clone, Debug)]
+pub struct HistoryPage {
+    unit: UnitId,
+    /// Revision of `entries[0]`.
+    lo: u64,
+    /// The `REV_META` values, back to back; the field ranges of `fixed`
+    /// point into it.
+    buf: Vec<u8>,
+    /// In the order asked for: the index of the entry (revision `lo + i`)
+    /// and its fixed fields.
+    fixed: Vec<(u32, MetaFixed)>,
+}
+
+impl HistoryPage {
+    pub fn len(&self) -> usize {
+        self.fixed.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.fixed.is_empty()
+    }
+
+    /// The `i`-th revision of the page, in the order asked for.
+    pub fn get(&self, i: usize) -> Option<RevisionView<'_>> {
+        let (at, fixed) = self.fixed.get(i)?;
+        Some(RevisionView {
+            id: RevisionId { unit: self.unit, rev: RevNo(self.lo + u64::from(*at)) },
+            fixed,
+            buf: &self.buf,
+        })
+    }
+
+    /// The revisions in the order asked for.
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = RevisionView<'_>> + '_ {
+        (0..self.fixed.len()).map(|i| self.get(i).expect("index in range"))
+    }
+
+    /// Every revision as an owned [`Revision`] (what `history` returns).
+    pub fn to_revisions(&self) -> Vec<Revision> {
+        self.iter().map(|r| r.to_revision()).collect()
+    }
+}
+
+/// One revision of a [`HistoryPage`], borrowed from it: the fields of
+/// [`Revision`] (without payload), read from the stored `REV_META`, which
+/// was validated when the page was read.
+#[derive(Clone, Copy, Debug)]
+pub struct RevisionView<'a> {
+    id: RevisionId,
+    fixed: &'a MetaFixed,
+    /// The page's buffer, where `fixed.fields` point.
+    buf: &'a [u8],
+}
+
+impl<'a> RevisionView<'a> {
+    fn field(&self, i: usize) -> &'a [u8] {
+        let (a, b) = self.fixed.fields[i];
+        &self.buf[a..b]
+    }
+
+    pub fn id(&self) -> RevisionId {
+        self.id
+    }
+    pub fn kind(&self) -> RevisionKind {
+        self.fixed.kind
+    }
+    pub fn parent(&self) -> Option<RevNo> {
+        self.fixed.parent_rev
+    }
+    pub fn commit_seq(&self) -> CommitSeq {
+        self.fixed.commit_seq
+    }
+    /// Equal to `commit_seq` (design §2.5).
+    pub fn change_set(&self) -> ChangeSetId {
+        self.fixed.commit_seq
+    }
+    /// Descriptive only, never used for ordering (I-26).
+    pub fn created_at(&self) -> Timestamp {
+        self.fixed.created_at
+    }
+    /// See [`Revision::lifecycle`].
+    pub fn lifecycle(&self) -> Lifecycle {
+        lifecycle_after(self.fixed.kind)
+    }
+    pub fn schema_version(&self) -> u32 {
+        self.fixed.schema_version
+    }
+    pub fn content_hash(&self) -> ContentHash {
+        self.fixed.content_hash
+    }
+    pub fn payload_len(&self) -> u32 {
+        self.fixed.payload_len
+    }
+    pub fn restored_from(&self) -> Option<RevNo> {
+        self.fixed.restored_from
+    }
+    /// The unit's metadata as of this revision.
+    pub fn metadata(&self) -> &'a [u8] {
+        self.field(0)
+    }
+    /// `Provenance::actor`: `None` when empty.
+    pub fn actor(&self) -> Option<&'a [u8]> {
+        Some(self.field(1)).filter(|b| !b.is_empty())
+    }
+    /// `Provenance::source`: `None` when empty.
+    pub fn source(&self) -> Option<&'a [u8]> {
+        Some(self.field(2)).filter(|b| !b.is_empty())
+    }
+
+    /// The owned [`Revision`], without payload, equal to what `history`
+    /// returns for it.
+    pub fn to_revision(&self) -> Revision {
+        Revision {
+            id: self.id,
+            kind: self.kind(),
+            parent: self.parent(),
+            commit_seq: self.commit_seq(),
+            change_set: self.change_set(),
+            created_at: self.created_at(),
+            lifecycle: self.lifecycle(),
+            schema_version: self.schema_version(),
+            content_hash: self.content_hash(),
+            payload_len: self.payload_len(),
+            restored_from: self.restored_from(),
+            metadata: self.metadata().to_vec(),
+            provenance: Provenance {
+                actor: self.actor().map(<[u8]>::to_vec),
+                source: self.source().map(<[u8]>::to_vec),
+            },
+            payload: None,
+        }
+    }
+}
+
 fn lifecycle_after(kind: RevisionKind) -> Lifecycle {
     match kind {
         RevisionKind::Archive => Lifecycle::Archived,
@@ -144,6 +282,7 @@ fn lifecycle_after(kind: RevisionKind) -> Lifecycle {
     }
 }
 
+#[inline(always)]
 fn to_revision(unit: UnitId, rev: RevNo, meta: RevisionMeta, payload: Option<Vec<u8>>) -> Revision {
     Revision {
         id: RevisionId { unit, rev },
@@ -376,6 +515,16 @@ fn need_limit(limit: usize) -> Result<(), UnitError> {
 /// Key/value pairs of one engine scan.
 type KvPage = Vec<(Vec<u8>, Vec<u8>)>;
 
+/// What a history query reads: the unit's head, the first revision and
+/// the number of revisions of the page, and the `REV_META` keys `[start, stop)`.
+struct HistoryRange {
+    head: UnitHead,
+    lo: u64,
+    take: u64,
+    start: Vec<u8>,
+    stop: Vec<u8>,
+}
+
 fn scan_all<S: Snapshot>(snap: &S, start: Bound<&[u8]>, end: Bound<&[u8]>, limit: usize) -> Result<KvPage, UnitError> {
     Ok(snap.scan(start, end, limit)?)
 }
@@ -403,7 +552,7 @@ impl<E: Engine> UnitSnapshot<E> {
     pub fn get_revision(&self, id: UnitId, rev: RevNo) -> Result<Revision, UnitError> {
         let get = self.getter();
         let head = read_head(&get, id)?.ok_or(UnitError::NotFound { unit: id })?;
-        check_bounds(&head, id, rev, policy_of(&get, &head.unit_type, self.fallback)?)?;
+        check_bounds(&head, id, rev, self.policy(&head.unit_type)?)?;
         load_revision(&get, id, rev, true)
     }
 
@@ -411,10 +560,72 @@ impl<E: Engine> UnitSnapshot<E> {
     /// `scan` of its `REV_META` range, plus a verified payload read per
     /// revision when `with_payload`.
     pub fn history(&self, id: UnitId, q: HistoryQuery) -> Result<Vec<Revision>, UnitError> {
+        let get = self.getter();
+        let Some((head, lo, page)) = self.history_scan(id, q)? else {
+            return Ok(Vec::new());
+        };
+        let start = key(Key::RevMeta { unit: id, rev: RevNo(lo) })?;
+        // Built directly in the order asked for (no reversal afterwards);
+        // the checks are the same either way: each entry has the key of its
+        // revision (bytes compared in place, nothing decoded), and
+        // `commit_seq` grows strictly with the revision, up to the head's.
+        let mut out = Vec::with_capacity(page.len());
+        let mut want = start;
+        let at = want.len() - 8;
+        let entry = |i: usize, k: &[u8], v: &[u8], want: &mut Vec<u8>| -> Result<Revision, UnitError> {
+            let rev = RevNo(lo + i as u64);
+            want[at..].copy_from_slice(&rev.0.to_be_bytes());
+            if k != want.as_slice() {
+                return Err(corruption(format!("unit {id}: REV_META of retained revision {rev} is missing")));
+            }
+            let meta =
+                RevisionMeta::decode(rev, v).map_err(|e| context(e, &format!("REV_META of unit {id} rev {rev}")))?;
+            let payload = if q.with_payload {
+                check_content(&meta)?;
+                read_payload(&get, id, rev, &meta)?
+            } else {
+                None
+            };
+            Ok(to_revision(id, rev, meta, payload))
+        };
+        let out_of_order = |r: &Revision| {
+            corruption(format!("unit {id}: revision {} has commit_seq {} out of order (IU-3)", r.id.rev, r.commit_seq))
+        };
+        match q.order {
+            Order::Asc => {
+                let mut prev: Option<CommitSeq> = None;
+                for (i, (k, v)) in page.iter().enumerate() {
+                    let r = entry(i, k, v, &mut want)?;
+                    if prev.is_some_and(|p| r.commit_seq <= p) || r.commit_seq > head.updated_seq {
+                        return Err(out_of_order(&r));
+                    }
+                    prev = Some(r.commit_seq);
+                    out.push(r);
+                }
+            }
+            Order::Desc => {
+                let mut next = CommitSeq(head.updated_seq.0.saturating_add(1));
+                for (i, (k, v)) in page.iter().enumerate().rev() {
+                    let r = entry(i, k, v, &mut want)?;
+                    if r.commit_seq >= next {
+                        return Err(out_of_order(&r));
+                    }
+                    next = r.commit_seq;
+                    out.push(r);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// The checks shared by [`history`](Self::history) and
+    /// [`history_page`](Self::history_page) and the range of `REV_META`
+    /// keys they read. `None`: the range is empty.
+    fn history_range(&self, id: UnitId, q: HistoryQuery) -> Result<Option<HistoryRange>, UnitError> {
         need_limit(q.limit)?;
         let get = self.getter();
         let head = read_head(&get, id)?.ok_or(UnitError::NotFound { unit: id })?;
-        match policy_of(&get, &head.unit_type, self.fallback)? {
+        match self.policy(&head.unit_type)? {
             HistoryPolicy::None => return Err(UnitError::HistoryUnavailable { policy: HistoryPolicy::None }),
             HistoryPolicy::Audit if q.with_payload => {
                 return Err(UnitError::HistoryUnavailable { policy: HistoryPolicy::Audit });
@@ -435,7 +646,7 @@ impl<E: Engine> UnitSnapshot<E> {
         }
         let end = q.to.map_or(head.head_rev.0 + 1, |t| t.0.min(head.head_rev.0 + 1));
         if from.0 >= end {
-            return Ok(Vec::new());
+            return Ok(None);
         }
         let take = (end - from.0).min(q.limit as u64);
         let (lo, hi) = match q.order {
@@ -445,39 +656,132 @@ impl<E: Engine> UnitSnapshot<E> {
         let start = key(Key::RevMeta { unit: id, rev: RevNo(lo) })?;
         let (_, unit_end) = Key::unit_rev_range(crate::codec::TAG_REV_META, id);
         let stop = if hi > head.head_rev.0 { unit_end } else { key(Key::RevMeta { unit: id, rev: RevNo(hi) })? };
+        Ok(Some(HistoryRange { head, lo, take, start, stop }))
+    }
+
+    /// [`history_range`](Self::history_range) and its one engine `scan`
+    /// (used by [`history`](Self::history)): exactly the `REV_META` entries
+    /// asked for (a gap is `Storage(Corruption)`). `None`: the range is
+    /// empty.
+    fn history_scan(&self, id: UnitId, q: HistoryQuery) -> Result<Option<(UnitHead, u64, KvPage)>, UnitError> {
+        let Some(HistoryRange { head, lo, take, start, stop }) = self.history_range(id, q)? else {
+            return Ok(None);
+        };
         let page = scan_all(&self.snap, Bound::Included(&start), Bound::Excluded(&stop), take as usize)?;
-        let mut out = Vec::with_capacity(page.len());
-        let mut prev: Option<CommitSeq> = None;
-        for (i, (k, v)) in page.into_iter().enumerate() {
-            let rev = RevNo(lo + i as u64);
-            if Key::decode(&k)? != (Key::RevMeta { unit: id, rev }) {
-                return Err(corruption(format!("unit {id}: REV_META of retained revision {rev} is missing")));
+        if page.len() as u64 != take {
+            // Find the first missing revision for the error (below).
+            let mut want = start.clone();
+            for (i, (k, _)) in page.iter().enumerate() {
+                let at = want.len() - 8;
+                want[at..].copy_from_slice(&(lo + i as u64).to_be_bytes());
+                if *k != want {
+                    return Err(corruption(format!(
+                        "unit {id}: REV_META of retained revision {} is missing",
+                        lo + i as u64
+                    )));
+                }
             }
-            let meta =
-                RevisionMeta::decode(rev, &v).map_err(|e| context(e, &format!("REV_META of unit {id} rev {rev}")))?;
-            if prev.is_some_and(|p| meta.commit_seq <= p) || meta.commit_seq > head.updated_seq {
-                return Err(corruption(format!(
-                    "unit {id}: revision {rev} has commit_seq {} out of order (IU-3)",
-                    meta.commit_seq
-                )));
-            }
-            prev = Some(meta.commit_seq);
-            let payload = if q.with_payload {
-                check_content(&meta)?;
-                read_payload(&get, id, rev, &meta)?
-            } else {
-                None
-            };
-            out.push(to_revision(id, rev, meta, payload));
-        }
-        if out.len() as u64 != take {
-            let missing = RevNo(lo + out.len() as u64);
+            let missing = RevNo(lo + page.len() as u64);
             return Err(corruption(format!("unit {id}: REV_META of retained revision {missing} is missing")));
         }
-        if q.order == Order::Desc {
-            out.reverse();
+        Ok(Some((head, lo, page)))
+    }
+
+    /// A page of the unit's history, metadata only, without building a
+    /// [`Revision`] per entry (decision 12c of the design, E3-09c): the same
+    /// query, the same errors and the same checks as [`history`](Self::history)
+    /// (every entry's key, every `REV_META` decoded and validated, strictly
+    /// growing `commit_seq` up to the head's), but the page keeps the engine's
+    /// entries and hands out borrowed [`RevisionView`]s, so `metadata`,
+    /// `actor` and `source` are not copied. A query with `with_payload` is
+    /// [`UnitError::InvalidArgument`]: payloads are read with `history` or
+    /// `get_revision`.
+    pub fn history_page(&self, id: UnitId, q: HistoryQuery) -> Result<HistoryPage, UnitError> {
+        if q.with_payload {
+            return Err(UnitError::InvalidArgument("history_page reads metadata only; use history".into()));
         }
-        Ok(out)
+        let Some(HistoryRange { head, lo, take, start, stop }) = self.history_range(id, q)? else {
+            return Ok(HistoryPage { unit: id, lo: 0, buf: Vec::new(), fixed: Vec::new() });
+        };
+        // One pass over the engine's entries without copying them one by
+        // one: each key is compared in place with the one expected, each
+        // value appended to one buffer (its range noted).
+        let take = take as usize;
+        let mut buf = Vec::with_capacity(take * 96);
+        let mut spans: Vec<(usize, usize)> = Vec::with_capacity(take);
+        let mut gap: Option<u64> = None;
+        let mut want = start.clone();
+        let at = want.len() - 8;
+        let seen = self.snap.scan_visit(Bound::Included(&start), Bound::Excluded(&stop), take, &mut |k, v| {
+            let rev = lo + spans.len() as u64;
+            want[at..].copy_from_slice(&rev.to_be_bytes());
+            if gap.is_none() && k != want.as_slice() {
+                gap = Some(rev);
+            }
+            let from = buf.len();
+            buf.extend_from_slice(v);
+            spans.push((from, buf.len()));
+            Ok(())
+        })?;
+        if let Some(rev) = gap {
+            return Err(corruption(format!("unit {id}: REV_META of retained revision {rev} is missing")));
+        }
+        if seen != take {
+            let missing = RevNo(lo + seen as u64);
+            return Err(corruption(format!("unit {id}: REV_META of retained revision {missing} is missing")));
+        }
+        // Decoded and checked in the order asked for, like `history`.
+        let mut fixed = Vec::with_capacity(take);
+        let decode = |i: usize| -> Result<MetaFixed, UnitError> {
+            let rev = RevNo(lo + i as u64);
+            let (a, b) = spans[i];
+            let v = &buf[a..b];
+            match RevisionMeta::decode_fixed(rev, v) {
+                Some(mut f) => {
+                    for r in &mut f.fields {
+                        *r = (r.0 + a, r.1 + a);
+                    }
+                    Ok(f)
+                }
+                // The checked decoder names the rule that the value breaks.
+                None => Err(match RevisionMeta::decode(rev, v) {
+                    Err(e) => context(e, &format!("REV_META of unit {id} rev {rev}")).into(),
+                    Ok(_) => corruption(format!("unit {id}: REV_META of rev {rev} decodes on one path only")),
+                }),
+            }
+        };
+        let out_of_order = |i: usize, f: &MetaFixed| {
+            corruption(format!(
+                "unit {id}: revision {} has commit_seq {} out of order (IU-3)",
+                lo + i as u64,
+                f.commit_seq
+            ))
+        };
+        match q.order {
+            Order::Asc => {
+                let mut prev: Option<CommitSeq> = None;
+                for i in 0..take {
+                    let f = decode(i)?;
+                    if prev.is_some_and(|p| f.commit_seq <= p) || f.commit_seq > head.updated_seq {
+                        return Err(out_of_order(i, &f));
+                    }
+                    prev = Some(f.commit_seq);
+                    fixed.push((i as u32, f));
+                }
+            }
+            Order::Desc => {
+                let mut next = CommitSeq(head.updated_seq.0.saturating_add(1));
+                for i in (0..take).rev() {
+                    let f = decode(i)?;
+                    if f.commit_seq >= next {
+                        return Err(out_of_order(i, &f));
+                    }
+                    next = f.commit_seq;
+                    fixed.push((i as u32, f));
+                }
+            }
+        }
+        Ok(HistoryPage { unit: id, lo, buf, fixed })
     }
 
     /// The unit as of `at` (design §3.5, IU-6). A sequence after the
@@ -630,6 +934,12 @@ impl<E: TxnEngine> UnitDb<E> {
     /// [`UnitSnapshot::history`] on a fresh snapshot.
     pub fn history(&self, id: UnitId, q: HistoryQuery) -> Result<Vec<Revision>, UnitError> {
         self.snapshot()?.history(id, q)
+    }
+
+    /// [`UnitSnapshot::history_page`] on a fresh snapshot. The page owns
+    /// what it read: it does not keep the snapshot.
+    pub fn history_page(&self, id: UnitId, q: HistoryQuery) -> Result<HistoryPage, UnitError> {
+        self.snapshot()?.history_page(id, q)
     }
 
     /// [`UnitSnapshot::unit_as_of`] on a fresh snapshot.

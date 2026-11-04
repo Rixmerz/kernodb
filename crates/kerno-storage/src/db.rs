@@ -62,8 +62,9 @@ struct State {
     /// only after the `fsync` of the frame that holds it (W-12, I-16).
     last_seq: u64,
     /// Every commit up to this sequence survives a power loss. Equal to
-    /// `last_seq` in `Sync` mode; in `Buffered` mode it follows `sync()` and
-    /// WAL rotations.
+    /// `last_seq` in `Sync` mode, except after deferred commits (decision
+    /// 12c), which reach it with the next `fsync`; in `Buffered` mode it
+    /// follows `sync()` and WAL rotations.
     durable_seq: u64,
     poisoned: Option<String>,
     shutdown: bool,
@@ -280,12 +281,26 @@ impl Snapshot for KernoSnapshot {
     fn scan(&self, start: Bound<&[u8]>, end: Bound<&[u8]>, limit: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         self.version.scan(self.seq, start, end, limit)
     }
+
+    fn scan_visit(
+        &self,
+        start: Bound<&[u8]>,
+        end: Bound<&[u8]>,
+        limit: usize,
+        visit: &mut kerno_core::contract::Visit<'_>,
+    ) -> Result<usize> {
+        self.version.scan_with(self.seq, start, end, limit, visit)
+    }
 }
 
 /// What a queued request asks the leader for.
 enum Work {
     /// A non-empty commit, already canonical, and when its call began.
-    Commit { commit: CanonicalCommit<Vec<u8>>, started: Instant },
+    /// `deferred`: the commit does not ask for an `fsync` of its own, even in
+    /// `Sync` mode; it becomes durable with the next `fsync` of the WAL
+    /// (another commit's, a `sync()` or a log rotation). See
+    /// [`WriteTxn::commit_deferred`](crate::WriteTxn::commit_deferred).
+    Commit { commit: CanonicalCommit<Vec<u8>>, started: Instant, deferred: bool },
     /// `sync()`: make everything acknowledged so far durable.
     Sync,
 }
@@ -494,7 +509,7 @@ impl Inner {
     fn commit(&self, batch: &WriteBatch) -> Result<u64> {
         self.check_writable()?;
         let started = Instant::now();
-        match self.prepare(batch, started)? {
+        match self.prepare(batch, started, false)? {
             Some((work, bytes)) => self.submit(work, bytes),
             None => Ok(self.state.lock().last_seq),
         }
@@ -503,7 +518,7 @@ impl Inner {
     /// Checks `batch` against the limits and canonicalizes it into the
     /// request the leader will write, with its encoded size; `None` for an
     /// empty batch, which writes nothing and consumes no sequence.
-    fn prepare(&self, batch: &WriteBatch, started: Instant) -> Result<Option<(Work, usize)>> {
+    fn prepare(&self, batch: &WriteBatch, started: Instant, deferred: bool) -> Result<Option<(Work, usize)>> {
         validate_batch(batch, &self.limits)?;
         let commit = canonical(batch);
         let bytes = commit.encoded_len();
@@ -520,7 +535,7 @@ impl Inner {
         // ponytail: the commit is copied into the request so the leader can
         // read it while this thread waits; borrow it for a leader's own
         // commit if profiling ever shows the copy.
-        Ok(Some((Work::Commit { commit: commit.to_owned_commit(), started }, bytes)))
+        Ok(Some((Work::Commit { commit: commit.to_owned_commit(), started, deferred }, bytes)))
     }
 
     /// Takes the write slot. A wait that finds it taken is timed
@@ -573,9 +588,11 @@ impl Inner {
     /// the transaction still holds the write slot (so that nothing commits
     /// between its reads and its write), then releasing the slot and waiting
     /// for the group. An empty log returns the current sequence.
-    pub(crate) fn commit_txn(&self, gate: Gate<'_>, batch: &WriteBatch) -> Result<u64> {
+    /// With `deferred`, the batch asks for no `fsync` of its own (see
+    /// [`Work::Commit`]).
+    pub(crate) fn commit_txn(&self, gate: Gate<'_>, batch: &WriteBatch, deferred: bool) -> Result<u64> {
         let started = Instant::now();
-        match self.prepare(batch, started)? {
+        match self.prepare(batch, started, deferred)? {
             Some((work, bytes)) => self.submit_gated(gate, work, bytes),
             None => Ok(self.state.lock().last_seq),
         }
@@ -685,13 +702,27 @@ impl Inner {
             return fail_all(e, None);
         }
         let wants_sync = group.iter().any(|r| matches!(r.payload(), Work::Sync));
+        // In `Sync` mode the group needs its `fsync` unless every accepted
+        // commit in it is deferred (decision 12c of etapa3-design.md).
+        let own_sync = |accepted: usize| {
+            group
+                .iter()
+                .filter_map(|r| match r.payload() {
+                    Work::Commit { deferred, .. } => Some(*deferred),
+                    Work::Sync => None,
+                })
+                .take(accepted)
+                .any(|deferred| !deferred)
+        };
         // Sequences are exhausted before they wrap: the commits that do not
         // fit are refused, nothing is poisoned and reads still work.
         let room = usize::try_from(MAX_SEQ - w.last_seq).unwrap_or(usize::MAX);
         let accepted = commits.len().min(room);
         let first = w.last_seq + 1;
         let mut frame_len = 0;
-        let mut synced = self.durability == Durability::Sync;
+        // A group with no accepted commit makes nothing durable unless it syncs
+        // (deferred frames may be unsynced; the `sync()` branch below).
+        let mut synced = self.durability == Durability::Sync && accepted > 0 && own_sync(accepted);
         if accepted > 0 {
             let room_start = Instant::now();
             // The rate slowdown charges the group's encoded bytes.
@@ -747,8 +778,10 @@ impl Inner {
         let last = first - 1 + accepted as u64;
         w.last_seq = last;
         {
-            // Published together, once: a reader never sees a sequence that
-            // a power loss could take back (Sync mode).
+            // Published together, once: in Sync mode a reader never sees a
+            // sequence that a power loss could take back, except a deferred
+            // commit's (decision 12c), which every later durable commit
+            // makes durable with it.
             let mut st = self.state.lock();
             st.last_seq = last;
             if synced {
@@ -899,9 +932,13 @@ impl Inner {
         let _phase = probe::phase("rotate");
         self.spare_requested.store(false, Ordering::SeqCst);
         w.mem.set_wal_len(w.wal.written());
-        if self.durability == Durability::Buffered {
+        if self.durability == Durability::Buffered || w.wal.needs_sync() {
             // Every older log must be complete before a newer one exists,
-            // so that recovery's "only the newest log may be torn" holds.
+            // so that recovery's "only the newest log may be torn" holds
+            // (in `Sync` mode, frames of deferred commits may be unsynced).
+            if self.durability == Durability::Sync {
+                bump(&self.stats.wal_syncs, 1);
+            }
             w.wal.sync()?;
             // ...and everything acknowledged so far is durable.
             self.state.lock().durable_seq = w.last_seq;
@@ -1948,9 +1985,10 @@ impl KernoDb {
 
     /// Makes every commit acknowledged so far durable and returns the durable
     /// sequence (ADR-0002, I-17). With [`Durability::Sync`](kerno_core::Durability::Sync)
-    /// every acknowledged commit is durable already and this does no I/O; in
-    /// `Buffered` mode it costs one `fsync` of the WAL if frames are
-    /// unsynced. A failed `fsync` poisons the handle. Shares the commit queue:
+    /// every acknowledged commit is durable already and this does no I/O,
+    /// unless deferred commits ([`WriteTxn::commit_deferred`]) left frames
+    /// unsynced; in `Buffered` mode it costs one `fsync` of the WAL if frames
+    /// are unsynced. A failed `fsync` poisons the handle. Shares the commit queue:
     /// it is served by the leader of the group it joins.
     pub fn sync(&self) -> Result<u64> {
         self.inner.sync()

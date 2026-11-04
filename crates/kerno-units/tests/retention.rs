@@ -417,14 +417,30 @@ fn every_point_policy() -> RetentionPolicy {
         .with_type("aud", RetentionRule::KeepAll)
 }
 
-/// IU-7: a crash before every mutating I/O operation of `run_retention`
-/// (and of the close after it) recovers exactly the store before it or the one after it (the retention
-/// is one engine commit), and every unit keeps its head.
-fn retention_every_point<E: TxnEngine>(kind: CrashKind, durability: Durability) {
+/// IU-7 and decision 12c: a crash before every mutating I/O operation of
+/// `run_retention`, of the user change set that follows it and of the close
+/// after them recovers exactly the store before the call, after one of its
+/// change sets (each unit is pruned in one engine commit), or after the
+/// whole call and the user change set; every unit keeps its head.
+/// Retention change sets are deferred on `KernoDb` (no `fsync` of their
+/// own): a power loss may take them back until the next durable change set,
+/// but never that one, and never one without the retention before it (the
+/// store is a prefix). After recovery retention runs again and finishes the
+/// job. `per_cs` is [`RetentionPacing::units_per_change_set`] (E3-09b): with
+/// 1, the call writes one change set per unit and a crash may keep any
+/// prefix of them.
+fn retention_every_point<E: TxnEngine>(kind: CrashKind, durability: Durability, per_cs: usize) {
     let config = || {
         let mut c = cfg();
         c.engine.durability = durability;
+        c.retention_pacing = RetentionPacing { units_per_change_set: per_cs, pause_ratio: 0 };
         c
+    };
+    let deferred = <E as kerno_core::contract::Engine>::name() == <KernoDb as kerno_core::contract::Engine>::name();
+    let user = |db: &UnitDb<E>, id: UnitId| -> Result<CommitInfo, UnitError> {
+        let mut cs = db.begin_changeset(meta())?;
+        cs.update(id, upd(b"after retention"), None)?;
+        cs.commit()
     };
     let disk = SimVfs::new(9);
     let db = open::<E>(&disk, &config());
@@ -432,15 +448,70 @@ fn retention_every_point<E: TxnEngine>(kind: CrashKind, durability: Durability) 
     let before = raw(&db);
     let heads: Vec<Unit> = ids.iter().map(|id| db.get_unit(*id).unwrap().unwrap()).collect();
     let start = disk.mutating_ops();
+    let stat = |db: &UnitDb<E>, name: &str| {
+        kerno_core::contract::Engine::stats(db.engine()).into_iter().find(|(n, _)| n == name).map(|(_, v)| v)
+    };
+    let (syncs, rotations) = (stat(&db, "wal_syncs"), stat(&db, "memtable_rotations"));
     let r = db.run_retention(&every_point_policy(), RetentionBudget::default()).unwrap();
     assert!(r.change_set.is_some() && r.revisions_pruned > 0 && r.payloads_dropped > 0, "{r:?}");
+    assert_eq!(r.change_sets.len(), (r.units_retained as usize).div_ceil(per_cs), "{r:?}");
+    assert_eq!(r.change_set.as_ref(), r.change_sets.last());
+    if deferred {
+        assert!(r.change_sets.iter().all(|c| !c.durable), "retention change sets are deferred: {r:?}");
+        // No `fsync` of their own. Only a WAL rotation during the call
+        // (here, while writing them) syncs the log, which makes the change
+        // sets before it durable (decision 12c); `wal_syncs` counts that
+        // sync in `Sync` mode only, once per rotation.
+        let rotated = stat(&db, "memtable_rotations").unwrap() - rotations.unwrap();
+        let expected = if durability == Durability::Sync { rotated } else { 0 };
+        assert_eq!(
+            stat(&db, "wal_syncs").unwrap() - syncs.unwrap(),
+            expected,
+            "deferred retention change sets do not sync"
+        );
+    } else {
+        let durable = durability == Durability::Sync;
+        assert!(r.change_sets.iter().all(|c| c.durable == durable), "{r:?}");
+    }
     let after = raw(&db);
-    // The sweep covers the retention commit and the close that writes it to
-    // tables (flush of the range deletions), so that both the WAL frame and
-    // the table files are cut at every point.
+    // A user change set after the retention: durable in `Sync` mode, and
+    // with it every retention change set before it.
+    let u = user(&db, ids[0]).unwrap();
+    assert_eq!(u.durable, durability == Durability::Sync);
+    let after_user = raw(&db);
+    // The store after the first `k` change sets: a call whose budget stops
+    // after `k * per_cs` units (same clock reading and sequences).
+    let mut states = vec![before.clone()];
+    for k in 1..r.change_sets.len() {
+        let disk = SimVfs::new(9);
+        let db = open::<E>(&disk, &config());
+        every_point_setup(&db);
+        let budget = RetentionBudget { max_units: k * per_cs, ..RetentionBudget::default() };
+        db.run_retention(&every_point_policy(), budget).unwrap();
+        states.push(raw(&db));
+    }
+    states.push(after.clone());
+    states.push(after_user.clone());
+    // What retention run again after recovery must leave, without and with
+    // the user change set (only the change set sequences and clock may
+    // differ, so CHANGESET and CS_MEMBER are left out).
+    let finished = |d: &Dump| -> Dump { d.iter().filter(|(k, _)| k[0] != 0x30 && k[0] != 0x31).cloned().collect() };
+    let want_user = {
+        let disk = SimVfs::new(9);
+        let db = open::<E>(&disk, &config());
+        every_point_setup(&db);
+        db.run_retention(&every_point_policy(), RetentionBudget::default()).unwrap();
+        user(&db, ids[0]).unwrap();
+        db.run_retention(&every_point_policy(), RetentionBudget::default()).unwrap();
+        finished(&raw(&db))
+    };
+    // The sweep covers the retention commits, the user change set and the
+    // close that writes them to tables (flush of the range deletions), so
+    // that both the WAL frames and the table files are cut at every point.
     db.close().unwrap();
     let total = disk.mutating_ops() - start;
     assert!(total > 2, "retention and close did too little I/O: {total}");
+    let mut lost_deferred = 0;
     for point in 1..=total {
         let ctx = format!("{kind:?} {durability:?} before mutating op #{point} of {total}");
         let disk = SimVfs::new(9);
@@ -448,6 +519,7 @@ fn retention_every_point<E: TxnEngine>(kind: CrashKind, durability: Durability) 
         every_point_setup(&db);
         disk.crash_after(point, kind);
         let acked = db.run_retention(&every_point_policy(), RetentionBudget::default()).is_ok();
+        let user_acked = acked && user(&db, ids[0]).is_ok();
         let _ = db.close();
         assert!(disk.has_crashed(), "{ctx}: the crash did not fire");
         let image = disk.take_crash_image().expect("crash image");
@@ -456,28 +528,46 @@ fn retention_every_point<E: TxnEngine>(kind: CrashKind, durability: Durability) 
             .unwrap_or_else(|e| panic!("{ctx}: reopen: {e}"));
         let got = raw(&db);
         verified(&db, &ctx);
-        let whole = got == after;
-        assert!(whole || got == before, "{ctx}: retention is half applied");
-        if acked && durability == Durability::Sync {
-            assert!(whole, "{ctx}: an acknowledged Sync retention was lost");
+        assert!(states.contains(&got), "{ctx}: not a prefix of the change sets (a unit's retention half applied?)");
+        let with_user = got == after_user;
+        // No change set acknowledged as durable is lost: the user's, and
+        // with it the retention before it (the store is a prefix).
+        if user_acked && (durability == Durability::Sync || kind == CrashKind::ProcessKill) {
+            assert!(with_user, "{ctx}: an acknowledged durable change set was lost");
+        }
+        if acked && kind == CrashKind::ProcessKill {
+            assert!(got == after || with_user, "{ctx}: a process kill lost an acknowledged retention");
+        }
+        if acked && !deferred && durability == Durability::Sync {
+            assert!(got == after || with_user, "{ctx}: an acknowledged Sync retention was lost");
+        }
+        if acked && got != after && !with_user {
+            lost_deferred += 1;
         }
         for (id, h) in ids.iter().zip(&heads) {
             let u = db.get_unit(*id).unwrap_or_else(|e| panic!("{ctx}: get_unit: {e}")).expect("unit");
-            assert_eq!((u.head, &u.payload, u.lifecycle), (h.head, &h.payload, h.lifecycle), "{ctx}: head kept");
+            if !(with_user && *id == ids[0]) {
+                assert_eq!((u.head, &u.payload, u.lifecycle), (h.head, &h.payload, h.lifecycle), "{ctx}: head kept");
+            }
             let hist = db.history(*id, HistoryQuery::oldest(100)).unwrap_or_else(|e| panic!("{ctx}: history: {e}"));
             assert_eq!(hist.first().map(|r| r.id.rev), Some(u.oldest), "{ctx}: oldest_rev matches the keys");
+            let page = db.history_page(*id, HistoryQuery::oldest(100)).unwrap_or_else(|e| panic!("{ctx}: page: {e}"));
+            assert_eq!(page.to_revisions(), hist, "{ctx}: history_page agrees with history");
         }
-        // Retention can run again and finishes the job.
+        // Retention can run again (idempotent) and finishes the job.
         db.run_retention(&every_point_policy(), RetentionBudget::default())
             .unwrap_or_else(|e| panic!("{ctx}: retention after recovery: {e}"));
-        let mut done: Dump = raw(&db);
-        // Only the change set sequence and clock may differ from `after`.
-        done.retain(|(k, _)| k[0] != 0x30 && k[0] != 0x31);
-        let mut want = after.clone();
-        want.retain(|(k, _)| k[0] != 0x30 && k[0] != 0x31);
+        let done = finished(&raw(&db));
+        let want = if with_user { want_user.clone() } else { finished(&after) };
         assert!(done == want, "{ctx}: retention after recovery differs");
         verified(&db, &format!("{ctx}, retention after recovery"));
+        // And once more: nothing left to do.
+        let again = db.run_retention(&every_point_policy(), RetentionBudget::default()).unwrap();
+        assert!(again.change_sets.is_empty() && again.complete, "{ctx}: retention is not idempotent: {again:?}");
         drop(db);
+    }
+    if deferred && kind == CrashKind::PowerLoss && durability == Durability::Sync {
+        assert!(lost_deferred > 0, "no power loss took back a deferred retention; the sweep proved nothing");
     }
 }
 
@@ -532,6 +622,28 @@ fn kerno_history_sim_reclaims_space() {
     history_sim_reclaims_space();
 }
 
+/// An empty change set after a deferred retention commit (decision 12c)
+/// reports `durable` only once the engine has synced that commit.
+#[test]
+fn kerno_empty_changeset_after_deferred_retention() {
+    let disk = SimVfs::new(5);
+    let mut c = cfg();
+    c.engine.durability = Durability::Sync;
+    let db = open::<KernoDb>(&disk, &c);
+    let ids = every_point_setup(&db);
+    assert!(!ids.is_empty());
+    let r = db.run_retention(&every_point_policy(), RetentionBudget::default()).unwrap();
+    let last = r.change_set.clone().expect("retention committed a change set");
+    assert!(!last.durable, "{r:?}");
+    let empty = db.begin_changeset(meta()).unwrap().commit().unwrap();
+    assert_eq!(empty.commit_seq, last.commit_seq);
+    assert!(!empty.durable, "the deferred retention commit is not synced yet");
+    db.sync().unwrap();
+    let empty = db.begin_changeset(meta()).unwrap().commit().unwrap();
+    assert!(empty.durable, "synced by UnitDb::sync");
+    db.close().unwrap();
+}
+
 macro_rules! engine_tests {
     ($m:ident, $e:ty) => {
         mod $m {
@@ -560,11 +672,19 @@ macro_rules! engine_tests {
             }
             #[test]
             fn retention_every_point_power_loss_sync() {
-                super::retention_every_point::<E>(CrashKind::PowerLoss, Durability::Sync);
+                super::retention_every_point::<E>(CrashKind::PowerLoss, Durability::Sync, 32);
+            }
+            #[test]
+            fn retention_every_point_paced_power_loss_sync() {
+                super::retention_every_point::<E>(CrashKind::PowerLoss, Durability::Sync, 1);
+            }
+            #[test]
+            fn retention_every_point_paced_process_kill_buffered() {
+                super::retention_every_point::<E>(CrashKind::ProcessKill, Durability::Buffered, 1);
             }
             #[test]
             fn retention_every_point_process_kill_buffered() {
-                super::retention_every_point::<E>(CrashKind::ProcessKill, Durability::Buffered);
+                super::retention_every_point::<E>(CrashKind::ProcessKill, Durability::Buffered, 32);
             }
         }
     };

@@ -199,7 +199,28 @@ impl<'db> WriteTxn<'db> {
         self.snapshot = None;
         self.overlay.clear();
         self.ranges.clear();
-        let seq = self.db.commit_txn(gate, &self.log)?;
+        let seq = self.db.commit_txn(gate, &self.log, false)?;
+        bump(&self.db.stats().txns_committed, 1);
+        Ok(seq)
+    }
+
+    /// Like [`commit`](Self::commit), but the batch asks for no `fsync` of
+    /// its own, even with [`Durability::Sync`](kerno_core::Durability::Sync)
+    /// (decision 12c of `etapa3-design.md`): it is visible and acknowledged
+    /// at once, and becomes durable with the next `fsync` of the log, that
+    /// of any later commit that is not deferred, of [`KernoDb::sync`] or of
+    /// the log rotation that a full write buffer or `close` causes. The log
+    /// is written in commit order and recovered as a prefix, so a power loss
+    /// can only take back a tail of deferred commits; a later durable
+    /// commit never survives without the deferred commits before it.
+    ///
+    /// [`KernoDb::sync`]: crate::KernoDb::sync
+    pub fn commit_deferred(mut self) -> Result<u64> {
+        let gate = self.gate.take().expect("the write slot is held until the transaction ends");
+        self.snapshot = None;
+        self.overlay.clear();
+        self.ranges.clear();
+        let seq = self.db.commit_txn(gate, &self.log, true)?;
         bump(&self.db.stats().txns_committed, 1);
         Ok(seq)
     }
@@ -243,6 +264,10 @@ impl Txn for WriteTxn<'_> {
 
     fn commit(self) -> Result<u64> {
         WriteTxn::commit(self)
+    }
+
+    fn commit_deferred(self) -> Result<(u64, bool)> {
+        WriteTxn::commit_deferred(self).map(|seq| (seq, false))
     }
 }
 

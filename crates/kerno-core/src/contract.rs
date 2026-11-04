@@ -135,7 +135,23 @@ pub trait Snapshot: Send + 'static {
     /// Up to `limit` entries with keys in `(start, end)`, in ascending key
     /// order. Pagination: call again with `Bound::Excluded(last_key)`.
     fn scan(&self, start: Bound<&[u8]>, end: Bound<&[u8]>, limit: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>>;
+
+    /// The entries [`scan`](Self::scan) returns, handed to `visit` one by
+    /// one, in order, borrowed: an engine may avoid copying each key and
+    /// value. Returns how many entries were visited; the first error of
+    /// `visit` stops the scan and is returned. The default implementation
+    /// runs `scan` and visits its result.
+    fn scan_visit(&self, start: Bound<&[u8]>, end: Bound<&[u8]>, limit: usize, visit: &mut Visit<'_>) -> Result<usize> {
+        let page = self.scan(start, end, limit)?;
+        for (k, v) in &page {
+            visit(k, v)?;
+        }
+        Ok(page.len())
+    }
 }
+
+/// The visitor of [`Snapshot::scan_visit`]: one borrowed key and value.
+pub type Visit<'a> = dyn FnMut(&[u8], &[u8]) -> Result<()> + 'a;
 
 /// An engine with an explicit durability barrier: `sync()` (ADR-0002,
 /// invariant I-17).
@@ -244,6 +260,20 @@ pub trait Txn: Sized {
 
     /// Commits the writes and returns their commit sequence.
     fn commit(self) -> Result<u64>;
+
+    /// Commits the writes like [`commit`](Self::commit), allowing the engine
+    /// not to wait for stable storage even with [`Durability::Sync`]: the
+    /// batch is atomic and visible at once and becomes durable no later than
+    /// the next commit made with [`commit`](Self::commit) or
+    /// [`Engine::commit`] returns, or the next [`SyncEngine::sync`] or
+    /// [`Engine::close`]. After a crash the store is still a prefix of the
+    /// commits: only a tail of deferred commits can be missing, never one
+    /// that precedes a durable commit. Returns the sequence and whether the
+    /// call waited for durability as `commit` would (`true` in the default
+    /// implementation, which is `commit`).
+    fn commit_deferred(self) -> Result<(u64, bool)> {
+        self.commit().map(|seq| (seq, true))
+    }
 
     /// Discards the writes (same as dropping the transaction).
     fn abort(self) {}

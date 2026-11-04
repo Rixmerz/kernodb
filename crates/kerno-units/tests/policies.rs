@@ -758,11 +758,40 @@ fn retention_round<E: TxnEngine>(db: &UnitDb<E>, model: &mut UnitModel, rng: &mu
     }
 }
 
+/// E3-09b: snapshots share a cache of the policies they read, per policy
+/// epoch. A snapshot taken before `set_policy` keeps answering with the old
+/// policy after it (and after a newer snapshot cached the new one), and a
+/// snapshot taken after it never sees the old one.
+fn policy_cache_follows_snapshots<E: TxnEngine>() {
+    let disk = SimVfs::new(1);
+    let db = open::<E>(&disk, &cfg(HistoryPolicy::Versioned));
+    let (id, _) = db.create_unit(unit("doc", b"a"), meta()).unwrap();
+    let mut cs = db.begin_changeset(meta()).unwrap();
+    cs.update(id, upd(b"b"), None).unwrap();
+    cs.commit().unwrap();
+    let old = db.snapshot().unwrap();
+    assert_eq!(old.history(id, HistoryQuery::latest(10)).unwrap().len(), 2);
+    for (p, n) in [(HistoryPolicy::None, None), (HistoryPolicy::Versioned, Some(2)), (HistoryPolicy::Audit, Some(2))] {
+        db.set_policy("doc", p, meta()).unwrap();
+        let new = db.snapshot().unwrap();
+        assert_eq!(new.policy("doc").unwrap(), p);
+        assert_eq!(new.history(id, HistoryQuery::latest(10)).ok().map(|h| h.len()), n, "{p:?}");
+        assert_eq!(db.policy("doc").unwrap(), p, "{p:?}: a fresh snapshot");
+        assert_eq!(old.policy("doc").unwrap(), HistoryPolicy::Versioned, "{p:?}: the old snapshot");
+        assert_eq!(old.history(id, HistoryQuery::latest(10)).unwrap().len(), 2);
+    }
+}
+
 macro_rules! engine_tests {
     ($m:ident, $e:ty) => {
         mod $m {
             use super::*;
             type E = $e;
+
+            #[test]
+            fn policy_cache_follows_snapshots() {
+                super::policy_cache_follows_snapshots::<E>();
+            }
 
             #[test]
             fn policy_matrix() {
