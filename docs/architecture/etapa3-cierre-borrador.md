@@ -18,7 +18,7 @@ Este texto está pensado para incorporarse como sección de cierre del diseño o
 | E3-07 | `verify_units`, `verify_engine`, `verify_immutable` (UNIT-29…35), detección de daños | #11 | hecho |
 | E3-08 | Barridos de caída de la capa (`changeset_every_point`, `model_crash`, `recovery_reentrant`, `fsync_failure`, `enospc`, `torn_write`, `wal_independence`, `kill -9` real). I-20 e I-21 verificadas. Filas U1–U10 de la matriz de fallos | #12 | hecho |
 | E3-09 | `unit_bench`, objetivos U1–U6, ritmo de retención, `docs/testing/etapa3-report.md` | #13 | hecho (U2 y U6 incumplen; integrado con el incumplimiento documentado, ver §4) |
-| E3-10 | Revisión adversarial, promoción de IU-1…IU-10, este cierre | — | borrador (rama `e3-10-prep`) |
+| E3-10 | Revisión adversarial, promoción de IU-1…IU-10, este cierre | #14 | borrador (rama `claude/quirky-allen-d65xsg`) |
 
 ### Criterios de aceptación del roadmap
 
@@ -77,7 +77,7 @@ Fuente: [`docs/testing/etapa3-report.md`](../testing/etapa3-report.md) §8–§9
 | U3 (aviso > 5×) | 5,03× / 4,66× / 4,78× | informativo (aviso en la pasada 1) |
 | U4 | +339 B de WAL por `update`; amplificación 2,67 (1 KiB) y 3,22 (64 KiB) frente a 1,10 y 1,78 de put | informativo: coste estructural de la copia completa (decisión 4) |
 | U5 | 1 257,7 B por revisión frente a 1 068,0 B (1,178×, +189,7 B) | informativo |
-| U6 | p99 de escritura 1,05–1,18×, rendimiento del escritor 0,89–0,94× | **incumple** 3 de 3 |
+| U6 | p99 de escritura 1,05–1,18×, rendimiento del escritor 0,89–0,94× (1,06× una vez) | **incumple** 3 de 3 |
 
 - **U2.** `history` oscila alrededor de 1,5× por materializar 100 `Revision` y por la variación del p99 de la referencia; la vista ligera `history_page` ya no añade coste propio. Juzgar U2 sobre `history_page` cambiaría la definición de la decisión 12 y queda para el propietario.
 - **U6.** Tras E3-09c la retención no hace `fsync` propio (21 800–27 700 rev/s). Lo que queda es el trabajo de fondo que la poda genera: rotaciones, vaciados y compactaciones.
@@ -102,7 +102,7 @@ Fuente: [`docs/testing/etapa3-report.md`](../testing/etapa3-report.md) §8–§9
 | K-E3-6 | El borrado lógico se confunde con la supresión | Abierto hasta ADR-0009 (decisión 13) |
 | K-E3-7 (nuevo) | Las lecturas comprueban menos de lo que comprueba `verify_units`. Por ejemplo, un `REV_META` intermedio dañado solo se ve cuando una lectura pasa por él | Aceptado por diseño: las lecturas comprueban lo que tocan y `verify_units` lo recorre todo. D-1 muestra que cada comprobación de lectura conviene que reutilice la regla de `verify`. Se recomienda revisarlo en la Etapa 9 junto con la CLI de verificación. **Cerrado para la Etapa 3** como riesgo aceptado: tras D-1, la comprobación de lectura de la cabeza reutiliza `lifecycle_after(kind)` y no hay otra comprobación de lectura con regla propia. La evidencia es `unit_db::corruption_detected` (casos «metadata» y «lifecycle») |
 | K-E3-8 (nuevo) | U2 incumple: `history` llega a 1,50× (1,503) de la referencia en 1 de 3 pasadas | Abierto. Integrado con el incumplimiento documentado (decisión del propietario, 2026-11-04). Umbral sin cambiar. Opciones: juzgar U2 sobre `history_page` (0,58–0,90×) o abaratar la materialización de `Revision` |
-| K-E3-9 (nuevo) | U6 incumple: con retención concurrente, p99 de escritura 1,05–1,18× y rendimiento 0,89–0,94× | Abierto. Integrado con el incumplimiento documentado (decisión del propietario, 2026-11-04). La causa son las rotaciones, vaciados y compactaciones de fondo que genera la poda. Se recomienda limitar su ritmo en el motor |
+| K-E3-9 (nuevo) | U6 incumple: con retención concurrente, p99 de escritura 1,05–1,18× y rendimiento 0,89–0,94× (1,06× una vez) | Abierto. Integrado con el incumplimiento documentado (decisión del propietario, 2026-11-04). La causa son las rotaciones, vaciados y compactaciones de fondo que genera la poda. Se recomienda limitar su ritmo en el motor |
 
 ## 6. Pendiente para cerrar la etapa
 
