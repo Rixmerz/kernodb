@@ -42,11 +42,11 @@ I-16 a I-19 las propuso [phase1-design.md §8](phase1-design.md) y WP14 las prom
 |---|---|---|---|
 | I-20 | El historial de revisiones no depende del journal/WAL de recuperación; compactar o truncar el WAL nunca borra revisiones. | D-06, SAD §7.3 | **verificada** (Etapa 3, E3-08) en `kerno-units`: `wal_independence_{deleted,recycled}_wals` (historial y `get_revision` idénticos tras flush, rotación, borrado o reciclado del WAL, `compact`, reapertura y corte de energía); [matriz de fallos §7](failure-matrix.md) fila U8 |
 | I-21 | Contenido, revisión e índices transaccionales de un mismo cambio se confirman en la misma frontera atómica. | SAD §6.2, §9.2 | **verificada** (Etapa 3, E3-08) para los registros de la capa de unidades (cabeza, `REV_META`, `REV_PAYLOAD`, `CHANGESET`, `CS_MEMBER`): `changeset_every_point`, `model_crash`, `recovery_reentrant`, `fsync_failure`, `enospc`, `torn_write` y `kill -9` real exigen tras cada caída el almacén byte a byte que deja el mismo código de la capa tras un prefijo de `ChangeSet` completos (prueba la atomicidad en la frontera del motor, no la corrección de la capa, que está en ambos lados), lecturas públicas iguales a las del `UnitModel` independiente tras ese mismo prefijo (prueba lo que la capa escribió) y `verify_units` sin hallazgos; matriz de fallos §7, filas U1–U10. Los índices derivados aún no existen (Fase 5) |
-| I-22 | Restaurar una revisión crea una revisión nueva; nunca reescribe ni borra revisiones posteriores. | SAD §8.3 | Fase 3 |
+| I-22 | Restaurar una revisión crea una revisión nueva; nunca reescribe ni borra revisiones posteriores. | SAD §8.3 | **verificada** (Etapa 3, E3-10) en `kerno-units`: `history::restore_keeps_later` (restaurar añade una revisión nueva y los registros `REV_*` previos quedan byte a byte iguales) |
 | I-23 | Un índice derivado expone su estado (`ready`/`building`/`stale`/`failed`) y su watermark; una consulta no declara frescura que no tiene. | SAD §9.2 | Fase 5 |
 | I-24 | Un índice reconstruido produce los mismos resultados que uno nuevo sobre los mismos datos. | ADR-0007 | Fase 5 |
 | I-25 | Todo embedding referencia la revisión fuente exacta y el perfil de modelo; cambiar la fuente lo marca obsoleto. | SAD §10.2–10.3 | Fase 5 |
-| I-26 | El orden de commits lo define la secuencia de la base, nunca el timestamp de UUIDv7. | SAD §5.2 | Fase 2 |
+| I-26 | El orden de commits lo define la secuencia de la base, nunca el timestamp de UUIDv7. | SAD §5.2 | **verificada** (Etapa 3, E3-10) en `kerno-units`: `history::ordering_ignores_clock` (el reloj retrocede entre `ChangeSet` y el orden del historial sigue a `commit_seq`) |
 | I-27 | Un identificador público no concede autorización; un token manipulado se rechaza. | SAD §5.2, §11.2 | Fase 4 |
 | I-28 | Las claves de cifrado no se almacenan en el directorio de datos por defecto. | SAD §11.3 | Fase 4 |
 | I-29 | La auditoría y los logs no registran contenido completo de documentos, secretos ni tokens. | SAD §11.4 | Fase 4 |
@@ -81,7 +81,7 @@ I-16 a I-19 las propuso [phase1-design.md §8](phase1-design.md) y WP14 las prom
 Notas de la revisión:
 
 - El diseño citaba como pruebas `immutability_sweep`, `payload_hash_checked` y `sentinel_no_content`, pero ninguna existía con ese nombre. IU-1 se barre ahora en `policy_model`. IU-5 la cubren `payload_integrity.rs` y los daños de `verify.rs`. IU-10 tiene ahora `sentinel_no_content`.
-- I-22 (restaurar sin destruir posteriores) e I-26 (el orden lo da la secuencia, no el reloj) ya tienen prueba en la capa: `history::restore_keeps_later` y `history::ordering_ignores_clock`. Se propone actualizar su fila de §2 junto con esta promoción.
+- I-22 (restaurar sin destruir posteriores) e I-26 (el orden lo da la secuencia, no el reloj) ya tienen prueba en la capa: `history::restore_keeps_later` y `history::ordering_ignores_clock`. Su fila de §2 está actualizada.
 
 ## 3. Riesgos
 

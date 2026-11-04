@@ -1,8 +1,8 @@
 # Cierre de la Etapa 3: borrador (E3-10)
 
-Estado: **borrador** para revisión del propietario. Faltan los resultados de E3-09 (marcados como *pendiente*). · Relacionado con: [diseño de la Etapa 3](etapa3-design.md) §11–§13, [acta E3-00](etapa3-acta-e3-00.md), [invariantes §2.1](invariants.md#21-invariantes-de-la-capa-de-unidades-etapa-3), [matriz de fallos §7](failure-matrix.md), [roadmap](../roadmap/README.md#etapa-3--unidades-revisiones-y-procedencia)
+Estado: **borrador** para revisión del propietario. Incorpora los resultados de E3-09/09b/09c (PR #13, `b2ed16c`). · Relacionado con: [diseño de la Etapa 3](etapa3-design.md) §11–§13, [acta E3-00](etapa3-acta-e3-00.md), [invariantes §2.1](invariants.md#21-invariantes-de-la-capa-de-unidades-etapa-3), [matriz de fallos §7](failure-matrix.md), [roadmap](../roadmap/README.md#etapa-3--unidades-revisiones-y-procedencia)
 
-Este texto está pensado para incorporarse como sección de cierre del diseño o del informe de la etapa una vez integrado E3-09. Describe la etapa tal como quedó en `main` después de E3-08 (`3a8b794`), más las correcciones de la revisión adversarial de E3-10.
+Este texto está pensado para incorporarse como sección de cierre del diseño o del informe de la etapa una vez integrado E3-09. Describe la etapa tal como quedó en `main` después de E3-09 (`b2ed16c`), más las correcciones de la revisión adversarial de E3-10.
 
 ## 1. Paquetes de trabajo entregados
 
@@ -17,7 +17,7 @@ Este texto está pensado para incorporarse como sección de cierre del diseño o
 | E3-06 | `RetentionPolicy`, `run_retention` por lotes, `compact`, `RetentionReport` | #10 | hecho |
 | E3-07 | `verify_units`, `verify_engine`, `verify_immutable` (UNIT-29…35), detección de daños | #11 | hecho |
 | E3-08 | Barridos de caída de la capa (`changeset_every_point`, `model_crash`, `recovery_reentrant`, `fsync_failure`, `enospc`, `torn_write`, `wal_independence`, `kill -9` real). I-20 e I-21 verificadas. Filas U1–U10 de la matriz de fallos | #12 | hecho |
-| E3-09 | `unit_bench`, objetivos U1–U6, ritmo de retención, `docs/testing/etapa3-report.md` | — | *pendiente: en curso en otra rama; resultados por incorporar* |
+| E3-09 | `unit_bench`, objetivos U1–U6, ritmo de retención, `docs/testing/etapa3-report.md` | #13 | hecho (U2 y U6 incumplen; integrado con el incumplimiento documentado, ver §4) |
 | E3-10 | Revisión adversarial, promoción de IU-1…IU-10, este cierre | — | borrador (rama `e3-10-prep`) |
 
 ### Criterios de aceptación del roadmap
@@ -25,10 +25,10 @@ Este texto está pensado para incorporarse como sección de cierre del diseño o
 | Criterio | Evidencia | Estado |
 |---|---|---|
 | Se reconstruye la evolución de una unidad | `history::model_as_of`, `policies::policy_model` (historial, as-of y `state_as_of` comparados con `UnitModel`) | cumplido |
-| Se restaura sin destruir revisiones posteriores (I-22) | `history::restore_keeps_later` | cumplido; falta actualizar la fila I-22 de `invariants.md` |
+| Se restaura sin destruir revisiones posteriores (I-22) | `history::restore_keeps_later` | cumplido; fila I-22 de `invariants.md` actualizada |
 | El historial no depende del WAL (I-20) | `crash::wal_independence_{deleted,recycled}_wals` | cumplido (E3-08) |
 | Contenido y revisión en la misma frontera atómica, también en la matriz de fallos (I-21) | barridos de `crash.rs`, `process_kill.rs`; matriz de fallos U1–U10 | cumplido (E3-08) |
-| Bancos y métricas U1–U6 frente a la referencia; T1–T10 sin tocar | *pendiente de E3-09* | *pendiente* |
+| Bancos y métricas U1–U6 frente a la referencia; T1–T10 sin tocar | `unit_bench` (3 pasadas, [informe §8–§9](../testing/etapa3-report.md)); T1–T10 antes/después en `spikes/storage/results/2026-11-04-e3/t1-t10-e3-09c/` | parcial: U1 cumple; U2 y U6 incumplen (riesgos K-E3-8 y K-E3-9); T1–T10 sin tocar y sin regresión |
 
 ## 2. Revisión adversarial (E3-10)
 
@@ -62,12 +62,33 @@ No se encontraron otros defectos en el código. Las demás diferencias son **hue
   - poda de `CHANGESET`;
   - `unit_id` y su relación con ADR-0005;
   - troceado de cargas útiles;
-  - umbrales U1–U6 (*los cierra E3-09*);
+  - umbrales U1–U6: medidos en E3-09 sin cambiar ningún umbral; U2 y U6 incumplen y el propietario decidió el 2026-11-04 integrar con el incumplimiento documentado (si U2 se juzga sobre `history_page` sigue siendo decisión del propietario);
   - orden de ADR-0009 frente a la IA.
 
 ## 4. Resultados de rendimiento (E3-09)
 
-*Pendiente: se incorporará desde `docs/testing/etapa3-report.md` cuando E3-09 se integre. Incluirá U1–U6 frente a la referencia, el coste de la retención y la confirmación de que T1–T10 no cambian.*
+Fuente: [`docs/testing/etapa3-report.md`](../testing/etapa3-report.md) §8–§9 y `spikes/storage/results/2026-11-04-e3/` (`unit_bench-full-e3-09c-run{1,2,3}.txt`). Tres pasadas completas en máquina quieta; ningún umbral se rebajó y la metodología de `unit_bench` no cambió.
+
+| Id | Resultado (pasadas 1 / 2 / 3) | Veredicto |
+|---|---|---|
+| U1 (≤ 1,5×) | 1,05× / 1,09× / 1,10× | **cumple** 3 de 3 |
+| U2 sobre `history` (≤ 1,5×) | 1,50× (1,503) / 1,27× / 0,95× | **incumple** (la pasada 1 supera el límite) |
+| `history_page` | 0,90× / 0,88× / 0,58× | informativo, sin veredicto |
+| U3 (aviso > 5×) | 5,03× / 4,66× / 4,78× | informativo (aviso en la pasada 1) |
+| U4 | +339 B de WAL por `update`; amplificación 2,67 (1 KiB) y 3,22 (64 KiB) frente a 1,10 y 1,78 de put | informativo: coste estructural de la copia completa (decisión 4) |
+| U5 | 1 257,7 B por revisión frente a 1 068,0 B (1,178×, +189,7 B) | informativo |
+| U6 | p99 de escritura 1,05–1,18×, rendimiento del escritor 0,89–0,94× | **incumple** 3 de 3 |
+
+- **U2.** `history` oscila alrededor de 1,5× por materializar 100 `Revision` y por la variación del p99 de la referencia; la vista ligera `history_page` ya no añade coste propio. Juzgar U2 sobre `history_page` cambiaría la definición de la decisión 12 y queda para el propietario.
+- **U6.** Tras E3-09c la retención no hace `fsync` propio (21 800–27 700 rev/s). Lo que queda es el trabajo de fondo que la poda genera: rotaciones, vaciados y compactaciones.
+- **T1–T10.** Sin tocar y sin regresión por encima del ruido entre repeticiones (informe §8.2 y §9.2).
+- **Decisión del propietario (2026-11-04).** Integrar con el incumplimiento de U2 y U6 documentado, sin rebajar umbrales y sin tocar T1–T10. Ambos quedan como riesgos abiertos K-E3-8 y K-E3-9 (§5).
+
+### 4.1 Defectos corregidos en la revisión del PR #13
+
+- **Durabilidad de un `ChangeSet` vacío.** `ChangeSet::commit` sin operaciones devolvía `durable = (durability == Sync)`, aunque una retención diferida (decisión 12c) podía dejar la secuencia actual sin sincronizar. Ahora solo es duradero si el `durable_seq` del motor lo cubre (los motores que no informan `durable_seq` sincronizan cada commit). Con prueba nueva.
+- **Desplazamientos de `history_page`.** `history_page` y `MetaFixed` guardan los desplazamientos dentro del búfer de página como `usize` en vez de `u32`, así que una página de más de 4 GiB ya no los trunca.
+- **Prueba de retención y rotación.** Una retención pausada en modo `Sync` llena el memtable y lo rota, y la rotación sincroniza el WAL (un `wal_syncs`), lo que hace duraderos los conjuntos diferidos previos, como permite la decisión 12c. La prueba espera ahora exactamente una sincronización por rotación en `Sync` y ninguna en los demás modos.
 
 ## 5. Riesgos abiertos
 
@@ -75,14 +96,16 @@ No se encontraron otros defectos en el código. Las demás diferencias son **hue
 |---|---|---|
 | K-E3-1 | Falla la predicción `commit_seq = read_seq + 1` | Mitigado: comprobación tras el commit con envenenamiento (`seq_mismatch_poisons_the_handle`). Sigue vigente si el motor llega a consumir secuencia por su cuenta |
 | K-E3-2 | La ranura de escritura es única: un `ChangeSet` largo bloquea a todos | Abierto. Se acota con `max_changeset_ops` y con la retención por lotes. El multiescritor está fuera de alcance |
-| K-E3-3 | Amplificación por escribir varios registros por revisión | *Pendiente de las métricas U4/U5 (E3-09)* |
-| K-E3-4 | Las instantáneas largas anulan la retención | Abierto. El informe separa «liberado lógicamente» de «reclamado». Ver el ritmo de retención en E3-09 |
+| K-E3-3 | Amplificación por escribir varios registros por revisión | Medido (U4/U5): +339 B de WAL por `update` y 1,178× de espacio por revisión. Aceptado como coste de la copia completa (decisión 4); sin defecto |
+| K-E3-4 | Las instantáneas largas anulan la retención | Abierto. El informe separa «liberado lógicamente» de «reclamado». La retención por lotes con durabilidad diferida (E3-09c) va a 21 800–27 700 rev/s, pero no reclama espacio mientras haya instantáneas antiguas |
 | K-E3-5 | Una capa construida sobre ADR pendientes cuesta revertirla | Mitigado por bytes opacos, `alg`/`kind` reservados y `layer_version` |
 | K-E3-6 | El borrado lógico se confunde con la supresión | Abierto hasta ADR-0009 (decisión 13) |
-| K-E3-7 (nuevo) | Las lecturas comprueban menos de lo que comprueba `verify_units`. Por ejemplo, un `REV_META` intermedio dañado solo se ve cuando una lectura pasa por él | Aceptado por diseño: las lecturas comprueban lo que tocan y `verify_units` lo recorre todo. D-1 muestra que cada comprobación de lectura conviene que reutilice la regla de `verify`. Se recomienda revisarlo en la Etapa 9 junto con la CLI de verificación |
+| K-E3-7 (nuevo) | Las lecturas comprueban menos de lo que comprueba `verify_units`. Por ejemplo, un `REV_META` intermedio dañado solo se ve cuando una lectura pasa por él | Aceptado por diseño: las lecturas comprueban lo que tocan y `verify_units` lo recorre todo. D-1 muestra que cada comprobación de lectura conviene que reutilice la regla de `verify`. Se recomienda revisarlo en la Etapa 9 junto con la CLI de verificación. **Cerrado para la Etapa 3** como riesgo aceptado: tras D-1, la comprobación de lectura de la cabeza reutiliza `lifecycle_after(kind)` y no hay otra comprobación de lectura con regla propia. La evidencia es `unit_db::corruption_detected` (casos «metadata» y «lifecycle») |
+| K-E3-8 (nuevo) | U2 incumple: `history` llega a 1,50× (1,503) de la referencia en 1 de 3 pasadas | Abierto. Integrado con el incumplimiento documentado (decisión del propietario, 2026-11-04). Umbral sin cambiar. Opciones: juzgar U2 sobre `history_page` (0,58–0,90×) o abaratar la materialización de `Revision` |
+| K-E3-9 (nuevo) | U6 incumple: con retención concurrente, p99 de escritura 1,05–1,18× y rendimiento 0,89–0,94× | Abierto. Integrado con el incumplimiento documentado (decisión del propietario, 2026-11-04). La causa son las rotaciones, vaciados y compactaciones de fondo que genera la poda. Se recomienda limitar su ritmo en el motor |
 
 ## 6. Pendiente para cerrar la etapa
 
-1. Integrar E3-09 y completar §1 (fila E3-09), §4 y los riesgos K-E3-3 y K-E3-4.
-2. Que el propietario apruebe la promoción de IU-1…IU-10 ([invariants.md §2.1](invariants.md#21-invariantes-de-la-capa-de-unidades-etapa-3)) y la actualización de las filas I-22 e I-26.
+1. ~~Integrar E3-09 y completar §1, §4 y los riesgos K-E3-3 y K-E3-4.~~ Hecho (PR #13; este WP).
+2. Que el propietario apruebe la promoción de IU-1…IU-10 ([invariants.md §2.1](invariants.md#21-invariantes-de-la-capa-de-unidades-etapa-3)) y la actualización de las filas I-22 e I-26 (ya hecha en esta rama).
 3. Actualizar el roadmap (Etapa 3 con su estado real) y SAD §8 con lo construido.
