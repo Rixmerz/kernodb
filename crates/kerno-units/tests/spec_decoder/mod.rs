@@ -255,7 +255,7 @@ pub fn decode(key: &[u8], value: &[u8]) -> Res<Rec> {
             if member_count > MAX_MEMBERS {
                 return Err(rule(24));
             }
-            let purpose = enum_max(&mut r, 2)?;
+            let purpose = enum_max(&mut r, 3)?;
             let reason = r.bytes(1024)?;
             let actor_ref = r.bytes(1024)?;
             let source_ref = r.bytes(1024)?;

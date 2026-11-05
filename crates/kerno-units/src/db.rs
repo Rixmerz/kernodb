@@ -75,13 +75,15 @@ use kerno_core::{Durability, MAX_VALUE_LEN};
 
 use crate::clock::{Clock, SystemClock, UnitIdSource, UuidV7Source};
 use crate::codec::{
-    ChangeSetRecord, CsMember, Key, LAYER_MARK_NAME, LAYER_VERSION, LayerMeta, MAX_CHANGESET_FIELD_LEN,
-    MAX_MEMBER_COUNT, MAX_METADATA_LEN, MAX_REV_REF_LEN, MAX_UNIT_TYPE_LEN, RevisionMeta, UnitHead,
+    Adjacency, ChangeSetRecord, CsMember, Key, LAYER_MARK_NAME, LAYER_VERSION, LayerMeta, MAX_CHANGESET_FIELD_LEN,
+    MAX_MEMBER_COUNT, MAX_METADATA_LEN, MAX_REV_REF_LEN, MAX_UNIT_TYPE_LEN, RelationRecord, RevisionMeta, TAG_REL_IN,
+    TAG_REL_OUT, UnitHead, valid_relation_type,
 };
 use crate::error::{DecodeError, UnitError};
 use crate::payload::{ContentHash, MAX_PAYLOAD_LEN, PAYLOAD_CODEC_OPAQUE, verify_payload};
 use crate::types::{
-    ChangeSetId, CommitSeq, HistoryPolicy, Lifecycle, Purpose, RevNo, RevisionId, RevisionKind, Timestamp, UnitId,
+    ChangeSetId, CommitSeq, Direction, HistoryPolicy, Lifecycle, Purpose, RelationId, RelationProvenance, RevNo,
+    RevisionId, RevisionKind, Timestamp, UnitId,
 };
 
 /// Default of [`UnitConfig::max_changeset_ops`] (design §4).
@@ -530,6 +532,7 @@ impl<E: TxnEngine> UnitDb<E> {
             now,
             need_mark,
             members: Vec::new(),
+            relation_ops: 0,
             touched: BTreeSet::new(),
             broken: false,
             maintenance: false,
@@ -662,6 +665,113 @@ impl<E: Engine> UnitSnapshot<E> {
     pub fn get_unit(&self, id: UnitId) -> Result<Option<Unit>, UnitError> {
         Ok(load_unit(&|k| self.snap.get(k), id)?.map(|(head, _, payload)| to_unit(id, head, payload)))
     }
+
+    /// The relation `id` at this snapshot, or `None`.
+    pub fn get_relation(&self, id: RelationId) -> Result<Option<Relation>, UnitError> {
+        let Some(raw) = self.snap.get(&key(Key::Relation { edge: id })?)? else {
+            return Ok(None);
+        };
+        let record = RelationRecord::decode(&raw).map_err(|e| context(e, &format!("REL {id}")))?;
+        Ok(Some(Relation::new(id, record)))
+    }
+
+    /// The relations that start at (`Direction::Out`) or end at
+    /// (`Direction::In`) `unit`, optionally of one `relation_type`, read from
+    /// the adjacency index: a range scan, not a scan of all relations. In
+    /// index order: relation type, then relation id. Every entry is checked
+    /// against its `REL` record; a missing record or a disagreement is
+    /// `Storage(Corruption)`. The result must equal
+    /// [`UnitSnapshot::reference_relations_of`] on the same snapshot (I-32).
+    pub fn relations_of(
+        &self,
+        unit: UnitId,
+        dir: Direction,
+        relation_type: Option<&str>,
+    ) -> Result<Vec<Relation>, UnitError> {
+        let tag = match dir {
+            Direction::Out => TAG_REL_OUT,
+            Direction::In => TAG_REL_IN,
+        };
+        let Some((start, end)) = Key::adjacency_range(tag, unit, relation_type) else {
+            return Ok(Vec::new());
+        };
+        let mut out = Vec::new();
+        scan_all(&self.snap, start, end, |k, v| {
+            let (edge, ty) = match Key::decode(k)? {
+                Key::RelationOut { relation_type, edge, .. } | Key::RelationIn { relation_type, edge, .. } => {
+                    (edge, relation_type)
+                }
+                _ => return Err(corruption("a key in an adjacency range is not an adjacency key".into())),
+            };
+            let other = Adjacency::decode(v).map_err(|e| context(e, &format!("adjacency entry of {edge}")))?.other;
+            let Some(rel) = self.get_relation(edge)? else {
+                return Err(corruption(format!("adjacency entry of relation {edge} has no REL record")));
+            };
+            let (here, there) = if dir == Direction::Out { (rel.from, rel.to) } else { (rel.to, rel.from) };
+            if here != unit || there != other || rel.relation_type != ty {
+                return Err(corruption(format!("adjacency entry of relation {edge} disagrees with its REL record")));
+            }
+            out.push(rel);
+            Ok(())
+        })?;
+        Ok(out)
+    }
+}
+
+/// A relation between two units (ADR-0014).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Relation {
+    pub id: RelationId,
+    pub from: UnitId,
+    pub to: UnitId,
+    pub relation_type: String,
+    /// The commit sequence of the change set that created it; that change
+    /// set's record holds the actor, source and reason.
+    pub created_seq: CommitSeq,
+    pub provenance: RelationProvenance,
+}
+
+impl Relation {
+    pub(crate) fn new(id: RelationId, r: RelationRecord) -> Self {
+        Relation {
+            id,
+            from: r.from,
+            to: r.to,
+            relation_type: r.relation_type,
+            created_seq: r.created_seq,
+            provenance: r.provenance,
+        }
+    }
+}
+
+/// Keys read per engine scan call by the relation reads.
+const REL_PAGE: usize = 256;
+
+/// Calls `visit` on every pair with a key in `[start, end)` of `snap`, in
+/// key order, [`REL_PAGE`] pairs per scan call.
+pub(crate) fn scan_all<S: Snapshot>(
+    snap: &S,
+    start: Vec<u8>,
+    end: Vec<u8>,
+    mut visit: impl FnMut(&[u8], &[u8]) -> Result<(), UnitError>,
+) -> Result<(), UnitError> {
+    let mut cursor = start;
+    let mut inclusive = true;
+    loop {
+        let lo = if inclusive { Bound::Included(cursor.as_slice()) } else { Bound::Excluded(cursor.as_slice()) };
+        let page = snap.scan(lo, Bound::Excluded(&end), REL_PAGE)?;
+        let n = page.len();
+        for (k, v) in &page {
+            visit(k, v)?;
+        }
+        match page.into_iter().last() {
+            Some((k, _)) if n == REL_PAGE => {
+                cursor = k;
+                inclusive = false;
+            }
+            _ => return Ok(()),
+        }
+    }
 }
 
 /// An open change set: one engine write transaction (see the [module
@@ -674,6 +784,9 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     now: Timestamp,
     need_mark: bool,
     members: Vec<(RevisionId, RevisionKind)>,
+    /// Relations created or deleted so far (E4-02): they are not members, but
+    /// they count against `max_changeset_ops` and make the change set non-empty.
+    relation_ops: usize,
     touched: BTreeSet<UnitId>,
     broken: bool,
     /// A `set_policy` change set: commits without members.
@@ -980,6 +1093,9 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         if head.lifecycle != from {
             return Err(UnitError::InvalidArgument(format!("unit {id} is {:?}, not {from:?}", head.lifecycle)));
         }
+        if to == Lifecycle::Archived {
+            self.ensure_no_relations(id)?;
+        }
         let Some(payload) = payload else {
             return Err(corruption(format!("unit {id}: a {:?} head revision has no payload", head.lifecycle)));
         };
@@ -1005,6 +1121,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
     pub fn delete(&mut self, id: UnitId, expected: Option<RevNo>) -> Result<RevNo, UnitError> {
         self.admit(Some(id))?;
         let (head, _, _) = self.current(id, expected)?;
+        self.ensure_no_relations(id)?;
         let mut next = self.next_head(&head);
         next.lifecycle = Lifecycle::Deleted;
         next.content_hash = ContentHash::blake3(PAYLOAD_CODEC_OPAQUE, &[]);
@@ -1055,6 +1172,129 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         self.apply(plan)
     }
 
+    /// Refuses with [`UnitError::UnitHasRelations`] when a relation, in
+    /// either direction, touches `unit` as this change set sees it (ADR-0014,
+    /// criterion 4). Two single-entry scans of the adjacency indexes.
+    fn ensure_no_relations(&self, unit: UnitId) -> Result<(), UnitError> {
+        let txn = self.txn()?;
+        for tag in [TAG_REL_OUT, TAG_REL_IN] {
+            let Some((start, end)) = Key::adjacency_range(tag, unit, None) else {
+                continue;
+            };
+            if let Some((k, _)) = txn.scan(Bound::Included(&start), Bound::Excluded(&end), 1)?.into_iter().next() {
+                return match Key::decode(&k)? {
+                    Key::RelationOut { edge, .. } | Key::RelationIn { edge, .. } => {
+                        Err(UnitError::UnitHasRelations { unit, relation: edge })
+                    }
+                    _ => Err(corruption("a key in an adjacency range is not an adjacency key".into())),
+                };
+            }
+        }
+        Ok(())
+    }
+
+    /// The lifecycle of `unit` as this change set sees it, reading only its
+    /// `UNIT_HEAD`; `NotFound` or `Deleted` for a unit that cannot take a
+    /// relation, `InvalidArgument` for an archived one.
+    fn require_active(&self, unit: UnitId) -> Result<(), UnitError> {
+        let txn = self.txn()?;
+        let Some(raw) = txn.get(&key(Key::UnitHead { unit })?)? else {
+            return Err(UnitError::NotFound { unit });
+        };
+        let head = UnitHead::decode(&raw).map_err(|e| context(e, &format!("UNIT_HEAD of unit {unit}")))?;
+        match head.lifecycle {
+            Lifecycle::Active => Ok(()),
+            Lifecycle::Deleted => Err(UnitError::Deleted { unit }),
+            Lifecycle::Archived => Err(UnitError::InvalidArgument(format!(
+                "unit {unit} is archived; a relation needs Active units at both ends"
+            ))),
+        }
+    }
+
+    /// Creates the relation `from -> to` of type `relation_type` (1..=64 B,
+    /// no NUL) with a fresh id from the id source (ADR-0014, option 2): the
+    /// `REL` record and its two adjacency entries are written in this change
+    /// set, so they commit together or not at all (I-21). Both units must be
+    /// `Active` as this change set sees them, which includes units it
+    /// creates. `provenance` is mandatory and checked: see
+    /// [`RelationProvenance`]. The actor, source and reason of the change set
+    /// are the relation's. Parallel relations (same ends and type) are
+    /// allowed; a unit may relate to itself.
+    pub fn create_relation(
+        &mut self,
+        from: UnitId,
+        to: UnitId,
+        relation_type: &str,
+        provenance: RelationProvenance,
+    ) -> Result<RelationId, UnitError> {
+        self.admit_relation()?;
+        if !valid_relation_type(relation_type) {
+            return Err(UnitError::InvalidArgument(format!(
+                "relation_type of {} bytes is outside 1..={} or has a NUL",
+                relation_type.len(),
+                crate::codec::MAX_RELATION_TYPE_LEN
+            )));
+        }
+        self.require_active(from)?;
+        self.require_active(to)?;
+        let edge = RelationId(self.db.cfg.ids.next_id().0);
+        if self.txn()?.get(&key(Key::Relation { edge })?)?.is_some() {
+            return Err(UnitError::InvalidArgument(format!("relation id {edge} already exists")));
+        }
+        let record =
+            RelationRecord { from, to, relation_type: relation_type.to_owned(), created_seq: self.seq, provenance };
+        let t = || relation_type.to_owned();
+        let writes = [
+            Write::Put(key(Key::Relation { edge })?, record.encode()?),
+            Write::Put(
+                key(Key::RelationOut { unit: from, relation_type: t(), edge })?,
+                Adjacency { other: to }.encode(),
+            ),
+            Write::Put(
+                key(Key::RelationIn { unit: to, relation_type: t(), edge })?,
+                Adjacency { other: from }.encode(),
+            ),
+        ];
+        self.apply_relation_writes(&writes)?;
+        Ok(edge)
+    }
+
+    /// Deletes a relation: its record and both adjacency entries, in this
+    /// change set. Relations have no history of their own (ADR-0014): the
+    /// change set that deleted it is the only trace.
+    pub fn delete_relation(&mut self, edge: RelationId) -> Result<(), UnitError> {
+        self.admit_relation()?;
+        let txn = self.txn()?;
+        let Some(raw) = txn.get(&key(Key::Relation { edge })?)? else {
+            return Err(UnitError::RelationNotFound { relation: edge });
+        };
+        let r = RelationRecord::decode(&raw).map_err(|e| context(e, &format!("REL {edge}")))?;
+        let t = || r.relation_type.clone();
+        let writes = [
+            Write::Delete(key(Key::Relation { edge })?),
+            Write::Delete(key(Key::RelationOut { unit: r.from, relation_type: t(), edge })?),
+            Write::Delete(key(Key::RelationIn { unit: r.to, relation_type: t(), edge })?),
+        ];
+        self.apply_relation_writes(&writes)
+    }
+
+    fn admit_relation(&self) -> Result<(), UnitError> {
+        self.txn()?;
+        let ops = self.members.len() + self.relation_ops;
+        if ops >= self.db.cfg.max_changeset_ops {
+            return Err(UnitError::ChangeSetTooLarge { ops: ops + 1, bytes: self.bytes });
+        }
+        Ok(())
+    }
+
+    fn apply_relation_writes(&mut self, writes: &[Write]) -> Result<(), UnitError> {
+        for w in writes {
+            self.write(w)?;
+        }
+        self.relation_ops += 1;
+        Ok(())
+    }
+
     /// The unit as this change set sees it, its own writes included.
     pub fn get_unit(&self, id: UnitId) -> Result<Option<Unit>, UnitError> {
         let txn = self.txn()?;
@@ -1066,7 +1306,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
     pub fn commit(mut self) -> Result<CommitInfo, UnitError> {
         self.txn()?;
         let durable = self.db.cfg.engine.durability == Durability::Sync;
-        if self.members.is_empty() && !self.maintenance {
+        if self.members.is_empty() && !self.maintenance && self.relation_ops == 0 {
             let current = CommitSeq(self.seq.0 - 1);
             if let Some(t) = self.txn.take() {
                 t.abort();
@@ -1098,7 +1338,13 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         let record = ChangeSetRecord {
             created_at: self.now,
             member_count: self.members.len() as u32,
-            purpose: self.meta.purpose,
+            // A member-less application change set is relation-only: say so,
+            // so a lost-members change set stays detectable (UNIT-30).
+            purpose: if self.meta.purpose == Purpose::Application && self.members.is_empty() {
+                Purpose::Relation
+            } else {
+                self.meta.purpose
+            },
             reason: self.meta.reason.clone().map(String::into_bytes).unwrap_or_default(),
             actor_ref: self.actor(),
             source_ref: self.source(),

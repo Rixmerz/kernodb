@@ -11,7 +11,13 @@
 //! ```
 //!
 //! Options: `--quick`, `--dir <path>` (default: the system temp dir),
-//! `--seed <u64>` (default 0xE309), `--only U1,U3,...`.
+//! `--seed <u64>` (default 0xE309), `--only U1,U3,...`, `--relations`.
+//!
+//! `--relations` (E4-02, K-E3-8 and K-E3-9): U2 and U6 run with declared
+//! relations active. The units they create get three outgoing relations each
+//! (three records per relation, ADR-0014), and in U6 every writer update also
+//! creates one relation in the same change set. Thresholds and method are the
+//! same; only the data under the measured operation differs.
 //!
 //! * U1: p99 of a `Sync` change set with one 1 KiB `update` against the p99
 //!   of a `Sync` commit of one 1 KiB put. Threshold <= 1.5x.
@@ -47,8 +53,8 @@ use kerno_core::vfs::StdVfs;
 use kerno_storage::KernoDb;
 use kerno_testkit::rng::Rng;
 use kerno_units::{
-    AsOf, ChangeMeta, CommitSeq, CounterIds, FixedClock, HistoryQuery, NewUnit, RetentionBudget, RetentionPolicy,
-    RetentionRule, Timestamp, UnitAt, UnitConfig, UnitDb, UnitId, UnitUpdate,
+    AsOf, ChangeMeta, CommitSeq, CounterIds, FixedClock, HistoryQuery, NewUnit, RelationProvenance, RetentionBudget,
+    RetentionPolicy, RetentionRule, Timestamp, UnitAt, UnitConfig, UnitDb, UnitId, UnitUpdate,
 };
 
 type Res<T> = Result<T, Box<dyn std::error::Error>>;
@@ -61,14 +67,16 @@ struct Args {
     dir: PathBuf,
     seed: u64,
     only: Option<Vec<String>>,
+    relations: bool,
 }
 
 fn parse_args() -> Res<Args> {
-    let mut a = Args { quick: false, dir: std::env::temp_dir(), seed: 0xE309, only: None };
+    let mut a = Args { quick: false, dir: std::env::temp_dir(), seed: 0xE309, only: None, relations: false };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--quick" => a.quick = true,
+            "--relations" => a.relations = true,
             "--dir" => a.dir = PathBuf::from(it.next().ok_or("--dir needs a path")?),
             "--seed" => a.seed = it.next().ok_or("--seed needs a value")?.parse()?,
             "--only" => {
@@ -199,6 +207,33 @@ fn update_one(db: &Units, id: UnitId, payload: Vec<u8>) -> Res<()> {
     let mut cs = db.begin_changeset(ChangeMeta::default())?;
     cs.update(id, upd(payload), None)?;
     cs.commit()?;
+    Ok(())
+}
+
+/// `update_one` plus one declared relation `id -> other`, in the same change set.
+fn update_and_relate(db: &Units, id: UnitId, other: UnitId, payload: Vec<u8>) -> Res<()> {
+    let mut cs = db.begin_changeset(ChangeMeta::default())?;
+    cs.update(id, upd(payload), None)?;
+    cs.create_relation(id, other, "bench", RelationProvenance::Declared)?;
+    cs.commit()?;
+    Ok(())
+}
+
+/// Gives every unit of `ids` `per_unit` outgoing relations to random units of
+/// `ids`, `per_cs` relations per change set.
+fn add_relations(db: &Units, rng: &mut Rng, ids: &[UnitId], per_unit: usize, per_cs: usize) -> Res<()> {
+    let total = ids.len() * per_unit;
+    let mut made = 0;
+    while made < total {
+        let mut cs = db.begin_changeset(ChangeMeta::default())?;
+        for _ in 0..per_cs.min(total - made) {
+            let from = ids[made % ids.len()];
+            let to = ids[rng.below(ids.len() as u64) as usize];
+            cs.create_relation(from, to, "bench", RelationProvenance::Declared)?;
+            made += 1;
+        }
+        cs.commit()?;
+    }
     Ok(())
 }
 
@@ -406,6 +441,9 @@ fn u2(a: &Args, z: &Sizes, out: &mut Vec<Verdict>) -> Res<()> {
     let plain = open_plain(&dp.0)?;
     let ids = create_units(&units, &mut rng, z.u2_units, LEN, 1_000)?;
     add_revisions(&units, &mut rng, &ids, REVS - 1, LEN, 1_000)?;
+    if a.relations {
+        add_relations(&units, &mut rng, &ids, 3, 1_000)?;
+    }
     let keys = (z.u2_units * REVS) as u64;
     for chunk in (0..keys).collect::<Vec<_>>().chunks(1_000) {
         let mut b = WriteBatch::new();
@@ -678,7 +716,14 @@ struct Window {
 
 /// Runs the writers and a reader until `stop` while `body` runs, and
 /// returns what they measured. `body` returns when the window ends.
-fn window(db: &Units, hot: &[UnitId], z: &Sizes, seed: u64, body: impl FnOnce() -> Res<()>) -> Res<Window> {
+fn window(
+    db: &Units,
+    hot: &[UnitId],
+    z: &Sizes,
+    relate: bool,
+    seed: u64,
+    body: impl FnOnce() -> Res<()>,
+) -> Res<Window> {
     let stop = AtomicBool::new(false);
     std::thread::scope(|s| -> Res<Window> {
         let writers: Vec<_> = (0..z.u6_writers)
@@ -690,7 +735,11 @@ fn window(db: &Units, hot: &[UnitId], z: &Sizes, seed: u64, body: impl FnOnce() 
                     while !stop.load(Ordering::Relaxed) {
                         let id = hot[rng.below(hot.len() as u64) as usize];
                         let payload = rng.bytes(1024);
-                        lats.push(timed(|| update_one(db, id, payload)).map_err(|e| e.to_string())?);
+                        let other = hot[rng.below(hot.len() as u64) as usize];
+                        let op = || {
+                            if relate { update_and_relate(db, id, other, payload) } else { update_one(db, id, payload) }
+                        };
+                        lats.push(timed(op).map_err(|e| e.to_string())?);
                     }
                     Ok(lats)
                 })
@@ -740,6 +789,10 @@ fn u6_run(a: &Args, z: &Sizes, out: &mut Vec<Verdict>, budget: RetentionBudget) 
     let units = open_units(&du.0)?;
     let cold = create_units(&units, &mut rng, z.u6_units, LEN, 1_000)?;
     let hot = create_units(&units, &mut rng, z.u6_hot, 1024, 1_000)?;
+    if a.relations {
+        add_relations(&units, &mut rng, &cold, 3, 1_000)?;
+        add_relations(&units, &mut rng, &hot, 3, 1_000)?;
+    }
     let policy = RetentionPolicy::all(RetentionRule::KeepLast(1));
     // Low load: one writer alone, no reader (the T1-like reference).
     let low = {
@@ -749,7 +802,14 @@ fn u6_run(a: &Args, z: &Sizes, out: &mut Vec<Verdict>, budget: RetentionBudget) 
         while Instant::now() < end {
             let id = hot[rng.below(hot.len() as u64) as usize];
             let payload = rng.bytes(1024);
-            lats.push(timed(|| update_one(&units, id, payload))?);
+            let other = hot[rng.below(hot.len() as u64) as usize];
+            lats.push(timed(|| {
+                if a.relations {
+                    update_and_relate(&units, id, other, payload)
+                } else {
+                    update_one(&units, id, payload)
+                }
+            })?);
         }
         (lat(&lats), lats.len() as f64 / t.elapsed().as_secs_f64())
     };
@@ -761,15 +821,15 @@ fn u6_run(a: &Args, z: &Sizes, out: &mut Vec<Verdict>, budget: RetentionBudget) 
         add_revisions(&units, &mut rng, &cold, z.u6_revs, LEN, 1_000)?;
         settle(units.engine())?;
         let seed = a.seed ^ 0x0600 ^ round as u64;
-        let b1 = window(&units, &hot, z, seed, || {
+        let b1 = window(&units, &hot, z, a.relations, seed, || {
             std::thread::sleep(z.u6_window);
             Ok(())
         })?;
-        let b2 = window(&units, &hot, z, seed ^ 1, || {
+        let b2 = window(&units, &hot, z, a.relations, seed ^ 1, || {
             std::thread::sleep(z.u6_window);
             Ok(())
         })?;
-        let d = window(&units, &hot, z, seed ^ 2, || {
+        let d = window(&units, &hot, z, a.relations, seed ^ 2, || {
             loop {
                 let r = units.run_retention(&policy, budget)?;
                 calls += 1;
@@ -841,8 +901,9 @@ fn main() -> Res<()> {
     let a = parse_args()?;
     let z = sizes(a.quick);
     println!(
-        "# unit_bench mode={} seed={:#x} dir={} engine=KernoDb options={:?} vfs=StdVfs rounds={}",
+        "# unit_bench mode={} relations={} seed={:#x} dir={} engine=KernoDb options={:?} vfs=StdVfs rounds={}",
         if a.quick { "quick" } else { "full" },
+        a.relations,
         a.seed,
         a.dir.display(),
         options(),
