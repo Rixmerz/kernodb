@@ -154,13 +154,19 @@ impl<E: TxnEngine> UnitDb<E> {
     pub fn rebuild_index(&self) -> Result<IndexStatus, UnitError> {
         let _queued = Queued::enter(&self.index_builds);
         let mut cs = ChangeSet::begin_index(self)?;
-        match write_generation(&mut cs) {
-            Ok(()) => {
-                let watermark = cs.commit()?.commit_seq;
-                Ok(IndexStatus { state: IndexState::Ready, watermark: Some(watermark) })
-            }
+        // A build fails either while writing the generation (the change set
+        // is then dropped, which aborts it) or at commit (which consumes it);
+        // both record `Failed` below.
+        let built = match write_generation(&mut cs) {
+            Ok(()) => cs.commit().map(|c| c.commit_seq),
             Err(e) => {
                 drop(cs); // aborts: releases the write slot, stores nothing
+                Err(e)
+            }
+        };
+        match built {
+            Ok(watermark) => Ok(IndexStatus { state: IndexState::Ready, watermark: Some(watermark) }),
+            Err(e) => {
                 if !matches!(&e, UnitError::Storage(kerno_core::Error::Io(_) | kerno_core::Error::Poisoned(_))) {
                     // The build error is what the caller needs. If the marker
                     // cannot be written either (a damaged IDX_META, a full
