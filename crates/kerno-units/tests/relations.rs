@@ -25,7 +25,7 @@ use kerno_testkit::emulated::Emulated;
 use kerno_testkit::reference::LogEngine;
 use kerno_testkit::rng::Rng;
 use kerno_testkit::vfs::SimVfs;
-use kerno_units::codec::{Key, RelationRecord};
+use kerno_units::codec::{ChangeSetRecord, Key, RelationRecord};
 use kerno_units::*;
 
 type EmuLog = Emulated<LogEngine>;
@@ -341,6 +341,20 @@ fn relation_only_changeset_commits<E: TxnEngine>() {
     let rel = &snap.relations_of(u[0], Direction::Out, None).unwrap()[0];
     assert_eq!(rel.created_seq, info.commit_seq);
     assert_clean(&db, "relation-only change set");
+
+    // It is recorded as `Relation`, so an `Application` change set that lost
+    // its members is still corruption (review finding F1).
+    let ck = Key::ChangeSet { seq: info.commit_seq }.encode().unwrap();
+    let raw = db.engine().snapshot().unwrap().get(&ck).unwrap().unwrap();
+    let mut rec = ChangeSetRecord::decode(&raw).unwrap();
+    assert_eq!(rec.purpose, Purpose::Relation);
+    rec.purpose = Purpose::Application;
+    put_all(db.engine(), vec![(ck.clone(), Some(rec.encode().unwrap()))]);
+    let report = db.verify_units().unwrap();
+    assert!(report.rules().contains("UNIT-33"), "{:?}", report.findings);
+    rec.purpose = Purpose::Relation;
+    put_all(db.engine(), vec![(ck, Some(rec.encode().unwrap()))]);
+    assert_clean(&db, "relation purpose restored");
 }
 
 fn relations_count_against_the_changeset_limit<E: TxnEngine>() {

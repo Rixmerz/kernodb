@@ -1338,7 +1338,13 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         let record = ChangeSetRecord {
             created_at: self.now,
             member_count: self.members.len() as u32,
-            purpose: self.meta.purpose,
+            // A member-less application change set is relation-only: say so,
+            // so a lost-members change set stays detectable (UNIT-30).
+            purpose: if self.meta.purpose == Purpose::Application && self.members.is_empty() {
+                Purpose::Relation
+            } else {
+                self.meta.purpose
+            },
             reason: self.meta.reason.clone().map(String::into_bytes).unwrap_or_default(),
             actor_ref: self.actor(),
             source_ref: self.source(),

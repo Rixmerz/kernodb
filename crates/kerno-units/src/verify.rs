@@ -877,10 +877,9 @@ impl State {
             let list = members.get(seq).unwrap_or(&empty);
             let shape_ok = match rec.purpose {
                 Purpose::Maintenance => rec.member_count == 0,
-                Purpose::Retention => rec.member_count >= 1,
-                // E4-02: a change set that only creates or deletes relations
-                // has no members and leaves no other trace of that.
-                Purpose::Application => true,
+                Purpose::Application | Purpose::Retention => rec.member_count >= 1,
+                // E4-02: a change set that only creates or deletes relations.
+                Purpose::Relation => rec.member_count == 0,
             };
             if !shape_ok {
                 self.cross(

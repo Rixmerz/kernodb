@@ -120,8 +120,10 @@ byte_enum!(
 pub type ChangeKind = RevisionKind;
 
 byte_enum!(
-    /// `CHANGESET.purpose`.
-    Purpose { Application = 0, Retention = 1, Maintenance = 2 }
+    /// `CHANGESET.purpose`. `Relation` marks an application change set that
+    /// only creates or deletes relations (no members, E4-02); the layer
+    /// records it, a caller never passes it.
+    Purpose { Application = 0, Retention = 1, Maintenance = 2, Relation = 3 }
 );
 
 /// The name the design uses (§6.3).

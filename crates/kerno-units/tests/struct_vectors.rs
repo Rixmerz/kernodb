@@ -266,7 +266,7 @@ fn vectors() -> Vec<Vector> {
     v.push(neg_rec("kind_0", 13, C, Rec::RevMeta(rev(0, 2, 1))));
     v.push(neg_rec("kind_7", 13, C, Rec::RevMeta(rev(7, 2, 1))));
     v.push(neg_rec("member_kind_7", 13, C, Rec::Member(Member { kind: 7, ..member() })));
-    v.push(neg_rec("purpose_3", 13, C, Rec::ChangeSet(ChangeSet { purpose: 3, ..changeset() })));
+    v.push(neg_rec("purpose_4", 13, C, Rec::ChangeSet(ChangeSet { purpose: 4, ..changeset() })));
     v.push(neg_rec("history_policy_3", 13, C, Rec::Layer(Layer { history_policy: 3, ..layer() })));
     v.push(neg_rec("alg_2", 13, C, Rec::Head(Head { content_hash: Hash { alg: 2, digest: [0; 32] }, ..head() })));
     v.push(neg_rec("payload_codec_1", 13, C, Rec::RevMeta(RevMeta { payload_codec: 1, ..rev(2, 2, 1) })));
