@@ -310,6 +310,9 @@ pub struct UnitDb<E: TxnEngine> {
     /// Primary-index builds waiting for the write slot or running (E4-03):
     /// what [`UnitDb::index_status`] reports as `Building`.
     pub(crate) index_builds: AtomicUsize,
+    /// Where `query` and `query_relations` report (E5-03); shared with every
+    /// snapshot.
+    observer: Arc<crate::observation::Observer>,
 }
 
 fn layer_mark_key() -> Vec<u8> {
@@ -465,6 +468,7 @@ impl<E: TxnEngine> UnitDb<E> {
                 policy_epoch: AtomicU64::new(0),
                 policy_cache: Arc::default(),
                 index_builds: AtomicUsize::new(0),
+                observer: Arc::default(),
             }),
             Err(e) => {
                 let _ = engine.close();
@@ -480,6 +484,12 @@ impl<E: TxnEngine> UnitDb<E> {
 
     pub fn config(&self) -> &UnitConfig {
         &self.cfg
+    }
+
+    /// The observation point of this database (E5-03): `Off` until a caller
+    /// sets a level.
+    pub fn observer(&self) -> &crate::observation::Observer {
+        &self.observer
     }
 
     pub(crate) fn check_poisoned(&self) -> Result<(), UnitError> {
@@ -567,7 +577,7 @@ impl<E: TxnEngine> UnitDb<E> {
         let snap = self.engine.snapshot()?;
         let stable = before.is_multiple_of(2) && self.policy_epoch.load(Ordering::SeqCst) == before;
         let policies = stable.then(|| (before, self.policy_cache.clone()));
-        Ok(UnitSnapshot { snap, fallback: self.cfg.default_policy, policies })
+        Ok(UnitSnapshot { snap, fallback: self.cfg.default_policy, policies, observer: self.observer.clone() })
     }
 
     /// The history policy in force for `unit_type` (see the [module
@@ -636,6 +646,8 @@ pub struct UnitSnapshot<E: Engine> {
     /// The policy cache and the epoch this snapshot may use it under;
     /// `None` when a policy commit was in flight while it was taken.
     pub(crate) policies: Option<(u64, Arc<PolicyCache>)>,
+    /// The database's observer: `query` reports to it.
+    pub(crate) observer: Arc<crate::observation::Observer>,
 }
 
 impl<E: Engine> UnitSnapshot<E> {

@@ -15,7 +15,8 @@
 //! primary index with basic filters and its freshness state ([`index`],
 //! ADR-0007). E5-01 adds the normalized query fingerprint ([`fingerprint`],
 //! ADR-0015) and the explainable plan ([`plan`]); E5-02 the deterministic
-//! planner that `query` follows ([`planner`]). This crate stays separate
+//! planner that `query` follows ([`planner`]); E5-03 the optional
+//! `ExecutionObservation` ([`observation`]). This crate stays separate
 //! from `kerno-storage`.
 
 pub mod clock;
@@ -26,6 +27,7 @@ pub mod fingerprint;
 pub mod history;
 pub mod index;
 pub mod model;
+pub mod observation;
 pub mod payload;
 pub mod plan;
 pub mod planner;
@@ -50,11 +52,15 @@ pub use history::{
 };
 pub use index::{IndexPath, IndexState, IndexStatus, QueryOutcome, QuerySource, UnitFilter};
 pub use model::{ModelChange, ModelChangeSet, ModelError, ModelRevision, ModelUnitAt, UnitModel};
+pub use observation::{
+    DEFAULT_MAX_AGE, DEFAULT_MAX_RECORDS, ErrorKind, ExecutionObservation, ObservationConfig, ObservationLevel,
+    ObservationStats, Observer, Outcome, PlanKind,
+};
 pub use payload::{
     ContentHash, HashAlg, MAX_PAYLOAD_LEN, PayloadDecl, PayloadError, PayloadRule, VerifiedPayload, verify_payload,
 };
 pub use plan::{Candidate, Cost, Plan, PlanError, PlanPath, Reason, Unusable, Usability};
-pub use planner::{Fallback, FallbackCause, RelationsOutcome, Violation};
+pub use planner::{Fallback, FallbackCause, PLANNER_VERSION, RelationsOutcome, Violation};
 pub use retention::{CompactReport, RetentionBudget, RetentionPacing, RetentionPolicy, RetentionReport, RetentionRule};
 pub use types::{
     BuildOutcome, ChangeKind, ChangePurpose, ChangeSetId, CommitSeq, Direction, HistoryPolicy, Lifecycle,

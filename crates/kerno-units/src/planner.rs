@@ -11,7 +11,7 @@
 //! | 3. Estimate cost with the statistics at hand | [`costs`]: the index state and the entry count of `IDX_META`, and a bounded probe of the range the path would read |
 //! | 4. Choose | [`Decision::new`](crate::plan): the cheapest usable, the first in table order on a tie |
 //! | 5. Execute | the chosen path, through the same code the explicit calls use |
-//! | 6. Record metrics | [`QueryOutcome`] and [`RelationsOutcome`] carry the path and the fallback; storing observations is E5-03 |
+//! | 6. Record metrics | [`QueryOutcome`] and [`RelationsOutcome`] carry the path and the fallback; `query` hands them to the [`Observer`](crate::observation::Observer) (E5-03) |
 //! | 7. Validate and fall back | the answer is checked against the query and, if the index path failed or the check fails, the **reference path answers** and the outcome says so ([`Fallback`]) |
 //!
 //! # Determinism
@@ -67,8 +67,13 @@ use crate::db::{Relation, Unit, UnitSnapshot, corruption};
 use crate::error::UnitError;
 use crate::fingerprint::{FingerprintKey, NormalizedQuery, QueryKind, RelationQuery};
 use crate::index::{IndexPath, IndexState, IndexStatus, QueryOutcome, QuerySource, UnitFilter};
+use crate::observation::{Ended, ErrorKind, Observed};
 use crate::plan::{Candidate, Cost, Decision, Plan, PlanError, PlanPath, Unusable, Usability};
 use crate::types::{Direction, Lifecycle};
+
+/// Version of the planner, recorded in every observation (E5-03). Bump it
+/// when the candidates, the cost model or the choice change.
+pub const PLANNER_VERSION: u32 = 1;
 
 /// Entries a probe reads at most.
 pub const PROBE: usize = 64;
@@ -297,8 +302,18 @@ impl<E: Engine> UnitSnapshot<E> {
     /// snapshot (I-32). The outcome says which path answered, and whether it
     /// was the reference after the chosen one failed its check.
     pub fn query(&self, filter: &UnitFilter) -> Result<QueryOutcome, UnitError> {
-        let (status, decision) = self.decide_units(filter)?;
-        self.execute_units(filter, status, decision.chosen().path, |via, f| self.scan_path(via, f))
+        let started = self.observer.begin();
+        let outcome = self.decide_units(filter).and_then(|(status, decision)| {
+            self.execute_units(filter, status, decision.chosen().path, |via, f| self.scan_path(via, f))
+        });
+        if let Some(started) = started {
+            let ended = outcome
+                .as_ref()
+                .map(|o| Ended { path: o.path, rows: o.units.len(), fallback: o.fallback })
+                .map_err(ErrorKind::of);
+            self.observer.finish(started, Observed::Units(filter), self.seq(), ended);
+        }
+        outcome
     }
 
     /// Steps 5 to 7 for units. `scan` runs an index path; it is a parameter so
@@ -350,10 +365,20 @@ impl<E: Engine> UnitSnapshot<E> {
     /// [`UnitSnapshot::reference_relations_of`]'s on the same snapshot
     /// (I-32).
     pub fn query_relations(&self, query: &RelationQuery) -> Result<RelationsOutcome, UnitError> {
-        let decision = self.decide_relations(query)?;
-        self.execute_relations(query, decision.chosen().path, |q| {
-            self.relations_of(q.unit, q.direction, q.relation_type.as_deref())
-        })
+        let started = self.observer.begin();
+        let outcome = self.decide_relations(query).and_then(|decision| {
+            self.execute_relations(query, decision.chosen().path, |q| {
+                self.relations_of(q.unit, q.direction, q.relation_type.as_deref())
+            })
+        });
+        if let Some(started) = started {
+            let ended = outcome
+                .as_ref()
+                .map(|o| Ended { path: o.path, rows: o.relations.len(), fallback: o.fallback })
+                .map_err(ErrorKind::of);
+            self.observer.finish(started, Observed::Relations(query), self.seq(), ended);
+        }
+        outcome
     }
 
     /// Steps 5 to 7 for relations; `adjacency` runs the index path.

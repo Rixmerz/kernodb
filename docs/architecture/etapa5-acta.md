@@ -66,7 +66,7 @@ Del [roadmap, Etapa 5](../roadmap/README.md#etapa-5--planificador-y-observabilid
 | El plan elegido devuelve lo mismo que la ruta de referencia | I-32 (parte del planificador) | Prueba diferencial planificador frente a referencia en CI, unidades y relaciones, con y sin índice listo (E5-02) | pendiente |
 | Fallback a la ruta de referencia registrado cuando el índice no es utilizable | I-23, I-32 | Pruebas con cada estado de frescura (E5-02) | pendiente |
 | Ninguna observación, métrica o explicación contiene literales ni contenido fuera de `diagnostic` | I-37, I-29, IU-10 | Prueba de centinelas en todos los niveles (E5-04) | pendiente |
-| Observar no altera datos confirmados ni la secuencia de commit | I-34 (solo observaciones; la parte de optimizaciones es de la Etapa 6) | Prueba: mismas lecturas y misma secuencia con observación `off` y `diagnostic` (E5-03) | pendiente |
+| Observar no altera datos confirmados ni la secuencia de commit | I-34 (solo observaciones; la parte de optimizaciones es de la Etapa 6) | Prueba: mismas lecturas y misma secuencia con observación `off` y `diagnostic` (E5-03) | verificado en E5-03 ([informe](etapa5-observacion.md)) |
 
 ## 5. Riesgos heredados
 

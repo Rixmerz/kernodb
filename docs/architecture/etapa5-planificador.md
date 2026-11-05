@@ -13,7 +13,7 @@ Contrato de E5-02 ([acta de la Etapa 5](etapa5-acta.md) §3). El código está e
 | 3. Estimar coste | Con lo que la capa ya tiene: estado y número de entradas de `IDX_META`, y un sondeo acotado (`PROBE` = 64 lecturas) del rango que el camino leería. Ninguna estadística nueva |
 | 4. Elegir | El utilizable más barato; en empate, el primero de la tabla (`Decision::new`) |
 | 5. Ejecutar | El camino elegido, por el mismo código de las llamadas explícitas |
-| 6. Registrar | `QueryOutcome` y `RelationsOutcome` llevan el camino y el fallback; guardar observaciones es E5-03 |
+| 6. Registrar | `QueryOutcome` y `RelationsOutcome` llevan el camino y el fallback; `query` los entrega al observador de [E5-03](etapa5-observacion.md) |
 | 7. Validar y fallback | La respuesta se comprueba contra la consulta (solo lo que el filtro selecciona, solo `Active`, orden estrictamente ascendente de la referencia). Si el camino de índice falla con daño (`Corruption`) o la respuesta no pasa, **responde la ruta de referencia** y el resultado lo dice (`Fallback { abandoned, cause }`). Un error que no es daño no se oculta con un segundo intento |
 
 `explain_filter` y `explain_relations` devuelven el `Plan` que `query` / `query_relations` siguen en esa instantánea: candidatos con coste y utilizabilidad, elegido, motivo y estado del índice. El plan lleva la huella con clave, nunca la consulta.

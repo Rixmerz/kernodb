@@ -17,6 +17,12 @@
 //! alternate the two and prints the overhead against the 10 % threshold of
 //! the Stage 5 acta (§8, decision 5).
 //!
+//! E5-03 measures the cost of recording an observation: `secondary` with the
+//! observer at `off` against `aggregate`, `fingerprint` and `diagnostic`, in
+//! rounds that alternate the levels. The cost is the added p50; the threshold
+//! of the Stage 5 acta (§8, decision 5) is 5 % of the p99 of the unobserved
+//! query.
+//!
 //! The paths must return the same units; the run stops if they do not. The
 //! threshold of the workload (§3) is evaluated and printed at the end.
 //!
@@ -36,8 +42,8 @@ use kerno_core::vfs::StdVfs;
 use kerno_storage::KernoDb;
 use kerno_testkit::rng::Rng;
 use kerno_units::{
-    ChangeMeta, CounterIds, FixedClock, IndexPath, IndexState, NewUnit, QuerySource, Timestamp, Unit, UnitConfig,
-    UnitDb, UnitFilter, UnitId, UnitSnapshot,
+    ChangeMeta, CounterIds, FixedClock, IndexPath, IndexState, NewUnit, ObservationLevel, QuerySource, Timestamp, Unit,
+    UnitConfig, UnitDb, UnitFilter, UnitId, UnitSnapshot,
 };
 
 type Res<T> = Result<T, Box<dyn std::error::Error>>;
@@ -207,6 +213,26 @@ fn overhead(db: &Units, qs: &[Query]) -> Res<(f64, f64)> {
     Ok((pct(0), pct(2)))
 }
 
+const LEVELS: [ObservationLevel; 4] =
+    [ObservationLevel::Off, ObservationLevel::Aggregate, ObservationLevel::Fingerprint, ObservationLevel::Diagnostic];
+
+/// Added p50 of each observed level over `off`, and the p99 of `off`, both in
+/// ms and on the best round of each level; the level goes back to `off`.
+fn observation_cost(db: &Units, qs: &[Query]) -> Res<(f64, Vec<(ObservationLevel, f64)>)> {
+    let mut rounds: Vec<Vec<(f64, f64, f64)>> = vec![Vec::new(); LEVELS.len()];
+    for _ in 0..ROUNDS {
+        for (i, level) in LEVELS.iter().enumerate() {
+            db.observer().set_level(*level)?;
+            rounds[i].push(measure(db, qs, secondary as QueryPath)?);
+            db.observer().clear();
+        }
+    }
+    db.observer().set_level(ObservationLevel::Off)?;
+    let best = |i: usize, k: usize| rounds[i].iter().map(|m| [m.0, m.1, m.2][k]).fold(f64::INFINITY, f64::min);
+    let added = (1..LEVELS.len()).map(|i| (LEVELS[i], best(i, 0) - best(0, 0))).collect();
+    Ok((best(0, 2), added))
+}
+
 fn main() -> Res<()> {
     let args: Vec<String> = std::env::args().collect();
     let quick = args.iter().any(|a| a == "--quick");
@@ -257,6 +283,16 @@ fn main() -> Res<()> {
                     "# {n} {name}: planner overhead over the current path: p50 {p50:+.1} %, p99 {p99:+.1} % (threshold 10 %) -> {}",
                     if p50 <= 10.0 && p99 <= 10.0 { "within" } else { "exceeded" }
                 );
+            }
+            if !combined {
+                let (p99_off, added) = observation_cost(&db, &qs)?;
+                for (level, ms) in added {
+                    let pct = ms / p99_off * 100.0;
+                    println!(
+                        "# {n} {name}: observation at {level:?} adds p50 {ms:+.4} ms = {pct:+.2} % of the unobserved p99 {p99_off:.3} ms (threshold 5 %) -> {}",
+                        if pct <= 5.0 { "within" } else { "exceeded" }
+                    );
+                }
             }
         }
         db.close()?;
