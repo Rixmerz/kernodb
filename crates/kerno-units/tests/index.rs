@@ -17,6 +17,9 @@
 //!   (I-24).
 //! * `verifier_*` — damage to the index is UNIT-37, and a merely stale index
 //!   is not damage; the index path refuses what it can see.
+//! * E4-04: `check` holds `IDX_PRIMARY` and `IDX_TYPE` each to the
+//!   reference path; damage to `IDX_TYPE` alone is UNIT-38; the rebuild and
+//!   crash tests cover both, since they are one generation.
 //! * `index_every_point` — a crash before every mutating I/O operation of a
 //!   scenario with builds: the stored status is the one of the recovered
 //!   commit, whole generation or none (I-21, I-23).
@@ -121,9 +124,17 @@ fn undo_of<E: Engine>(db: &E, keys: impl IntoIterator<Item = Vec<u8>>) -> Patch 
         .collect()
 }
 
-/// Every stored `IDX_PRIMARY` pair, raw.
+/// Every stored `IDX_PRIMARY` and `IDX_TYPE` pair, raw, in key order.
 fn raw_entries<E: TxnEngine>(db: &UnitDb<E>) -> Vec<(Vec<u8>, Vec<u8>)> {
-    dump(&db.engine().snapshot().expect("snapshot")).into_iter().filter(|(k, _)| k[0] == 0x51).collect()
+    dump(&db.engine().snapshot().expect("snapshot")).into_iter().filter(|(k, _)| k[0] == 0x51 || k[0] == 0x52).collect()
+}
+
+fn type_key(unit_type: &str, schema_version: u32, unit: UnitId) -> Vec<u8> {
+    Key::IndexType { unit_type: unit_type.into(), schema_version, unit }.encode().expect("key")
+}
+
+fn type_value() -> Vec<u8> {
+    vec![1, 0]
 }
 
 fn entry_key(unit: UnitId) -> Vec<u8> {
@@ -257,6 +268,18 @@ fn check<E: Engine>(snap: &UnitSnapshot<E>, model: &Model, ctx: &str) -> IndexSt
                 reference,
                 "{ctx}: index path vs reference, {f:?}"
             );
+            // Each index on its own, not only the one `Auto` picks (E4-04).
+            assert_eq!(
+                snap.indexed_scan_via(IndexPath::Primary, &f).expect("primary path"),
+                reference,
+                "{ctx}: IDX_PRIMARY vs reference, {f:?}"
+            );
+            let by_type = snap.indexed_scan_via(IndexPath::ByType, &f);
+            if f.unit_type.is_some() {
+                assert_eq!(by_type.expect("type path"), reference, "{ctx}: IDX_TYPE vs reference, {f:?}");
+            } else {
+                assert!(matches!(by_type, Err(UnitError::InvalidArgument(_))), "{ctx}: {by_type:?}");
+            }
             assert_eq!(out.source, QuerySource::Index { watermark }, "{ctx}: {f:?}");
         } else {
             let refused = snap.indexed_scan(&f);
@@ -575,12 +598,13 @@ fn rebuilt_equals_fresh<E: TxnEngine>(seed: u64) {
     assert_eq!(rebuilt_entries, fresh_entries, "seed {seed}: a rebuilt index is a fresh one");
     assert_ne!(before, rebuilt_entries, "seed {seed}: the churn changed the active set, so this proves something");
     // ... and both are exactly the model's active units.
-    let want: Vec<(Vec<u8>, Vec<u8>)> = model_a
-        .0
-        .iter()
-        .filter(|(_, (_, _, l))| *l == Lifecycle::Active)
-        .map(|(id, (t, v, _))| (entry_key(*id), entry_value(t, *v)))
-        .collect();
+    let active = || model_a.0.iter().filter(|(_, (_, _, l))| *l == Lifecycle::Active);
+    let mut want: Vec<(Vec<u8>, Vec<u8>)> =
+        active().map(|(id, (t, v, _))| (entry_key(*id), entry_value(t, *v))).collect();
+    let mut by_type: Vec<(Vec<u8>, Vec<u8>)> =
+        active().map(|(id, (t, v, _))| (type_key(t, *v, *id), type_value())).collect();
+    by_type.sort();
+    want.extend(by_type);
     assert_eq!(fresh_entries, want, "seed {seed}: the entries are the model's active units");
     for (db, name) in [(&a, "rebuilt"), (&b, "fresh")] {
         let snap = db.snapshot().unwrap();
@@ -628,6 +652,37 @@ fn verifier_reports_index_damage<E: TxnEngine>() {
         ("watermark after the snapshot", vec![(meta_key(), Some(meta_value(999, 3)))]),
         ("wrong entry count", vec![(meta_key(), Some(meta_value(3, 4)))]),
     ];
+    // The secondary index (E4-04): every damage that leaves IDX_PRIMARY right
+    // is UNIT-38 and nothing else.
+    let type_damages: Vec<(&str, Patch)> = vec![
+        ("type entry missing", vec![(type_key("a", 1, u[0]), None)]),
+        ("type entry of an archived unit", vec![(type_key("c", 3, u[3]), Some(type_value()))]),
+        (
+            "type entry under another type",
+            vec![(type_key("a", 1, u[0]), None), (type_key("b", 1, u[0]), Some(type_value()))],
+        ),
+        (
+            "type entry under another schema",
+            vec![(type_key("a", 1, u[0]), None), (type_key("a", 7, u[0]), Some(type_value()))],
+        ),
+        ("type entry of a unit that does not exist", vec![(type_key("a", 1, ghost), Some(type_value()))]),
+    ];
+    for (name, patch) in type_damages {
+        let undo = undo_of(db.engine(), patch.iter().map(|(k, _)| k.clone()));
+        put_all(db.engine(), patch);
+        let report = db.verify_units().unwrap();
+        assert_eq!(report.rules().into_iter().collect::<Vec<_>>(), ["UNIT-38"], "{name}: {:?}", report.findings);
+        put_all(db.engine(), undo);
+        assert_clean(&db, name);
+    }
+    // A type entry that does not decode is a structure finding only.
+    let undo = undo_of(db.engine(), [type_key("a", 1, u[0])]);
+    put_all(db.engine(), vec![(type_key("a", 1, u[0]), Some(vec![1, 0, 0]))]);
+    let report = db.verify_units().unwrap();
+    assert_eq!(report.rules().into_iter().collect::<Vec<_>>(), ["UNIT-10"], "{:?}", report.findings);
+    put_all(db.engine(), undo);
+    assert_clean(&db, "type entry restored");
+
     for (name, patch) in damages {
         let undo = undo_of(db.engine(), patch.iter().map(|(k, _)| k.clone()));
         put_all(db.engine(), patch);
@@ -692,12 +747,13 @@ fn index_path_refuses_what_it_can_see<E: TxnEngine>() {
     // An entry that disagrees with the head is refused when the filter reaches it.
     forge(vec![(entry_key(u[0]), Some(entry_value("b", 1)))], 2);
     let snap = db.snapshot().unwrap();
-    let e = snap.indexed_scan(&by_type("b")).unwrap_err();
+    let e = snap.indexed_scan_via(IndexPath::Primary, &by_type("b")).unwrap_err();
     assert!(matches!(&e, UnitError::Storage(kerno_core::Error::Corruption(_))), "{e}");
     assert!(db.verify_units().unwrap().rules().contains("UNIT-37"));
     // ... but a filter that skips it silently loses the unit: this is what
     // the differential test would flag, and the verifier reports.
-    assert_ne!(snap.indexed_scan(&by_type("a")).unwrap(), snap.reference_filter(&by_type("a")).unwrap());
+    let primary = |f: &UnitFilter| snap.indexed_scan_via(IndexPath::Primary, f).unwrap();
+    assert_ne!(primary(&by_type("a")), snap.reference_filter(&by_type("a")).unwrap());
     assert_eq!(db.rebuild_index().unwrap().state, IndexState::Ready);
     assert_eq!(
         check(&db.snapshot().unwrap(), &model_of(&u, &[("a", 1), ("b", 1)]), "rebuilt").state,
@@ -708,7 +764,10 @@ fn index_path_refuses_what_it_can_see<E: TxnEngine>() {
     forge(vec![(entry_key(u[2]), Some(entry_value("c", 1)))], 3);
     let snap = db.snapshot().unwrap();
     assert!(snap.indexed_scan(&all).is_err());
-    assert!(snap.indexed_scan(&by_type("a")).is_ok(), "entries the filter skips are not opened");
+    assert!(
+        snap.indexed_scan_via(IndexPath::Primary, &by_type("a")).is_ok(),
+        "entries the filter skips are not opened"
+    );
     // The entry of a unit that does not exist.
     forge(vec![(entry_key(u[2]), None), (entry_key(UnitId([0xEE; 16])), Some(entry_value("a", 1)))], 3);
     assert!(db.snapshot().unwrap().indexed_scan(&all).is_err());
@@ -719,6 +778,20 @@ fn index_path_refuses_what_it_can_see<E: TxnEngine>() {
         db.snapshot().unwrap().reference_filter(&all).unwrap()
     );
     assert!(db.verify_units().unwrap().rules().contains("UNIT-37"));
+
+    // The same for IDX_TYPE (E4-04): an entry whose key disagrees with the
+    // head is refused; a missing one silently loses the unit, which the
+    // verifier reports.
+    assert_eq!(db.rebuild_index().unwrap().state, IndexState::Ready);
+    forge(vec![(type_key("a", 1, u[0]), None), (type_key("b", 1, u[0]), Some(type_value()))], 2);
+    let snap = db.snapshot().unwrap();
+    let e = snap.indexed_scan(&by_type("b")).unwrap_err();
+    assert!(matches!(&e, UnitError::Storage(kerno_core::Error::Corruption(_))), "{e}");
+    assert_ne!(snap.indexed_scan(&by_type("a")).unwrap(), snap.reference_filter(&by_type("a")).unwrap());
+    assert!(db.verify_units().unwrap().rules().contains("UNIT-38"));
+    forge(vec![(type_key("b", 1, u[0]), None), (type_key("c", 1, u[2]), Some(type_value()))], 2);
+    let e = db.snapshot().unwrap().indexed_scan(&by_type("c")).unwrap_err();
+    assert!(matches!(&e, UnitError::Storage(kerno_core::Error::Corruption(_))), "{e}");
 
     // A rebuild repairs all of it.
     assert_eq!(db.rebuild_index().unwrap().state, IndexState::Ready);

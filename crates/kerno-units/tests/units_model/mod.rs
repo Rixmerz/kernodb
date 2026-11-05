@@ -97,6 +97,14 @@ pub struct IdxPrimary {
     pub schema_version: u32,
 }
 
+/// `IDX_TYPE` (E4-04): everything is in the key; the value is the envelope.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IdxType {
+    pub unit_type: Vec<u8>,
+    pub schema_version: u32,
+    pub unit_id: UnitId,
+}
+
 /// A decoded key and value.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Rec {
@@ -108,6 +116,7 @@ pub enum Rec {
     Member(Member),
     IdxMeta(IdxMeta),
     IdxPrimary(IdxPrimary),
+    IdxType(IdxType),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

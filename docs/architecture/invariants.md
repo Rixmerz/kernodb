@@ -94,6 +94,11 @@ Cada fila de I-23, I-24 e I-32 se comprobó con una mutación del código citado
 | UNIT-37 no exige entrada a una unidad activa que no cambió | I-23 | muerta (`verifier_reports_index_damage`, `index_path_refuses_what_it_can_see`) |
 | UNIT-37 no excusa a las unidades que cambiaron tras el watermark | I-23 | muerta (`states_and_watermark`, `verifier_reports_index_damage`, `differential_seeded`, `index_every_point_*`) |
 | El códec acepta `IDX_META` con `Succeeded` y watermark 0 | I-23 | muerta (`production_codec_matches_committed_vectors`, `production_and_spec_decoder_agree_on_flips`) |
+| E4-04: la construcción no borra la generación anterior de `IDX_TYPE` | I-24, I-32 | muerta (6 pruebas en `emulated_log`, entre ellas `rebuilt_equals_fresh`, `differential_seeded`, `index_every_point_*`) |
+| E4-04: la construcción no escribe `IDX_TYPE` | I-32 | muerta (8 pruebas en `emulated_log`, entre ellas `differential_*`, `rebuilt_equals_fresh`) |
+| E4-04: la ruta por tipo sin versión no reordena por id | I-32 | muerta (5 pruebas en `emulated_log`, entre ellas `differential_*`, `rebuilt_equals_fresh`) |
+| E4-04: la ruta por tipo no compara el tipo de la cabeza | I-32 | muerta (`index_path_refuses_what_it_can_see`) |
+| E4-04: el verificador no aplica UNIT-38 | I-23 | muerta (`verifier_reports_index_damage`, `index_path_refuses_what_it_can_see`) |
 
 Limitación conocida, por diseño: una construcción lee solo las cabezas, y una consulta por índice verifica las unidades que devuelve, no las que su filtro descarta. Un índice `Ready` forjado con una entrada de menos o de más que el filtro no toca se detecta con `verify_units` (UNIT-37) o con la prueba diferencial, no al consultar (`index_path_refuses_what_it_can_see`). Una reconstrucción lo repara.
 
