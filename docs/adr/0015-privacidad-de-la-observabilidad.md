@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | Propuesto |
+| Estado | Propuesto. Se mantiene así: se aceptará con la evidencia de E5-04 (decisión del propietario, 2026-11-05; [acta de la Etapa 5](../architecture/etapa5-acta.md) §8) |
 | Fecha | 2026-10-28 |
 | Decisores | Propietario del proyecto (pendiente) |
 | Relacionado con | [especificación v0.2.0](../spec/especificacion-arquitectonica-v0.2.0.md) §6.5, §7, §18; SAD §11.4; [ejecución adaptativa](../architecture/adaptive-execution.md); [threat model](../security/threat-model.md); ADR-0009, ADR-0016; invariantes I-29, I-37 |
