@@ -89,6 +89,7 @@ Después de la Fase 1 el trabajo se organiza por las etapas de la [especificaci�
 
 - **Entregables:** planificador determinista (spec §9: validar, generar candidatos, estimar coste, elegir, ejecutar, registrar, validar invariantes); explicación del plan; `ExecutionObservation` con niveles de detalle ([ejecución adaptativa](../architecture/adaptive-execution.md), ADR-0015).
 - **Aceptación:** el plan puede inspeccionarse; prueba diferencial planificador frente a ruta de referencia en CI (I-32); prueba de centinelas sin literales ni contenido en observaciones (I-37).
+- **Acta:** [etapa5-acta.md](../architecture/etapa5-acta.md) (propuesta, pendiente de aprobación del propietario).
 
 ### Etapa 6 — Primera plasticidad operacional
 

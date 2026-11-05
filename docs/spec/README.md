@@ -19,7 +19,7 @@ La especificación numera el trabajo en etapas 0–9; el SAD, en fases 0–6. La
 | 2 Persistencia y transacciones | Fase 1 | En curso |
 | 3 Unidades, revisiones y procedencia | Fases 2 y 3 | Cerrada (2026-11-04); riesgos abiertos K-E3-8 y K-E3-9 ([cierre](../architecture/etapa3-cierre.md)) |
 | 4 Relaciones e índices | Fase 2 (índice primario, filtros) y Fase 5 (índices secundarios) | Cerrada, aprobada el 2026-11-05 ([cierre](../architecture/etapa4-cierre.md)) |
-| 5 Planificador y observabilidad | sin equivalente en el SAD | — |
+| 5 Planificador y observabilidad | sin equivalente en el SAD | Acta propuesta, pendiente de aprobación ([acta](../architecture/etapa5-acta.md)) |
 | 6 Primera plasticidad operacional | sin equivalente en el SAD | — |
 | 7 Memoria asociativa | Fase 5 (vectores exactos, ranking híbrido) | — |
 | 8 Consolidación y embeddings | Fase 5 (adaptador de embeddings, invalidez de derivados) | — |
