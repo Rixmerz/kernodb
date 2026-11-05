@@ -4,7 +4,9 @@
 //! only thing it shares with the vector encoder is the plain data of
 //! `units_model`.
 
-use crate::units_model::{ChangeSet, Class, Hash, Head, IdxMeta, IdxPrimary, Layer, Member, Rec, RevMeta, RevPayload};
+use crate::units_model::{
+    ChangeSet, Class, Hash, Head, IdxMeta, IdxPrimary, IdxType, Layer, Member, Rec, RevMeta, RevPayload,
+};
 
 const MAX_PAYLOAD_LEN: u32 = 1 << 26;
 const MAX_MEMBERS: u32 = 1 << 20;
@@ -130,6 +132,11 @@ pub fn decode(key: &[u8], value: &[u8]) -> Res<Rec> {
         0x31 => Some(13),
         0x50 => Some(1),
         0x51 => Some(17),
+        // tag ‖ len ‖ unit_type[len] ‖ schema_version ‖ unit_id, len 1..=64
+        0x52 => match key.get(1) {
+            Some(&n) if (1..=64).contains(&n) && key.len() == 22 + n as usize => Some(key.len()),
+            _ => return Err(rule(3)),
+        },
         0x00..=0x3F => return Err(rule(1)),
         _ => return Err(rule(2)),
     };
@@ -146,6 +153,21 @@ pub fn decode(key: &[u8], value: &[u8]) -> Res<Rec> {
         0x20 | 0x21 if unit_and_u64(tail).1 == 0 => return Err(rule(5)),
         0x30 | 0x31 if u64::from_be_bytes(tail[..8].try_into().expect("8 bytes")) == 0 => return Err(rule(5)),
         _ => {}
+    }
+    if tag == 0x52 {
+        let n = key.len();
+        let unit_type = key[2..n - 20].to_vec();
+        if std::str::from_utf8(&unit_type).is_err() {
+            return Err(rule(12));
+        }
+        let mut r = Reader { buf: value, pos: 0 };
+        header(&mut r)?;
+        r.finish()?;
+        return Ok(Rec::IdxType(IdxType {
+            unit_type,
+            schema_version: u32::from_be_bytes(key[n - 20..n - 16].try_into().expect("4 bytes")),
+            unit_id: key[n - 16..].try_into().expect("16 bytes"),
+        }));
     }
     if tag == 0x21 {
         let (unit_id, rev_no) = unit_and_u64(tail);

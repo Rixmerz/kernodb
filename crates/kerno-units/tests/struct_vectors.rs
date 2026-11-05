@@ -21,7 +21,9 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use spec_decoder::Reject;
-use units_model::{ChangeSet, Class, Hash, Head, IdxMeta, IdxPrimary, Layer, Member, Rec, RevMeta, RevPayload};
+use units_model::{
+    ChangeSet, Class, Hash, Head, IdxMeta, IdxPrimary, IdxType, Layer, Member, Rec, RevMeta, RevPayload,
+};
 use vector_encoder::encode;
 
 const UNIT: [u8; 16] = [0xA0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
@@ -128,6 +130,10 @@ fn idx_meta() -> IdxMeta {
     IdxMeta { outcome: 0, watermark: 90, entries: 12 }
 }
 
+fn idx_type() -> IdxType {
+    IdxType { unit_type: b"note".to_vec(), schema_version: 3, unit_id: UNIT }
+}
+
 fn idx_primary() -> IdxPrimary {
     IdxPrimary { unit_id: UNIT, unit_type: b"note".to_vec(), schema_version: 3 }
 }
@@ -221,6 +227,11 @@ fn vectors() -> Vec<Vector> {
         pos("idx_meta_failed_never_built", Rec::IdxMeta(IdxMeta { outcome: 1, watermark: 0, entries: 0 })),
         pos("idx_meta_limits", Rec::IdxMeta(IdxMeta { outcome: 0, watermark: u64::MAX, entries: u64::MAX })),
         pos("idx_primary_one", Rec::IdxPrimary(idx_primary())),
+        pos("idx_type_one", Rec::IdxType(idx_type())),
+        pos(
+            "idx_type_limits",
+            Rec::IdxType(IdxType { unit_type: vec![b'x'; 64], schema_version: u32::MAX, ..idx_type() }),
+        ),
         pos(
             "idx_primary_limits",
             Rec::IdxPrimary(IdxPrimary { unit_type: vec![b'x'; 64], schema_version: u32::MAX, ..idx_primary() }),
@@ -238,7 +249,25 @@ fn vectors() -> Vec<Vector> {
     v.push(neg_bytes("tag_0x43", 2, I, [vec![0x43], ck[1..].to_vec()].concat(), cv.clone()));
     v.push(neg_bytes("tag_0xff", 2, I, vec![0xFF], Vec::new()));
     // E4-03: 0x50 and 0x51 are known; 0x52 and 0x4F are not.
-    v.push(neg_bytes("tag_0x52", 2, I, vec![0x52], encode(&Rec::IdxMeta(idx_meta())).1));
+    v.push(neg_bytes("tag_0x53", 2, I, vec![0x53], encode(&Rec::IdxMeta(idx_meta())).1));
+    let (tk, tv) = encode(&Rec::IdxType(idx_type()));
+    v.push(neg_bytes("idx_type_key_short", 3, C, tk[..tk.len() - 1].to_vec(), tv.clone()));
+    v.push(neg_bytes("idx_type_key_len_0", 3, C, [vec![0x52, 0], tk[6..].to_vec()].concat(), tv.clone()));
+    v.push(neg_bytes(
+        "idx_type_type_65",
+        3,
+        C,
+        encode(&Rec::IdxType(IdxType { unit_type: vec![b't'; 65], ..idx_type() })).0,
+        tv.clone(),
+    ));
+    v.push(neg_bytes("idx_type_cut", 9, C, tk.clone(), tv[..1].to_vec()));
+    v.push(neg_bytes("idx_type_trailing", 10, C, tk.clone(), [tv.clone(), vec![0]].concat()));
+    v.push(neg_rec(
+        "idx_type_type_not_utf8",
+        12,
+        C,
+        Rec::IdxType(IdxType { unit_type: vec![0xFF, 0xFE], ..idx_type() }),
+    ));
     let (mk, mv) = encode(&Rec::IdxMeta(idx_meta()));
     let (pk, pv) = encode(&Rec::IdxPrimary(idx_primary()));
     v.push(neg_bytes("idx_meta_key_long", 3, C, [mk.clone(), vec![0]].concat(), mv.clone()));
@@ -524,6 +553,9 @@ fn production_decode(key: &[u8], value: &[u8]) -> Result<Rec, Reject> {
             unit_type: entry.unit_type.into_bytes(),
             schema_version: entry.schema_version,
         }),
+        Record::IndexType { unit_type, schema_version, unit } => {
+            Rec::IdxType(IdxType { unit_type: unit_type.into_bytes(), schema_version, unit_id: unit.0 })
+        }
         // Relation records (tags 0x40..=0x42) are covered by tests/relations.rs.
         Record::Relation { .. } | Record::RelationOut { .. } | Record::RelationIn { .. } => {
             unreachable!("no structure vector has a relation tag")

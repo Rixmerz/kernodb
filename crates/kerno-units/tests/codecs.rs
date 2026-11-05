@@ -101,6 +101,8 @@ fn valid_key() -> impl Strategy<Value = Key> {
         (1..=u64::MAX, any::<u32>()).prop_map(|(s, ordinal)| Key::CsMember { seq: CommitSeq(s), ordinal }),
         Just(Key::IndexMeta),
         unit_id().prop_map(|unit| Key::IndexPrimary { unit }),
+        ("[a-z\u{0}\u{e9}]{1,16}", any::<u32>(), unit_id())
+            .prop_map(|(unit_type, schema_version, unit)| Key::IndexType { unit_type, schema_version, unit }),
     ]
 }
 

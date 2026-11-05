@@ -39,7 +39,7 @@ pub use history::{
     AsOf, ChangeSetInfo, ChangeSetMember, Comparison, HistoryPage, HistoryQuery, Order, Provenance, Revision,
     RevisionView, UnitAt, UnitStates,
 };
-pub use index::{IndexState, IndexStatus, QueryOutcome, QuerySource, UnitFilter};
+pub use index::{IndexPath, IndexState, IndexStatus, QueryOutcome, QuerySource, UnitFilter};
 pub use model::{ModelChange, ModelChangeSet, ModelError, ModelRevision, ModelUnitAt, UnitModel};
 pub use payload::{
     ContentHash, HashAlg, MAX_PAYLOAD_LEN, PayloadDecl, PayloadError, PayloadRule, VerifiedPayload, verify_payload,

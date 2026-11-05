@@ -3,7 +3,9 @@
 //! codecs); it shares nothing with `spec_decoder` but the plain data of
 //! `units_model`. It encodes whatever the record holds, valid or not.
 
-use crate::units_model::{ChangeSet, Hash, Head, IdxMeta, IdxPrimary, Layer, Member, Rec, RevMeta, RevPayload};
+use crate::units_model::{
+    ChangeSet, Hash, Head, IdxMeta, IdxPrimary, IdxType, Layer, Member, Rec, RevMeta, RevPayload,
+};
 
 /// The envelope header every value but `REV_PAYLOAD` starts with.
 fn envelope() -> Vec<u8> {
@@ -113,6 +115,13 @@ pub fn encode(rec: &Rec) -> (Vec<u8>, Vec<u8>) {
             put_bytes(&mut v, unit_type);
             v.extend_from_slice(&schema_version.to_be_bytes());
             (key, v)
+        }
+        Rec::IdxType(IdxType { unit_type, schema_version, unit_id }) => {
+            let mut key = vec![0x52, u8::try_from(unit_type.len()).unwrap_or(0xFF)];
+            key.extend_from_slice(unit_type);
+            key.extend_from_slice(&schema_version.to_be_bytes());
+            key.extend_from_slice(unit_id);
+            (key, envelope())
         }
     }
 }
