@@ -83,6 +83,20 @@ pub struct Member {
     pub kind: u8,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct IdxMeta {
+    pub outcome: u8,
+    pub watermark: u64,
+    pub entries: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct IdxPrimary {
+    pub unit_id: UnitId,
+    pub unit_type: Vec<u8>,
+    pub schema_version: u32,
+}
+
 /// A decoded key and value.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Rec {
@@ -92,6 +106,8 @@ pub enum Rec {
     RevPayload(RevPayload),
     ChangeSet(ChangeSet),
     Member(Member),
+    IdxMeta(IdxMeta),
+    IdxPrimary(IdxPrimary),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

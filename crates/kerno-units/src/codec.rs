@@ -15,8 +15,8 @@
 use crate::error::{DecodeError, UnitError, UnitRule};
 use crate::payload::{ContentHash, HashAlg, MAX_PAYLOAD_LEN, PAYLOAD_CODEC_OPAQUE, PayloadDecl};
 use crate::types::{
-    CommitSeq, HistoryPolicy, Lifecycle, ProvenanceKind, Purpose, RelationId, RelationProvenance, RevNo, RevisionKind,
-    Timestamp, UnitId,
+    BuildOutcome, CommitSeq, HistoryPolicy, Lifecycle, ProvenanceKind, Purpose, RelationId, RelationProvenance, RevNo,
+    RevisionKind, Timestamp, UnitId,
 };
 
 /// Key tags (`units-v1.md` §2).
@@ -30,6 +30,9 @@ pub const TAG_CS_MEMBER: u8 = 0x31;
 pub const TAG_REL: u8 = 0x40;
 pub const TAG_REL_OUT: u8 = 0x41;
 pub const TAG_REL_IN: u8 = 0x42;
+/// Freshness record of the primary index and its entries (E4-03, ADR-0007).
+pub const TAG_IDX_META: u8 = 0x50;
+pub const TAG_IDX_PRIMARY: u8 = 0x51;
 
 /// `envelope_version` written and accepted (§1.1).
 pub const ENVELOPE_VERSION: u8 = 1;
@@ -99,6 +102,12 @@ pub enum Key {
         relation_type: String,
         edge: RelationId,
     },
+    /// How the last build of the primary index ended and what it reflects.
+    IndexMeta,
+    /// The primary-index entry of an `Active` unit.
+    IndexPrimary {
+        unit: UnitId,
+    },
 }
 
 /// Valid `relation_type`: 1..=64 bytes of UTF-8 without NUL (the NUL ends the
@@ -134,6 +143,8 @@ impl Key {
             Key::Relation { .. } => TAG_REL,
             Key::RelationOut { .. } => TAG_REL_OUT,
             Key::RelationIn { .. } => TAG_REL_IN,
+            Key::IndexMeta => TAG_IDX_META,
+            Key::IndexPrimary { .. } => TAG_IDX_PRIMARY,
         }
     }
 
@@ -143,7 +154,8 @@ impl Key {
         let mut out = vec![self.tag()];
         match self {
             Key::LayerMeta { name } => out.extend_from_slice(name.as_bytes()),
-            Key::UnitHead { unit } => out.extend_from_slice(&unit.0),
+            Key::UnitHead { unit } | Key::IndexPrimary { unit } => out.extend_from_slice(&unit.0),
+            Key::IndexMeta => {}
             Key::RevMeta { unit, rev } | Key::RevPayload { unit, rev } => {
                 out.extend_from_slice(&unit.0);
                 out.extend_from_slice(&rev.0.to_be_bytes());
@@ -176,7 +188,8 @@ impl Key {
             TAG_REV_META | TAG_REV_PAYLOAD => Some(25),
             TAG_CHANGESET => Some(9),
             TAG_CS_MEMBER => Some(13),
-            TAG_REL => Some(17),
+            TAG_REL | TAG_IDX_PRIMARY => Some(17),
+            TAG_IDX_META => Some(1),
             TAG_REL_OUT | TAG_REL_IN => None,
             0x00..=0x3F => return reject(UnitRule::Unit1, format!("unknown tag 0x{tag:02x} in a known range")),
             _ => return reject(UnitRule::Unit2, format!("tag 0x{tag:02x} belongs to a newer layer")),
@@ -199,6 +212,8 @@ impl Key {
                 Err(_) => reject(UnitRule::Unit4, "LAYER_META name is not UTF-8"),
             },
             TAG_UNIT_HEAD => Ok(Key::UnitHead { unit: unit() }),
+            TAG_IDX_PRIMARY => Ok(Key::IndexPrimary { unit: unit() }),
+            TAG_IDX_META => Ok(Key::IndexMeta),
             TAG_REL => Ok(Key::Relation { edge: RelationId(arr::<16>(tail)) }),
             TAG_REL_OUT | TAG_REL_IN => {
                 let n = tail.len();
@@ -990,6 +1005,76 @@ impl Adjacency {
     }
 }
 
+/// `IDX_META` value (E4-03, ADR-0007): how the last build of the primary index
+/// ended and what its entries reflect. The `watermark` is the commit sequence
+/// of the change set that wrote them (they are a function of the state at that
+/// commit); `0` only for a failed build with nothing built before it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IndexMeta {
+    pub outcome: BuildOutcome,
+    pub watermark: CommitSeq,
+    /// Number of `IDX_PRIMARY` entries the build wrote.
+    pub entries: u64,
+}
+
+impl IndexMeta {
+    pub fn encode(&self) -> Result<Vec<u8>, UnitError> {
+        let mut w = Writer::envelope();
+        w.u8(self.outcome.to_byte());
+        w.u64(self.watermark.0);
+        w.u64(self.entries);
+        Self::decode(&w.0).map_err(|e| refuse("IDX_META", &e))?;
+        Ok(w.0)
+    }
+
+    pub fn decode(value: &[u8]) -> Res<Self> {
+        let mut r = Reader::new(value, "IDX_META");
+        r.envelope()?;
+        let outcome = r.enumeration("outcome", BuildOutcome::from_byte)?;
+        let watermark = r.u64("watermark")?;
+        if outcome == BuildOutcome::Succeeded && watermark == 0 {
+            return reject(UnitRule::Unit23, "IDX_META.watermark 0 on a successful build");
+        }
+        let entries = r.u64("entries")?;
+        r.finish()?;
+        if watermark == 0 && entries != 0 {
+            return reject(UnitRule::Unit13, "IDX_META: entries without a watermark");
+        }
+        Ok(IndexMeta { outcome, watermark: CommitSeq(watermark), entries })
+    }
+}
+
+/// `IDX_PRIMARY` value (E4-03): the `UNIT_HEAD` fields a basic filter reads,
+/// copied from the head of an `Active` unit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrimaryEntry {
+    pub unit_type: String,
+    pub schema_version: u32,
+}
+
+impl PrimaryEntry {
+    pub fn encode(&self) -> Result<Vec<u8>, UnitError> {
+        let mut w = Writer::envelope();
+        w.bytes(self.unit_type.as_bytes(), MAX_UNIT_TYPE_LEN, "IDX_PRIMARY.unit_type")?;
+        w.u32(self.schema_version);
+        Self::decode(&w.0).map_err(|e| refuse("IDX_PRIMARY", &e))?;
+        Ok(w.0)
+    }
+
+    pub fn decode(value: &[u8]) -> Res<Self> {
+        let mut r = Reader::new(value, "IDX_PRIMARY");
+        r.envelope()?;
+        let unit_type = match std::str::from_utf8(r.bytes(MAX_UNIT_TYPE_LEN, "unit_type")?) {
+            Ok(s) if !s.is_empty() => s.to_owned(),
+            Ok(_) => return reject(UnitRule::Unit12, "IDX_PRIMARY.unit_type is empty"),
+            Err(_) => return reject(UnitRule::Unit12, "IDX_PRIMARY.unit_type is not UTF-8"),
+        };
+        let schema_version = r.u32("schema_version")?;
+        r.finish()?;
+        Ok(PrimaryEntry { unit_type, schema_version })
+    }
+}
+
 // ---------------------------------------------------------------- records
 
 /// A decoded `(key, value)` pair.
@@ -1040,6 +1125,13 @@ pub enum Record {
         edge: RelationId,
         adjacency: Adjacency,
     },
+    IndexMeta {
+        meta: IndexMeta,
+    },
+    IndexPrimary {
+        unit: UnitId,
+        entry: PrimaryEntry,
+    },
 }
 
 impl Record {
@@ -1058,6 +1150,8 @@ impl Record {
             Record::RelationIn { unit, relation_type, edge, .. } => {
                 Key::RelationIn { unit: *unit, relation_type: relation_type.clone(), edge: *edge }
             }
+            Record::IndexMeta { .. } => Key::IndexMeta,
+            Record::IndexPrimary { unit, .. } => Key::IndexPrimary { unit: *unit },
         }
     }
 
@@ -1073,6 +1167,8 @@ impl Record {
             Record::CsMember { member, .. } => member.encode()?,
             Record::Relation { record, .. } => record.encode()?,
             Record::RelationOut { adjacency, .. } | Record::RelationIn { adjacency, .. } => adjacency.encode(),
+            Record::IndexMeta { meta } => meta.encode()?,
+            Record::IndexPrimary { entry, .. } => entry.encode()?,
         };
         Ok((key, value))
     }
@@ -1094,6 +1190,8 @@ impl Record {
             Key::RelationIn { unit, relation_type, edge } => {
                 Record::RelationIn { unit, relation_type, edge, adjacency: Adjacency::decode(value)? }
             }
+            Key::IndexMeta => Record::IndexMeta { meta: IndexMeta::decode(value)? },
+            Key::IndexPrimary { unit } => Record::IndexPrimary { unit, entry: PrimaryEntry::decode(value)? },
         })
     }
 }

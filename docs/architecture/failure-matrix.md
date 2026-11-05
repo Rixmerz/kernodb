@@ -236,3 +236,23 @@ E4-02 ([ADR-0014](../adr/0014-representacion-fisica-de-relaciones.md), opción 2
 | `{emulated_log,kerno}::verifier_reports_index_damage` | R5 |
 
 Las filas R1–R3 no se repiten en `Buffered` ni con `fsync` fallido o disco lleno: el registro y los índices usan el mismo camino de confirmación que cualquier otro `ChangeSet` (filas U2, U4, U5 y U9 de la sección 7, que cubren esos modos sin depender del contenido del `ChangeSet`).
+
+## 9. Índice primario (`kerno-units`, Etapa 4, E4-03)
+
+E4-03 ([ADR-0007](../adr/0007-consistencia-de-indices.md)) añade el índice primario: un registro de estado `IDX_META` y una entrada `IDX_PRIMARY` por unidad `Active` ([units-v1.md](../file-format/units-v1.md) §3.9–§3.10). Es un índice **derivado**: lo construye `UnitDb::rebuild_index` en su propio `ChangeSet` (propósito `Index`) y no lo mantiene cada `ChangeSet`. La construcción borra la generación anterior, escribe las entradas y el `IDX_META` en la misma transacción, y su watermark es su propia secuencia de commit. Notación como en la sección 7: `N` = último `ChangeSet` confirmado; `N+1` = el `ChangeSet` en curso. Tras cada reapertura se exige que el estado guardado sea el del commit recuperado (`Ready` con su watermark si fue el último, `Stale` con el anterior si no), que `verify_units` no dé hallazgos (UNIT-37), que las consultas den lo mismo que la ruta de referencia, y que la base reconstruya el índice y lo deje `Ready` en el commit siguiente.
+
+| # | Punto de fallo | Muerte del proceso | Corte de energía | Por qué |
+|---|---|---|---|---|
+| I1 | Caída en cualquier operación mutante de una construcción (borrado de la generación anterior, entradas, `IDX_META`) | `N` o `N+1` | `N` o `N+1` (`Sync`) | Todo viaja en la misma trama con un solo CRC (I-21): la imagen contiene la generación anterior entera (con su watermark, ahora obsoleto) o la nueva entera; nunca una mezcla ni entradas sin `IDX_META`. |
+| I2 | La construcción falla por los datos (una cabeza que no decodifica, un lote por encima de los límites del motor) | — | — | No se confirma ninguna entrada. Se anota `Failed`, con el watermark y el número de entradas de la generación que sigue guardada, en un segundo `ChangeSet`. Si el motor no está utilizable (`Io`, `Poisoned`) no se anota: el estado guardado sigue siendo el anterior y sigue siendo cierto. |
+| I3 | Daño del medio que respeta los CRC del motor: falta o sobra una entrada, una entrada difiere de su cabeza, falta o discrepa `IDX_META` | — | — | `verify_units` informa UNIT-37. Una consulta por índice rechaza lo que ve (una entrada que no concuerda con la cabeza de la unidad que devuelve es `Corruption`); lo que su filtro descarta solo lo ve el verificador, la prueba diferencial o una reconstrucción. |
+
+**Cómo se verifica** (`crates/kerno-units/tests/index.rs`).
+
+| Prueba | Filas |
+|---|---|
+| `{emulated_log,kerno}::index_every_point_{power_loss,process_kill}` (caída antes de cada operación mutante de 5 `ChangeSet`: alta, construcción, cambio de esquema, reconstrucción, archivado; desgarro a 1 B en los puntos impares; tras recuperar, el estado es el del commit recuperado, `verify_units` limpio, las consultas iguales a las de un modelo y a la ruta de referencia, y la base reconstruye) | I1 |
+| `{emulated_log,kerno}::failed_build_is_recorded_and_repaired`, `status_survives_reopen` | I2 |
+| `{emulated_log,kerno}::verifier_reports_index_damage`, `index_path_refuses_what_it_can_see` | I3 |
+
+Las filas I1–I3 no se repiten en `Buffered` ni con `fsync` fallido o disco lleno: la construcción usa el mismo camino de confirmación que cualquier otro `ChangeSet` (filas U2, U4, U5 y U9 de la sección 7).

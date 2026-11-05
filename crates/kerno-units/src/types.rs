@@ -121,9 +121,10 @@ pub type ChangeKind = RevisionKind;
 
 byte_enum!(
     /// `CHANGESET.purpose`. `Relation` marks an application change set that
-    /// only creates or deletes relations (no members, E4-02); the layer
-    /// records it, a caller never passes it.
-    Purpose { Application = 0, Retention = 1, Maintenance = 2, Relation = 3 }
+    /// only creates or deletes relations (no members, E4-02); `Index` one that
+    /// only writes derived-index records (no members, E4-03). The layer
+    /// records both, a caller never passes them.
+    Purpose { Application = 0, Retention = 1, Maintenance = 2, Relation = 3, Index = 4 }
 );
 
 /// The name the design uses (§6.3).
@@ -140,6 +141,14 @@ byte_enum!(
     /// origin, and `Inferred` also a confidence, so that an inferred relation
     /// is never read as a declared one (I-39).
     ProvenanceKind { Declared = 0, Imported = 1, Algorithmic = 2, Inferred = 3 }
+);
+
+byte_enum!(
+    /// How the last build of the primary index ended (`IDX_META.outcome`,
+    /// E4-03). Only these two are stored: `Building` is a property of a live
+    /// handle and `Stale` is computed against a snapshot, so neither can be
+    /// written (see [`crate::index::IndexState`]).
+    BuildOutcome { Succeeded = 0, Failed = 1 }
 );
 
 /// Which side of a unit a relation is followed from.

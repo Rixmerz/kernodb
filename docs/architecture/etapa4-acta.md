@@ -63,9 +63,9 @@ Del [roadmap, Etapa 4](../roadmap/README.md#etapa-4--relaciones-e-índices):
 
 | Criterio | Evidencia prevista | Estado |
 |---|---|---|
-| Los resultados por índice coinciden con la ruta de referencia (I-32 aplicado a índices) | Pruebas diferenciales índice frente a E4-01 sobre la misma instantánea | pendiente |
-| Un índice reconstruido es equivalente a uno nuevo (I-24) | Prueba de reconstrucción frente a construcción nueva | pendiente |
-| El estado de frescura está expuesto (I-23) | Prueba de estados y watermark, incluido tras una caída | pendiente |
+| Los resultados por índice coinciden con la ruta de referencia (I-32 aplicado a índices) | Pruebas diferenciales índice frente a E4-01 sobre la misma instantánea | cumplido en E4-03 (`tests/index.rs`: `differential_seeded`, `differential_across_scan_pages`; [invariantes](invariants.md) §2.2) |
+| Un índice reconstruido es equivalente a uno nuevo (I-24) | Prueba de reconstrucción frente a construcción nueva | cumplido en E4-03 (`tests/index.rs`: `rebuilt_equals_fresh`) |
+| El estado de frescura está expuesto (I-23) | Prueba de estados y watermark, incluido tras una caída | cumplido en E4-03 (`tests/index.rs`: `states_and_watermark`, `index_every_point_*`, [matriz de fallos](failure-matrix.md) §9) |
 | Una relación declarada nunca se confunde con una inferida (I-39) | Prueba de procedencia obligatoria y del campo de origen | pendiente |
 
 ## 5. Riesgos heredados de la Etapa 3

@@ -67,7 +67,7 @@ use std::ops::Bound;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use kerno_core::contract::{Engine, Options, Snapshot, SyncEngine, Txn, TxnEngine};
 use kerno_core::vfs::Vfs;
@@ -307,6 +307,9 @@ pub struct UnitDb<E: TxnEngine> {
     pub(crate) policy_epoch: AtomicU64,
     /// See [`PolicyCache`].
     pub(crate) policy_cache: Arc<PolicyCache>,
+    /// Primary-index builds waiting for the write slot or running (E4-03):
+    /// what [`UnitDb::index_status`] reports as `Building`.
+    pub(crate) index_builds: AtomicUsize,
 }
 
 fn layer_mark_key() -> Vec<u8> {
@@ -461,6 +464,7 @@ impl<E: TxnEngine> UnitDb<E> {
                 retention: Mutex::new(None),
                 policy_epoch: AtomicU64::new(0),
                 policy_cache: Arc::default(),
+                index_builds: AtomicUsize::new(0),
             }),
             Err(e) => {
                 let _ = engine.close();
@@ -536,6 +540,7 @@ impl<E: TxnEngine> UnitDb<E> {
             touched: BTreeSet::new(),
             broken: false,
             maintenance: false,
+            index: false,
             writes: 0,
             bytes: 0,
             deferred: false,
@@ -791,6 +796,9 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     broken: bool,
     /// A `set_policy` change set: commits without members.
     maintenance: bool,
+    /// A primary-index build or failure marker (E4-03): purpose `Index`,
+    /// commits without members, and changes no policy.
+    index: bool,
     /// Engine writes and their key + value bytes so far.
     writes: usize,
     bytes: usize,
@@ -1307,7 +1315,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
     pub fn commit(mut self) -> Result<CommitInfo, UnitError> {
         self.txn()?;
         let durable = self.db.cfg.engine.durability == Durability::Sync;
-        if self.members.is_empty() && !self.maintenance && self.relation_ops == 0 {
+        if self.members.is_empty() && !self.maintenance && !self.index && self.relation_ops == 0 {
             let current = CommitSeq(self.seq.0 - 1);
             if let Some(t) = self.txn.take() {
                 t.abort();
@@ -1373,6 +1381,17 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
             revisions: self.members.iter().map(|(r, _)| *r).collect(),
             durable,
         })
+    }
+
+    /// An index change set (purpose `Index`, no caller provenance), for
+    /// [`UnitDb::rebuild_index`]. Its commit sequence is the watermark it
+    /// writes: it changes no unit, so the state it read is the state at
+    /// that commit.
+    pub(crate) fn begin_index(db: &'db UnitDb<E>) -> Result<Self, UnitError> {
+        let mut cs = db.begin_changeset(ChangeMeta::default())?;
+        cs.meta.purpose = Purpose::Index;
+        cs.index = true;
+        Ok(cs)
     }
 
     /// A retention change set (purpose `Retention`, no caller provenance).
