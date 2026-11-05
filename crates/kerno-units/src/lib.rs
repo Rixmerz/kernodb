@@ -13,16 +13,20 @@
 //! index-free reference query path ([`reference`]), and E4-02 declared
 //! relations with their adjacency indexes ([`db`], ADR-0014). E4-03 adds the
 //! primary index with basic filters and its freshness state ([`index`],
-//! ADR-0007). This crate stays separate from `kerno-storage`.
+//! ADR-0007). E5-01 adds the normalized query fingerprint ([`fingerprint`],
+//! ADR-0015) and the explainable plan ([`plan`]). This crate stays separate
+//! from `kerno-storage`.
 
 pub mod clock;
 pub mod codec;
 pub mod db;
 pub mod error;
+pub mod fingerprint;
 pub mod history;
 pub mod index;
 pub mod model;
 pub mod payload;
+pub mod plan;
 pub mod reference;
 pub mod retention;
 pub mod types;
@@ -35,6 +39,9 @@ pub use db::{
     Relation, Unit, UnitConfig, UnitDb, UnitSnapshot, UnitUpdate,
 };
 pub use error::{DecodeError, ErrorClass, UnitError, UnitRule};
+pub use fingerprint::{
+    FINGERPRINT_VERSION, Fingerprint, FingerprintAlg, FingerprintKey, NormalizedQuery, QueryKind, RelationQuery,
+};
 pub use history::{
     AsOf, ChangeSetInfo, ChangeSetMember, Comparison, HistoryPage, HistoryQuery, Order, Provenance, Revision,
     RevisionView, UnitAt, UnitStates,
@@ -44,6 +51,7 @@ pub use model::{ModelChange, ModelChangeSet, ModelError, ModelRevision, ModelUni
 pub use payload::{
     ContentHash, HashAlg, MAX_PAYLOAD_LEN, PayloadDecl, PayloadError, PayloadRule, VerifiedPayload, verify_payload,
 };
+pub use plan::{Candidate, Cost, Plan, PlanError, PlanPath, Reason, Unusable, Usability};
 pub use retention::{CompactReport, RetentionBudget, RetentionPacing, RetentionPolicy, RetentionReport, RetentionRule};
 pub use types::{
     BuildOutcome, ChangeKind, ChangePurpose, ChangeSetId, CommitSeq, Direction, HistoryPolicy, Lifecycle,
