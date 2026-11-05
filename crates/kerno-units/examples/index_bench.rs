@@ -211,7 +211,7 @@ fn main() -> Res<()> {
                 prim.0 / best.0,
                 prim.1,
                 r[3].0 / best.0,
-                if justified { "threshold missed" } else { "threshold met" }
+                if justified { "threshold exceeded" } else { "threshold not exceeded" }
             );
             if n == 100_000 {
                 justified_at_100k |= justified;

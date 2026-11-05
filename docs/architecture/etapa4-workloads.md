@@ -40,7 +40,7 @@ Comando: `cargo run --release -p kerno-units --example index_bench` (3 pasadas, 
 | 100 000 | tipo | 999 | 508,7 | 59,4 / 68,7 | 12,15 | 4,9× |
 | 100 000 | tipo + versión | 333 | 520,9 | 41,2 / 59,1 | 4,50 | 10,6× |
 
-En `N` = 100 000 las dos consultas incumplen el umbral en las 3 pasadas: la ruta primaria es 4,8–12,3× la cota ideal (> 2×) y su p95 es 57–71 ms (> 10 ms). Recorrer las 100 000 entradas de `IDX_PRIMARY` cuesta más que abrir las 333–999 unidades que coinciden. **El workload justifica un índice secundario por `(unit_type, schema_version)`**, que se construye: `IDX_TYPE` ([units-v1.md](../file-format/units-v1.md) §3.11).
+En `N` = 100 000 las dos consultas superan el umbral en las 3 pasadas: la ruta primaria es 4,8–12,3× la cota ideal (> 2×) y su p95 es 57–71 ms (> 10 ms). Recorrer las 100 000 entradas de `IDX_PRIMARY` cuesta más que abrir las 333–999 unidades que coinciden. **El workload justifica un índice secundario por `(unit_type, schema_version)`**, que se construye: `IDX_TYPE` ([units-v1.md](../file-format/units-v1.md) §3.11).
 
 ### 4.2 Con `IDX_TYPE`
 

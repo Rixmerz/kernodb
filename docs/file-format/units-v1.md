@@ -209,6 +209,8 @@ La entrada del índice primario de una unidad `Active`: los campos de `UNIT_HEAD
 
 El índice secundario por `(unit_type, schema_version)`, justificado por el workload W1 ([etapa4-workloads.md](../architecture/etapa4-workloads.md)). Una entrada por cada entrada `IDX_PRIMARY` y ninguna más: la escribe la misma construcción, en la misma transacción y bajo el mismo `IDX_META` (§3.9), así que comparte watermark, estado y comportamiento ante caídas, y una reconstrucción las reemplaza a la vez (I-21, I-23, I-24). Todo está en la clave; el prefijo de longitud hace que el rango de un tipo no contenga el de otro tipo que lo tenga por prefijo. El orden es longitud, tipo, versión de esquema y `unit_id`: un filtro con tipo y versión recorre su rango en orden de id; con tipo solo, el resultado se reordena por id.
 
+**Compatibilidad con índices E4-03.** `IDX_META` no registra si la generación incluye `IDX_TYPE`: un almacén cuyo último índice lo construyó E4-03 (sin `IDX_TYPE`) se leería como `Ready` y una consulta por tipo devolvería vacío. No existe ningún almacén así: el formato de la Etapa 4 no se ha publicado, y E4-03 y E4-04 forman un solo formato. Si algún día hay que leer índices de una versión publicada sin `IDX_TYPE`, `IDX_META` debe llevar una versión de generación que los marque `Stale`.
+
 | Campo | Tipo | Restricción |
 |---|---|---|
 | `envelope_version`, `reserved_flags` | `u8`, `u8` | §1.1; no hay más campos (UNIT-10 si sobran bytes) |

@@ -2,53 +2,53 @@ scale,query,path,p50_ms,p95_ms,p99_ms,mean_hits,build_ms
 20000,type,reference,96.540,121.504,133.064,199,62
 20000,type,primary,9.906,12.551,13.314,199,62
 20000,type,ideal,1.346,1.740,3.066,199,62
-# 20000 type: primary/ideal p50 = 7.36x, primary p95 = 12.551 ms -> threshold missed
+# 20000 type: primary/ideal p50 = 7.36x, primary p95 = 12.551 ms -> threshold exceeded
 20000,type+schema,reference,96.328,122.150,124.698,67,62
 20000,type+schema,primary,7.787,12.916,14.719,67,62
 20000,type+schema,ideal,0.542,0.775,0.881,67,62
-# 20000 type+schema: primary/ideal p50 = 14.36x, primary p95 = 12.916 ms -> threshold missed
+# 20000 type+schema: primary/ideal p50 = 14.36x, primary p95 = 12.916 ms -> threshold exceeded
 100000,type,reference,596.115,692.332,855.934,999,339
 100000,type,primary,50.137,68.679,70.355,999,339
 100000,type,ideal,10.459,14.834,19.989,999,339
-# 100000 type: primary/ideal p50 = 4.79x, primary p95 = 68.679 ms -> threshold missed
+# 100000 type: primary/ideal p50 = 4.79x, primary p95 = 68.679 ms -> threshold exceeded
 100000,type+schema,reference,580.522,748.889,789.712,333,339
 100000,type+schema,primary,41.166,59.052,61.090,333,339
 100000,type+schema,ideal,4.497,5.899,9.240,333,339
-# 100000 type+schema: primary/ideal p50 = 9.15x, primary p95 = 59.052 ms -> threshold missed
+# 100000 type+schema: primary/ideal p50 = 9.15x, primary p95 = 59.052 ms -> threshold exceeded
 # secondary index justified by W1: true
 scale,query,path,p50_ms,p95_ms,p99_ms,mean_hits,build_ms
 20000,type,reference,81.500,124.295,130.161,199,54
 20000,type,primary,8.524,12.937,13.434,199,54
 20000,type,ideal,1.711,2.064,2.498,199,54
-# 20000 type: primary/ideal p50 = 4.98x, primary p95 = 12.937 ms -> threshold missed
+# 20000 type: primary/ideal p50 = 4.98x, primary p95 = 12.937 ms -> threshold exceeded
 20000,type+schema,reference,100.888,120.265,125.859,67,54
 20000,type+schema,primary,6.628,11.052,11.447,67,54
 20000,type+schema,ideal,0.548,0.705,0.779,67,54
-# 20000 type+schema: primary/ideal p50 = 12.09x, primary p95 = 11.052 ms -> threshold missed
+# 20000 type+schema: primary/ideal p50 = 12.09x, primary p95 = 11.052 ms -> threshold exceeded
 100000,type,reference,508.667,665.942,770.908,999,317
 100000,type,primary,60.828,71.402,73.464,999,317
 100000,type,ideal,12.204,13.136,13.432,999,317
-# 100000 type: primary/ideal p50 = 4.98x, primary p95 = 71.402 ms -> threshold missed
+# 100000 type: primary/ideal p50 = 4.98x, primary p95 = 71.402 ms -> threshold exceeded
 100000,type+schema,reference,519.667,706.866,744.773,333,317
 100000,type+schema,primary,55.517,57.583,59.146,333,317
 100000,type+schema,ideal,4.509,5.063,5.382,333,317
-# 100000 type+schema: primary/ideal p50 = 12.31x, primary p95 = 57.583 ms -> threshold missed
+# 100000 type+schema: primary/ideal p50 = 12.31x, primary p95 = 57.583 ms -> threshold exceeded
 # secondary index justified by W1: true
 scale,query,path,p50_ms,p95_ms,p99_ms,mean_hits,build_ms
 20000,type,reference,93.284,121.011,123.072,199,75
 20000,type,primary,12.552,13.185,13.690,199,75
 20000,type,ideal,1.512,1.864,1.973,199,75
-# 20000 type: primary/ideal p50 = 8.30x, primary p95 = 13.185 ms -> threshold missed
+# 20000 type: primary/ideal p50 = 8.30x, primary p95 = 13.185 ms -> threshold exceeded
 20000,type+schema,reference,102.076,124.246,136.670,67,75
 20000,type+schema,primary,6.903,12.040,13.580,67,75
 20000,type+schema,ideal,0.369,0.456,0.515,67,75
-# 20000 type+schema: primary/ideal p50 = 18.69x, primary p95 = 12.040 ms -> threshold missed
+# 20000 type+schema: primary/ideal p50 = 18.69x, primary p95 = 12.040 ms -> threshold exceeded
 100000,type,reference,480.671,670.338,721.828,999,360
 100000,type,primary,59.422,67.924,70.110,999,360
 100000,type,ideal,12.153,13.037,13.616,999,360
-# 100000 type: primary/ideal p50 = 4.89x, primary p95 = 67.924 ms -> threshold missed
+# 100000 type: primary/ideal p50 = 4.89x, primary p95 = 67.924 ms -> threshold exceeded
 100000,type+schema,reference,520.916,756.184,871.904,333,360
 100000,type+schema,primary,40.176,59.736,62.190,333,360
 100000,type+schema,ideal,3.809,4.506,5.748,333,360
-# 100000 type+schema: primary/ideal p50 = 10.55x, primary p95 = 59.736 ms -> threshold missed
+# 100000 type+schema: primary/ideal p50 = 10.55x, primary p95 = 59.736 ms -> threshold exceeded
 # secondary index justified by W1: true
