@@ -295,6 +295,13 @@ fn check<E: Engine>(snap: &UnitSnapshot<E>, model: &Model, ctx: &str) -> IndexSt
         assert_eq!(ids, model.active(&f), "{ctx}: reference path vs model, {f:?}");
         let out = snap.query(&f).expect("query");
         assert_eq!(out.units, reference, "{ctx}: query vs reference, {f:?}");
+        // E5-02: `query` follows the plan the snapshot explains for the
+        // filter, and asking twice gives the same plan (determinism).
+        let key = FingerprintKey::from_bytes([0x42; 32]);
+        let plan = snap.explain_filter(&key, &f).expect("explain_filter");
+        assert_eq!(snap.explain_filter(&key, &f).expect("explain_filter"), plan, "{ctx}: plan is deterministic, {f:?}");
+        assert_eq!(plan.chosen().path, out.path, "{ctx}: query ran the planned path, {f:?}");
+        assert_eq!(plan.index(), Some(status), "{ctx}: the plan saw the snapshot's status, {f:?}");
         if let (IndexState::Ready, Some(watermark)) = (status.state, status.watermark) {
             assert_eq!(
                 snap.indexed_scan(&f).expect("indexed_scan"),
@@ -313,7 +320,16 @@ fn check<E: Engine>(snap: &UnitSnapshot<E>, model: &Model, ctx: &str) -> IndexSt
             } else {
                 assert!(matches!(by_type, Err(UnitError::InvalidArgument(_))), "{ctx}: {by_type:?}");
             }
-            assert_eq!(out.source, QuerySource::Index { watermark }, "{ctx}: {f:?}");
+            // E5-02: with a `Ready` index the planner picks by cost, so the
+            // source is whatever the path says; an answer is never a fallback
+            // here, the index is exact.
+            let want = match out.path {
+                PlanPath::UnitsReference => QuerySource::Reference { index: status },
+                PlanPath::IndexPrimary | PlanPath::IndexType => QuerySource::Index { watermark },
+                other => panic!("{ctx}: a unit query went through {other:?}"),
+            };
+            assert_eq!(out.source, want, "{ctx}: {f:?}");
+            assert_eq!(out.fallback, None, "{ctx}: {f:?}");
         } else {
             let refused = snap.indexed_scan(&f);
             let want = UnitError::IndexNotReady { state: status.state, watermark: status.watermark }.to_string();
@@ -351,7 +367,14 @@ fn states_and_watermark<E: TxnEngine>() {
     let info = built.change_set(CommitSeq(2)).unwrap().expect("the build is a change set");
     assert_eq!((info.purpose, info.members.len()), (Purpose::Index, 0));
     assert_eq!(built.indexed_scan(&all).unwrap().iter().map(|x| x.id).collect::<Vec<_>>(), u);
-    assert_eq!(built.query(&all).unwrap().source, QuerySource::Index { watermark: CommitSeq(2) });
+    // No condition: the primary index costs what the reference does, and the
+    // tie goes to the reference. A selective type goes to the index.
+    let out = built.query(&all).unwrap();
+    assert_eq!((out.path, out.source), (PlanPath::UnitsReference, QuerySource::Reference { index: ready(2) }));
+    let by_type = UnitFilter { unit_type: Some("a".into()), schema_version: None };
+    let out = built.query(&by_type).unwrap();
+    assert_eq!((out.path, out.source), (PlanPath::IndexType, QuerySource::Index { watermark: CommitSeq(2) }));
+    assert_eq!(out.units.iter().map(|x| x.id).collect::<Vec<_>>(), [u[0], u[2]]);
     assert_clean(&db, "after the first build");
 
     // An empty change set commits nothing, so the index is still ready.
@@ -537,6 +560,78 @@ fn status_survives_reopen<E: TxnEngine>() {
     db.close().unwrap();
     let db = open_on::<E>(&vfs, 300);
     assert_eq!(db.index_status().unwrap(), failure);
+}
+
+// ------------------------------------------------------- planner fallback
+
+/// E5-02: with the index in `status`, which is not `Ready`, the plan lists
+/// every index candidate as unusable for that state, chooses the reference
+/// path and says why, and `query` answers as the reference does (I-23, I-32).
+#[track_caller]
+fn assert_reference_fallback<E: Engine>(snap: &UnitSnapshot<E>, status: IndexStatus, ctx: &str) {
+    let key = FingerprintKey::from_bytes([0x42; 32]);
+    for f in filters() {
+        let plan = snap.explain_filter(&key, &f).expect("explain_filter");
+        assert_eq!(plan.index(), Some(status), "{ctx}: {f:?}");
+        assert_eq!(plan.chosen().path, PlanPath::UnitsReference, "{ctx}: {f:?}");
+        assert_eq!(plan.reason(), Reason::Fallback { index: status.state }, "{ctx}: {f:?}");
+        for c in plan.candidates().iter().filter(|c| c.path != PlanPath::UnitsReference) {
+            assert_eq!(c.usability, Usability::Unusable(Unusable::IndexNotReady(status.state)), "{ctx}: {f:?}");
+        }
+        let out = snap.query(&f).expect("query");
+        assert_eq!(out.path, PlanPath::UnitsReference, "{ctx}: {f:?}");
+        assert_eq!(out.source, QuerySource::Reference { index: status }, "{ctx}: {f:?}");
+        assert_eq!(out.units, snap.reference_filter(&f).expect("reference"), "{ctx}: {f:?}");
+        // The reason is the index state, not a failed check.
+        assert_eq!(out.fallback, None, "{ctx}: {f:?}");
+    }
+}
+
+fn planner_falls_back_when_the_index_is_not_ready<E: TxnEngine>() {
+    let db = open::<E>();
+    let u = create_units(&db, &[("a", 1), ("b", 1), ("a", 2)]); // commit 1
+    // Never built.
+    assert_reference_fallback(&db.snapshot().unwrap(), stale(None), "never built");
+
+    // Ready: the planner may use the index, and a selective type does.
+    assert_eq!(db.rebuild_index().unwrap(), ready(2));
+    let snap = db.snapshot().unwrap();
+    let by_type = UnitFilter { unit_type: Some("a".into()), schema_version: None };
+    assert_eq!(snap.query(&by_type).unwrap().path, PlanPath::IndexType);
+
+    // Stale: a commit after the build.
+    let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
+    cs.archive(u[1], None).unwrap();
+    cs.commit().unwrap();
+    assert_reference_fallback(&db.snapshot().unwrap(), stale(Some(2)), "stale");
+    // An older snapshot keeps the verdict of its own commit.
+    assert_eq!(snap.query(&by_type).unwrap().path, PlanPath::IndexType);
+
+    // Building: the handle reports it while a build waits, but a snapshot is a
+    // view of stored data, so the planner on it sees the stored generation.
+    assert_eq!(db.rebuild_index().unwrap(), ready(4));
+    let mut held = db.begin_changeset(ChangeMeta::default()).unwrap();
+    held.create(new_unit("c", 1, b"held")).unwrap();
+    std::thread::scope(|s| {
+        let build = s.spawn(|| db.rebuild_index());
+        wait_until("the build to be reported", || db.index_status().unwrap().state == IndexState::Building);
+        let during = db.snapshot().unwrap();
+        assert_eq!(during.index_status().unwrap(), ready(4));
+        assert_eq!(during.query(&by_type).unwrap().units, during.reference_filter(&by_type).unwrap());
+        held.commit().unwrap();
+        build.join().expect("the build thread").unwrap();
+    });
+
+    // Failed: repairing the data does not clear it, so the reference answers.
+    let head = Key::UnitHead { unit: u[0] }.encode().unwrap();
+    let good = db.engine().snapshot().unwrap().get(&head).unwrap().unwrap();
+    put_all(db.engine(), vec![(head.clone(), Some(good[..good.len() - 1].to_vec()))]);
+    assert!(db.rebuild_index().is_err());
+    put_all(db.engine(), vec![(head, Some(good))]);
+    let snap = db.snapshot().unwrap();
+    let status = snap.index_status().unwrap();
+    assert_eq!(status.state, IndexState::Failed);
+    assert_reference_fallback(&snap, status, "failed");
 }
 
 // ---------------------------------------------------------- differential
@@ -977,6 +1072,10 @@ macro_rules! engine_tests {
             #[test]
             fn status_survives_reopen() {
                 super::status_survives_reopen::<E>();
+            }
+            #[test]
+            fn planner_falls_back_when_the_index_is_not_ready() {
+                super::planner_falls_back_when_the_index_is_not_ready::<E>();
             }
             #[test]
             fn differential_seeded() {

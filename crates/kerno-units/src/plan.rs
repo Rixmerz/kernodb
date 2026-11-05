@@ -15,8 +15,9 @@
 //!
 //! A plan holds the query's [`Fingerprint`], never the query: it carries no
 //! literal and no shape text, so it can leave the process wherever a
-//! fingerprint can. Filling candidates and costs is the planner's job (E5-02);
-//! this module only refuses a plan that cannot be explained truthfully.
+//! fingerprint can. Filling candidates and costs is the planner's job
+//! ([`crate::planner`], E5-02); this module only refuses a plan that cannot be
+//! explained truthfully.
 //!
 //! # What [`Plan::new`] enforces
 //!
@@ -122,26 +123,24 @@ pub enum PlanError {
     Freshness { path: PlanPath, status: IndexStatus },
 }
 
-/// How a query will be answered and why; see the [module documentation](self).
+/// The validated choice among a query's candidates. It carries no
+/// fingerprint, so the planner can decide (and `query` can run) without
+/// hashing; a [`Plan`] is a decision plus the fingerprint of its query.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Plan {
-    fingerprint: Fingerprint,
+pub(crate) struct Decision {
     index: Option<IndexStatus>,
     candidates: Vec<Candidate>,
     chosen: usize,
     reason: Reason,
 }
 
-impl Plan {
-    /// Builds the plan for a query of `fingerprint`'s kind, seen with this
-    /// `index` status (`None` for a relation query), choosing among
-    /// `candidates`. See the [module documentation](self) for what is checked.
-    pub fn new(
-        fingerprint: Fingerprint,
+impl Decision {
+    /// The checks and the choice of [`Plan::new`], for a query of `kind`.
+    pub(crate) fn new(
+        kind: QueryKind,
         index: Option<IndexStatus>,
         candidates: Vec<Candidate>,
     ) -> Result<Self, PlanError> {
-        let kind = fingerprint.kind();
         let expected = PlanPath::candidates_of(kind);
         if !candidates.iter().map(|c| c.path).eq(expected.iter().copied()) {
             return Err(PlanError::Candidates {
@@ -184,7 +183,35 @@ impl Plan {
             Some(IndexStatus { state, .. }) if state != IndexState::Ready => Reason::Fallback { index: state },
             _ => Reason::LowestCost,
         };
-        Ok(Plan { fingerprint, index, candidates, chosen, reason })
+        Ok(Decision { index, candidates, chosen, reason })
+    }
+
+    pub(crate) fn chosen(&self) -> &Candidate {
+        &self.candidates[self.chosen]
+    }
+}
+
+/// How a query will be answered and why; see the [module documentation](self).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Plan {
+    fingerprint: Fingerprint,
+    decision: Decision,
+}
+
+impl Plan {
+    /// Builds the plan for a query of `fingerprint`'s kind, seen with this
+    /// `index` status (`None` for a relation query), choosing among
+    /// `candidates`. See the [module documentation](self) for what is checked.
+    pub fn new(
+        fingerprint: Fingerprint,
+        index: Option<IndexStatus>,
+        candidates: Vec<Candidate>,
+    ) -> Result<Self, PlanError> {
+        Ok(Plan { fingerprint, decision: Decision::new(fingerprint.kind(), index, candidates)? })
+    }
+
+    pub(crate) fn of(fingerprint: Fingerprint, decision: Decision) -> Self {
+        Plan { fingerprint, decision }
     }
 
     pub fn fingerprint(&self) -> &Fingerprint {
@@ -193,20 +220,20 @@ impl Plan {
 
     /// The index status the decision saw; `None` for a relation query.
     pub fn index(&self) -> Option<IndexStatus> {
-        self.index
+        self.decision.index
     }
 
     /// Every candidate considered, in tie-break order.
     pub fn candidates(&self) -> &[Candidate] {
-        &self.candidates
+        &self.decision.candidates
     }
 
     /// The candidate chosen.
     pub fn chosen(&self) -> &Candidate {
-        &self.candidates[self.chosen]
+        self.decision.chosen()
     }
 
     pub fn reason(&self) -> Reason {
-        self.reason
+        self.decision.reason
     }
 }

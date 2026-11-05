@@ -10,7 +10,14 @@
 //! * `ideal` — `get_unit` of exactly the matching ids, the lower bound of
 //!   any secondary index (which would also scan its own range).
 //!
-//! The three must return the same units; the run stops if they do not. The
+//! * `legacy` — what `query` did before the planner (E5-02): the index status
+//!   and the automatic index path, with no cost estimate;
+//!
+//! E5-02 compares `secondary` (the planner) with `legacy` in rounds that
+//! alternate the two and prints the overhead against the 10 % threshold of
+//! the Stage 5 acta (§8, decision 5).
+//!
+//! The paths must return the same units; the run stops if they do not. The
 //! threshold of the workload (§3) is evaluated and printed at the end.
 //!
 //! ```text
@@ -29,8 +36,8 @@ use kerno_core::vfs::StdVfs;
 use kerno_storage::KernoDb;
 use kerno_testkit::rng::Rng;
 use kerno_units::{
-    ChangeMeta, CounterIds, FixedClock, IndexPath, NewUnit, QuerySource, Timestamp, Unit, UnitConfig, UnitDb,
-    UnitFilter, UnitId, UnitSnapshot,
+    ChangeMeta, CounterIds, FixedClock, IndexPath, IndexState, NewUnit, QuerySource, Timestamp, Unit, UnitConfig,
+    UnitDb, UnitFilter, UnitId, UnitSnapshot,
 };
 
 type Res<T> = Result<T, Box<dyn std::error::Error>>;
@@ -125,6 +132,15 @@ fn secondary(s: &UnitSnapshot<KernoDb>, f: &UnitFilter, _: &[UnitId]) -> Res<Vec
     Ok(out.units)
 }
 
+/// `query` as it was before the planner: the status, then the automatic path.
+fn legacy(s: &UnitSnapshot<KernoDb>, f: &UnitFilter, _: &[UnitId]) -> Res<Vec<Unit>> {
+    let status = s.index_status()?;
+    if status.state != IndexState::Ready {
+        return Err("the primary index is not Ready".into());
+    }
+    Ok(s.indexed_scan(f)?)
+}
+
 fn ideal(s: &UnitSnapshot<KernoDb>, _: &UnitFilter, ids: &[UnitId]) -> Res<Vec<Unit>> {
     let mut out = Vec::with_capacity(ids.len());
     for id in ids {
@@ -172,6 +188,25 @@ fn measure(db: &Units, qs: &[Query], path: QueryPath) -> Res<(f64, f64, f64)> {
     Ok((percentile(&mut samples, 0.50), percentile(&mut samples, 0.95), percentile(&mut samples, 0.99)))
 }
 
+/// Rounds of the planner-versus-legacy comparison.
+const ROUNDS: usize = 5;
+
+/// `(p50, p99)` of each path per round, the two alternating; the overhead is
+/// taken on the best round of each (least disturbed), in percent.
+fn overhead(db: &Units, qs: &[Query]) -> Res<(f64, f64)> {
+    let (mut planned, mut before) = (Vec::new(), Vec::new());
+    for _ in 0..ROUNDS {
+        before.push(measure(db, qs, legacy as QueryPath)?);
+        planned.push(measure(db, qs, secondary as QueryPath)?);
+    }
+    let best = |r: &[(f64, f64, f64)], i: usize| r.iter().map(|m| [m.0, m.1, m.2][i]).fold(f64::INFINITY, f64::min);
+    let pct = |i: usize| (best(&planned, i) / best(&before, i) - 1.0) * 100.0;
+    for (r, (p, l)) in planned.iter().zip(&before).enumerate() {
+        println!("# round {r}: planner p50/p99 = {:.3}/{:.3} ms, legacy = {:.3}/{:.3} ms", p.0, p.2, l.0, l.2);
+    }
+    Ok((pct(0), pct(2)))
+}
+
 fn main() -> Res<()> {
     let args: Vec<String> = std::env::args().collect();
     let quick = args.iter().any(|a| a == "--quick");
@@ -215,6 +250,13 @@ fn main() -> Res<()> {
             );
             if n == 100_000 {
                 justified_at_100k |= justified;
+            }
+            if !combined {
+                let (p50, p99) = overhead(&db, &qs)?;
+                println!(
+                    "# {n} {name}: planner overhead over the current path: p50 {p50:+.1} %, p99 {p99:+.1} % (threshold 10 %) -> {}",
+                    if p50 <= 10.0 && p99 <= 10.0 { "within" } else { "exceeded" }
+                );
             }
         }
         db.close()?;

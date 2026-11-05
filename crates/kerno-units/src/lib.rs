@@ -14,7 +14,8 @@
 //! relations with their adjacency indexes ([`db`], ADR-0014). E4-03 adds the
 //! primary index with basic filters and its freshness state ([`index`],
 //! ADR-0007). E5-01 adds the normalized query fingerprint ([`fingerprint`],
-//! ADR-0015) and the explainable plan ([`plan`]). This crate stays separate
+//! ADR-0015) and the explainable plan ([`plan`]); E5-02 the deterministic
+//! planner that `query` follows ([`planner`]). This crate stays separate
 //! from `kerno-storage`.
 
 pub mod clock;
@@ -27,6 +28,7 @@ pub mod index;
 pub mod model;
 pub mod payload;
 pub mod plan;
+pub mod planner;
 pub mod reference;
 pub mod retention;
 pub mod types;
@@ -52,6 +54,7 @@ pub use payload::{
     ContentHash, HashAlg, MAX_PAYLOAD_LEN, PayloadDecl, PayloadError, PayloadRule, VerifiedPayload, verify_payload,
 };
 pub use plan::{Candidate, Cost, Plan, PlanError, PlanPath, Reason, Unusable, Usability};
+pub use planner::{Fallback, FallbackCause, RelationsOutcome, Violation};
 pub use retention::{CompactReport, RetentionBudget, RetentionPacing, RetentionPolicy, RetentionReport, RetentionRule};
 pub use types::{
     BuildOutcome, ChangeKind, ChangePurpose, ChangeSetId, CommitSeq, Direction, HistoryPolicy, Lifecycle,
