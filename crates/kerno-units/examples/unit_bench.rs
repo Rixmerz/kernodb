@@ -915,9 +915,10 @@ fn main() -> Res<()> {
     let a = parse_args()?;
     let z = sizes(a.quick);
     println!(
-        "# unit_bench mode={} relations={} seed={:#x} dir={} engine=KernoDb options={:?} vfs=StdVfs rounds={}",
+        "# unit_bench mode={} relations={} indexes={} seed={:#x} dir={} engine=KernoDb options={:?} vfs=StdVfs rounds={}",
         if a.quick { "quick" } else { "full" },
         a.relations,
+        a.indexes,
         a.seed,
         a.dir.display(),
         options(),
