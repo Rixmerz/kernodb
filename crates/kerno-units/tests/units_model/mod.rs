@@ -105,6 +105,29 @@ pub struct IdxType {
     pub unit_id: UnitId,
 }
 
+/// `REL` (E4-02): a declared or derived relation and its provenance.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Rel {
+    pub edge_id: [u8; 16],
+    pub from: UnitId,
+    pub to: UnitId,
+    pub relation_type: Vec<u8>,
+    pub created_seq: u64,
+    pub provenance: u8,
+    pub origin: Vec<u8>,
+    pub confidence: u16,
+}
+
+/// `REL_OUT` (`tag = 0x41`) or `REL_IN` (`tag = 0x42`) adjacency entry (E4-02).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RelAdj {
+    pub tag: u8,
+    pub unit_id: UnitId,
+    pub relation_type: Vec<u8>,
+    pub edge_id: [u8; 16],
+    pub other: UnitId,
+}
+
 /// A decoded key and value.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Rec {
@@ -117,6 +140,8 @@ pub enum Rec {
     IdxMeta(IdxMeta),
     IdxPrimary(IdxPrimary),
     IdxType(IdxType),
+    Rel(Rel),
+    RelAdj(RelAdj),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

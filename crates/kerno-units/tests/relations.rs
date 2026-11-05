@@ -2,7 +2,8 @@
 //! and `KernoDb`.
 //!
 //! * `provenance_*` — provenance is mandatory and checked; declared is never
-//!   confused with inferred (I-39).
+//!   confused with inferred (I-39); a damaged stored provenance is refused
+//!   on read and by `verify_units`.
 //! * `archive_and_delete_are_rejected_with_live_relations` — criterion 4.
 //! * `abort_leaves_no_relation` / `relation_only_changeset_commits` — the
 //!   record and its two index entries commit together or not at all (I-21).
@@ -245,6 +246,53 @@ fn declared_is_never_confused_with_inferred<E: TxnEngine>() {
     // A record cut before its provenance is not a relation without one.
     let full = rec.encode().unwrap();
     assert!(RelationRecord::decode(&full[..kind_at]).is_err());
+}
+
+/// I-39 on stored data: a `REL` whose provenance was damaged on disk is
+/// refused by `get_relation`, by the adjacency and reference paths and by
+/// `verify_units`; it is never read back as another provenance.
+fn stored_provenance_corruption_is_detected<E: TxnEngine>() {
+    let db = open::<E>();
+    let u = units(&db, 2);
+    let inferred = RelationProvenance::Inferred { origin: b"model".to_vec(), confidence_permille: 900 };
+    let id = relate(&db, u[0], u[1], "supports", inferred.clone()).unwrap();
+    assert_clean(&db, "before damage");
+    let key = Key::Relation { edge: id }.encode().unwrap();
+    let good = db.engine().snapshot().unwrap().get(&key).unwrap().unwrap();
+    let rec = RelationRecord::decode(&good).unwrap();
+    assert_eq!(rec.provenance, inferred);
+    let kind_at = good.len() - 2 - 4 - rec_origin_len(&rec) - 1;
+    assert_eq!(good[kind_at], ProvenanceKind::Inferred.to_byte());
+
+    for (name, kind) in [
+        ("inferred stored as declared", ProvenanceKind::Declared),
+        ("inferred stored as imported", ProvenanceKind::Imported),
+        ("inferred stored as an unknown kind", ProvenanceKind::Inferred),
+    ] {
+        let mut bad = good.clone();
+        bad[kind_at] = if name.contains("unknown") { 9 } else { kind.to_byte() };
+        put_all(db.engine(), vec![(key.clone(), Some(bad))]);
+        let snap = db.snapshot().unwrap();
+        let e = snap.get_relation(id).unwrap_err();
+        assert!(e.to_string().contains("UNIT-13"), "{name}: {e}");
+        assert!(snap.relations_of(u[0], Direction::Out, None).is_err(), "{name}: adjacency path");
+        assert!(snap.reference_relations(|_| true).is_err(), "{name}: reference path");
+        drop(snap);
+        let report = db.verify_units().unwrap();
+        assert!(report.rules().contains("UNIT-13"), "{name}: {:?}", report.findings);
+    }
+
+    // Origin emptied under an inferred kind: also refused.
+    let mut emptied = RelationRecord { provenance: RelationProvenance::Declared, ..rec.clone() }.encode().unwrap();
+    let k = emptied.len() - 2 - 4 - 1;
+    emptied[k] = ProvenanceKind::Inferred.to_byte();
+    put_all(db.engine(), vec![(key.clone(), Some(emptied))]);
+    assert!(db.snapshot().unwrap().get_relation(id).is_err(), "inferred without origin");
+    assert!(db.verify_units().unwrap().rules().contains("UNIT-13"));
+
+    put_all(db.engine(), vec![(key, Some(good))]);
+    assert_eq!(db.snapshot().unwrap().get_relation(id).unwrap().unwrap().provenance, inferred);
+    assert_clean(&db, "provenance restored");
 }
 
 fn rec_origin_len(r: &RelationRecord) -> usize {
@@ -566,6 +614,10 @@ macro_rules! engine_tests {
             #[test]
             fn declared_is_never_confused_with_inferred() {
                 super::declared_is_never_confused_with_inferred::<E>();
+            }
+            #[test]
+            fn stored_provenance_corruption_is_detected() {
+                super::stored_provenance_corruption_is_detected::<E>();
             }
             #[test]
             fn archive_and_delete_are_rejected_with_live_relations() {
