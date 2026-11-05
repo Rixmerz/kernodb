@@ -829,8 +829,9 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
     /// Checks shared by every operation, before reading anything.
     fn admit(&self, unit: Option<UnitId>) -> Result<(), UnitError> {
         self.txn()?;
-        if self.members.len() >= self.db.cfg.max_changeset_ops {
-            return Err(UnitError::ChangeSetTooLarge { ops: self.members.len() + 1, bytes: self.bytes });
+        let ops = self.members.len() + self.relation_ops;
+        if ops >= self.db.cfg.max_changeset_ops {
+            return Err(UnitError::ChangeSetTooLarge { ops: ops + 1, bytes: self.bytes });
         }
         if let Some(u) = unit
             && self.touched.contains(&u)
