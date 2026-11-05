@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | **Pendiente de aprobación del propietario** |
+| Estado | **Aprobado por el propietario (2026-11-05)** |
 | Fecha | 2026-11-05 (borrador de E4-05) |
 | Acto | Aprobación del cierre de la Etapa 4 por el propietario del proyecto |
 | Alcance | Paquetes E4-00 a E4-05: relaciones declaradas, ruta de referencia, índice primario y el índice secundario `IDX_TYPE`, en el crate `kerno-units` |
@@ -19,7 +19,7 @@ Este documento describe la etapa tal como quedó en `main` después de E4-04 (`e
 | E4-02 | Relaciones declaradas (ADR-0014, opción 2: `REL` y adyacencias `REL_OUT`/`REL_IN` en el mismo `ChangeSet`), procedencia obligatoria, UNIT-36, barridos de caída, U2 y U6 re-medidos | #18 | hecho (ADR-0014 aceptado, opción 2) |
 | E4-03 | Índice primario `IDX_PRIMARY` con `IDX_META` (estado y watermark), `rebuild_index`, `indexed_scan`, `query`, UNIT-37 | #19 | hecho |
 | E4-04 | Workload W1 escrito antes de medir; justifica `IDX_TYPE` (UNIT-38) | #20 | hecho |
-| E4-05 | Revisión adversarial, vectores de relaciones, promoción de invariantes, este documento | este cambio | hecho, pendiente de aprobación |
+| E4-05 | Revisión adversarial, vectores de relaciones, promoción de invariantes, este documento | #21 | hecho, aprobado |
 
 ## 2. Criterios de aceptación (acta §4)
 
@@ -83,7 +83,7 @@ Ninguno afecta a la corrección de los resultados entregados; quedan registrados
 |---|---|---|
 | 1 | Criterios de la acta §4 cumplidos, con evidencia (§2) | hecho |
 | 2 | Revisión adversarial sin bloqueantes abiertos (§3) | hecho |
-| 3 | Promoción de I-21 (relaciones), I-23, I-24, I-32 (índices) e I-39 (declaradas) en [invariants.md](invariants.md) | hecho, **pendiente de aprobación** |
+| 3 | Promoción de I-21 (relaciones), I-23, I-24, I-32 (índices) e I-39 (declaradas) en [invariants.md](invariants.md) | hecho, **aprobado por el propietario el 2026-11-05** |
 | 4 | Roadmap, SAD §9 y acta actualizados | hecho en el cambio que incorpora este documento |
 | 5 | Aprobación del propietario del cierre, de la promoción y de los menores aceptados (§4) | **pendiente** |
 

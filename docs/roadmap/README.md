@@ -61,7 +61,7 @@ La tarea de cierre de la Fase 1 (revisión adversarial, benchmarks, documentaci�
 
 ## Etapas 3–9 (especificación v0.2.0)
 
-Después de la Fase 1 el trabajo se organiza por las etapas de la [especificación v0.2.0](../spec/especificacion-arquitectonica-v0.2.0.md) §16; la [correspondencia con las fases del SAD](../spec/README.md) está en `docs/spec/`. La **Etapa 3 está cerrada** (aprobada por el propietario el 2026-11-04). La **Etapa 4 está implementada** (E4-00…E4-05) y su cierre está **pendiente de aprobación** del propietario ([cierre](../architecture/etapa4-cierre.md)); el resto no ha empezado. Una etapa ya implementada y probada se salta (spec §16).
+Después de la Fase 1 el trabajo se organiza por las etapas de la [especificación v0.2.0](../spec/especificacion-arquitectonica-v0.2.0.md) §16; la [correspondencia con las fases del SAD](../spec/README.md) está en `docs/spec/`. La **Etapa 3 está cerrada** (aprobada por el propietario el 2026-11-04). La **Etapa 4 está cerrada** (aprobada por el propietario el 2026-11-05, [cierre](../architecture/etapa4-cierre.md)); el resto no ha empezado. Una etapa ya implementada y probada se salta (spec §16).
 
 | Etapa | Depende de | Condición de inicio | ADR que se deciden |
 |---|---|---|---|
@@ -81,7 +81,7 @@ Después de la Fase 1 el trabajo se organiza por las etapas de la [especificaci�
 
 ### Etapa 4 — Relaciones e índices
 
-- **Estado: implementada; cierre pendiente de aprobación del propietario** ([etapa4-cierre.md](../architecture/etapa4-cierre.md), 2026-11-05; [acta](../architecture/etapa4-acta.md) aprobada el 2026-11-04). Relaciones declaradas (ADR-0014, opción 2), ruta de referencia, índice primario con estado y watermark (ADR-0007) e `IDX_TYPE` justificado por el workload W1. Los cinco criterios se cumplen y la revisión adversarial no dejó bloqueantes. I-21 (relaciones), I-23, I-24, I-32 (índices) e I-39 (declaradas) quedan promovidas a falta de aprobación. Siguen abiertos K-E3-8 y K-E3-9 (U6 no re-medido con índices) y la decisión de si los índices se mantienen en cada `ChangeSet` (ADR-0007).
+- **Estado: cerrada, aprobada por el propietario el 2026-11-05** ([etapa4-cierre.md](../architecture/etapa4-cierre.md), 2026-11-05; [acta](../architecture/etapa4-acta.md) aprobada el 2026-11-04). Relaciones declaradas (ADR-0014, opción 2), ruta de referencia, índice primario con estado y watermark (ADR-0007) e `IDX_TYPE` justificado por el workload W1. Los cinco criterios se cumplen y la revisión adversarial no dejó bloqueantes. I-21 (relaciones), I-23, I-24, I-32 (índices) e I-39 (declaradas) quedan promovidas y aprobadas. Siguen abiertos K-E3-8 y K-E3-9 (U6 no re-medido con índices). ADR-0007: los índices de unidades siguen derivados (solo `rebuild_index`) hasta que un workload con escrituras intercaladas pida mantenerlos en cada `ChangeSet`.
 - **Entregables:** relaciones tipadas declaradas (ADR-0014); índice primario y filtros básicos; índices secundarios solo con un workload que los justifique; ruta de referencia para todas las consultas.
 - **Aceptación:** los resultados por índice coinciden con la ruta de referencia (I-32 aplicado a índices); índices reconstruidos equivalentes a nuevos (I-24); estado de frescura expuesto (I-23); una relación declarada nunca se confunde con una inferida (I-39).
 
@@ -89,6 +89,7 @@ Después de la Fase 1 el trabajo se organiza por las etapas de la [especificaci�
 
 - **Entregables:** planificador determinista (spec §9: validar, generar candidatos, estimar coste, elegir, ejecutar, registrar, validar invariantes); explicación del plan; `ExecutionObservation` con niveles de detalle ([ejecución adaptativa](../architecture/adaptive-execution.md), ADR-0015).
 - **Aceptación:** el plan puede inspeccionarse; prueba diferencial planificador frente a ruta de referencia en CI (I-32); prueba de centinelas sin literales ni contenido en observaciones (I-37).
+- **Acta:** [etapa5-acta.md](../architecture/etapa5-acta.md) (propuesta, pendiente de aprobación del propietario).
 
 ### Etapa 6 — Primera plasticidad operacional
 
