@@ -214,3 +214,25 @@ E3-08 aporta las filas de la capa ([etapa3-design.md §8.2–§8.3](etapa3-desig
 | `retention::retention_every_point` (E3-06) | U7 |
 | `wal_independence_{deleted,recycled}_wals` | U8 |
 | `process_kill::kill_dash_9_changeset_writer_{sync,buffered}` | U10 |
+
+## 8. Relaciones declaradas (`kerno-units`, Etapa 4, E4-02)
+
+E4-02 ([ADR-0014](../adr/0014-representacion-fisica-de-relaciones.md), opción 2) añade tres familias de registros: el registro de relación `REL` y sus dos índices de adyacencia `REL_OUT` y `REL_IN` ([units-v1.md](../file-format/units-v1.md) §3.7–§3.8). Los índices de adyacencia **no** son índices secundarios con estado de frescura (ADR-0007): se escriben en el mismo `ChangeSet`, y por tanto en la misma trama del WAL, que el registro (I-21). Notación como en la sección 7: `N` = último `ChangeSet` confirmado; `N+1` = el `ChangeSet` en curso. Tras cada reapertura se exige que el almacén sea **byte a byte** el que deja una ejecución sin fallos tras exactamente `s` `ChangeSet` (oráculo `Emulated<LogEngine>`), que `verify_units` no dé hallazgos (UNIT-36), que el recorrido por el índice y el de referencia den lo mismo y que las relaciones vivas sean las de un modelo independiente.
+
+| # | Punto de fallo | Muerte del proceso | Corte de energía | Por qué |
+|---|---|---|---|---|
+| R1 | Caída en cualquier operación mutante de un `ChangeSet` que **crea** relaciones (registro y dos entradas por relación) | `N` o `N+1` | `N` o `N+1` (`Sync`) | `REL`, `REL_OUT` y `REL_IN` viajan en la misma trama con un solo CRC: ninguna imagen de caída contiene el registro sin sus entradas ni las entradas sin el registro (I-21). |
+| R2 | Caída en cualquier operación mutante de un `ChangeSet` que **borra** relaciones | `N` o `N+1` | `N` o `N+1` (`Sync`) | Igual: las tres claves se borran en la misma trama; no queda una entrada colgante ni un registro sin entradas. |
+| R3 | Caída durante el `ChangeSet` que borra las últimas relaciones de una unidad **y** la archiva | `N` o `N+1` | `N` o `N+1` (`Sync`) | O la unidad sigue `Active` con sus relaciones, o está archivada sin ninguna: nunca archivada con una relación viva (criterio 4 de ADR-0014; UNIT-36). |
+| R4 | Un `ChangeSet` se abandona (`abort`) o se rechaza una operación (archivar o borrar una unidad con relaciones vivas) antes de confirmar | `N` | `N` | Nada llegó al WAL; el rechazo no marca el `ChangeSet` como roto y el resto de sus operaciones sigue siendo válido. |
+| R5 | Daño del medio que respeta los CRC del motor (equivalente a parchear una SST y recalcular sus CRC): falta un `REL_OUT` o un `REL_IN`, falta el `REL`, o una relación apunta a una unidad no `Active` | — | — | `verify_units` informa UNIT-36. El recorrido por índice no contesta con datos que sabe dañados: una entrada de índice sin `REL` es `Corruption`. |
+
+**Cómo se verifica** (`crates/kerno-units/tests/crash.rs` y `relations.rs`).
+
+| Prueba | Filas |
+|---|---|
+| `{emulated_log,kerno}::relations_every_point_{power_loss,process_kill}` (caída antes de cada operación mutante de 7 `ChangeSet` con altas y bajas de relaciones y un archivado final; 4 semillas; desgarro a 1 B en los puntos impares; tras recuperar, el almacén igual al del oráculo, `verify_units` limpio, relaciones vivas iguales al modelo, recorrido por índice igual al de referencia, y la base acepta una relación nueva y su borrado) | R1, R2, R3 |
+| `{emulated_log,kerno}::abort_leaves_no_relation`, `archive_and_delete_are_rejected_with_live_relations` | R4 |
+| `{emulated_log,kerno}::verifier_reports_index_damage` | R5 |
+
+Las filas R1–R3 no se repiten en `Buffered` ni con `fsync` fallido o disco lleno: el registro y los índices usan el mismo camino de confirmación que cualquier otro `ChangeSet` (filas U2, U4, U5 y U9 de la sección 7, que cubren esos modos sin depender del contenido del `ChangeSet`).

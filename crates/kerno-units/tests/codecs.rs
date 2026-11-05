@@ -346,7 +346,7 @@ fn every_rule_is_rejected_with_its_class() {
     let cases: Vec<(u8, Vec<u8>, Vec<u8>)> = vec![
         (1, vec![], lv.clone()),
         (1, vec![0x11; 17], hv.clone()),
-        (2, vec![0x40], vec![]),
+        (2, vec![0x43], vec![]),
         (3, hk[..16].to_vec(), hv.clone()),
         (4, vec![0x01, 0xC3, 0x28], lv.clone()),
         (5, [&rk[..17], &[0; 8][..]].concat(), rv.clone()),

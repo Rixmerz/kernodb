@@ -24,6 +24,27 @@ impl fmt::Display for UnitId {
     }
 }
 
+/// Identifier of a relation (an edge between two units): 16 opaque bytes
+/// drawn from the same source as unit ids (ADR-0014, E4-02).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RelationId(pub [u8; 16]);
+
+impl RelationId {
+    pub fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+}
+
+impl fmt::Display for RelationId {
+    /// Lower-case hex, 32 digits, like [`UnitId`].
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for b in self.0 {
+            write!(f, "{b:02x}")?;
+        }
+        Ok(())
+    }
+}
+
 /// Revision number of a unit, 1-based.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RevNo(pub u64);
@@ -99,8 +120,10 @@ byte_enum!(
 pub type ChangeKind = RevisionKind;
 
 byte_enum!(
-    /// `CHANGESET.purpose`.
-    Purpose { Application = 0, Retention = 1, Maintenance = 2 }
+    /// `CHANGESET.purpose`. `Relation` marks an application change set that
+    /// only creates or deletes relations (no members, E4-02); the layer
+    /// records it, a caller never passes it.
+    Purpose { Application = 0, Retention = 1, Maintenance = 2, Relation = 3 }
 );
 
 /// The name the design uses (§6.3).
@@ -110,3 +133,52 @@ byte_enum!(
     /// `LAYER_META.history_policy` (its semantics are E3-05's).
     HistoryPolicy { None = 0, Audit = 1, Versioned = 2 }
 );
+
+byte_enum!(
+    /// How a relation came to exist (`REL.provenance`, ADR-0014). `Declared`
+    /// is the only kind a caller asserts by itself; the others carry an
+    /// origin, and `Inferred` also a confidence, so that an inferred relation
+    /// is never read as a declared one (I-39).
+    ProvenanceKind { Declared = 0, Imported = 1, Algorithmic = 2, Inferred = 3 }
+);
+
+/// Which side of a unit a relation is followed from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Direction {
+    /// Relations whose `from` is the unit.
+    Out,
+    /// Relations whose `to` is the unit.
+    In,
+}
+
+/// Provenance of a relation: mandatory on every relation (ADR-0014, E4-02).
+/// There is no default and no variant-less form, so a relation cannot be
+/// written without saying where it comes from, and a declared relation
+/// carries neither origin nor confidence while an inferred one carries both
+/// (I-39).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RelationProvenance {
+    /// Asserted by a caller of the database.
+    Declared,
+    /// Brought in from another system; `source` names it (1..=256 bytes).
+    Imported { source: Vec<u8> },
+    /// Computed by a deterministic procedure; `origin` names it (1..=256 bytes).
+    Algorithmic { origin: Vec<u8> },
+    /// Guessed with some confidence, in thousandths (`0..=1000`).
+    Inferred { origin: Vec<u8>, confidence_permille: u16 },
+}
+
+impl RelationProvenance {
+    pub fn kind(&self) -> ProvenanceKind {
+        match self {
+            RelationProvenance::Declared => ProvenanceKind::Declared,
+            RelationProvenance::Imported { .. } => ProvenanceKind::Imported,
+            RelationProvenance::Algorithmic { .. } => ProvenanceKind::Algorithmic,
+            RelationProvenance::Inferred { .. } => ProvenanceKind::Inferred,
+        }
+    }
+
+    pub fn is_declared(&self) -> bool {
+        matches!(self, RelationProvenance::Declared)
+    }
+}

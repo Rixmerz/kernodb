@@ -75,13 +75,13 @@ use std::ops::Bound;
 use kerno_core::contract::{Engine, Snapshot, TxnEngine};
 
 use crate::codec::{
-    ChangeSetRecord, CsMember, Key, LAYER_MARK_NAME, LayerMeta, Record, RevisionMeta, TAG_REV_META, TAG_REV_PAYLOAD,
-    UnitHead,
+    Adjacency, ChangeSetRecord, CsMember, Key, LAYER_MARK_NAME, LayerMeta, Record, RelationRecord, RevisionMeta,
+    TAG_REV_META, TAG_REV_PAYLOAD, UnitHead,
 };
 use crate::db::{MAX_POLICY_UNIT_TYPE_LEN, UnitDb, UnitSnapshot};
 use crate::error::{DecodeError, ErrorClass, UnitError, UnitRule};
 use crate::payload::{PayloadRule, verify_payload};
-use crate::types::{CommitSeq, HistoryPolicy, Lifecycle, Purpose, RevNo, RevisionKind, UnitId};
+use crate::types::{CommitSeq, HistoryPolicy, Lifecycle, Purpose, RelationId, RevNo, RevisionKind, UnitId};
 
 /// Keys read per engine scan.
 pub const VERIFY_PAGE: usize = 32;
@@ -107,6 +107,9 @@ pub enum CrossRule {
     Unit34,
     /// A revision that changed between two snapshots (IU-1).
     Unit35,
+    /// A relation and its adjacency entries disagree, or a relation has an
+    /// end that is not an `Active` unit (E4-02, ADR-0014, I-21).
+    Unit36,
 }
 
 impl CrossRule {
@@ -200,6 +203,8 @@ pub struct VerifyCounts {
     pub payloads: u64,
     pub change_sets: u64,
     pub members: u64,
+    /// `REL` records.
+    pub relations: u64,
     /// Keys with a tag this layer does not know.
     pub unknown: u64,
 }
@@ -307,6 +312,12 @@ struct State {
     bad_change_sets: BTreeSet<CommitSeq>,
     members: BTreeMap<CommitSeq, Vec<(u32, CsMember)>>,
     bad_members: BTreeSet<CommitSeq>,
+    relations: BTreeMap<RelationId, RelationRecord>,
+    bad_relations: BTreeSet<RelationId>,
+    adj_out: BTreeMap<(UnitId, String, RelationId), UnitId>,
+    adj_in: BTreeMap<(UnitId, String, RelationId), UnitId>,
+    /// Relations with an adjacency entry that does not decode.
+    bad_adjacency: BTreeSet<RelationId>,
 }
 
 fn key_of(k: Key) -> Vec<u8> {
@@ -325,6 +336,9 @@ fn describe(k: &Key) -> String {
         Key::RevPayload { unit, rev } => format!("REV_PAYLOAD of unit {unit} rev {rev}"),
         Key::ChangeSet { seq } => format!("CHANGESET {seq}"),
         Key::CsMember { seq, ordinal } => format!("CS_MEMBER {seq}/{ordinal}"),
+        Key::Relation { edge } => format!("REL {edge}"),
+        Key::RelationOut { unit, edge, .. } => format!("REL_OUT of unit {unit} for relation {edge}"),
+        Key::RelationIn { unit, edge, .. } => format!("REL_IN of unit {unit} for relation {edge}"),
     }
 }
 
@@ -417,6 +431,12 @@ impl State {
                     Key::CsMember { seq, .. } => {
                         self.bad_members.insert(*seq);
                     }
+                    Key::Relation { edge } => {
+                        self.bad_relations.insert(*edge);
+                    }
+                    Key::RelationOut { edge, .. } | Key::RelationIn { edge, .. } => {
+                        self.bad_adjacency.insert(*edge);
+                    }
                     _ => {}
                 }
                 self.decode_error(k, crate::db::context(e, &describe(&decoded_key)));
@@ -460,6 +480,16 @@ impl State {
             Record::CsMember { seq, ordinal, member } => {
                 self.counts.members += 1;
                 self.members.entry(seq).or_default().push((ordinal, member));
+            }
+            Record::Relation { edge, record } => {
+                self.counts.relations += 1;
+                self.relations.insert(edge, record);
+            }
+            Record::RelationOut { unit, relation_type, edge, adjacency: Adjacency { other } } => {
+                self.adj_out.insert((unit, relation_type, edge), other);
+            }
+            Record::RelationIn { unit, relation_type, edge, adjacency: Adjacency { other } } => {
+                self.adj_in.insert((unit, relation_type, edge), other);
             }
         }
     }
@@ -508,6 +538,80 @@ impl State {
         self.heads = heads;
         self.check_change_sets();
         self.check_revision_provenance();
+        self.check_relations();
+    }
+
+    /// I-21 for relations (UNIT-36): every `REL` has exactly its two
+    /// adjacency entries, every adjacency entry has its `REL`, and both ends
+    /// of a relation are `Active` units (archiving or deleting a unit with
+    /// relations is refused, ADR-0014).
+    fn check_relations(&mut self) {
+        let relations = std::mem::take(&mut self.relations);
+        let (adj_out, adj_in) = (std::mem::take(&mut self.adj_out), std::mem::take(&mut self.adj_in));
+        for (edge, r) in &relations {
+            let rk = key_of(Key::Relation { edge: *edge });
+            if r.created_seq.0 > self.seq {
+                self.cross(
+                    CrossRule::Unit36,
+                    rk.clone(),
+                    format!("relation {edge}: created_seq {} after the snapshot {}", r.created_seq, self.seq),
+                );
+            }
+            if !self.bad_adjacency.contains(edge) {
+                let outs = adj_out.get(&(r.from, r.relation_type.clone(), *edge));
+                let ins = adj_in.get(&(r.to, r.relation_type.clone(), *edge));
+                if outs != Some(&r.to) {
+                    self.cross(
+                        CrossRule::Unit36,
+                        rk.clone(),
+                        format!("relation {edge}: REL_OUT entry missing or wrong"),
+                    );
+                }
+                if ins != Some(&r.from) {
+                    self.cross(
+                        CrossRule::Unit36,
+                        rk.clone(),
+                        format!("relation {edge}: REL_IN entry missing or wrong"),
+                    );
+                }
+            }
+            for unit in [r.from, r.to] {
+                let problem = match self.heads.get(&unit) {
+                    Some(h) if h.lifecycle == Lifecycle::Active => None,
+                    Some(h) => Some(format!("is {:?}", h.lifecycle)),
+                    None if self.bad_heads.contains(&unit) => None,
+                    None => Some("does not exist".to_owned()),
+                };
+                if let Some(p) = problem {
+                    self.cross(CrossRule::Unit36, rk.clone(), format!("relation {edge}: unit {unit} {p}"));
+                }
+            }
+        }
+        for (side, entries) in [("REL_OUT", &adj_out), ("REL_IN", &adj_in)] {
+            for (unit, ty, edge) in entries.keys() {
+                if self.bad_relations.contains(edge) {
+                    continue;
+                }
+                let owned = relations.get(edge).is_some_and(|r| {
+                    r.relation_type == *ty && if side == "REL_OUT" { r.from == *unit } else { r.to == *unit }
+                });
+                if !owned {
+                    let k = if side == "REL_OUT" {
+                        Key::RelationOut { unit: *unit, relation_type: ty.clone(), edge: *edge }
+                    } else {
+                        Key::RelationIn { unit: *unit, relation_type: ty.clone(), edge: *edge }
+                    };
+                    self.cross(
+                        CrossRule::Unit36,
+                        key_of(k),
+                        format!("{side} entry of unit {unit} for relation {edge} has no matching REL"),
+                    );
+                }
+            }
+        }
+        self.relations = relations;
+        self.adj_out = adj_out;
+        self.adj_in = adj_in;
     }
 
     fn check_mark(&mut self) {
@@ -774,6 +878,8 @@ impl State {
             let shape_ok = match rec.purpose {
                 Purpose::Maintenance => rec.member_count == 0,
                 Purpose::Application | Purpose::Retention => rec.member_count >= 1,
+                // E4-02: a change set that only creates or deletes relations.
+                Purpose::Relation => rec.member_count == 0,
             };
             if !shape_ok {
                 self.cross(

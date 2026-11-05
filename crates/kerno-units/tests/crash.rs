@@ -20,6 +20,11 @@
 //!   frame is dropped whole.
 //! * `wal_independence` — flushes, WAL rotation and recycling never change a
 //!   unit's history (I-20).
+//! * `relations_every_point` (E4-02) — a crash before every mutating I/O
+//!   operation of a scenario of change sets that create and delete relations:
+//!   the relation record and its two adjacency entries are all there or all
+//!   absent (I-21), the store is the one after a whole prefix of change sets,
+//!   and the adjacency path equals the reference traversal.
 //!
 //! `SPIKE_SEEDS=<n>` sets the seeds of every suite, `SPIKE_SEED=<n>` reruns
 //! one, `SPIKE_POINT=<n>` one point of a sweep.
@@ -30,6 +35,7 @@ use std::collections::BTreeSet;
 
 use harness::units::*;
 use kerno_core::Durability;
+use kerno_core::contract::TxnEngine;
 use kerno_storage::KernoDb;
 use kerno_storage::format::header::HEADER_LEN;
 use kerno_testkit::emulated::Emulated;
@@ -600,6 +606,249 @@ fn wal_independence(preallocate: bool) {
     verified(&db, "after a power loss");
 }
 
+// ------------------------------------------------------------ relations_every_point
+
+/// A relation as the test models it: `(from, to, relation_type)`, the ends as
+/// indexes into the six units of step 1.
+type RelTuple = (usize, usize, &'static str);
+
+/// One change set of the relation scenario.
+enum RelOp {
+    Create(RelTuple),
+    /// Deletes the `n`-th live relation in creation order.
+    DeleteNth(usize),
+    /// Deletes every relation that touches the unit, then archives it.
+    DetachAndArchive(usize),
+}
+
+const REL_TYPES: [&str; 3] = ["cites", "cite", "refines"];
+const REL_UNITS: usize = 6;
+const REL_STEPS: u64 = 7;
+
+/// Step 1 creates six units and two relations; steps 2..=6 create two or
+/// three relations and maybe delete one; step 7 detaches and archives unit 5.
+fn relation_plan(seed: u64) -> Vec<Vec<RelOp>> {
+    let mut rng = Rng::new(seed ^ 0xE402);
+    let mut live = 0usize;
+    let mut plan = Vec::new();
+    for step in 1..=REL_STEPS {
+        let mut ops = Vec::new();
+        if step == REL_STEPS {
+            ops.push(RelOp::DetachAndArchive(REL_UNITS - 1));
+        } else {
+            for _ in 0..if step == 1 { 2 } else { rng.range(2, 4) } {
+                let t = (rng.below(REL_UNITS as u64) as usize, rng.below(REL_UNITS as u64) as usize);
+                ops.push(RelOp::Create((t.0, t.1, REL_TYPES[rng.below(3) as usize])));
+                live += 1;
+            }
+            if step > 1 && live > 0 && rng.chance(1, 2) {
+                ops.push(RelOp::DeleteNth(rng.below(live as u64) as usize));
+                live -= 1;
+            }
+        }
+        plan.push(ops);
+    }
+    plan
+}
+
+/// The live relations after `steps` change sets, from the plan alone.
+fn relation_model(plan: &[Vec<RelOp>], steps: usize) -> (Vec<RelTuple>, bool) {
+    let (mut live, mut archived) = (Vec::<RelTuple>::new(), false);
+    for ops in &plan[..steps] {
+        for op in ops {
+            match op {
+                RelOp::Create(t) => live.push(*t),
+                RelOp::DeleteNth(n) => {
+                    live.remove(*n);
+                }
+                RelOp::DetachAndArchive(u) => {
+                    live.retain(|(f, t, _)| f != u && t != u);
+                    archived = true;
+                }
+            }
+        }
+    }
+    (live, archived)
+}
+
+/// The world a relation scenario runs in: the units of step 1 and the live
+/// relations, in creation order.
+#[derive(Default)]
+struct RelWorld {
+    units: Vec<UnitId>,
+    live: Vec<(RelationId, RelTuple)>,
+}
+
+/// Change set `step` of the plan on `db` (ids reset per step, like the unit
+/// workload), updating `world` only when the change set commits.
+fn run_relation_step<E: TxnEngine>(
+    db: &UnitDb<E>,
+    ids: &StepIds,
+    step: u64,
+    ops: &[RelOp],
+    world: &mut RelWorld,
+) -> Result<(), UnitError> {
+    ids.start_step(step);
+    let mut cs = db.begin_changeset(ChangeMeta::default())?;
+    let mut staged = RelWorld { units: world.units.clone(), live: world.live.clone() };
+    if step == 1 {
+        for i in 0..REL_UNITS {
+            let n =
+                NewUnit { unit_type: "doc".into(), schema_version: 1, metadata: Vec::new(), payload: vec![i as u8] };
+            staged.units.push(cs.create(n)?);
+        }
+    }
+    for op in ops {
+        match op {
+            RelOp::Create((f, t, ty)) => {
+                let id = cs.create_relation(staged.units[*f], staged.units[*t], ty, RelationProvenance::Declared)?;
+                staged.live.push((id, (*f, *t, ty)));
+            }
+            RelOp::DeleteNth(n) => {
+                let (id, _) = staged.live.remove(*n);
+                cs.delete_relation(id)?;
+            }
+            RelOp::DetachAndArchive(u) => {
+                // Archiving first is refused: the unit still has relations.
+                if staged.live.iter().any(|(_, (f, t, _))| f == u || t == u) {
+                    assert!(matches!(cs.archive(staged.units[*u], None), Err(UnitError::UnitHasRelations { .. })));
+                }
+                for (id, _) in staged.live.iter().filter(|(_, (f, t, _))| f == u || t == u) {
+                    cs.delete_relation(*id)?;
+                }
+                staged.live.retain(|(_, (f, t, _))| f != u && t != u);
+                cs.archive(staged.units[*u], None)?;
+            }
+        }
+    }
+    cs.commit()?;
+    *world = staged;
+    Ok(())
+}
+
+/// What a relation scenario run did: change sets acknowledged, and
+/// attempted (the failed one may or may not have committed).
+fn run_relation_scenario<E: Target>(disk: &SimVfs, cfg: &UnitConfig, ids: &StepIds, plan: &[Vec<RelOp>]) -> (u64, u64) {
+    let Ok(db) = open_units::<E>(disk.as_vfs(), cfg) else { return (0, 0) };
+    let mut world = RelWorld::default();
+    for (i, ops) in plan.iter().enumerate() {
+        if run_relation_step(&db, ids, i as u64 + 1, ops, &mut world).is_err() {
+            return (i as u64, i as u64 + 1);
+        }
+    }
+    // Every step was acknowledged: a close that fails on the crashed device
+    // changes nothing about them.
+    let _ = db.close();
+    (plan.len() as u64, plan.len() as u64)
+}
+
+/// The raw store after each whole change set, from an undisturbed
+/// `Emulated<LogEngine>`.
+fn relation_oracle(plan: &[Vec<RelOp>]) -> Vec<Dump> {
+    let disk = SimVfs::new(0);
+    let ids = StepIds::new();
+    let cfg = unit_config(&ids, Durability::Sync);
+    let db = open_units::<Emulated<LogEngine>>(disk.as_vfs(), &cfg).expect("open the oracle");
+    let mut dumps = vec![raw(&db)];
+    let mut world = RelWorld::default();
+    for (i, ops) in plan.iter().enumerate() {
+        run_relation_step(&db, &ids, i as u64 + 1, ops, &mut world).expect("the oracle step");
+        dumps.push(raw(&db));
+    }
+    dumps
+}
+
+/// Recovered state `s`: whole prefix of change sets, adjacency coherent with
+/// the records, both read paths equal, and the live relations are the model's.
+fn check_relations<E: TxnEngine>(
+    db: &UnitDb<E>,
+    plan: &[Vec<RelOp>],
+    oracle: &[Dump],
+    lo: u64,
+    hi: u64,
+    ctx: &str,
+) -> u64 {
+    let s = seq(db);
+    assert!(lo <= s && s <= hi, "{ctx}: recovered {s} change sets, expected {lo}..={hi}");
+    let got = raw(db);
+    assert!(
+        got == oracle[s as usize],
+        "{ctx}: the store is not the one after {s} whole change sets: {}",
+        first_difference(&oracle[s as usize], &got)
+    );
+    verified(db, ctx);
+    let snap = db.snapshot().unwrap_or_else(|e| panic!("{ctx}: snapshot: {e}"));
+    let (want, archived) = relation_model(plan, s as usize);
+    let index = |u: UnitId| (u.0[8..].iter().fold(0u64, |a, b| (a << 8) | u64::from(*b)) & 0xFFFF) as usize - 1;
+    let mut got: Vec<RelTuple> = snap
+        .reference_relations(|_| true)
+        .unwrap_or_else(|e| panic!("{ctx}: reference_relations: {e}"))
+        .iter()
+        .map(|r| (index(r.from), index(r.to), *REL_TYPES.iter().find(|t| **t == r.relation_type).expect("type")))
+        .collect();
+    let mut want = want;
+    got.sort_unstable();
+    want.sort_unstable();
+    assert_eq!(got, want, "{ctx}: the live relations after {s} change sets");
+    if s >= 1 {
+        let units: Vec<UnitId> = (1..=REL_UNITS as u64).map(|n| unit_at_step(1, n)).collect();
+        for &u in &units {
+            for dir in [Direction::Out, Direction::In] {
+                let a = snap.relations_of(u, dir, None).unwrap_or_else(|e| panic!("{ctx}: relations_of: {e}"));
+                let b = snap.reference_relations_of(u, dir, None).expect("reference_relations_of");
+                assert_eq!(a, b, "{ctx}: adjacency path differs from the reference path");
+            }
+        }
+        let lifecycle = snap.get_unit(units[REL_UNITS - 1]).expect("get_unit").expect("unit").lifecycle;
+        assert_eq!(lifecycle == Lifecycle::Archived, archived, "{ctx}: unit 5 lifecycle after {s} change sets");
+    }
+    s
+}
+
+/// Id of the `n`-th (from 1) id minted in change set `step` ([`StepIds`]); in
+/// step 1 the units come first, so they are 1..=6.
+fn unit_at_step(step: u64, n: u64) -> UnitId {
+    let mut id = [0u8; 16];
+    id[8..].copy_from_slice(&((step << 16) + n).to_be_bytes());
+    UnitId(id)
+}
+
+fn relations_every_point<E: Target>(kind: CrashKind) {
+    let name = format!("relations_every_point {} {kind:?}", E::NAME);
+    for_each_seed(&name, seeds(4), |seed| {
+        let plan = relation_plan(seed);
+        let oracle = relation_oracle(&plan);
+        let ids = StepIds::new();
+        let cfg = unit_config(&ids, Durability::Sync);
+        let dry = SimVfs::new(0);
+        assert_eq!(run_relation_scenario::<E>(&dry, &cfg, &ids, &plan).0, REL_STEPS, "the dry run must complete");
+        let total = dry.mutating_ops() + 5;
+        eprintln!("{name} seed {seed}: {total} points");
+        for_each_point(&format!("{name} seed {seed}"), total, |point| {
+            let ctx = format!("{name} seed {seed}: crash before mutating op #{point} of {total}");
+            let disk = sweep_disk(seed, point);
+            disk.crash_after(point, kind);
+            let (acked, attempted) = run_relation_scenario::<E>(&disk, &cfg, &ids, &plan);
+            let image = disk.take_crash_image().unwrap_or_else(|| disk.crash_now(kind));
+            let db = open_units::<E>(image.as_vfs(), &cfg).unwrap_or_else(|e| panic!("{ctx}: recovery: {e}"));
+            let s = check_relations(&db, &plan, &oracle, acked, attempted, &ctx);
+            // The recovered database takes a relation, and a delete of it.
+            if s >= 1 {
+                ids.start_step(s + 1);
+                let (a, b) = (unit_at_step(1, 1), unit_at_step(1, 2));
+                let mut cs = db.begin_changeset(ChangeMeta::default()).expect("begin");
+                let r = cs.create_relation(a, b, "after", RelationProvenance::Declared).expect("create after recovery");
+                cs.commit().expect("commit after recovery");
+                verified(&db, &format!("{ctx}, after one more relation"));
+                let mut cs = db.begin_changeset(ChangeMeta::default()).expect("begin");
+                cs.delete_relation(r).expect("delete after recovery");
+                cs.commit().expect("commit");
+                verified(&db, &format!("{ctx}, after deleting it"));
+            }
+        });
+    });
+}
+
 // ------------------------------------------------------------ tests
 
 macro_rules! sweeps {
@@ -647,6 +896,14 @@ macro_rules! sweeps {
             #[test]
             fn recovery_reentrant_process_kill() {
                 super::recovery_reentrant::<E>(CrashKind::ProcessKill);
+            }
+            #[test]
+            fn relations_every_point_power_loss() {
+                super::relations_every_point::<E>(CrashKind::PowerLoss);
+            }
+            #[test]
+            fn relations_every_point_process_kill() {
+                super::relations_every_point::<E>(CrashKind::ProcessKill);
             }
         }
     };
