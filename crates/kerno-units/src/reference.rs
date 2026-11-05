@@ -29,6 +29,7 @@ use kerno_core::contract::{Engine, Snapshot};
 use crate::codec::{Key, RelationRecord, TAG_REL, TAG_UNIT_HEAD};
 use crate::db::{Relation, Unit, UnitSnapshot, corruption, scan_all};
 use crate::error::UnitError;
+use crate::index::UnitFilter;
 use crate::types::{Direction, Lifecycle, UnitId};
 
 /// Heads read per engine scan call.
@@ -77,6 +78,13 @@ impl<E: Engine> UnitSnapshot<E> {
     /// Every active unit of type `unit_type`, in unit id order.
     pub fn reference_by_type(&self, unit_type: &str) -> Result<Vec<Unit>, UnitError> {
         self.reference_scan(|u| u.unit_type == unit_type)
+    }
+
+    /// Every active unit matching `filter`, in unit id order: the definition
+    /// of what [`UnitSnapshot::indexed_scan`] (the index path) must return on
+    /// the same snapshot (E4-03, I-32).
+    pub fn reference_filter(&self, filter: &UnitFilter) -> Result<Vec<Unit>, UnitError> {
+        self.reference_scan(|u| filter.matches(&u.unit_type, u.schema_version))
     }
 }
 

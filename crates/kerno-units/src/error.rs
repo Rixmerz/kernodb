@@ -9,7 +9,8 @@
 
 use std::fmt;
 
-use crate::types::{HistoryPolicy, RelationId, RevNo, UnitId};
+use crate::index::IndexState;
+use crate::types::{CommitSeq, HistoryPolicy, RelationId, RevNo, UnitId};
 
 /// Class of a rejected record (`units-v1.md` §5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -213,6 +214,13 @@ pub enum UnitError {
         unit: UnitId,
         relation: RelationId,
     },
+    /// The primary index cannot answer at this snapshot (E4-03, I-23): it is
+    /// not `Ready` there. `watermark` is the commit its entries reflect, if
+    /// any was ever built. The reference path always can; so can a rebuild.
+    IndexNotReady {
+        state: IndexState,
+        watermark: Option<CommitSeq>,
+    },
 }
 
 impl fmt::Display for UnitError {
@@ -243,6 +251,12 @@ impl fmt::Display for UnitError {
                 f,
                 "unit {unit} still has live relations (for instance {relation}); delete them before archiving or deleting the unit"
             ),
+            UnitError::IndexNotReady { state, watermark: Some(w) } => {
+                write!(f, "the primary index is {state:?} (watermark {w}); rebuild it or use the reference path")
+            }
+            UnitError::IndexNotReady { state, watermark: None } => {
+                write!(f, "the primary index is {state:?} (never built); rebuild it or use the reference path")
+            }
         }
     }
 }

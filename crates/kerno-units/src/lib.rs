@@ -11,14 +11,16 @@
 //! E3-06 retention and GC ([`retention`]),
 //! and E3-07 the offline verifier `verify_units` ([`verify`]). E4-01 adds the
 //! index-free reference query path ([`reference`]), and E4-02 declared
-//! relations with their adjacency indexes ([`db`], ADR-0014). This crate stays separate from
-//! `kerno-storage`.
+//! relations with their adjacency indexes ([`db`], ADR-0014). E4-03 adds the
+//! primary index with basic filters and its freshness state ([`index`],
+//! ADR-0007). This crate stays separate from `kerno-storage`.
 
 pub mod clock;
 pub mod codec;
 pub mod db;
 pub mod error;
 pub mod history;
+pub mod index;
 pub mod model;
 pub mod payload;
 pub mod reference;
@@ -37,14 +39,15 @@ pub use history::{
     AsOf, ChangeSetInfo, ChangeSetMember, Comparison, HistoryPage, HistoryQuery, Order, Provenance, Revision,
     RevisionView, UnitAt, UnitStates,
 };
+pub use index::{IndexState, IndexStatus, QueryOutcome, QuerySource, UnitFilter};
 pub use model::{ModelChange, ModelChangeSet, ModelError, ModelRevision, ModelUnitAt, UnitModel};
 pub use payload::{
     ContentHash, HashAlg, MAX_PAYLOAD_LEN, PayloadDecl, PayloadError, PayloadRule, VerifiedPayload, verify_payload,
 };
 pub use retention::{CompactReport, RetentionBudget, RetentionPacing, RetentionPolicy, RetentionReport, RetentionRule};
 pub use types::{
-    ChangeKind, ChangePurpose, ChangeSetId, CommitSeq, Direction, HistoryPolicy, Lifecycle, ProvenanceKind, Purpose,
-    RelationId, RelationProvenance, RevNo, RevisionId, RevisionKind, Timestamp, UnitId,
+    BuildOutcome, ChangeKind, ChangePurpose, ChangeSetId, CommitSeq, Direction, HistoryPolicy, Lifecycle,
+    ProvenanceKind, Purpose, RelationId, RelationProvenance, RevNo, RevisionId, RevisionKind, Timestamp, UnitId,
 };
 pub use verify::{
     CrossRule, UnitVerifyReport, VerifyCounts, VerifyFinding, VerifyRule, verify_engine, verify_immutable,

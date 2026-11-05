@@ -99,6 +99,8 @@ fn valid_key() -> impl Strategy<Value = Key> {
         (unit_id(), 1..=u64::MAX).prop_map(|(unit, r)| Key::RevPayload { unit, rev: RevNo(r) }),
         (1..=u64::MAX).prop_map(|s| Key::ChangeSet { seq: CommitSeq(s) }),
         (1..=u64::MAX, any::<u32>()).prop_map(|(s, ordinal)| Key::CsMember { seq: CommitSeq(s), ordinal }),
+        Just(Key::IndexMeta),
+        unit_id().prop_map(|unit| Key::IndexPrimary { unit }),
     ]
 }
 
@@ -255,7 +257,7 @@ proptest! {
 
     /// Arbitrary bytes never panic and are either accepted or one rule.
     #[test]
-    fn arbitrary_input_never_panics(tag in prop_oneof![Just(0x01u8), Just(0x10), Just(0x20), Just(0x21), Just(0x30), Just(0x31), any::<u8>()],
+    fn arbitrary_input_never_panics(tag in prop_oneof![Just(0x01u8), Just(0x10), Just(0x20), Just(0x21), Just(0x30), Just(0x31), Just(0x50), Just(0x51), any::<u8>()],
                                     tail in proptest::collection::vec(any::<u8>(), 0..30),
                                     value in proptest::collection::vec(any::<u8>(), 0..200)) {
         let key = [vec![tag], tail].concat();

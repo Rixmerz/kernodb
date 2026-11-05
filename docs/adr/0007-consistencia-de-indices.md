@@ -41,3 +41,17 @@ Pendiente. No debe codificarse ningún supuesto de este ADR de forma difícil de
 ## Decisión (2026-11-04)
 
 Aceptada la opción recomendada: el índice primario es consistente con el commit; los índices secundarios son derivados asíncronos con estado (`ready`/`building`/`stale`/`failed`) y watermark de secuencia. I-23 e I-24 se promueven en E4-03.
+
+## Evidencia (E4-03, 2026-11-05)
+
+E4-03 implementa el índice primario de `kerno-units` ([`index.rs`](../../crates/kerno-units/src/index.rs), [units-v1.md](../file-format/units-v1.md) §3.9–§3.10) con el estado `ready`/`building`/`stale`/`failed` y el watermark que esta decisión pide. Lo que se decidió al implementarlo:
+
+- **El watermark es la secuencia de commit del `ChangeSet` que escribió las entradas.** Ese `ChangeSet` (propósito `Index`) no cambia ninguna unidad, así que las entradas son función del estado en ese mismo commit y la capa puede escribir su propia secuencia (se predice, como en cualquier `ChangeSet`). Comparar con `Snapshot::seq()` es entonces exacto: `Ready` si son iguales, `Stale` si la instantánea es posterior.
+- **Cualquier commit posterior deja el índice `Stale`**, también uno que no toca ninguna unidad (una política, una relación). Es conservador a propósito: una consulta nunca declara una frescura que no puede demostrar. `UnitSnapshot::query` cae a la ruta de referencia y dice por qué; `indexed_scan` se niega.
+- **`Ready` y `Failed` se guardan; `Stale` se calcula; `Building` es del manejador.** Una construcción es un solo `ChangeSet` atómico, así que un estado `Building` guardado no existiría nunca de forma veraz tras una caída.
+- **La construcción lee solo las cabezas.** El daño más profundo es de `verify_units` (K-E3-7) y cada unidad que devuelve una consulta por índice se lee y verifica como en `get_unit`.
+
+**Punto abierto para el propietario.** Esta decisión dice que el índice primario es «consistente con el commit». E4-03 lo implementa como derivado con frescura explícita, porque el acta (§3, fila E4-03) y la invariante I-23 piden el estado y el watermark para él. La consecuencia es que, tras cualquier escritura, las consultas usan la ruta de referencia hasta la siguiente `rebuild_index`. Si un workload medido lo justifica, el siguiente paso es mantenerlo dentro de cada `ChangeSet` (siempre `Ready`, con el coste de escritura que K-E3-9 ya señala) o reconstruirlo en segundo plano; el formato y el estado ya lo admiten. Propuesta: decidirlo en E4-04, con un workload escrito, y no antes.
+
+**Límite conocido.** La construcción guarda todas las entradas en memoria y las escribe en un solo lote, así que está limitada por los límites del lote del motor (1 Mi operaciones y 64 MiB por defecto); por encima falla con `ChangeSetTooLarge` y el estado queda `Failed`.
+

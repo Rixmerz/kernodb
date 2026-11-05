@@ -44,6 +44,12 @@
 //!   without payload.
 //! * **Immutability** (UNIT-35, IU-1) between two snapshots:
 //!   [`verify_immutable`].
+//! * **The primary index** (UNIT-37, E4-03, I-23): `IDX_META` exists when
+//!   entries do, its watermark is not after the snapshot, it counts the
+//!   entries, and the entries are exactly the active units that did not change
+//!   after the watermark (`updated_seq <= watermark`): a unit that changed
+//!   since is the staleness the status declares, so only its existence is
+//!   checked.
 //!
 //! # Contracts
 //!
@@ -75,8 +81,8 @@ use std::ops::Bound;
 use kerno_core::contract::{Engine, Snapshot, TxnEngine};
 
 use crate::codec::{
-    Adjacency, ChangeSetRecord, CsMember, Key, LAYER_MARK_NAME, LayerMeta, Record, RelationRecord, RevisionMeta,
-    TAG_REV_META, TAG_REV_PAYLOAD, UnitHead,
+    Adjacency, ChangeSetRecord, CsMember, IndexMeta, Key, LAYER_MARK_NAME, LayerMeta, PrimaryEntry, Record,
+    RelationRecord, RevisionMeta, TAG_REV_META, TAG_REV_PAYLOAD, UnitHead,
 };
 use crate::db::{MAX_POLICY_UNIT_TYPE_LEN, UnitDb, UnitSnapshot};
 use crate::error::{DecodeError, ErrorClass, UnitError, UnitRule};
@@ -110,6 +116,9 @@ pub enum CrossRule {
     /// A relation and its adjacency entries disagree, or a relation has an
     /// end that is not an `Active` unit (E4-02, ADR-0014, I-21).
     Unit36,
+    /// The primary index disagrees with its `IDX_META` or with the units it
+    /// lists (E4-03, ADR-0007, I-23).
+    Unit37,
 }
 
 impl CrossRule {
@@ -205,6 +214,8 @@ pub struct VerifyCounts {
     pub members: u64,
     /// `REL` records.
     pub relations: u64,
+    /// `IDX_PRIMARY` entries.
+    pub index_entries: u64,
     /// Keys with a tag this layer does not know.
     pub unknown: u64,
 }
@@ -318,6 +329,10 @@ struct State {
     adj_in: BTreeMap<(UnitId, String, RelationId), UnitId>,
     /// Relations with an adjacency entry that does not decode.
     bad_adjacency: BTreeSet<RelationId>,
+    idx_meta: Option<IndexMeta>,
+    bad_idx_meta: bool,
+    idx_entries: BTreeMap<UnitId, PrimaryEntry>,
+    bad_idx_entries: BTreeSet<UnitId>,
 }
 
 fn key_of(k: Key) -> Vec<u8> {
@@ -339,6 +354,8 @@ fn describe(k: &Key) -> String {
         Key::Relation { edge } => format!("REL {edge}"),
         Key::RelationOut { unit, edge, .. } => format!("REL_OUT of unit {unit} for relation {edge}"),
         Key::RelationIn { unit, edge, .. } => format!("REL_IN of unit {unit} for relation {edge}"),
+        Key::IndexMeta => "IDX_META".into(),
+        Key::IndexPrimary { unit } => format!("IDX_PRIMARY of unit {unit}"),
     }
 }
 
@@ -437,6 +454,10 @@ impl State {
                     Key::RelationOut { edge, .. } | Key::RelationIn { edge, .. } => {
                         self.bad_adjacency.insert(*edge);
                     }
+                    Key::IndexMeta => self.bad_idx_meta = true,
+                    Key::IndexPrimary { unit } => {
+                        self.bad_idx_entries.insert(*unit);
+                    }
                     _ => {}
                 }
                 self.decode_error(k, crate::db::context(e, &describe(&decoded_key)));
@@ -491,6 +512,11 @@ impl State {
             Record::RelationIn { unit, relation_type, edge, adjacency: Adjacency { other } } => {
                 self.adj_in.insert((unit, relation_type, edge), other);
             }
+            Record::IndexMeta { meta } => self.idx_meta = Some(meta),
+            Record::IndexPrimary { unit, entry } => {
+                self.counts.index_entries += 1;
+                self.idx_entries.insert(unit, entry);
+            }
         }
     }
 
@@ -539,6 +565,71 @@ impl State {
         self.check_change_sets();
         self.check_revision_provenance();
         self.check_relations();
+        self.check_index();
+    }
+
+    /// I-23 for the primary index (UNIT-37): see the module documentation.
+    fn check_index(&mut self) {
+        let entries = std::mem::take(&mut self.idx_entries);
+        let meta_key = key_of(Key::IndexMeta);
+        match self.idx_meta {
+            None if self.bad_idx_meta => {}
+            None => {
+                let stored = entries.len() + self.bad_idx_entries.len();
+                if stored > 0 {
+                    self.cross(CrossRule::Unit37, meta_key, format!("{stored} IDX_PRIMARY entries without IDX_META"));
+                }
+            }
+            Some(meta) => self.check_index_against(&meta, &meta_key, &entries),
+        }
+        self.idx_entries = entries;
+    }
+
+    fn check_index_against(&mut self, meta: &IndexMeta, meta_key: &[u8], entries: &BTreeMap<UnitId, PrimaryEntry>) {
+        let watermark = meta.watermark.0;
+        if watermark > self.seq {
+            self.cross(
+                CrossRule::Unit37,
+                meta_key.to_vec(),
+                format!("IDX_META watermark {watermark} after the snapshot {}", self.seq),
+            );
+        }
+        if self.bad_idx_entries.is_empty() && meta.entries != entries.len() as u64 {
+            self.cross(
+                CrossRule::Unit37,
+                meta_key.to_vec(),
+                format!("IDX_META counts {} entries, {} stored", meta.entries, entries.len()),
+            );
+        }
+        let heads = std::mem::take(&mut self.heads);
+        for (unit, head) in heads.iter().filter(|(_, h)| h.updated_seq.0 <= watermark) {
+            let problem = match (head.lifecycle == Lifecycle::Active, entries.get(unit)) {
+                (true, Some(e)) if e.unit_type == head.unit_type && e.schema_version == head.schema_version => None,
+                (true, Some(_)) => Some("entry differs from the head"),
+                (true, None) if self.bad_idx_entries.contains(unit) => None,
+                (true, None) => Some("active unit without an entry"),
+                (false, Some(_)) => Some("entry of a unit that is not Active"),
+                (false, None) => None,
+            };
+            if let Some(p) = problem {
+                let detail = format!("unit {unit} unchanged since the watermark {watermark}: {p}");
+                self.cross(CrossRule::Unit37, key_of(Key::IndexPrimary { unit: *unit }), detail);
+            }
+        }
+        for unit in entries.keys() {
+            let problem = match heads.get(unit) {
+                None if self.bad_heads.contains(unit) => None,
+                None => Some("entry of a unit that does not exist".to_owned()),
+                Some(h) if h.created_seq.0 > watermark => {
+                    Some(format!("entry of a unit created at {} after the watermark {watermark}", h.created_seq))
+                }
+                Some(_) => None,
+            };
+            if let Some(p) = problem {
+                self.cross(CrossRule::Unit37, key_of(Key::IndexPrimary { unit: *unit }), format!("unit {unit}: {p}"));
+            }
+        }
+        self.heads = heads;
     }
 
     /// I-21 for relations (UNIT-36): every `REL` has exactly its two
@@ -879,7 +970,8 @@ impl State {
                 Purpose::Maintenance => rec.member_count == 0,
                 Purpose::Application | Purpose::Retention => rec.member_count >= 1,
                 // E4-02: a change set that only creates or deletes relations.
-                Purpose::Relation => rec.member_count == 0,
+                // E4-03: one that only writes primary-index records.
+                Purpose::Relation | Purpose::Index => rec.member_count == 0,
             };
             if !shape_ok {
                 self.cross(

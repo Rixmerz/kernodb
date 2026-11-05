@@ -21,7 +21,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use spec_decoder::Reject;
-use units_model::{ChangeSet, Class, Hash, Head, Layer, Member, Rec, RevMeta, RevPayload};
+use units_model::{ChangeSet, Class, Hash, Head, IdxMeta, IdxPrimary, Layer, Member, Rec, RevMeta, RevPayload};
 use vector_encoder::encode;
 
 const UNIT: [u8; 16] = [0xA0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
@@ -124,6 +124,14 @@ fn member() -> Member {
     Member { commit_seq: 57, ordinal: 1, unit_id: UNIT, rev_no: 2, kind: 2 }
 }
 
+fn idx_meta() -> IdxMeta {
+    IdxMeta { outcome: 0, watermark: 90, entries: 12 }
+}
+
+fn idx_primary() -> IdxPrimary {
+    IdxPrimary { unit_id: UNIT, unit_type: b"note".to_vec(), schema_version: 3 }
+}
+
 fn pos(name: &str, rec: Rec) -> Vector {
     let (key, value) = encode(&rec);
     Vector { name: name.into(), key, value, expect: Expect::Ok(rec) }
@@ -206,6 +214,17 @@ fn vectors() -> Vec<Vector> {
             }),
         ),
         pos("cs_member_one", Rec::Member(member())),
+        // E4-03: a change set that only writes index records.
+        pos("changeset_index", Rec::ChangeSet(ChangeSet { member_count: 0, purpose: 4, ..changeset() })),
+        pos("idx_meta_succeeded", Rec::IdxMeta(idx_meta())),
+        pos("idx_meta_failed_after_build", Rec::IdxMeta(IdxMeta { outcome: 1, ..idx_meta() })),
+        pos("idx_meta_failed_never_built", Rec::IdxMeta(IdxMeta { outcome: 1, watermark: 0, entries: 0 })),
+        pos("idx_meta_limits", Rec::IdxMeta(IdxMeta { outcome: 0, watermark: u64::MAX, entries: u64::MAX })),
+        pos("idx_primary_one", Rec::IdxPrimary(idx_primary())),
+        pos(
+            "idx_primary_limits",
+            Rec::IdxPrimary(IdxPrimary { unit_type: vec![b'x'; 64], schema_version: u32::MAX, ..idx_primary() }),
+        ),
     ];
 
     // Key rules (§2).
@@ -218,6 +237,12 @@ fn vectors() -> Vec<Vector> {
     v.push(neg_bytes("empty_key", 1, C, Vec::new(), lv.clone()));
     v.push(neg_bytes("tag_0x43", 2, I, [vec![0x43], ck[1..].to_vec()].concat(), cv.clone()));
     v.push(neg_bytes("tag_0xff", 2, I, vec![0xFF], Vec::new()));
+    // E4-03: 0x50 and 0x51 are known; 0x52 and 0x4F are not.
+    v.push(neg_bytes("tag_0x52", 2, I, vec![0x52], encode(&Rec::IdxMeta(idx_meta())).1));
+    let (mk, mv) = encode(&Rec::IdxMeta(idx_meta()));
+    let (pk, pv) = encode(&Rec::IdxPrimary(idx_primary()));
+    v.push(neg_bytes("idx_meta_key_long", 3, C, [mk.clone(), vec![0]].concat(), mv.clone()));
+    v.push(neg_bytes("idx_primary_key_short", 3, C, pk[..16].to_vec(), pv.clone()));
     v.push(neg_bytes("head_key_short", 3, C, hk.0[..16].to_vec(), hk.1.clone()));
     v.push(neg_bytes("layer_name_empty", 3, C, vec![0x01], lv.clone()));
     v.push(neg_bytes("layer_name_65", 3, C, [vec![0x01], vec![b'n'; 65]].concat(), lv.clone()));
@@ -250,6 +275,16 @@ fn vectors() -> Vec<Vector> {
     ));
     v.push(neg_bytes("changeset_trailing", 10, C, ck.clone(), [cv.clone(), vec![0]].concat()));
     v.push(neg_bytes("layer_trailing", 10, C, lk.clone(), [lv.clone(), vec![0, 0]].concat()));
+    v.push(neg_bytes("idx_meta_cut", 9, C, mk.clone(), mv[..mv.len() - 1].to_vec()));
+    v.push(neg_bytes("idx_primary_cut", 9, C, pk.clone(), pv[..pv.len() - 2].to_vec()));
+    v.push(neg_bytes("idx_meta_trailing", 10, C, mk.clone(), [mv.clone(), vec![0]].concat()));
+    v.push(neg_bytes("idx_primary_trailing", 10, C, pk.clone(), [pv.clone(), vec![0]].concat()));
+    v.push(neg_rec(
+        "idx_primary_type_65",
+        11,
+        C,
+        Rec::IdxPrimary(IdxPrimary { unit_type: vec![b't'; 65], ..idx_primary() }),
+    ));
     v.push(neg_rec("metadata_4097", 11, C, Rec::Head(Head { metadata: vec![0; 4097], ..head() })));
     v.push(neg_rec("actor_ref_257", 11, C, Rec::RevMeta(RevMeta { actor_ref: vec![0; 257], ..rev(2, 2, 1) })));
     v.push(neg_rec("correlation_1025", 11, C, Rec::ChangeSet(ChangeSet { correlation: vec![0; 1025], ..changeset() })));
@@ -262,11 +297,24 @@ fn vectors() -> Vec<Vector> {
     // Field values.
     v.push(neg_rec("unit_type_empty", 12, C, Rec::Head(Head { unit_type: Vec::new(), ..head() })));
     v.push(neg_rec("unit_type_not_utf8", 12, C, Rec::Head(Head { unit_type: vec![0xC3, 0x28], ..head() })));
+    v.push(neg_rec(
+        "idx_primary_type_empty",
+        12,
+        C,
+        Rec::IdxPrimary(IdxPrimary { unit_type: Vec::new(), ..idx_primary() }),
+    ));
     v.push(neg_rec("lifecycle_3", 13, C, Rec::Head(Head { lifecycle: 3, ..head() })));
     v.push(neg_rec("kind_0", 13, C, Rec::RevMeta(rev(0, 2, 1))));
     v.push(neg_rec("kind_7", 13, C, Rec::RevMeta(rev(7, 2, 1))));
     v.push(neg_rec("member_kind_7", 13, C, Rec::Member(Member { kind: 7, ..member() })));
-    v.push(neg_rec("purpose_4", 13, C, Rec::ChangeSet(ChangeSet { purpose: 4, ..changeset() })));
+    v.push(neg_rec("purpose_5", 13, C, Rec::ChangeSet(ChangeSet { purpose: 5, ..changeset() })));
+    v.push(neg_rec("idx_meta_outcome_2", 13, C, Rec::IdxMeta(IdxMeta { outcome: 2, ..idx_meta() })));
+    v.push(neg_rec(
+        "idx_meta_entries_without_watermark",
+        13,
+        C,
+        Rec::IdxMeta(IdxMeta { outcome: 1, watermark: 0, entries: 1 }),
+    ));
     v.push(neg_rec("history_policy_3", 13, C, Rec::Layer(Layer { history_policy: 3, ..layer() })));
     v.push(neg_rec("alg_2", 13, C, Rec::Head(Head { content_hash: Hash { alg: 2, digest: [0; 32] }, ..head() })));
     v.push(neg_rec("payload_codec_1", 13, C, Rec::RevMeta(RevMeta { payload_codec: 1, ..rev(2, 2, 1) })));
@@ -300,6 +348,7 @@ fn vectors() -> Vec<Vector> {
         Rec::RevMeta(RevMeta { payload_len: (1 << 26) + 1, ..rev(2, 2, 1) }),
     ));
     v.push(neg_rec("commit_seq_zero", 23, C, Rec::RevMeta(RevMeta { commit_seq: 0, ..rev(2, 2, 1) })));
+    v.push(neg_rec("idx_meta_watermark_zero", 23, C, Rec::IdxMeta(IdxMeta { watermark: 0, entries: 0, ..idx_meta() })));
     v.push(neg_rec(
         "member_count_over",
         24,
@@ -465,8 +514,17 @@ fn production_decode(key: &[u8], value: &[u8]) -> Result<Rec, Reject> {
             rev_no: member.rev_no.0,
             kind: member.kind.to_byte(),
         }),
-        // The structure vectors are the E3 records; relation records (tags
-        // 0x40..=0x42) are covered by tests/relations.rs.
+        Record::IndexMeta { meta } => Rec::IdxMeta(IdxMeta {
+            outcome: meta.outcome.to_byte(),
+            watermark: meta.watermark.0,
+            entries: meta.entries,
+        }),
+        Record::IndexPrimary { unit, entry } => Rec::IdxPrimary(IdxPrimary {
+            unit_id: unit.0,
+            unit_type: entry.unit_type.into_bytes(),
+            schema_version: entry.schema_version,
+        }),
+        // Relation records (tags 0x40..=0x42) are covered by tests/relations.rs.
         Record::Relation { .. } | Record::RelationOut { .. } | Record::RelationIn { .. } => {
             unreachable!("no structure vector has a relation tag")
         }

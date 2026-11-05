@@ -4,7 +4,7 @@
 |---|---|
 | Estado | Borrador normativo (E3-01); lo fija el propietario al cerrar E3-01 |
 | Versión de la capa | `layer_version = 1`, `envelope_version = 1` |
-| Relacionado con | [diseño de la Etapa 3](../architecture/etapa3-design.md) §2, [acta E3-00](../architecture/etapa3-acta-e3-00.md), [ADR-0004](../adr/0004-historial-de-revisiones.md), [ADR-0008](../adr/0008-serializacion-documental-y-hashes.md) (aceptado), [formato v1 del motor](v1.md) |
+| Relacionado con | [diseño de la Etapa 3](../architecture/etapa3-design.md) §2, [acta E3-00](../architecture/etapa3-acta-e3-00.md), [ADR-0004](../adr/0004-historial-de-revisiones.md), [ADR-0007](../adr/0007-consistencia-de-indices.md) (índice primario, E4-03), [ADR-0008](../adr/0008-serializacion-documental-y-hashes.md) (aceptado), [ADR-0014](../adr/0014-representacion-fisica-de-relaciones.md) (relaciones, E4-02), [formato v1 del motor](v1.md) |
 
 Este documento especifica, byte a byte, las claves y los valores que la capa de unidades guarda como **claves y valores ordinarios** del motor. No cambia ningún byte del formato v1 del motor ([v1.md](v1.md)): para el motor, todo lo de aquí son bytes opacos. Una implementación de la capa y el decodificador independiente de `crates/kerno-units/tests/spec_decoder` se escriben **solo** desde este texto. Las palabras «debe» y «no debe» son normativas.
 
@@ -62,11 +62,13 @@ Una clave es `tag: u8` seguido de los campos de la tabla. Longitudes en bytes, t
 | `0x40` | `REL` (E4-02) | `edge_id[16]` | 17 |
 | `0x41` | `REL_OUT` (E4-02) | `unit_id[16]` ‖ `relation_type` (1..=64 B de UTF-8 sin NUL) ‖ `0x00` ‖ `edge_id[16]` | 35..=98 |
 | `0x42` | `REL_IN` (E4-02) | igual que `REL_OUT`, con `unit_id` = el extremo `to` | 35..=98 |
+| `0x50` | `IDX_META` (E4-03) | ninguno: hay un solo registro, el del índice primario | 1 |
+| `0x51` | `IDX_PRIMARY` (E4-03) | `unit_id[16]` | 17 |
 
 Reglas de clave, evaluadas **en este orden**:
 
 - **UNIT-1** (`Corruption`): un tag desconocido cuyo nibble alto es `0x0`, `0x1`, `0x2` o `0x3` (`0x00`, `0x02..=0x0F`, `0x11..=0x1F`, `0x22..=0x2F`, `0x32..=0x3F`) está dentro del rango de una etiqueta conocida y es corrupción. Una clave vacía también (no tiene tag).
-- **UNIT-2** (`IncompatibleLayer`): un tag con nibble alto `0x4..=0xF`, salvo `0x40..=0x42` (E4-02), lo escribió una capa más nueva. Una capa anterior a E4-02 rechaza por esta regla un almacén con relaciones (véase ADR-0014, «Consecuencias»).
+- **UNIT-2** (`IncompatibleLayer`): un tag con nibble alto `0x4..=0xF`, salvo `0x40..=0x42` (E4-02) y `0x50..=0x51` (E4-03), lo escribió una capa más nueva. Una capa anterior a E4-02 rechaza por esta regla un almacén con relaciones (véase ADR-0014, «Consecuencias»), y una anterior a E4-03 uno con el índice primario construido. Un almacén sin ninguno de esos registros se abre igual con todas ellas: el índice solo existe tras una llamada a `rebuild_index`.
 - **UNIT-3** (`Corruption`): la longitud de la clave no es la de la tabla.
 - **UNIT-4** (`Corruption`): el `name` de `LAYER_META` no es UTF-8 válido.
 - **UNIT-5** (`Corruption`): `rev_no = 0` en `REV_META`/`REV_PAYLOAD`, o `commit_seq = 0` en `CHANGESET`/`CS_MEMBER`. Los números de revisión y las secuencias de commit empiezan en 1.
@@ -137,7 +139,7 @@ El valor es la carga útil **tal cual**: sin `envelope_version`, sin longitud, s
 | `envelope_version`, `reserved_flags` | `u8`, `u8` | §1.1 |
 | `created_at` | `i64` | ninguna |
 | `member_count` | `u32` | ≤ 2^20 (UNIT-24) |
-| `purpose` | `u8` | `Application=0`, `Retention=1`, `Maintenance=2`, `Relation=3` (UNIT-13). `Relation` lo escribe la capa para un `ChangeSet` de aplicación que solo crea o borra relaciones (sin miembros, E4-02) |
+| `purpose` | `u8` | `Application=0`, `Retention=1`, `Maintenance=2`, `Relation=3`, `Index=4` (UNIT-13). `Relation` lo escribe la capa para un `ChangeSet` de aplicación que solo crea o borra relaciones (sin miembros, E4-02). `Index` lo escribe para el `ChangeSet` que construye el índice primario o anota que su construcción falló (sin miembros, E4-03) |
 | `reason`, `actor_ref`, `source_ref`, `correlation` | `bytes(1024)` cada uno | |
 
 ### 3.6 `CS_MEMBER` (`0x31`)
@@ -178,6 +180,29 @@ Entradas del índice de adyacencia, escritas y borradas en el mismo `ChangeSet` 
 
 Tamaño fijo: 18 B.
 
+### 3.9 `IDX_META` (`0x50`, E4-03)
+
+El estado de frescura del índice primario que se guarda ([ADR-0007](../adr/0007-consistencia-de-indices.md), I-23). Hay un solo registro. Lo escribe el `ChangeSet` de propósito `Index` que construye el índice (`UnitDb::rebuild_index`), en la misma transacción que las entradas y el borrado de las anteriores (I-21): un almacén tiene la generación anterior entera o la nueva entera.
+
+| Campo | Tipo | Restricción |
+|---|---|---|
+| `envelope_version`, `reserved_flags` | `u8`, `u8` | §1.1 |
+| `outcome` | `u8` | `Succeeded=0`, `Failed=1` (UNIT-13): cómo acabó el último intento de construcción. `Building` y `Stale` **no se guardan**: el primero es de un manejador en marcha y el segundo se calcula contra una instantánea |
+| `watermark` | `u64` | la secuencia de commit que reflejan las entradas: la del `ChangeSet` que las escribió (no cambia ninguna unidad, así que las entradas son función del estado en ese commit). `0` solo si nunca se construyó nada; con `Succeeded` es ≥ 1 (UNIT-23) |
+| `entries` | `u64` | número de entradas `IDX_PRIMARY` de esa generación. Con `watermark = 0` es `0` (UNIT-13) |
+
+Tamaño fijo: 19 B. Con `Failed`, `watermark` y `entries` son los de la generación que sigue guardada (o `0` y `0` si no hay ninguna): un intento fallido no cambia ninguna entrada. El estado que ve una consulta es función de este registro y de su instantánea: `Failed` si `outcome = Failed`; si no, `Ready` cuando `watermark` es la secuencia de la instantánea y `Stale` cuando es anterior; sin registro, `Stale` sin watermark. Un `watermark` posterior a la instantánea es corrupción.
+
+### 3.10 `IDX_PRIMARY` (`0x51`, E4-03)
+
+La entrada del índice primario de una unidad `Active`: los campos de `UNIT_HEAD` que lee un filtro básico. Solo hay entrada para las unidades `Active` (las archivadas y las borradas no la tienen). La clave ordena por `unit_id`, igual que `UNIT_HEAD`, así que recorrer el índice da las unidades en el mismo orden que la ruta de referencia.
+
+| Campo | Tipo | Restricción |
+|---|---|---|
+| `envelope_version`, `reserved_flags` | `u8`, `u8` | §1.1 |
+| `unit_type` | `str(64)` | no vacío (UNIT-12); el de la cabeza de la unidad |
+| `schema_version` | `u32` | ninguna; el de la cabeza de la unidad |
+
 ## 4. `ContentHash`
 
 | `alg` | Algoritmo | `digest` |
@@ -194,7 +219,7 @@ Cada regla lleva su clase de error: `Corruption` (los bytes no son lo que un esc
 | Id | Regla | Clase |
 |---|---|---|
 | UNIT-1 | Tag desconocido dentro del rango de una etiqueta conocida, o clave vacía | `Corruption` |
-| UNIT-2 | Tag con nibble alto `0x4..=0xF`, salvo `0x40..=0x42` | `IncompatibleLayer` |
+| UNIT-2 | Tag con nibble alto `0x4..=0xF`, salvo `0x40..=0x42` y `0x50..=0x51` | `IncompatibleLayer` |
 | UNIT-3 | Longitud de clave distinta de la de §2 | `Corruption` |
 | UNIT-4 | `name` de `LAYER_META` no es UTF-8 | `Corruption` |
 | UNIT-5 | `rev_no = 0` o `commit_seq = 0` en la clave | `Corruption` |
@@ -204,8 +229,8 @@ Cada regla lleva su clase de error: `Corruption` (los bytes no son lo que un esc
 | UNIT-9 | Un campo sobrepasa el final del valor (valor truncado, incluido el vacío) | `Corruption` |
 | UNIT-10 | Bytes sobrantes tras el último campo | `Corruption` |
 | UNIT-11 | El prefijo de longitud de un `str`/`bytes` supera el máximo del campo | `Corruption` |
-| UNIT-12 | `unit_type` o `relation_type` vacío o no UTF-8; `relation_type` con NUL (también en la clave de `REL_OUT`/`REL_IN`) | `Corruption` |
-| UNIT-13 | Valor de enumeración fuera de la tabla: `lifecycle`, `kind`, `purpose`, `history_policy`, `alg`, `provenance`; `payload_codec ≠ 0`; o una procedencia de `REL` incoherente (§3.7) | `Corruption` |
+| UNIT-12 | `unit_type` o `relation_type` vacío o no UTF-8 (también el de `IDX_PRIMARY`); `relation_type` con NUL (también en la clave de `REL_OUT`/`REL_IN`) | `Corruption` |
+| UNIT-13 | Valor de enumeración fuera de la tabla: `lifecycle`, `kind`, `purpose`, `history_policy`, `alg`, `provenance`, `outcome`; `payload_codec ≠ 0`; una procedencia de `REL` incoherente (§3.7); o un `IDX_META` con `entries ≠ 0` y `watermark = 0` (§3.9) | `Corruption` |
 | UNIT-14 | `alg = 0` con los 28 bytes finales del `digest` distintos de cero | `Corruption` |
 | UNIT-15 | `layer_version = 0` | `Corruption` |
 | UNIT-16 | `layer_version > 1` | `IncompatibleLayer` |
@@ -215,7 +240,7 @@ Cada regla lleva su clase de error: `Corruption` (los bytes no son lo que un esc
 | UNIT-20 | `REV_META`: `restored_from` incoherente con `kind` y `rev_no` (§3.3) | `Corruption` |
 | UNIT-21 | `REV_META`: `payload_present ∉ {0,1}`, o `Delete` con carga útil | `Corruption` |
 | UNIT-22 | `payload_len > 2^26` | `Corruption` |
-| UNIT-23 | `REV_META` o `REL`: `commit_seq` / `created_seq` = 0 | `Corruption` |
+| UNIT-23 | `REV_META` o `REL`: `commit_seq` / `created_seq` = 0; `IDX_META` con `outcome = Succeeded` y `watermark` = 0 | `Corruption` |
 | UNIT-24 | `CHANGESET`: `member_count > 2^20` | `Corruption` |
 | UNIT-25 | `CS_MEMBER`: `rev_no = 0` | `Corruption` |
 
@@ -245,10 +270,11 @@ El verificador offline (`verify_units`, `crates/kerno-units/src/verify.rs`) reco
 | UNIT-30 | Registro huérfano: `REV_META`/`REV_PAYLOAD` sin `UNIT_HEAD`, `REV_PAYLOAD` sin su `REV_META`, `CS_MEMBER` sin su `CHANGESET` | IU-2, IU-4 |
 | UNIT-31 | Cabeza incoherente: falta un `REV_META` en `[oldest_rev, head_rev]`, hay `REV_META`/`REV_PAYLOAD` fuera de ese rango, la cabeza difiere del `REV_META` de `head_rev` (hash, longitud, esquema, metadatos, `updated_seq = commit_seq`, ciclo de vida deducido de `kind`), la revisión vigente no lápida no tiene carga útil, o `created_seq` no es el `commit_seq` de la revisión 1 (si está retenida; si no, es menor que el de `oldest_rev`) | IU-2 |
 | UNIT-32 | Cadena imposible: `Create` fuera de la revisión 1 o revisión 1 que no es `Create`, `parent_rev ≠ rev_no − 1`, `commit_seq` no estrictamente creciente o posterior a la instantánea, transición de ciclo de vida que ningún escritor produce (`Update`/`Archive`/`Restore` sobre no `Active`, `Unarchive` sobre no `Archived`, nada tras `Delete`), o `Archive`/`Unarchive`/`Restore` cuyo hash, longitud, esquema o metadatos difieren de los de su origen retenido | IU-3 |
-| UNIT-33 | Procedencia: un `REV_META` sin `CHANGESET` en su `commit_seq`, con un `CHANGESET` cuyo `purpose` no es `Application`, o sin un `CS_MEMBER` de ese `ChangeSet` que lo nombre (`unit_id`, `rev_no`, `kind`); miembros que no son exactamente los ordinales `0..member_count`; una unidad nombrada dos veces en un `ChangeSet`; `Application`/`Retention` sin miembros o `Maintenance`/`Relation` con miembros; un miembro de `Application` que nombra una unidad inexistente, una revisión posterior a la cabeza, o una revisión retenida con otro `commit_seq` u otro `kind`. Los miembros de `Retention` solo se comprueban en el sentido `REV_META → miembro` (nombran la primera revisión retenida, no una que escribieran) | IU-4 |
+| UNIT-33 | Procedencia: un `REV_META` sin `CHANGESET` en su `commit_seq`, con un `CHANGESET` cuyo `purpose` no es `Application`, o sin un `CS_MEMBER` de ese `ChangeSet` que lo nombre (`unit_id`, `rev_no`, `kind`); miembros que no son exactamente los ordinales `0..member_count`; una unidad nombrada dos veces en un `ChangeSet`; `Application`/`Retention` sin miembros o `Maintenance`/`Relation`/`Index` con miembros; un miembro de `Application` que nombra una unidad inexistente, una revisión posterior a la cabeza, o una revisión retenida con otro `commit_seq` u otro `kind`. Los miembros de `Retention` solo se comprueban en el sentido `REV_META → miembro` (nombran la primera revisión retenida, no una que escribieran) | IU-4 |
 | UNIT-34 | Política no aplicada, solo donde la política vigente al escribir se conoce (revisiones confirmadas después del último `ChangeSet` `Maintenance`): bajo `none`, `oldest_rev ≠ head_rev`; bajo `audit`, una revisión sustituida que conserva `payload_present = 1` | IU-9 |
 | UNIT-35 | Entre dos instantáneas, una clave `REV_META`/`REV_PAYLOAD` presente en ambas cambió de valor, salvo el paso de `payload_present` de 1 a 0 que hace una política (`verify_immutable`) | IU-1 |
 | UNIT-36 | Relaciones (E4-02): un `REL` sin su `REL_OUT` o sin su `REL_IN` (con el mismo tipo y el otro extremo correcto), una entrada `REL_OUT`/`REL_IN` sin su `REL` o que no concuerda con él, un `REL` con `created_seq` posterior a la instantánea, o un extremo que no existe o no está `Active` (archivar o borrar una unidad con relaciones se rechaza) | I-21 |
+| UNIT-37 | Índice primario (E4-03): entradas `IDX_PRIMARY` sin `IDX_META`; un `watermark` posterior a la instantánea; un `entries` que no es el número de entradas guardadas; una unidad que no cambió desde el watermark (`updated_seq ≤ watermark`) y que, siendo `Active`, no tiene entrada o la tiene con otro `unit_type` o `schema_version`, o que, no siendo `Active`, la tiene; una entrada de una unidad que no existe o que se creó después del watermark. Una unidad que cambió después del watermark puede discrepar de su entrada: es la obsolescencia que declara el estado, no un daño | I-23 |
 
 Para la integridad de la carga útil el verificador aplica §5.1 a cada `REV_META`, con una excepción: una revisión no lápida con `payload_present = 0` es una que un periodo `audit` vació conservando hash y longitud (nota de E3-05 del diseño); para ella solo se exige que no exista `REV_PAYLOAD` (UNIT-26) y no se aplica la parte «`payload_present = 0` con `payload_len ≠ 0`» de UNIT-26.
 
@@ -257,10 +283,10 @@ Para la integridad de la carga útil el verificador aplica §5.1 a cada `REV_MET
 Un decodificador recibe el par `(key, value)` y devuelve los campos o **un** rechazo `(UNIT-n, clase)`. Debe:
 
 1. **No entrar en pánico, no leer fuera del búfer y no reservar memoria a partir de una longitud sin validarla**: un prefijo de longitud se compara con el máximo del campo (UNIT-11) y con los bytes que quedan (UNIT-9) antes de leer el cuerpo. El máximo se comprueba primero: un prefijo `0xFFFFFFFF` es UNIT-11, no UNIT-9.
-2. **Rechazar la primera regla violada** en este orden: reglas de clave (§2) → cabecera (UNIT-6, UNIT-7, UNIT-8) → campos en orden de byte, cada uno con sus comprobaciones propias (UNIT-9, UNIT-11, UNIT-12, UNIT-13, UNIT-14, UNIT-15, UNIT-16, UNIT-22, UNIT-23, UNIT-24, UNIT-25 en cuanto se lee el campo) → bytes sobrantes (UNIT-10) → reglas entre campos (UNIT-17..UNIT-21, tras UNIT-10).
+2. **Rechazar la primera regla violada** en este orden: reglas de clave (§2) → cabecera (UNIT-6, UNIT-7, UNIT-8) → campos en orden de byte, cada uno con sus comprobaciones propias (UNIT-9, UNIT-11, UNIT-12, UNIT-13, UNIT-14, UNIT-15, UNIT-16, UNIT-22, UNIT-23, UNIT-24, UNIT-25 en cuanto se lee el campo) → bytes sobrantes (UNIT-10) → reglas entre campos (UNIT-17..UNIT-21 y la de `IDX_META` con `watermark = 0`, tras UNIT-10).
 3. **Distinguir truncamiento de corrupción solo por la regla**, no por la clase: ambas son `Corruption`. Un valor vacío es UNIT-9, y nunca una base nueva.
 4. No «reparar», rellenar ni ignorar nada. Un rechazo no modifica la base (I-18 si es de solo lectura).
-5. Un tag con nibble alto `0x4..=0xF`, salvo `0x40..=0x42` (UNIT-2), o `envelope_version`/`layer_version` mayores (UNIT-7, UNIT-16) se rechaza como `IncompatibleLayer` **sin interpretar el resto**.
+5. Un tag con nibble alto `0x4..=0xF`, salvo `0x40..=0x42` y `0x50..=0x51` (UNIT-2), o `envelope_version`/`layer_version` mayores (UNIT-7, UNIT-16) se rechaza como `IncompatibleLayer` **sin interpretar el resto**.
 
 Los códecs de producción (E3-02) están en `crates/kerno-units/src/codec.rs` (`Key`, `Record` y un tipo por valor) y siguen este orden; los errores, con la regla y su clase, en `src/error.rs`. La prueba `production_codec_matches_committed_vectors` de `tests/struct_vectors.rs` exige que decodifiquen cada vector de §7 como indica la tabla y que reproduzcan byte a byte los positivos; `spec_decoder` sigue sin depender de ellos.
 

@@ -4,7 +4,7 @@
 //! only thing it shares with the vector encoder is the plain data of
 //! `units_model`.
 
-use crate::units_model::{ChangeSet, Class, Hash, Head, Layer, Member, Rec, RevMeta, RevPayload};
+use crate::units_model::{ChangeSet, Class, Hash, Head, IdxMeta, IdxPrimary, Layer, Member, Rec, RevMeta, RevPayload};
 
 const MAX_PAYLOAD_LEN: u32 = 1 << 26;
 const MAX_MEMBERS: u32 = 1 << 20;
@@ -128,6 +128,8 @@ pub fn decode(key: &[u8], value: &[u8]) -> Res<Rec> {
         0x20 | 0x21 => Some(25),
         0x30 => Some(9),
         0x31 => Some(13),
+        0x50 => Some(1),
+        0x51 => Some(17),
         0x00..=0x3F => return Err(rule(1)),
         _ => return Err(rule(2)),
     };
@@ -255,7 +257,7 @@ pub fn decode(key: &[u8], value: &[u8]) -> Res<Rec> {
             if member_count > MAX_MEMBERS {
                 return Err(rule(24));
             }
-            let purpose = enum_max(&mut r, 3)?;
+            let purpose = enum_max(&mut r, 4)?;
             let reason = r.bytes(1024)?;
             let actor_ref = r.bytes(1024)?;
             let source_ref = r.bytes(1024)?;
@@ -271,6 +273,28 @@ pub fn decode(key: &[u8], value: &[u8]) -> Res<Rec> {
                 source_ref,
                 correlation,
             }))
+        }
+        0x50 => {
+            let outcome = enum_max(&mut r, 1)?;
+            let watermark = r.u64()?;
+            if outcome == 0 && watermark == 0 {
+                return Err(rule(23));
+            }
+            let entries = r.u64()?;
+            r.finish()?;
+            if watermark == 0 && entries != 0 {
+                return Err(rule(13));
+            }
+            Ok(Rec::IdxMeta(IdxMeta { outcome, watermark, entries }))
+        }
+        0x51 => {
+            let unit_type = r.bytes(64)?;
+            if unit_type.is_empty() || std::str::from_utf8(&unit_type).is_err() {
+                return Err(rule(12));
+            }
+            let schema_version = r.u32()?;
+            r.finish()?;
+            Ok(Rec::IdxPrimary(IdxPrimary { unit_id: tail.try_into().expect("16 bytes"), unit_type, schema_version }))
         }
         _ => {
             let unit_id: [u8; 16] = r.arr()?;
