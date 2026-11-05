@@ -57,5 +57,9 @@ E4-03 implementa el índice primario de `kerno-units` ([`index.rs`](../../crates
 
 El workload W1 ([etapa4-workloads.md](../architecture/etapa4-workloads.md)), escrito antes de medir, justificó un índice secundario por `(unit_type, schema_version)`: con 100 000 unidades y selectividad del 1 %, la ruta primaria quedaba a 4,8–12,3× de la cota ideal con p95 de 57–71 ms. `IDX_TYPE` ([units-v1.md](../file-format/units-v1.md) §3.11) es derivado como dice esta decisión y comparte generación con `IDX_PRIMARY`: misma construcción, misma transacción, mismo `IDX_META`, mismo estado y watermark. W1 mide lecturas sobre un índice `Ready`; no mide escrituras intercaladas, así que **no** aporta evidencia para mantener los índices dentro de cada `ChangeSet`. El punto abierto de arriba sigue abierto, a la espera de un workload que lo mida.
 
+## Decisión del propietario sobre el punto abierto (2026-11-05)
+
+Se aprueba la implementación de E4-03/E4-04: los índices de unidades (`IDX_PRIMARY`, `IDX_TYPE`) siguen siendo **derivados** con frescura explícita y solo los escribe `rebuild_index`; tras una escritura, `query` usa la ruta de referencia hasta la siguiente reconstrucción (I-32). Mantenerlos dentro de cada `ChangeSet` o reconstruirlos en segundo plano **no** se hace sin un workload escrito antes de medir que incluya escrituras intercaladas y muestre que la ruta de referencia no basta. Los índices de adyacencia de relaciones no cambian: son transaccionales (ADR-0014, I-21).
+
 **Límite conocido.** La construcción guarda todas las entradas en memoria y las escribe en un solo lote, así que está limitada por los límites del lote del motor (1 Mi operaciones y 64 MiB por defecto); por encima falla con `ChangeSetTooLarge` y el estado queda `Failed`.
 

@@ -1,6 +1,6 @@
 # Invariantes y riesgos
 
-Estado: vigente al cierre de la Fase 1 (2026-10-29); las invariantes del motor están verificadas sobre `kerno-storage`. La §2.1 (IU-1…IU-10) se promovió y aprobó por el propietario el 2026-11-04, al cerrar la Etapa 3; I-21 (relaciones), I-23, I-24, I-32 (aplicada a índices) e I-39 (relaciones declaradas) se promueven en la revisión de cierre E4-05 (2026-11-05, [etapa4-cierre.md](etapa4-cierre.md)), **pendiente de aprobación del propietario** · Relacionado con: [SAD §3, §17, §18](SAD.md), [ADR-0002](../adr/0002-transacciones-y-durabilidad.md), [matriz de fallos](failure-matrix.md)
+Estado: vigente al cierre de la Fase 1 (2026-10-29); las invariantes del motor están verificadas sobre `kerno-storage`. La §2.1 (IU-1…IU-10) se promovió y aprobó por el propietario el 2026-11-04, al cerrar la Etapa 3; I-21 (relaciones), I-23, I-24, I-32 (aplicada a índices) e I-39 (relaciones declaradas) se promueven en la revisión de cierre E4-05 (2026-11-05, [etapa4-cierre.md](etapa4-cierre.md)), **aprobado por el propietario el 2026-11-05** · Relacionado con: [SAD §3, §17, §18](SAD.md), [ADR-0002](../adr/0002-transacciones-y-durabilidad.md), [matriz de fallos](failure-matrix.md)
 
 Este documento lista las propiedades que **ninguna funcionalidad posterior puede romper** y cómo se verifican hoy. Una invariante sin prueba automatizada se marca como *pendiente*: no basta con que aparezca en la documentación (SAD §18.2).
 

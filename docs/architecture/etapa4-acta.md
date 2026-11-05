@@ -3,13 +3,13 @@
 | Campo | Valor |
 |---|---|
 | Fecha | 2026-11-04 (borrador) |
-| Estado | Aprobada (2026-11-04); cierre de la etapa pendiente de aprobación ([etapa4-cierre.md](etapa4-cierre.md)) |
+| Estado | Aprobada (2026-11-04); cierre de la etapa aprobado el 2026-11-05 ([etapa4-cierre.md](etapa4-cierre.md)) |
 | Acto | Aprobación del alcance y de los paquetes E4-00 a E4-05 por el propietario del proyecto |
 | Documentos | [Roadmap, Etapa 4](../roadmap/README.md#etapa-4--relaciones-e-índices) · [cierre de la Etapa 3](etapa3-cierre.md) · [ADR-0014](../adr/0014-representacion-fisica-de-relaciones.md) · [ADR-0007](../adr/0007-consistencia-de-indices.md) · [invariantes](invariants.md) · [objetivos T1–T10](../testing/f1-objetivos-rendimiento.md) |
 
 ## 0. Estado
 
-Esta acta fue **aprobada por el propietario el 2026-11-04** (ver §8). Ningún WP posterior arranca antes que el anterior, como en la Etapa 3. E4-00…E4-04 están integrados (PR #16–#20). E4-05 (cierre) está hecho y **pendiente de aprobación del propietario**: [etapa4-cierre.md](etapa4-cierre.md).
+Esta acta fue **aprobada por el propietario el 2026-11-04** (ver §8). Ningún WP posterior arranca antes que el anterior, como en la Etapa 3. E4-00…E4-04 están integrados (PR #16–#20). E4-05 (cierre) está hecho (PR #21) y **aprobado por el propietario el 2026-11-05**: [etapa4-cierre.md](etapa4-cierre.md).
 
 ## 1. Condición de inicio
 
@@ -67,7 +67,7 @@ Del [roadmap, Etapa 4](../roadmap/README.md#etapa-4--relaciones-e-índices):
 | Un índice reconstruido es equivalente a uno nuevo (I-24) | Prueba de reconstrucción frente a construcción nueva | cumplido en E4-03 (`tests/index.rs`: `rebuilt_equals_fresh`) |
 | El estado de frescura está expuesto (I-23) | Prueba de estados y watermark, incluido tras una caída | cumplido en E4-03 (`tests/index.rs`: `states_and_watermark`, `index_every_point_*`, [matriz de fallos](failure-matrix.md) §9) |
 | Cada índice secundario tiene workload documentado y equivalencia con la ruta de referencia; ningún índice sin workload (E4-04) | Workload escrito antes de medir, medición, pruebas diferenciales por índice | cumplido en E4-04 ([etapa4-workloads.md](etapa4-workloads.md): W1 justifica `IDX_TYPE`; `tests/index.rs`: `check` compara `IndexPath::Primary` y `IndexPath::ByType` con la referencia en `differential_*`, `rebuilt_equals_fresh`, `index_every_point_*`; UNIT-38) |
-| Una relación declarada nunca se confunde con una inferida (I-39) | Prueba de procedencia obligatoria y del campo de origen | cumplido en E4-02 y E4-05 (`tests/relations.rs`: `provenance_is_stored_and_checked`, `declared_is_never_confused_with_inferred`, `stored_provenance_corruption_is_detected`; vectores `rel_*` de `struct_vectors.rs`; [invariantes](invariants.md) §2.3). Cierre: [etapa4-cierre.md](etapa4-cierre.md), pendiente de aprobación |
+| Una relación declarada nunca se confunde con una inferida (I-39) | Prueba de procedencia obligatoria y del campo de origen | cumplido en E4-02 y E4-05 (`tests/relations.rs`: `provenance_is_stored_and_checked`, `declared_is_never_confused_with_inferred`, `stored_provenance_corruption_is_detected`; vectores `rel_*` de `struct_vectors.rs`; [invariantes](invariants.md) §2.3). Cierre: [etapa4-cierre.md](etapa4-cierre.md), aprobado |
 
 ## 5. Riesgos heredados de la Etapa 3
 
