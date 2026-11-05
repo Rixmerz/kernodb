@@ -33,6 +33,8 @@ pub const TAG_REL_IN: u8 = 0x42;
 /// Freshness record of the primary index and its entries (E4-03, ADR-0007).
 pub const TAG_IDX_META: u8 = 0x50;
 pub const TAG_IDX_PRIMARY: u8 = 0x51;
+/// Secondary index by `(unit_type, schema_version)` (E4-04, workload W1).
+pub const TAG_IDX_TYPE: u8 = 0x52;
 
 /// `envelope_version` written and accepted (§1.1).
 pub const ENVELOPE_VERSION: u8 = 1;
@@ -61,9 +63,10 @@ fn reject<T>(rule: UnitRule, detail: impl Into<String>) -> Res<T> {
 
 // ---------------------------------------------------------------- keys
 
-/// A decoded key (`units-v1.md` §2). The derived order is the order of the
-/// encoded bytes: variants follow their tags and fields follow byte order.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// A decoded key (`units-v1.md` §2). Its order is the order of the encoded
+/// bytes (an `IDX_TYPE` type sorts by length first, so the order is not
+/// derived).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Key {
     LayerMeta {
         name: String,
@@ -108,6 +111,13 @@ pub enum Key {
     IndexPrimary {
         unit: UnitId,
     },
+    /// The secondary-index entry of an `Active` unit, ordered by type and
+    /// schema version (E4-04).
+    IndexType {
+        unit_type: String,
+        schema_version: u32,
+        unit: UnitId,
+    },
 }
 
 /// Valid `relation_type`: 1..=64 bytes of UTF-8 without NUL (the NUL ends the
@@ -131,6 +141,18 @@ fn prefix_end(prefix: &[u8]) -> Vec<u8> {
     end
 }
 
+impl PartialOrd for Key {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Key {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.raw().cmp(&other.raw())
+    }
+}
+
 impl Key {
     pub fn tag(&self) -> u8 {
         match self {
@@ -145,12 +167,20 @@ impl Key {
             Key::RelationIn { .. } => TAG_REL_IN,
             Key::IndexMeta => TAG_IDX_META,
             Key::IndexPrimary { .. } => TAG_IDX_PRIMARY,
+            Key::IndexType { .. } => TAG_IDX_TYPE,
         }
     }
 
     /// The key bytes. Refuses a key the decoder would reject (an empty or
     /// over-long `LAYER_META` name, `rev_no = 0`, `commit_seq = 0`).
     pub fn encode(&self) -> Result<Vec<u8>, UnitError> {
+        let out = self.raw();
+        Key::decode(&out).map_err(|e| refuse("key", &e))?;
+        Ok(out)
+    }
+
+    /// The key bytes, unchecked.
+    fn raw(&self) -> Vec<u8> {
         let mut out = vec![self.tag()];
         match self {
             Key::LayerMeta { name } => out.extend_from_slice(name.as_bytes()),
@@ -166,6 +196,12 @@ impl Key {
                 out.extend_from_slice(&ordinal.to_be_bytes());
             }
             Key::Relation { edge } => out.extend_from_slice(&edge.0),
+            Key::IndexType { unit_type, schema_version, unit } => {
+                out.push(u8::try_from(unit_type.len()).unwrap_or(0));
+                out.extend_from_slice(unit_type.as_bytes());
+                out.extend_from_slice(&schema_version.to_be_bytes());
+                out.extend_from_slice(&unit.0);
+            }
             Key::RelationOut { unit, relation_type, edge } | Key::RelationIn { unit, relation_type, edge } => {
                 out.extend_from_slice(&unit.0);
                 out.extend_from_slice(relation_type.as_bytes());
@@ -173,8 +209,7 @@ impl Key {
                 out.extend_from_slice(&edge.0);
             }
         }
-        Key::decode(&out).map_err(|e| refuse("key", &e))?;
-        Ok(out)
+        out
     }
 
     /// Decodes a key, applying UNIT-1..=UNIT-5 in that order.
@@ -190,13 +225,18 @@ impl Key {
             TAG_CS_MEMBER => Some(13),
             TAG_REL | TAG_IDX_PRIMARY => Some(17),
             TAG_IDX_META => Some(1),
-            TAG_REL_OUT | TAG_REL_IN => None,
+            TAG_REL_OUT | TAG_REL_IN | TAG_IDX_TYPE => None,
             0x00..=0x3F => return reject(UnitRule::Unit1, format!("unknown tag 0x{tag:02x} in a known range")),
             _ => return reject(UnitRule::Unit2, format!("tag 0x{tag:02x} belongs to a newer layer")),
         };
         let len_ok = match want {
             Some(n) => key.len() == n,
             None if tag == TAG_LAYER_META => (2..=MAX_LAYER_NAME_LEN + 1).contains(&key.len()),
+            // tag ‖ len ‖ type (len = 1..=64) ‖ schema_version[4] ‖ unit[16]
+            None if tag == TAG_IDX_TYPE => {
+                tail.first().is_some_and(|&n| (1..=MAX_UNIT_TYPE_LEN as usize).contains(&(n as usize)))
+                    && key.len() == 22 + tail[0] as usize
+            }
             // tag ‖ unit[16] ‖ type (1..=64) ‖ NUL ‖ edge[16]
             None => (35..=2 + 16 + 16 + MAX_RELATION_TYPE_LEN as usize).contains(&key.len()),
         };
@@ -214,6 +254,15 @@ impl Key {
             TAG_UNIT_HEAD => Ok(Key::UnitHead { unit: unit() }),
             TAG_IDX_PRIMARY => Ok(Key::IndexPrimary { unit: unit() }),
             TAG_IDX_META => Ok(Key::IndexMeta),
+            TAG_IDX_TYPE => {
+                let n = tail.len();
+                let unit_type = match std::str::from_utf8(&tail[1..n - 20]) {
+                    Ok(t) => t.to_owned(),
+                    Err(_) => return reject(UnitRule::Unit12, "IDX_TYPE key unit_type is not UTF-8"),
+                };
+                let schema_version = u32::from_be_bytes(arr::<4>(&tail[n - 20..n - 16]));
+                Ok(Key::IndexType { unit_type, schema_version, unit: UnitId(arr::<16>(&tail[n - 16..])) })
+            }
             TAG_REL => Ok(Key::Relation { edge: RelationId(arr::<16>(tail)) }),
             TAG_REL_OUT | TAG_REL_IN => {
                 let n = tail.len();
@@ -271,6 +320,22 @@ impl Key {
         // it never overflows past the tag.
         let end = prefix_end(&start);
         (start, end)
+    }
+
+    /// Scan bounds `[start, end)` of the `IDX_TYPE` entries of `unit_type`:
+    /// all of them, or only those of `schema_version`. `None` for a type no
+    /// entry can have (empty or longer than 64 bytes).
+    pub fn type_range(unit_type: &str, schema_version: Option<u32>) -> Option<(Vec<u8>, Vec<u8>)> {
+        if unit_type.is_empty() || unit_type.len() > MAX_UNIT_TYPE_LEN as usize {
+            return None;
+        }
+        let mut start = vec![TAG_IDX_TYPE, unit_type.len() as u8];
+        start.extend_from_slice(unit_type.as_bytes());
+        if let Some(v) = schema_version {
+            start.extend_from_slice(&v.to_be_bytes());
+        }
+        let end = prefix_end(&start);
+        Some((start, end))
     }
 
     /// Scan bounds `[start, end)` of the adjacency entries of `unit` in the
@@ -1075,6 +1140,17 @@ impl PrimaryEntry {
     }
 }
 
+/// `IDX_TYPE` value (E4-04): the envelope alone; everything is in the key.
+pub fn encode_type_entry() -> Vec<u8> {
+    Writer::envelope().0
+}
+
+pub fn decode_type_entry(value: &[u8]) -> Res<()> {
+    let mut r = Reader::new(value, "IDX_TYPE");
+    r.envelope()?;
+    r.finish()
+}
+
 // ---------------------------------------------------------------- records
 
 /// A decoded `(key, value)` pair.
@@ -1132,6 +1208,11 @@ pub enum Record {
         unit: UnitId,
         entry: PrimaryEntry,
     },
+    IndexType {
+        unit_type: String,
+        schema_version: u32,
+        unit: UnitId,
+    },
 }
 
 impl Record {
@@ -1152,6 +1233,9 @@ impl Record {
             }
             Record::IndexMeta { .. } => Key::IndexMeta,
             Record::IndexPrimary { unit, .. } => Key::IndexPrimary { unit: *unit },
+            Record::IndexType { unit_type, schema_version, unit } => {
+                Key::IndexType { unit_type: unit_type.clone(), schema_version: *schema_version, unit: *unit }
+            }
         }
     }
 
@@ -1169,6 +1253,7 @@ impl Record {
             Record::RelationOut { adjacency, .. } | Record::RelationIn { adjacency, .. } => adjacency.encode(),
             Record::IndexMeta { meta } => meta.encode()?,
             Record::IndexPrimary { entry, .. } => entry.encode()?,
+            Record::IndexType { .. } => encode_type_entry(),
         };
         Ok((key, value))
     }
@@ -1192,6 +1277,10 @@ impl Record {
             }
             Key::IndexMeta => Record::IndexMeta { meta: IndexMeta::decode(value)? },
             Key::IndexPrimary { unit } => Record::IndexPrimary { unit, entry: PrimaryEntry::decode(value)? },
+            Key::IndexType { unit_type, schema_version, unit } => {
+                decode_type_entry(value)?;
+                Record::IndexType { unit_type, schema_version, unit }
+            }
         })
     }
 }

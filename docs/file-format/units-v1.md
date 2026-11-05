@@ -64,12 +64,14 @@ Una clave es `tag: u8` seguido de los campos de la tabla. Longitudes en bytes, t
 | `0x42` | `REL_IN` (E4-02) | igual que `REL_OUT`, con `unit_id` = el extremo `to` | 35..=98 |
 | `0x50` | `IDX_META` (E4-03) | ninguno: hay un solo registro, el del índice primario | 1 |
 | `0x51` | `IDX_PRIMARY` (E4-03) | `unit_id[16]` | 17 |
+| `0x52` | `IDX_TYPE` (E4-04) | `len: u8` (1..=64) ‖ `unit_type` (`len` B de UTF-8) ‖ `schema_version: u32` ‖ `unit_id[16]` | 23..=86 (= 22 + `len`) |
 
 Reglas de clave, evaluadas **en este orden**:
 
 - **UNIT-1** (`Corruption`): un tag desconocido cuyo nibble alto es `0x0`, `0x1`, `0x2` o `0x3` (`0x00`, `0x02..=0x0F`, `0x11..=0x1F`, `0x22..=0x2F`, `0x32..=0x3F`) está dentro del rango de una etiqueta conocida y es corrupción. Una clave vacía también (no tiene tag).
-- **UNIT-2** (`IncompatibleLayer`): un tag con nibble alto `0x4..=0xF`, salvo `0x40..=0x42` (E4-02) y `0x50..=0x51` (E4-03), lo escribió una capa más nueva. Una capa anterior a E4-02 rechaza por esta regla un almacén con relaciones (véase ADR-0014, «Consecuencias»), y una anterior a E4-03 uno con el índice primario construido. Un almacén sin ninguno de esos registros se abre igual con todas ellas: el índice solo existe tras una llamada a `rebuild_index`.
-- **UNIT-3** (`Corruption`): la longitud de la clave no es la de la tabla.
+- **UNIT-2** (`IncompatibleLayer`): un tag con nibble alto `0x4..=0xF`, salvo `0x40..=0x42` (E4-02), `0x50..=0x51` (E4-03) y `0x52` (E4-04), lo escribió una capa más nueva. Una capa anterior a E4-02 rechaza por esta regla un almacén con relaciones (véase ADR-0014, «Consecuencias»), una anterior a E4-03 uno con el índice primario construido, y una anterior a E4-04 uno construido con `IDX_TYPE`. Un almacén sin ninguno de esos registros se abre igual con todas ellas: el índice solo existe tras una llamada a `rebuild_index`.
+- **UNIT-3** (`Corruption`): la longitud de la clave no es la de la tabla (en `IDX_TYPE`, un `len` fuera de 1..=64 o una longitud distinta de 22 + `len`).
+- **UNIT-12** también se aplica a la clave de `IDX_TYPE`: un `unit_type` que no es UTF-8.
 - **UNIT-4** (`Corruption`): el `name` de `LAYER_META` no es UTF-8 válido.
 - **UNIT-5** (`Corruption`): `rev_no = 0` en `REV_META`/`REV_PAYLOAD`, o `commit_seq = 0` en `CHANGESET`/`CS_MEMBER`. Los números de revisión y las secuencias de commit empiezan en 1.
 
@@ -203,6 +205,18 @@ La entrada del índice primario de una unidad `Active`: los campos de `UNIT_HEAD
 | `unit_type` | `str(64)` | no vacío (UNIT-12); el de la cabeza de la unidad |
 | `schema_version` | `u32` | ninguna; el de la cabeza de la unidad |
 
+### 3.11 `IDX_TYPE` (`0x52`, E4-04)
+
+El índice secundario por `(unit_type, schema_version)`, justificado por el workload W1 ([etapa4-workloads.md](../architecture/etapa4-workloads.md)). Una entrada por cada entrada `IDX_PRIMARY` y ninguna más: la escribe la misma construcción, en la misma transacción y bajo el mismo `IDX_META` (§3.9), así que comparte watermark, estado y comportamiento ante caídas, y una reconstrucción las reemplaza a la vez (I-21, I-23, I-24). Todo está en la clave; el prefijo de longitud hace que el rango de un tipo no contenga el de otro tipo que lo tenga por prefijo. El orden es longitud, tipo, versión de esquema y `unit_id`: un filtro con tipo y versión recorre su rango en orden de id; con tipo solo, el resultado se reordena por id.
+
+**Compatibilidad con índices E4-03.** `IDX_META` no registra si la generación incluye `IDX_TYPE`: un almacén cuyo último índice lo construyó E4-03 (sin `IDX_TYPE`) se leería como `Ready` y una consulta por tipo devolvería vacío. No existe ningún almacén así: el formato de la Etapa 4 no se ha publicado, y E4-03 y E4-04 forman un solo formato. Si algún día hay que leer índices de una versión publicada sin `IDX_TYPE`, `IDX_META` debe llevar una versión de generación que los marque `Stale`.
+
+| Campo | Tipo | Restricción |
+|---|---|---|
+| `envelope_version`, `reserved_flags` | `u8`, `u8` | §1.1; no hay más campos (UNIT-10 si sobran bytes) |
+
+Tamaño fijo: 2 B.
+
 ## 4. `ContentHash`
 
 | `alg` | Algoritmo | `digest` |
@@ -219,7 +233,7 @@ Cada regla lleva su clase de error: `Corruption` (los bytes no son lo que un esc
 | Id | Regla | Clase |
 |---|---|---|
 | UNIT-1 | Tag desconocido dentro del rango de una etiqueta conocida, o clave vacía | `Corruption` |
-| UNIT-2 | Tag con nibble alto `0x4..=0xF`, salvo `0x40..=0x42` y `0x50..=0x51` | `IncompatibleLayer` |
+| UNIT-2 | Tag con nibble alto `0x4..=0xF`, salvo `0x40..=0x42` y `0x50..=0x52` | `IncompatibleLayer` |
 | UNIT-3 | Longitud de clave distinta de la de §2 | `Corruption` |
 | UNIT-4 | `name` de `LAYER_META` no es UTF-8 | `Corruption` |
 | UNIT-5 | `rev_no = 0` o `commit_seq = 0` en la clave | `Corruption` |
@@ -275,6 +289,7 @@ El verificador offline (`verify_units`, `crates/kerno-units/src/verify.rs`) reco
 | UNIT-35 | Entre dos instantáneas, una clave `REV_META`/`REV_PAYLOAD` presente en ambas cambió de valor, salvo el paso de `payload_present` de 1 a 0 que hace una política (`verify_immutable`) | IU-1 |
 | UNIT-36 | Relaciones (E4-02): un `REL` sin su `REL_OUT` o sin su `REL_IN` (con el mismo tipo y el otro extremo correcto), una entrada `REL_OUT`/`REL_IN` sin su `REL` o que no concuerda con él, un `REL` con `created_seq` posterior a la instantánea, o un extremo que no existe o no está `Active` (archivar o borrar una unidad con relaciones se rechaza) | I-21 |
 | UNIT-37 | Índice primario (E4-03): entradas `IDX_PRIMARY` sin `IDX_META`; un `watermark` posterior a la instantánea; un `entries` que no es el número de entradas guardadas; una unidad que no cambió desde el watermark (`updated_seq ≤ watermark`) y que, siendo `Active`, no tiene entrada o la tiene con otro `unit_type` o `schema_version`, o que, no siendo `Active`, la tiene; una entrada de una unidad que no existe o que se creó después del watermark. Una unidad que cambió después del watermark puede discrepar de su entrada: es la obsolescencia que declara el estado, no un daño | I-23 |
+| UNIT-38 | Índice secundario por tipo (E4-04): una entrada `IDX_PRIMARY` sin la entrada `IDX_TYPE` con su mismo `unit_type`, `schema_version` y `unit_id`, o una entrada `IDX_TYPE` sin esa entrada `IDX_PRIMARY`. Las unidades con una entrada que no decodifica (en cualquiera de los dos) ya son un hallazgo de estructura y se omiten | I-23, I-24 |
 
 Para la integridad de la carga útil el verificador aplica §5.1 a cada `REV_META`, con una excepción: una revisión no lápida con `payload_present = 0` es una que un periodo `audit` vació conservando hash y longitud (nota de E3-05 del diseño); para ella solo se exige que no exista `REV_PAYLOAD` (UNIT-26) y no se aplica la parte «`payload_present = 0` con `payload_len ≠ 0`» de UNIT-26.
 
@@ -286,7 +301,7 @@ Un decodificador recibe el par `(key, value)` y devuelve los campos o **un** rec
 2. **Rechazar la primera regla violada** en este orden: reglas de clave (§2) → cabecera (UNIT-6, UNIT-7, UNIT-8) → campos en orden de byte, cada uno con sus comprobaciones propias (UNIT-9, UNIT-11, UNIT-12, UNIT-13, UNIT-14, UNIT-15, UNIT-16, UNIT-22, UNIT-23, UNIT-24, UNIT-25 en cuanto se lee el campo) → bytes sobrantes (UNIT-10) → reglas entre campos (UNIT-17..UNIT-21 y la de `IDX_META` con `watermark = 0`, tras UNIT-10).
 3. **Distinguir truncamiento de corrupción solo por la regla**, no por la clase: ambas son `Corruption`. Un valor vacío es UNIT-9, y nunca una base nueva.
 4. No «reparar», rellenar ni ignorar nada. Un rechazo no modifica la base (I-18 si es de solo lectura).
-5. Un tag con nibble alto `0x4..=0xF`, salvo `0x40..=0x42` y `0x50..=0x51` (UNIT-2), o `envelope_version`/`layer_version` mayores (UNIT-7, UNIT-16) se rechaza como `IncompatibleLayer` **sin interpretar el resto**.
+5. Un tag con nibble alto `0x4..=0xF`, salvo `0x40..=0x42` y `0x50..=0x52` (UNIT-2), o `envelope_version`/`layer_version` mayores (UNIT-7, UNIT-16) se rechaza como `IncompatibleLayer` **sin interpretar el resto**.
 
 Los códecs de producción (E3-02) están en `crates/kerno-units/src/codec.rs` (`Key`, `Record` y un tipo por valor) y siguen este orden; los errores, con la regla y su clase, en `src/error.rs`. La prueba `production_codec_matches_committed_vectors` de `tests/struct_vectors.rs` exige que decodifiquen cada vector de §7 como indica la tabla y que reproduzcan byte a byte los positivos; `spec_decoder` sigue sin depender de ellos.
 

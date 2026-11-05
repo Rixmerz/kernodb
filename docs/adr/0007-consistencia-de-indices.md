@@ -53,5 +53,9 @@ E4-03 implementa el índice primario de `kerno-units` ([`index.rs`](../../crates
 
 **Punto abierto para el propietario.** Esta decisión dice que el índice primario es «consistente con el commit». E4-03 lo implementa como derivado con frescura explícita, porque el acta (§3, fila E4-03) y la invariante I-23 piden el estado y el watermark para él. La consecuencia es que, tras cualquier escritura, las consultas usan la ruta de referencia hasta la siguiente `rebuild_index`. Si un workload medido lo justifica, el siguiente paso es mantenerlo dentro de cada `ChangeSet` (siempre `Ready`, con el coste de escritura que K-E3-9 ya señala) o reconstruirlo en segundo plano; el formato y el estado ya lo admiten. Propuesta: decidirlo en E4-04, con un workload escrito, y no antes.
 
+## Evidencia (E4-04, 2026-11-05)
+
+El workload W1 ([etapa4-workloads.md](../architecture/etapa4-workloads.md)), escrito antes de medir, justificó un índice secundario por `(unit_type, schema_version)`: con 100 000 unidades y selectividad del 1 %, la ruta primaria quedaba a 4,8–12,3× de la cota ideal con p95 de 57–71 ms. `IDX_TYPE` ([units-v1.md](../file-format/units-v1.md) §3.11) es derivado como dice esta decisión y comparte generación con `IDX_PRIMARY`: misma construcción, misma transacción, mismo `IDX_META`, mismo estado y watermark. W1 mide lecturas sobre un índice `Ready`; no mide escrituras intercaladas, así que **no** aporta evidencia para mantener los índices dentro de cada `ChangeSet`. El punto abierto de arriba sigue abierto, a la espera de un workload que lo mida.
+
 **Límite conocido.** La construcción guarda todas las entradas en memoria y las escribe en un solo lote, así que está limitada por los límites del lote del motor (1 Mi operaciones y 64 MiB por defecto); por encima falla con `ChangeSetTooLarge` y el estado queda `Failed`.
 

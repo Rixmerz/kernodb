@@ -50,6 +50,10 @@
 //!   after the watermark (`updated_seq <= watermark`): a unit that changed
 //!   since is the staleness the status declares, so only its existence is
 //!   checked.
+//! * **The secondary index by type** (UNIT-38, E4-04): `IDX_TYPE` holds one
+//!   entry `(unit_type, schema_version, unit)` per `IDX_PRIMARY` entry and no
+//!   other. Both are written by the same build, so this holds whatever the
+//!   staleness; UNIT-37 then ties the primary entries to the units.
 //!
 //! # Contracts
 //!
@@ -119,6 +123,9 @@ pub enum CrossRule {
     /// The primary index disagrees with its `IDX_META` or with the units it
     /// lists (E4-03, ADR-0007, I-23).
     Unit37,
+    /// The secondary index by type is not exactly the primary index keyed
+    /// by `(unit_type, schema_version)` (E4-04, I-23, I-24).
+    Unit38,
 }
 
 impl CrossRule {
@@ -333,6 +340,8 @@ struct State {
     bad_idx_meta: bool,
     idx_entries: BTreeMap<UnitId, PrimaryEntry>,
     bad_idx_entries: BTreeSet<UnitId>,
+    idx_types: BTreeSet<(UnitId, String, u32)>,
+    bad_idx_types: BTreeSet<UnitId>,
 }
 
 fn key_of(k: Key) -> Vec<u8> {
@@ -356,6 +365,7 @@ fn describe(k: &Key) -> String {
         Key::RelationIn { unit, edge, .. } => format!("REL_IN of unit {unit} for relation {edge}"),
         Key::IndexMeta => "IDX_META".into(),
         Key::IndexPrimary { unit } => format!("IDX_PRIMARY of unit {unit}"),
+        Key::IndexType { unit, .. } => format!("IDX_TYPE of unit {unit}"),
     }
 }
 
@@ -458,6 +468,9 @@ impl State {
                     Key::IndexPrimary { unit } => {
                         self.bad_idx_entries.insert(*unit);
                     }
+                    Key::IndexType { unit, .. } => {
+                        self.bad_idx_types.insert(*unit);
+                    }
                     _ => {}
                 }
                 self.decode_error(k, crate::db::context(e, &describe(&decoded_key)));
@@ -517,6 +530,9 @@ impl State {
                 self.counts.index_entries += 1;
                 self.idx_entries.insert(unit, entry);
             }
+            Record::IndexType { unit_type, schema_version, unit } => {
+                self.idx_types.insert((unit, unit_type, schema_version));
+            }
         }
     }
 
@@ -566,6 +582,33 @@ impl State {
         self.check_revision_provenance();
         self.check_relations();
         self.check_index();
+        self.check_type_index();
+    }
+
+    /// UNIT-38: `IDX_TYPE` mirrors `IDX_PRIMARY` entry for entry. A unit
+    /// whose entry on either side does not decode is already a structure
+    /// finding and is skipped here.
+    fn check_type_index(&mut self) {
+        let skip = |u: &UnitId| self.bad_idx_entries.contains(u) || self.bad_idx_types.contains(u);
+        let want: BTreeSet<(UnitId, String, u32)> = self
+            .idx_entries
+            .iter()
+            .filter(|(u, _)| !skip(u))
+            .map(|(u, e)| (*u, e.unit_type.clone(), e.schema_version))
+            .collect();
+        let have: BTreeSet<(UnitId, String, u32)> = self.idx_types.iter().filter(|(u, ..)| !skip(u)).cloned().collect();
+        let mut found = Vec::new();
+        for (unit, t, v) in want.difference(&have) {
+            let k = key_of(Key::IndexType { unit_type: t.clone(), schema_version: *v, unit: *unit });
+            found.push((k, format!("unit {unit}: IDX_PRIMARY entry without its IDX_TYPE entry")));
+        }
+        for (unit, t, v) in have.difference(&want) {
+            let k = key_of(Key::IndexType { unit_type: t.clone(), schema_version: *v, unit: *unit });
+            found.push((k, format!("unit {unit}: IDX_TYPE entry without a matching IDX_PRIMARY entry")));
+        }
+        for (k, detail) in found {
+            self.cross(CrossRule::Unit38, k, detail);
+        }
     }
 
     /// I-23 for the primary index (UNIT-37): see the module documentation.

@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 36842fb5cee81dc31c40ea2b9d3d89b8f1f15f69466c86e7195b47a5867025df # shrinks to a = IndexType { unit_type: "aéa\0aa", schema_version: 0, unit: UnitId([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]) }, b = IndexType { unit_type: "b", schema_version: 0, unit: UnitId([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]) }

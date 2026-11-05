@@ -54,18 +54,36 @@
 //!   unit it returns. So on a damaged store the index path can answer where
 //!   the reference path, which opens every unit, fails.
 //!
+//! # The secondary index by type (E4-04)
+//!
+//! Workload W1 (`docs/architecture/etapa4-workloads.md`) measured the
+//! primary path at 4.8–12× the cost of opening only the matching units for a
+//! 1 % selective type filter on 100 000 units, with p95 near 60–70 ms, which
+//! misses the threshold fixed before measuring. So a build also writes
+//! `IDX_TYPE`: one key `len ‖ unit_type ‖ schema_version ‖ unit_id` per
+//! active unit (`units-v1.md` §3.11), in the **same** change set and under
+//! the same `IDX_META` as the primary entries. Both are one generation: same
+//! watermark, same state, same crash behaviour, and a rebuild replaces both.
+//! A filter that sets `unit_type` is answered from the range of that type
+//! (and schema version, when set); any other filter uses the primary
+//! entries. [`IndexPath`] lets a caller pick the path, which the
+//! differential tests do to hold each one to the reference.
+//!
 //! ponytail: a build holds every entry in memory and writes them in one
 //! batch, so it is limited by the engine's batch limits (1 Mi operations and
 //! 64 MiB by default; beyond them it fails with `ChangeSetTooLarge` and the
 //! status is `Failed`). Upgrade path: build in key-ordered chunks under a
-//! `Building` record, which is the E4-04 question.
+//! `Building` record (not needed by W1, which builds 100 000 units in under 1 s).
 
 use std::ops::Bound;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use kerno_core::contract::{Engine, Snapshot, Txn, TxnEngine};
 
-use crate::codec::{IndexMeta, Key, PrimaryEntry, TAG_IDX_PRIMARY, TAG_UNIT_HEAD, UnitHead};
+use crate::codec::{
+    IndexMeta, Key, PrimaryEntry, TAG_IDX_PRIMARY, TAG_IDX_TYPE, TAG_UNIT_HEAD, UnitHead, decode_type_entry,
+    encode_type_entry,
+};
 use crate::db::{ChangeSet, Unit, UnitDb, UnitSnapshot, Write, context, corruption, key, scan_all};
 use crate::error::UnitError;
 use crate::types::{BuildOutcome, CommitSeq, Lifecycle, UnitId};
@@ -104,6 +122,18 @@ impl UnitFilter {
         self.unit_type.as_deref().is_none_or(|t| t == unit_type)
             && self.schema_version.is_none_or(|v| v == schema_version)
     }
+}
+
+/// Which index answers an indexed query.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum IndexPath {
+    /// `IDX_TYPE` when the filter sets `unit_type`, else `IDX_PRIMARY`.
+    Auto,
+    /// `IDX_PRIMARY`: every active entry, filtered.
+    Primary,
+    /// `IDX_TYPE`: only the range of the filter's type. A filter without
+    /// `unit_type` is refused with `InvalidArgument`.
+    ByType,
 }
 
 /// Where a [`UnitSnapshot::query`] answer came from.
@@ -199,8 +229,13 @@ fn write_generation<E: TxnEngine>(cs: &mut ChangeSet<'_, E>) -> Result<(), UnitE
     // it, not what comes after (SEM-3).
     let (start, end) = Key::tag_range(TAG_IDX_PRIMARY);
     cs.write(&Write::DeleteRange(start, end))?;
+    let (start, end) = Key::tag_range(TAG_IDX_TYPE);
+    cs.write(&Write::DeleteRange(start, end))?;
     for (unit, entry) in &entries {
         cs.write(&Write::Put(key(Key::IndexPrimary { unit: *unit })?, entry.encode()?))?;
+        let by_type =
+            Key::IndexType { unit_type: entry.unit_type.clone(), schema_version: entry.schema_version, unit: *unit };
+        cs.write(&Write::Put(key(by_type)?, encode_type_entry()))?;
     }
     let meta =
         IndexMeta { outcome: BuildOutcome::Succeeded, watermark: cs.commit_seq(), entries: entries.len() as u64 };
@@ -278,9 +313,14 @@ impl<E: Engine> UnitSnapshot<E> {
     /// (`Storage(Corruption)` otherwise). On the same snapshot the answer is
     /// [`UnitSnapshot::reference_filter`]'s (I-32).
     pub fn indexed_scan(&self, filter: &UnitFilter) -> Result<Vec<Unit>, UnitError> {
+        self.indexed_scan_via(IndexPath::Auto, filter)
+    }
+
+    /// [`indexed_scan`](Self::indexed_scan) through the index `path`.
+    pub fn indexed_scan_via(&self, path: IndexPath, filter: &UnitFilter) -> Result<Vec<Unit>, UnitError> {
         let status = self.index_status()?;
         match (status.state, status.watermark) {
-            (IndexState::Ready, Some(_)) => self.scan_entries(filter),
+            (IndexState::Ready, Some(_)) => self.scan_path(path, filter),
             (state, watermark) => Err(UnitError::IndexNotReady { state, watermark }),
         }
     }
@@ -292,14 +332,53 @@ impl<E: Engine> UnitSnapshot<E> {
     pub fn query(&self, filter: &UnitFilter) -> Result<QueryOutcome, UnitError> {
         let status = self.index_status()?;
         match (status.state, status.watermark) {
-            (IndexState::Ready, Some(watermark)) => {
-                Ok(QueryOutcome { units: self.scan_entries(filter)?, source: QuerySource::Index { watermark } })
-            }
+            (IndexState::Ready, Some(watermark)) => Ok(QueryOutcome {
+                units: self.scan_path(IndexPath::Auto, filter)?,
+                source: QuerySource::Index { watermark },
+            }),
             _ => Ok(QueryOutcome {
                 units: self.reference_filter(filter)?,
                 source: QuerySource::Reference { index: status },
             }),
         }
+    }
+
+    fn scan_path(&self, path: IndexPath, filter: &UnitFilter) -> Result<Vec<Unit>, UnitError> {
+        match (path, filter.unit_type.as_deref()) {
+            (IndexPath::Primary, _) | (IndexPath::Auto, None) => self.scan_entries(filter),
+            (_, Some(t)) => self.scan_type(t, filter.schema_version),
+            (IndexPath::ByType, None) => {
+                Err(UnitError::InvalidArgument("the IDX_TYPE path needs a filter with unit_type".into()))
+            }
+        }
+    }
+
+    /// The `IDX_TYPE` entries of `unit_type` (and `schema_version`), opened
+    /// as units in unit id order.
+    fn scan_type(&self, unit_type: &str, schema_version: Option<u32>) -> Result<Vec<Unit>, UnitError> {
+        let Some((start, end)) = Key::type_range(unit_type, schema_version) else {
+            return Ok(Vec::new());
+        };
+        let mut out = Vec::new();
+        scan_all(&self.snap, start, end, |k, v| {
+            let Key::IndexType { unit_type: t, schema_version: sv, unit } = Key::decode(k)? else {
+                return Err(corruption("a key in the IDX_TYPE range is not an IDX_TYPE".into()));
+            };
+            decode_type_entry(v).map_err(|e| context(e, &format!("IDX_TYPE of unit {unit}")))?;
+            let Some(u) = self.get_unit(unit)? else {
+                return Err(corruption(format!("IDX_TYPE entry of unit {unit} has no UNIT_HEAD")));
+            };
+            if u.lifecycle != Lifecycle::Active || u.unit_type != t || u.schema_version != sv {
+                return Err(corruption(format!("IDX_TYPE entry of unit {unit} disagrees with its UNIT_HEAD")));
+            }
+            out.push(u);
+            Ok(())
+        })?;
+        // Without a schema version the range is ordered by version first.
+        if schema_version.is_none() {
+            out.sort_by_key(|u| u.id);
+        }
+        Ok(out)
     }
 
     /// The entries that match `filter`, opened as units.

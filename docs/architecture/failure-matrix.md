@@ -255,4 +255,10 @@ E4-03 ([ADR-0007](../adr/0007-consistencia-de-indices.md)) añade el índice pri
 | `{emulated_log,kerno}::failed_build_is_recorded_and_repaired`, `status_survives_reopen` | I2 |
 | `{emulated_log,kerno}::verifier_reports_index_damage`, `index_path_refuses_what_it_can_see` | I3 |
 
-Las filas I1–I3 no se repiten en `Buffered` ni con `fsync` fallido o disco lleno: la construcción usa el mismo camino de confirmación que cualquier otro `ChangeSet` (filas U2, U4, U5 y U9 de la sección 7).
+E4-04 añade el índice secundario `IDX_TYPE` ([units-v1.md](../file-format/units-v1.md) §3.11): lo escribe la misma construcción, en la misma transacción y bajo el mismo `IDX_META`, así que las filas I1 e I2 lo cubren sin cambios (la generación es una: las dos clases de entradas, enteras o ninguna). La prueba de caídas lo comprueba porque `check` compara cada ruta (`IndexPath::Primary` y `IndexPath::ByType`) con la de referencia tras cada recuperación.
+
+| # | Punto de fallo | Muerte del proceso | Corte de energía | Por qué |
+|---|---|---|---|---|
+| I4 | Daño del medio que respeta los CRC del motor en `IDX_TYPE`: falta o sobra una entrada, o está bajo otro tipo o versión | — | — | `verify_units` informa UNIT-38 (y solo esa regla si `IDX_PRIMARY` está bien). Una consulta por tipo rechaza una entrada cuya clave no concuerda con la cabeza de la unidad (`Corruption`); una que falta solo la ven el verificador, la prueba diferencial o una reconstrucción. Probado por `verifier_reports_index_damage` e `index_path_refuses_what_it_can_see` |
+
+Las filas I1–I4 no se repiten en `Buffered` ni con `fsync` fallido o disco lleno: la construcción usa el mismo camino de confirmación que cualquier otro `ChangeSet` (filas U2, U4, U5 y U9 de la sección 7).
