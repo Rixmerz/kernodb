@@ -42,6 +42,8 @@ Todo valor, salvo `REV_PAYLOAD` (§3.4), empieza por:
 | `reason`, `actor_ref`, `source_ref`, `correlation` de `ChangeSetRecord` | ≤ 1024 B c/u | UNIT-11 |
 | `payload_len` | ≤ 2^26 = 67 108 864 | UNIT-22 |
 | `member_count` | ≤ 2^20 = 1 048 576 | UNIT-24 |
+| `relation_type` de una relación (E4-02) | 1..=64 B, sin NUL | UNIT-12 |
+| `origin` de la procedencia de una relación | ≤ 256 B | UNIT-11 |
 | `layer_version` soportada | 1 | UNIT-15, UNIT-16 |
 | Longitud de clave | la de §2 | UNIT-3 |
 
@@ -57,11 +59,14 @@ Una clave es `tag: u8` seguido de los campos de la tabla. Longitudes en bytes, t
 | `0x21` | `REV_PAYLOAD` | `unit_id[16]` ‖ `rev_no: u64` | 25 |
 | `0x30` | `CHANGESET` | `commit_seq: u64` | 9 |
 | `0x31` | `CS_MEMBER` | `commit_seq: u64` ‖ `ordinal: u32` | 13 |
+| `0x40` | `REL` (E4-02) | `edge_id[16]` | 17 |
+| `0x41` | `REL_OUT` (E4-02) | `unit_id[16]` ‖ `relation_type` (1..=64 B de UTF-8 sin NUL) ‖ `0x00` ‖ `edge_id[16]` | 35..=98 |
+| `0x42` | `REL_IN` (E4-02) | igual que `REL_OUT`, con `unit_id` = el extremo `to` | 35..=98 |
 
 Reglas de clave, evaluadas **en este orden**:
 
 - **UNIT-1** (`Corruption`): un tag desconocido cuyo nibble alto es `0x0`, `0x1`, `0x2` o `0x3` (`0x00`, `0x02..=0x0F`, `0x11..=0x1F`, `0x22..=0x2F`, `0x32..=0x3F`) está dentro del rango de una etiqueta conocida y es corrupción. Una clave vacía también (no tiene tag).
-- **UNIT-2** (`IncompatibleLayer`): un tag con nibble alto `0x4..=0xF` lo escribió una capa más nueva.
+- **UNIT-2** (`IncompatibleLayer`): un tag con nibble alto `0x4..=0xF`, salvo `0x40..=0x42` (E4-02), lo escribió una capa más nueva. Una capa anterior a E4-02 rechaza por esta regla un almacén con relaciones (véase ADR-0014, «Consecuencias»).
 - **UNIT-3** (`Corruption`): la longitud de la clave no es la de la tabla.
 - **UNIT-4** (`Corruption`): el `name` de `LAYER_META` no es UTF-8 válido.
 - **UNIT-5** (`Corruption`): `rev_no = 0` en `REV_META`/`REV_PAYLOAD`, o `commit_seq = 0` en `CHANGESET`/`CS_MEMBER`. Los números de revisión y las secuencias de commit empiezan en 1.
@@ -146,6 +151,33 @@ El valor es la carga útil **tal cual**: sin `envelope_version`, sin longitud, s
 
 Tamaño fijo: 27 B.
 
+### 3.7 `REL` (`0x40`, E4-02)
+
+Una relación dirigida de `from` a `to` ([ADR-0014](../adr/0014-representacion-fisica-de-relaciones.md), opción 2).
+
+| Campo | Tipo | Restricción |
+|---|---|---|
+| `envelope_version`, `reserved_flags` | `u8`, `u8` | §1.1 |
+| `from`, `to` | `[u8; 16]` | ninguna (las unidades extremo deben ser `Active`: UNIT-36) |
+| `relation_type` | `str(64)` | 1..=64 B, sin NUL (UNIT-12) |
+| `created_seq` | `u64` | ≥ 1 (UNIT-23); el `CHANGESET` de esa secuencia guarda actor, origen y motivo |
+| `provenance` | `u8` | `Declared=0`, `Imported=1`, `Algorithmic=2`, `Inferred=3` (UNIT-13). **Obligatoria**: no hay valor por defecto ni forma de omitirla |
+| `origin` | `bytes(256)` | vacío con `Declared`; no vacío con las demás (UNIT-13) |
+| `confidence` | `u16` | milésimas, `0..=1000`; `0` salvo con `Inferred` (UNIT-13) |
+
+Un `REL` no tiene revisiones propias: borrarlo borra el registro y sus dos entradas, y el `ChangeSet` que lo hizo es la única huella.
+
+### 3.8 `REL_OUT` y `REL_IN` (`0x41`, `0x42`, E4-02)
+
+Entradas del índice de adyacencia, escritas y borradas en el mismo `ChangeSet` que el `REL` (I-21). La clave ordena por unidad, tipo y `edge_id`, de modo que los vecinos de una unidad (con o sin un tipo) son un rango. El NUL tras el tipo evita que un tipo que es prefijo de otro (`cite`, `cites`) coincida con las entradas del segundo.
+
+| Campo | Tipo | Restricción |
+|---|---|---|
+| `envelope_version`, `reserved_flags` | `u8`, `u8` | §1.1 |
+| `other` | `[u8; 16]` | el otro extremo de la relación (`to` en `REL_OUT`, `from` en `REL_IN`); permite leer el vecino sin abrir el `REL` |
+
+Tamaño fijo: 18 B.
+
 ## 4. `ContentHash`
 
 | `alg` | Algoritmo | `digest` |
@@ -162,7 +194,7 @@ Cada regla lleva su clase de error: `Corruption` (los bytes no son lo que un esc
 | Id | Regla | Clase |
 |---|---|---|
 | UNIT-1 | Tag desconocido dentro del rango de una etiqueta conocida, o clave vacía | `Corruption` |
-| UNIT-2 | Tag con nibble alto `0x4..=0xF` | `IncompatibleLayer` |
+| UNIT-2 | Tag con nibble alto `0x4..=0xF`, salvo `0x40..=0x42` | `IncompatibleLayer` |
 | UNIT-3 | Longitud de clave distinta de la de §2 | `Corruption` |
 | UNIT-4 | `name` de `LAYER_META` no es UTF-8 | `Corruption` |
 | UNIT-5 | `rev_no = 0` o `commit_seq = 0` en la clave | `Corruption` |
@@ -172,8 +204,8 @@ Cada regla lleva su clase de error: `Corruption` (los bytes no son lo que un esc
 | UNIT-9 | Un campo sobrepasa el final del valor (valor truncado, incluido el vacío) | `Corruption` |
 | UNIT-10 | Bytes sobrantes tras el último campo | `Corruption` |
 | UNIT-11 | El prefijo de longitud de un `str`/`bytes` supera el máximo del campo | `Corruption` |
-| UNIT-12 | `unit_type` vacío o no UTF-8 | `Corruption` |
-| UNIT-13 | Valor de enumeración fuera de la tabla: `lifecycle`, `kind`, `purpose`, `history_policy`, `alg`; o `payload_codec ≠ 0` | `Corruption` |
+| UNIT-12 | `unit_type` o `relation_type` vacío o no UTF-8; `relation_type` con NUL (también en la clave de `REL_OUT`/`REL_IN`) | `Corruption` |
+| UNIT-13 | Valor de enumeración fuera de la tabla: `lifecycle`, `kind`, `purpose`, `history_policy`, `alg`, `provenance`; `payload_codec ≠ 0`; o una procedencia de `REL` incoherente (§3.7) | `Corruption` |
 | UNIT-14 | `alg = 0` con los 28 bytes finales del `digest` distintos de cero | `Corruption` |
 | UNIT-15 | `layer_version = 0` | `Corruption` |
 | UNIT-16 | `layer_version > 1` | `IncompatibleLayer` |
@@ -183,7 +215,7 @@ Cada regla lleva su clase de error: `Corruption` (los bytes no son lo que un esc
 | UNIT-20 | `REV_META`: `restored_from` incoherente con `kind` y `rev_no` (§3.3) | `Corruption` |
 | UNIT-21 | `REV_META`: `payload_present ∉ {0,1}`, o `Delete` con carga útil | `Corruption` |
 | UNIT-22 | `payload_len > 2^26` | `Corruption` |
-| UNIT-23 | `REV_META`: `commit_seq = 0` | `Corruption` |
+| UNIT-23 | `REV_META` o `REL`: `commit_seq` / `created_seq` = 0 | `Corruption` |
 | UNIT-24 | `CHANGESET`: `member_count > 2^20` | `Corruption` |
 | UNIT-25 | `CS_MEMBER`: `rev_no = 0` | `Corruption` |
 
@@ -216,6 +248,7 @@ El verificador offline (`verify_units`, `crates/kerno-units/src/verify.rs`) reco
 | UNIT-33 | Procedencia: un `REV_META` sin `CHANGESET` en su `commit_seq`, con un `CHANGESET` cuyo `purpose` no es `Application`, o sin un `CS_MEMBER` de ese `ChangeSet` que lo nombre (`unit_id`, `rev_no`, `kind`); miembros que no son exactamente los ordinales `0..member_count`; una unidad nombrada dos veces en un `ChangeSet`; `Application`/`Retention` sin miembros o `Maintenance` con miembros; un miembro de `Application` que nombra una unidad inexistente, una revisión posterior a la cabeza, o una revisión retenida con otro `commit_seq` u otro `kind`. Los miembros de `Retention` solo se comprueban en el sentido `REV_META → miembro` (nombran la primera revisión retenida, no una que escribieran) | IU-4 |
 | UNIT-34 | Política no aplicada, solo donde la política vigente al escribir se conoce (revisiones confirmadas después del último `ChangeSet` `Maintenance`): bajo `none`, `oldest_rev ≠ head_rev`; bajo `audit`, una revisión sustituida que conserva `payload_present = 1` | IU-9 |
 | UNIT-35 | Entre dos instantáneas, una clave `REV_META`/`REV_PAYLOAD` presente en ambas cambió de valor, salvo el paso de `payload_present` de 1 a 0 que hace una política (`verify_immutable`) | IU-1 |
+| UNIT-36 | Relaciones (E4-02): un `REL` sin su `REL_OUT` o sin su `REL_IN` (con el mismo tipo y el otro extremo correcto), una entrada `REL_OUT`/`REL_IN` sin su `REL` o que no concuerda con él, un `REL` con `created_seq` posterior a la instantánea, o un extremo que no existe o no está `Active` (archivar o borrar una unidad con relaciones se rechaza) | I-21 |
 
 Para la integridad de la carga útil el verificador aplica §5.1 a cada `REV_META`, con una excepción: una revisión no lápida con `payload_present = 0` es una que un periodo `audit` vació conservando hash y longitud (nota de E3-05 del diseño); para ella solo se exige que no exista `REV_PAYLOAD` (UNIT-26) y no se aplica la parte «`payload_present = 0` con `payload_len ≠ 0`» de UNIT-26.
 
@@ -227,7 +260,7 @@ Un decodificador recibe el par `(key, value)` y devuelve los campos o **un** rec
 2. **Rechazar la primera regla violada** en este orden: reglas de clave (§2) → cabecera (UNIT-6, UNIT-7, UNIT-8) → campos en orden de byte, cada uno con sus comprobaciones propias (UNIT-9, UNIT-11, UNIT-12, UNIT-13, UNIT-14, UNIT-15, UNIT-16, UNIT-22, UNIT-23, UNIT-24, UNIT-25 en cuanto se lee el campo) → bytes sobrantes (UNIT-10) → reglas entre campos (UNIT-17..UNIT-21, tras UNIT-10).
 3. **Distinguir truncamiento de corrupción solo por la regla**, no por la clase: ambas son `Corruption`. Un valor vacío es UNIT-9, y nunca una base nueva.
 4. No «reparar», rellenar ni ignorar nada. Un rechazo no modifica la base (I-18 si es de solo lectura).
-5. Un tag con nibble alto `0x4..=0xF` (UNIT-2) o `envelope_version`/`layer_version` mayores (UNIT-7, UNIT-16) se rechaza como `IncompatibleLayer` **sin interpretar el resto**.
+5. Un tag con nibble alto `0x4..=0xF`, salvo `0x40..=0x42` (UNIT-2), o `envelope_version`/`layer_version` mayores (UNIT-7, UNIT-16) se rechaza como `IncompatibleLayer` **sin interpretar el resto**.
 
 Los códecs de producción (E3-02) están en `crates/kerno-units/src/codec.rs` (`Key`, `Record` y un tipo por valor) y siguen este orden; los errores, con la regla y su clase, en `src/error.rs`. La prueba `production_codec_matches_committed_vectors` de `tests/struct_vectors.rs` exige que decodifiquen cada vector de §7 como indica la tabla y que reproduzcan byte a byte los positivos; `spec_decoder` sigue sin depender de ellos.
 

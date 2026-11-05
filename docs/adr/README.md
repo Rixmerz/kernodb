@@ -24,7 +24,7 @@ Reglas:
 | [0011](0011-vectores-y-recuperacion-hibrida.md) | Perfil de vector y recuperación híbrida | Pendiente |
 | [0012](0012-metodologia-de-benchmarks.md) | Metodología de benchmarks y umbrales de salida | Propuesto (aplicada en M0) |
 | [0013](0013-formato-v1-y-protocolo-del-motor.md) | Formato v1 y protocolo del motor | Propuesto (WP06; se acepta antes de congelar v1 en WP14) |
-| [0014](0014-representacion-fisica-de-relaciones.md) | Representación física de relaciones | Propuesto (spec v0.2.0 §17.6; se decide en la Etapa 4) |
+| [0014](0014-representacion-fisica-de-relaciones.md) | Representación física de relaciones | Aceptado (2026-11-05, E4-02: opción 2) |
 | [0015](0015-privacidad-de-la-observabilidad.md) | Privacidad de la observabilidad | Propuesto (spec v0.2.0 §17.11; se decide en la Etapa 5) |
 | [0016](0016-adaptacion-e-invalidacion.md) | Adaptación operacional e invalidación | Propuesto (spec v0.2.0 §17.12; se decide en la Etapa 6) |
 | [0017](0017-semantica-de-la-unidad-neuronal.md) | Semántica de la «unidad neuronal» | Propuesto (spec v0.2.0 §17.13; se decide al iniciar la Etapa 3) |

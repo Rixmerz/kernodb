@@ -216,7 +216,7 @@ fn vectors() -> Vec<Vector> {
     v.push(neg_bytes("tag_0x02", 1, C, vec![0x02, 1], lv.clone()));
     v.push(neg_bytes("tag_0x32", 1, C, [vec![0x32], ck[1..].to_vec()].concat(), cv.clone()));
     v.push(neg_bytes("empty_key", 1, C, Vec::new(), lv.clone()));
-    v.push(neg_bytes("tag_0x40", 2, I, [vec![0x40], ck[1..].to_vec()].concat(), cv.clone()));
+    v.push(neg_bytes("tag_0x43", 2, I, [vec![0x43], ck[1..].to_vec()].concat(), cv.clone()));
     v.push(neg_bytes("tag_0xff", 2, I, vec![0xFF], Vec::new()));
     v.push(neg_bytes("head_key_short", 3, C, hk.0[..16].to_vec(), hk.1.clone()));
     v.push(neg_bytes("layer_name_empty", 3, C, vec![0x01], lv.clone()));
@@ -465,6 +465,11 @@ fn production_decode(key: &[u8], value: &[u8]) -> Result<Rec, Reject> {
             rev_no: member.rev_no.0,
             kind: member.kind.to_byte(),
         }),
+        // The structure vectors are the E3 records; relation records (tags
+        // 0x40..=0x42) are covered by tests/relations.rs.
+        Record::Relation { .. } | Record::RelationOut { .. } | Record::RelationIn { .. } => {
+            unreachable!("no structure vector has a relation tag")
+        }
     })
 }
 

@@ -10,7 +10,8 @@
 //! `compare` and `restore` ([`history`]). E3-05 adds history policies and
 //! E3-06 retention and GC ([`retention`]),
 //! and E3-07 the offline verifier `verify_units` ([`verify`]). E4-01 adds the
-//! index-free reference query path ([`reference`]). This crate stays separate from
+//! index-free reference query path ([`reference`]), and E4-02 declared
+//! relations with their adjacency indexes ([`db`], ADR-0014). This crate stays separate from
 //! `kerno-storage`.
 
 pub mod clock;
@@ -28,8 +29,8 @@ pub mod verify;
 pub use clock::{Clock, CounterIds, FixedClock, SystemClock, UnitIdSource, UuidV7Source};
 pub use codec::{ChangeSetRecord, CsMember, Key, LayerMeta, Record, RevisionMeta, UnitHead};
 pub use db::{
-    ChangeMeta, ChangeSet, CommitInfo, CreatedUnit, DEFAULT_MAX_CHANGESET_OPS, MAX_POLICY_UNIT_TYPE_LEN, NewUnit, Unit,
-    UnitConfig, UnitDb, UnitSnapshot, UnitUpdate,
+    ChangeMeta, ChangeSet, CommitInfo, CreatedUnit, DEFAULT_MAX_CHANGESET_OPS, MAX_POLICY_UNIT_TYPE_LEN, NewUnit,
+    Relation, Unit, UnitConfig, UnitDb, UnitSnapshot, UnitUpdate,
 };
 pub use error::{DecodeError, ErrorClass, UnitError, UnitRule};
 pub use history::{
@@ -42,8 +43,8 @@ pub use payload::{
 };
 pub use retention::{CompactReport, RetentionBudget, RetentionPacing, RetentionPolicy, RetentionReport, RetentionRule};
 pub use types::{
-    ChangeKind, ChangePurpose, ChangeSetId, CommitSeq, HistoryPolicy, Lifecycle, Purpose, RevNo, RevisionId,
-    RevisionKind, Timestamp, UnitId,
+    ChangeKind, ChangePurpose, ChangeSetId, CommitSeq, Direction, HistoryPolicy, Lifecycle, ProvenanceKind, Purpose,
+    RelationId, RelationProvenance, RevNo, RevisionId, RevisionKind, Timestamp, UnitId,
 };
 pub use verify::{
     CrossRule, UnitVerifyReport, VerifyCounts, VerifyFinding, VerifyRule, verify_engine, verify_immutable,

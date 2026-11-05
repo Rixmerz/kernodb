@@ -9,7 +9,7 @@
 
 use std::fmt;
 
-use crate::types::{HistoryPolicy, RevNo, UnitId};
+use crate::types::{HistoryPolicy, RelationId, RevNo, UnitId};
 
 /// Class of a rejected record (`units-v1.md` §5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -202,6 +202,17 @@ pub enum UnitError {
         supported: u32,
     },
     ChangeSetClosed,
+    /// No relation with that id (E4-02).
+    RelationNotFound {
+        relation: RelationId,
+    },
+    /// Archiving or deleting `unit` is refused while a relation touches it
+    /// (ADR-0014, criterion 4): `relation` is the first one found. Delete
+    /// the relations, in the same change set or before, and retry.
+    UnitHasRelations {
+        unit: UnitId,
+        relation: RelationId,
+    },
 }
 
 impl fmt::Display for UnitError {
@@ -227,6 +238,11 @@ impl fmt::Display for UnitError {
                 write!(f, "layer_version {found} is newer than the supported {supported}")
             }
             UnitError::ChangeSetClosed => f.write_str("the change set is closed"),
+            UnitError::RelationNotFound { relation } => write!(f, "relation {relation} not found"),
+            UnitError::UnitHasRelations { unit, relation } => write!(
+                f,
+                "unit {unit} still has live relations (for instance {relation}); delete them before archiving or deleting the unit"
+            ),
         }
     }
 }

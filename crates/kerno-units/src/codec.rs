@@ -14,7 +14,10 @@
 
 use crate::error::{DecodeError, UnitError, UnitRule};
 use crate::payload::{ContentHash, HashAlg, MAX_PAYLOAD_LEN, PAYLOAD_CODEC_OPAQUE, PayloadDecl};
-use crate::types::{CommitSeq, HistoryPolicy, Lifecycle, Purpose, RevNo, RevisionKind, Timestamp, UnitId};
+use crate::types::{
+    CommitSeq, HistoryPolicy, Lifecycle, ProvenanceKind, Purpose, RelationId, RelationProvenance, RevNo, RevisionKind,
+    Timestamp, UnitId,
+};
 
 /// Key tags (`units-v1.md` §2).
 pub const TAG_LAYER_META: u8 = 0x01;
@@ -23,6 +26,10 @@ pub const TAG_REV_META: u8 = 0x20;
 pub const TAG_REV_PAYLOAD: u8 = 0x21;
 pub const TAG_CHANGESET: u8 = 0x30;
 pub const TAG_CS_MEMBER: u8 = 0x31;
+/// Relation record and its two adjacency indexes (E4-02, ADR-0014).
+pub const TAG_REL: u8 = 0x40;
+pub const TAG_REL_OUT: u8 = 0x41;
+pub const TAG_REL_IN: u8 = 0x42;
 
 /// `envelope_version` written and accepted (§1.1).
 pub const ENVELOPE_VERSION: u8 = 1;
@@ -37,6 +44,11 @@ pub const MAX_METADATA_LEN: u32 = 4096;
 pub const MAX_REV_REF_LEN: u32 = 256;
 pub const MAX_CHANGESET_FIELD_LEN: u32 = 1024;
 pub const MAX_MEMBER_COUNT: u32 = 1 << 20;
+/// Longest `relation_type` (UTF-8, no NUL) and relation origin.
+pub const MAX_RELATION_TYPE_LEN: u32 = 64;
+pub const MAX_RELATION_ORIGIN_LEN: u32 = 256;
+/// Largest `Inferred` confidence, in thousandths.
+pub const MAX_CONFIDENCE_PERMILLE: u16 = 1000;
 
 type Res<T> = Result<T, DecodeError>;
 
@@ -50,12 +62,64 @@ fn reject<T>(rule: UnitRule, detail: impl Into<String>) -> Res<T> {
 /// encoded bytes: variants follow their tags and fields follow byte order.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Key {
-    LayerMeta { name: String },
-    UnitHead { unit: UnitId },
-    RevMeta { unit: UnitId, rev: RevNo },
-    RevPayload { unit: UnitId, rev: RevNo },
-    ChangeSet { seq: CommitSeq },
-    CsMember { seq: CommitSeq, ordinal: u32 },
+    LayerMeta {
+        name: String,
+    },
+    UnitHead {
+        unit: UnitId,
+    },
+    RevMeta {
+        unit: UnitId,
+        rev: RevNo,
+    },
+    RevPayload {
+        unit: UnitId,
+        rev: RevNo,
+    },
+    ChangeSet {
+        seq: CommitSeq,
+    },
+    CsMember {
+        seq: CommitSeq,
+        ordinal: u32,
+    },
+    /// The relation record of `edge`.
+    Relation {
+        edge: RelationId,
+    },
+    /// Adjacency entry of a relation, from the side of its `from` unit.
+    RelationOut {
+        unit: UnitId,
+        relation_type: String,
+        edge: RelationId,
+    },
+    /// Adjacency entry of a relation, from the side of its `to` unit.
+    RelationIn {
+        unit: UnitId,
+        relation_type: String,
+        edge: RelationId,
+    },
+}
+
+/// Valid `relation_type`: 1..=64 bytes of UTF-8 without NUL (the NUL ends the
+/// type inside an adjacency key, so a type that is a prefix of another never
+/// matches the other's entries).
+pub fn valid_relation_type(t: &str) -> bool {
+    !t.is_empty() && t.len() <= MAX_RELATION_TYPE_LEN as usize && !t.as_bytes().contains(&0)
+}
+
+/// The smallest key above every key that starts with `prefix`; `prefix` must
+/// not be all `0xFF`.
+fn prefix_end(prefix: &[u8]) -> Vec<u8> {
+    let mut end = prefix.to_vec();
+    for b in end.iter_mut().rev() {
+        let (v, carry) = b.overflowing_add(1);
+        *b = v;
+        if !carry {
+            break;
+        }
+    }
+    end
 }
 
 impl Key {
@@ -67,6 +131,9 @@ impl Key {
             Key::RevPayload { .. } => TAG_REV_PAYLOAD,
             Key::ChangeSet { .. } => TAG_CHANGESET,
             Key::CsMember { .. } => TAG_CS_MEMBER,
+            Key::Relation { .. } => TAG_REL,
+            Key::RelationOut { .. } => TAG_REL_OUT,
+            Key::RelationIn { .. } => TAG_REL_IN,
         }
     }
 
@@ -86,6 +153,13 @@ impl Key {
                 out.extend_from_slice(&seq.0.to_be_bytes());
                 out.extend_from_slice(&ordinal.to_be_bytes());
             }
+            Key::Relation { edge } => out.extend_from_slice(&edge.0),
+            Key::RelationOut { unit, relation_type, edge } | Key::RelationIn { unit, relation_type, edge } => {
+                out.extend_from_slice(&unit.0);
+                out.extend_from_slice(relation_type.as_bytes());
+                out.push(0);
+                out.extend_from_slice(&edge.0);
+            }
         }
         Key::decode(&out).map_err(|e| refuse("key", &e))?;
         Ok(out)
@@ -102,12 +176,16 @@ impl Key {
             TAG_REV_META | TAG_REV_PAYLOAD => Some(25),
             TAG_CHANGESET => Some(9),
             TAG_CS_MEMBER => Some(13),
+            TAG_REL => Some(17),
+            TAG_REL_OUT | TAG_REL_IN => None,
             0x00..=0x3F => return reject(UnitRule::Unit1, format!("unknown tag 0x{tag:02x} in a known range")),
             _ => return reject(UnitRule::Unit2, format!("tag 0x{tag:02x} belongs to a newer layer")),
         };
         let len_ok = match want {
             Some(n) => key.len() == n,
-            None => (2..=MAX_LAYER_NAME_LEN + 1).contains(&key.len()),
+            None if tag == TAG_LAYER_META => (2..=MAX_LAYER_NAME_LEN + 1).contains(&key.len()),
+            // tag ‖ unit[16] ‖ type (1..=64) ‖ NUL ‖ edge[16]
+            None => (35..=2 + 16 + 16 + MAX_RELATION_TYPE_LEN as usize).contains(&key.len()),
         };
         if !len_ok {
             return reject(UnitRule::Unit3, format!("key with tag 0x{tag:02x} has length {}", key.len()));
@@ -121,6 +199,28 @@ impl Key {
                 Err(_) => reject(UnitRule::Unit4, "LAYER_META name is not UTF-8"),
             },
             TAG_UNIT_HEAD => Ok(Key::UnitHead { unit: unit() }),
+            TAG_REL => Ok(Key::Relation { edge: RelationId(arr::<16>(tail)) }),
+            TAG_REL_OUT | TAG_REL_IN => {
+                let n = tail.len();
+                if tail[n - 17] != 0 {
+                    return reject(UnitRule::Unit3, format!("key with tag 0x{tag:02x} has no NUL before its edge id"));
+                }
+                let relation_type = match std::str::from_utf8(&tail[16..n - 17]) {
+                    Ok(t) if valid_relation_type(t) => t.to_owned(),
+                    _ => {
+                        return reject(
+                            UnitRule::Unit12,
+                            "adjacency key relation_type is empty, has a NUL or is not UTF-8",
+                        );
+                    }
+                };
+                let edge = RelationId(arr::<16>(&tail[n - 16..]));
+                Ok(if tag == TAG_REL_OUT {
+                    Key::RelationOut { unit: unit(), relation_type, edge }
+                } else {
+                    Key::RelationIn { unit: unit(), relation_type, edge }
+                })
+            }
             TAG_REV_META | TAG_REV_PAYLOAD => {
                 let rev = u64_at(16);
                 if rev == 0 {
@@ -152,17 +252,27 @@ impl Key {
     pub fn unit_rev_range(tag: u8, unit: UnitId) -> (Vec<u8>, Vec<u8>) {
         let mut start = vec![tag];
         start.extend_from_slice(&unit.0);
-        let mut end = start.clone();
-        // Increment the 17-byte prefix as a big-endian number; tag < 0xFF so it
-        // never overflows past the tag.
-        for b in end.iter_mut().rev() {
-            let (v, carry) = b.overflowing_add(1);
-            *b = v;
-            if !carry {
-                break;
-            }
-        }
+        // The 17-byte prefix as a big-endian number plus one; tag < 0xFF so
+        // it never overflows past the tag.
+        let end = prefix_end(&start);
         (start, end)
+    }
+
+    /// Scan bounds `[start, end)` of the adjacency entries of `unit` in the
+    /// index `tag` (`TAG_REL_OUT` or `TAG_REL_IN`): all of them, or only
+    /// those of `relation_type`. `None` for a type no entry can have.
+    pub fn adjacency_range(tag: u8, unit: UnitId, relation_type: Option<&str>) -> Option<(Vec<u8>, Vec<u8>)> {
+        let mut start = vec![tag];
+        start.extend_from_slice(&unit.0);
+        if let Some(t) = relation_type {
+            if !valid_relation_type(t) {
+                return None;
+            }
+            start.extend_from_slice(t.as_bytes());
+            start.push(0);
+        }
+        let end = prefix_end(&start);
+        Some((start, end))
     }
 }
 
@@ -208,6 +318,10 @@ impl<'a> Reader<'a> {
 
     fn u8(&mut self, field: &str) -> Res<u8> {
         Ok(self.take(1, field)?[0])
+    }
+
+    fn u16(&mut self, field: &str) -> Res<u16> {
+        Ok(u16::from_be_bytes(arr(self.take(2, field)?)))
     }
 
     fn u32(&mut self, field: &str) -> Res<u32> {
@@ -296,6 +410,10 @@ impl Writer {
 
     fn u8(&mut self, v: u8) {
         self.0.push(v);
+    }
+
+    fn u16(&mut self, v: u16) {
+        self.0.extend_from_slice(&v.to_be_bytes());
     }
 
     fn u32(&mut self, v: u32) {
@@ -773,6 +891,105 @@ impl CsMember {
     }
 }
 
+/// `REL` value (E4-02, ADR-0014): one relation, directed from `from` to `to`.
+/// Its provenance is part of the record and is checked by the decoder: a
+/// declared relation has no origin and no confidence, every other kind has an
+/// origin, and only an inferred one has a confidence (I-39).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RelationRecord {
+    pub from: UnitId,
+    pub to: UnitId,
+    pub relation_type: String,
+    /// The commit sequence of the change set that created the relation; that
+    /// change set holds the actor, the source and the reason.
+    pub created_seq: CommitSeq,
+    pub provenance: RelationProvenance,
+}
+
+impl RelationRecord {
+    pub fn encode(&self) -> Result<Vec<u8>, UnitError> {
+        let mut w = Writer::envelope();
+        w.0.extend_from_slice(&self.from.0);
+        w.0.extend_from_slice(&self.to.0);
+        w.bytes(self.relation_type.as_bytes(), MAX_RELATION_TYPE_LEN, "REL.relation_type")?;
+        w.u64(self.created_seq.0);
+        let (origin, confidence): (&[u8], u16) = match &self.provenance {
+            RelationProvenance::Declared => (&[], 0),
+            RelationProvenance::Imported { source } => (source, 0),
+            RelationProvenance::Algorithmic { origin } => (origin, 0),
+            RelationProvenance::Inferred { origin, confidence_permille } => (origin, *confidence_permille),
+        };
+        w.u8(self.provenance.kind().to_byte());
+        w.bytes(origin, MAX_RELATION_ORIGIN_LEN, "REL.origin")?;
+        w.u16(confidence);
+        let back = Self::decode(&w.0).map_err(|e| refuse("REL", &e))?;
+        if back != *self {
+            return Err(UnitError::InvalidArgument("refusing to encode an invalid REL".into()));
+        }
+        Ok(w.0)
+    }
+
+    pub fn decode(value: &[u8]) -> Res<Self> {
+        let mut r = Reader::new(value, "REL");
+        r.envelope()?;
+        let from = UnitId(arr(r.take(16, "from")?));
+        let to = UnitId(arr(r.take(16, "to")?));
+        let relation_type = match std::str::from_utf8(r.bytes(MAX_RELATION_TYPE_LEN, "relation_type")?) {
+            Ok(t) if valid_relation_type(t) => t.to_owned(),
+            _ => return reject(UnitRule::Unit12, "REL.relation_type is empty, has a NUL or is not UTF-8"),
+        };
+        let created_seq = r.u64("created_seq")?;
+        if created_seq == 0 {
+            return reject(UnitRule::Unit23, "REL.created_seq 0");
+        }
+        let kind = r.enumeration("provenance", ProvenanceKind::from_byte)?;
+        let origin = r.bytes(MAX_RELATION_ORIGIN_LEN, "origin")?.to_vec();
+        let confidence = r.u16("confidence")?;
+        r.finish()?;
+        let bad = |what: &str| reject(UnitRule::Unit13, format!("REL provenance {kind:?}: {what}"));
+        let provenance = match kind {
+            ProvenanceKind::Declared if !origin.is_empty() || confidence != 0 => {
+                return bad("a declared relation has no origin and no confidence");
+            }
+            ProvenanceKind::Declared => RelationProvenance::Declared,
+            _ if origin.is_empty() => return bad("the origin is empty"),
+            ProvenanceKind::Imported | ProvenanceKind::Algorithmic if confidence != 0 => {
+                return bad("only an inferred relation has a confidence");
+            }
+            ProvenanceKind::Imported => RelationProvenance::Imported { source: origin },
+            ProvenanceKind::Algorithmic => RelationProvenance::Algorithmic { origin },
+            ProvenanceKind::Inferred if confidence > MAX_CONFIDENCE_PERMILLE => {
+                return bad("confidence above 1000");
+            }
+            ProvenanceKind::Inferred => RelationProvenance::Inferred { origin, confidence_permille: confidence },
+        };
+        Ok(RelationRecord { from, to, relation_type, created_seq: CommitSeq(created_seq), provenance })
+    }
+}
+
+/// `REL_OUT` / `REL_IN` value: the unit at the other end of the relation, so
+/// that a neighbour is read from the index alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Adjacency {
+    pub other: UnitId,
+}
+
+impl Adjacency {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut w = Writer::envelope();
+        w.0.extend_from_slice(&self.other.0);
+        w.0
+    }
+
+    pub fn decode(value: &[u8]) -> Res<Self> {
+        let mut r = Reader::new(value, "REL_ADJ");
+        r.envelope()?;
+        let other = UnitId(arr(r.take(16, "other")?));
+        r.finish()?;
+        Ok(Adjacency { other })
+    }
+}
+
 // ---------------------------------------------------------------- records
 
 /// A decoded `(key, value)` pair.
@@ -807,6 +1024,22 @@ pub enum Record {
         ordinal: u32,
         member: CsMember,
     },
+    Relation {
+        edge: RelationId,
+        record: RelationRecord,
+    },
+    RelationOut {
+        unit: UnitId,
+        relation_type: String,
+        edge: RelationId,
+        adjacency: Adjacency,
+    },
+    RelationIn {
+        unit: UnitId,
+        relation_type: String,
+        edge: RelationId,
+        adjacency: Adjacency,
+    },
 }
 
 impl Record {
@@ -818,6 +1051,13 @@ impl Record {
             Record::RevPayload { unit, rev, .. } => Key::RevPayload { unit: *unit, rev: *rev },
             Record::ChangeSet { seq, .. } => Key::ChangeSet { seq: *seq },
             Record::CsMember { seq, ordinal, .. } => Key::CsMember { seq: *seq, ordinal: *ordinal },
+            Record::Relation { edge, .. } => Key::Relation { edge: *edge },
+            Record::RelationOut { unit, relation_type, edge, .. } => {
+                Key::RelationOut { unit: *unit, relation_type: relation_type.clone(), edge: *edge }
+            }
+            Record::RelationIn { unit, relation_type, edge, .. } => {
+                Key::RelationIn { unit: *unit, relation_type: relation_type.clone(), edge: *edge }
+            }
         }
     }
 
@@ -831,6 +1071,8 @@ impl Record {
             Record::RevPayload { payload, .. } => payload.clone(),
             Record::ChangeSet { record, .. } => record.encode()?,
             Record::CsMember { member, .. } => member.encode()?,
+            Record::Relation { record, .. } => record.encode()?,
+            Record::RelationOut { adjacency, .. } | Record::RelationIn { adjacency, .. } => adjacency.encode(),
         };
         Ok((key, value))
     }
@@ -845,6 +1087,13 @@ impl Record {
             Key::RevPayload { unit, rev } => Record::RevPayload { unit, rev, payload: value.to_vec() },
             Key::ChangeSet { seq } => Record::ChangeSet { seq, record: ChangeSetRecord::decode(value)? },
             Key::CsMember { seq, ordinal } => Record::CsMember { seq, ordinal, member: CsMember::decode(value)? },
+            Key::Relation { edge } => Record::Relation { edge, record: RelationRecord::decode(value)? },
+            Key::RelationOut { unit, relation_type, edge } => {
+                Record::RelationOut { unit, relation_type, edge, adjacency: Adjacency::decode(value)? }
+            }
+            Key::RelationIn { unit, relation_type, edge } => {
+                Record::RelationIn { unit, relation_type, edge, adjacency: Adjacency::decode(value)? }
+            }
         })
     }
 }
