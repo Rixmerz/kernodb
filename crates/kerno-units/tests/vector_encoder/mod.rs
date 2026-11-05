@@ -4,7 +4,7 @@
 //! `units_model`. It encodes whatever the record holds, valid or not.
 
 use crate::units_model::{
-    ChangeSet, Hash, Head, IdxMeta, IdxPrimary, IdxType, Layer, Member, Rec, RevMeta, RevPayload,
+    ChangeSet, Hash, Head, IdxMeta, IdxPrimary, IdxType, Layer, Member, Rec, Rel, RelAdj, RevMeta, RevPayload,
 };
 
 /// The envelope header every value but `REV_PAYLOAD` starts with.
@@ -122,6 +122,29 @@ pub fn encode(rec: &Rec) -> (Vec<u8>, Vec<u8>) {
             key.extend_from_slice(&schema_version.to_be_bytes());
             key.extend_from_slice(unit_id);
             (key, envelope())
+        }
+        Rec::Rel(Rel { edge_id, from, to, relation_type, created_seq, provenance, origin, confidence }) => {
+            let mut key = vec![0x40];
+            key.extend_from_slice(edge_id);
+            let mut v = envelope();
+            v.extend_from_slice(from);
+            v.extend_from_slice(to);
+            put_bytes(&mut v, relation_type);
+            v.extend_from_slice(&created_seq.to_be_bytes());
+            v.push(*provenance);
+            put_bytes(&mut v, origin);
+            v.extend_from_slice(&confidence.to_be_bytes());
+            (key, v)
+        }
+        Rec::RelAdj(RelAdj { tag, unit_id, relation_type, edge_id, other }) => {
+            let mut key = vec![*tag];
+            key.extend_from_slice(unit_id);
+            key.extend_from_slice(relation_type);
+            key.push(0);
+            key.extend_from_slice(edge_id);
+            let mut v = envelope();
+            v.extend_from_slice(other);
+            (key, v)
         }
     }
 }

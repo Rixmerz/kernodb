@@ -155,9 +155,19 @@ fn meta_value(watermark: u64, entries: u64) -> Vec<u8> {
 
 // ------------------------------------------------------------ the model
 
-/// `(unit_type, schema_version, lifecycle)` of every unit the test created.
+/// `(unit_type, schema_version, lifecycle)` of every unit the test created,
+/// and, for the units `random_step` wrote, their revisions (see [`Revs`]).
 #[derive(Clone, Default)]
-struct Model(BTreeMap<UnitId, (String, u32, Lifecycle)>);
+struct Model(BTreeMap<UnitId, (String, u32, Lifecycle)>, Revs);
+
+/// Per unit: the oldest revision retention left and the `schema_version` of
+/// every revision (`schemas[rev_no - 1]`), so that a `restore` knows which
+/// sources exist and what schema it brings back.
+#[derive(Clone, Default)]
+struct Revs(BTreeMap<UnitId, (u64, Vec<u32>)>);
+
+/// Retention rule of the `run_retention` steps of [`random_step`].
+const KEEP: u64 = 2;
 
 /// The filter, written out case by case (not the layer's `matches`).
 fn wants(f: &UnitFilter, unit_type: &str, schema: u32) -> bool {
@@ -208,12 +218,14 @@ fn random_step<E: TxnEngine>(db: &UnitDb<E>, rng: &mut Rng, model: &mut Model) {
             let (t, v) = (TYPES[rng.below(3) as usize], SCHEMAS[rng.below(3) as usize]);
             let id = cs.create(new_unit(t, v, &rng.bytes(4))).expect("create");
             staged.0.insert(id, (t.into(), v, Lifecycle::Active));
+            staged.1.0.insert(id, (1, vec![v]));
             touched.insert(id);
             continue;
         }
         let id = candidates[rng.below(candidates.len() as u64) as usize];
         let entry = staged.0.get_mut(&id).expect("candidate");
-        match (entry.2, rng.below(3)) {
+        let revs = staged.1.0.get_mut(&id);
+        match (entry.2, rng.below(4)) {
             (Lifecycle::Active, 0) => {
                 let v = rng.chance(1, 2).then(|| SCHEMAS[rng.below(3) as usize]);
                 cs.update(id, upd(&rng.bytes(4), v), None).expect("update");
@@ -225,7 +237,15 @@ fn random_step<E: TxnEngine>(db: &UnitDb<E>, rng: &mut Rng, model: &mut Model) {
                 cs.archive(id, None).expect("archive");
                 entry.2 = Lifecycle::Archived;
             }
-            (Lifecycle::Archived, 0 | 1) => {
+            // Restore an older retained revision: the head takes its schema
+            // version, so the index entry of the unit changes (E3-04 `restore`).
+            (Lifecycle::Active, 3) if revs.as_ref().is_some_and(|(oldest, s)| (s.len() as u64) > *oldest) => {
+                let (oldest, schemas) = revs.as_ref().expect("checked");
+                let from = rng.range(*oldest, schemas.len() as u64 - 1);
+                cs.restore(id, RevNo(from), None).expect("restore");
+                entry.1 = schemas[from as usize - 1];
+            }
+            (Lifecycle::Archived, 0 | 1 | 3) => {
                 cs.unarchive(id, None).expect("unarchive");
                 entry.2 = Lifecycle::Active;
             }
@@ -234,6 +254,10 @@ fn random_step<E: TxnEngine>(db: &UnitDb<E>, rng: &mut Rng, model: &mut Model) {
                 entry.2 = Lifecycle::Deleted;
             }
         }
+        let schema = entry.1;
+        if let Some((_, schemas)) = staged.1.0.get_mut(&id) {
+            schemas.push(schema);
+        }
         touched.insert(id);
     }
     if rng.chance(1, 6) {
@@ -241,6 +265,15 @@ fn random_step<E: TxnEngine>(db: &UnitDb<E>, rng: &mut Rng, model: &mut Model) {
     } else {
         cs.commit().expect("commit");
         *model = staged;
+    }
+    // Retention commits its own change set and changes no head, so the index
+    // goes stale without any entry changing; restores then see fewer sources.
+    if rng.chance(1, 8) {
+        db.run_retention(&RetentionPolicy::all(RetentionRule::KeepLast(KEEP)), RetentionBudget::default())
+            .expect("run_retention");
+        for (oldest, schemas) in model.1.0.values_mut() {
+            *oldest = (*oldest).max((schemas.len() as u64).saturating_sub(KEEP - 1));
+        }
     }
 }
 
@@ -801,7 +834,10 @@ fn index_path_refuses_what_it_can_see<E: TxnEngine>() {
 }
 
 fn model_of(units: &[UnitId], spec: &[(&str, u32)]) -> Model {
-    Model(units.iter().zip(spec).map(|(id, (t, v))| (*id, ((*t).into(), *v, Lifecycle::Active))).collect())
+    Model(
+        units.iter().zip(spec).map(|(id, (t, v))| (*id, ((*t).into(), *v, Lifecycle::Active))).collect(),
+        Revs::default(),
+    )
 }
 
 // ----------------------------------------------------------------- crash

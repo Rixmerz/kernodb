@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 
 use spec_decoder::Reject;
 use units_model::{
-    ChangeSet, Class, Hash, Head, IdxMeta, IdxPrimary, IdxType, Layer, Member, Rec, RevMeta, RevPayload,
+    ChangeSet, Class, Hash, Head, IdxMeta, IdxPrimary, IdxType, Layer, Member, Rec, Rel, RelAdj, RevMeta, RevPayload,
 };
 use vector_encoder::encode;
 
@@ -138,6 +138,26 @@ fn idx_primary() -> IdxPrimary {
     IdxPrimary { unit_id: UNIT, unit_type: b"note".to_vec(), schema_version: 3 }
 }
 
+const EDGE: [u8; 16] = [0xE0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+const OTHER: [u8; 16] = [0xB0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+
+fn rel() -> Rel {
+    Rel {
+        edge_id: EDGE,
+        from: UNIT,
+        to: OTHER,
+        relation_type: b"cites".to_vec(),
+        created_seq: 57,
+        provenance: 0,
+        origin: Vec::new(),
+        confidence: 0,
+    }
+}
+
+fn rel_out() -> RelAdj {
+    RelAdj { tag: 0x41, unit_id: UNIT, relation_type: b"cites".to_vec(), edge_id: EDGE, other: OTHER }
+}
+
 fn pos(name: &str, rec: Rec) -> Vector {
     let (key, value) = encode(&rec);
     Vector { name: name.into(), key, value, expect: Expect::Ok(rec) }
@@ -236,6 +256,27 @@ fn vectors() -> Vec<Vector> {
             "idx_primary_limits",
             Rec::IdxPrimary(IdxPrimary { unit_type: vec![b'x'; 64], schema_version: u32::MAX, ..idx_primary() }),
         ),
+        // E4-02: relations and their adjacency entries.
+        pos("rel_declared", Rec::Rel(rel())),
+        pos("rel_imported", Rec::Rel(Rel { provenance: 1, origin: b"crm".to_vec(), ..rel() })),
+        pos("rel_algorithmic", Rec::Rel(Rel { provenance: 2, origin: b"linker/v2".to_vec(), ..rel() })),
+        pos("rel_inferred", Rec::Rel(Rel { provenance: 3, origin: b"model".to_vec(), confidence: 750, ..rel() })),
+        pos("rel_inferred_zero_confidence", Rec::Rel(Rel { provenance: 3, origin: b"m".to_vec(), ..rel() })),
+        pos(
+            "rel_limits",
+            Rec::Rel(Rel {
+                relation_type: vec![b'x'; 64],
+                created_seq: u64::MAX,
+                provenance: 3,
+                origin: vec![0xEE; 256],
+                confidence: 1000,
+                ..rel()
+            }),
+        ),
+        pos("rel_out_one", Rec::RelAdj(rel_out())),
+        pos("rel_in_one", Rec::RelAdj(RelAdj { tag: 0x42, unit_id: OTHER, other: UNIT, ..rel_out() })),
+        pos("rel_out_type_min", Rec::RelAdj(RelAdj { relation_type: b"c".to_vec(), ..rel_out() })),
+        pos("rel_in_type_limits", Rec::RelAdj(RelAdj { tag: 0x42, relation_type: vec![b'x'; 64], ..rel_out() })),
     ];
 
     // Key rules (§2).
@@ -248,7 +289,7 @@ fn vectors() -> Vec<Vector> {
     v.push(neg_bytes("empty_key", 1, C, Vec::new(), lv.clone()));
     v.push(neg_bytes("tag_0x43", 2, I, [vec![0x43], ck[1..].to_vec()].concat(), cv.clone()));
     v.push(neg_bytes("tag_0xff", 2, I, vec![0xFF], Vec::new()));
-    // E4-03: 0x50 and 0x51 are known; 0x52 and 0x4F are not.
+    // 0x40..=0x42 and 0x50..=0x52 are known; 0x43 and 0x53 are not.
     v.push(neg_bytes("tag_0x53", 2, I, vec![0x53], encode(&Rec::IdxMeta(idx_meta())).1));
     let (tk, tv) = encode(&Rec::IdxType(idx_type()));
     v.push(neg_bytes("idx_type_key_short", 3, C, tk[..tk.len() - 1].to_vec(), tv.clone()));
@@ -279,6 +320,70 @@ fn vectors() -> Vec<Vector> {
     v.push(neg_rec("rev_meta_rev_no_0", 5, C, Rec::RevMeta(rev(2, 0, 1))));
     v.push(neg_bytes("changeset_seq_0", 5, C, [vec![0x30], vec![0; 8]].concat(), cv.clone()));
     v.push(neg_bytes("rev_payload_rev_no_0", 5, C, [vec![0x21], UNIT.to_vec(), vec![0; 8]].concat(), Vec::new()));
+
+    // E4-02 keys.
+    let (ek, ev) = encode(&Rec::Rel(rel()));
+    let (ok, ov) = encode(&Rec::RelAdj(rel_out()));
+    v.push(neg_bytes("rel_key_short", 3, C, ek[..16].to_vec(), ev.clone()));
+    v.push(neg_bytes("rel_key_long", 3, C, [ek.clone(), vec![0]].concat(), ev.clone()));
+    v.push(neg_bytes("rel_out_key_34", 3, C, [vec![0x41], vec![0; 33]].concat(), ov.clone()));
+    v.push(neg_bytes(
+        "rel_in_type_65",
+        3,
+        C,
+        encode(&Rec::RelAdj(RelAdj { tag: 0x42, relation_type: vec![b'x'; 65], ..rel_out() })).0,
+        ov.clone(),
+    ));
+    let mut no_nul = ok.clone();
+    let sep = no_nul.len() - 17;
+    no_nul[sep] = b'x';
+    v.push(neg_bytes("rel_out_key_without_nul", 3, C, no_nul, ov.clone()));
+    v.push(neg_rec(
+        "rel_out_key_type_not_utf8",
+        12,
+        C,
+        Rec::RelAdj(RelAdj { relation_type: vec![0xFF, 0xFE], ..rel_out() }),
+    ));
+    v.push(neg_rec(
+        "rel_in_key_type_with_nul",
+        12,
+        C,
+        Rec::RelAdj(RelAdj { tag: 0x42, relation_type: b"a\0b".to_vec(), ..rel_out() }),
+    ));
+    v.push(neg_bytes("rel_out_cut", 9, C, ok.clone(), ov[..ov.len() - 1].to_vec()));
+    v.push(neg_bytes("rel_out_trailing", 10, C, ok.clone(), [ov.clone(), vec![0]].concat()));
+    v.push(neg_bytes("rel_in_version_0", 6, C, [vec![0x42], ok[1..].to_vec()].concat(), {
+        let mut b = ov.clone();
+        b[0] = 0;
+        b
+    }));
+
+    // E4-02 values.
+    v.push(neg_bytes("rel_cut", 9, C, ek.clone(), ev[..ev.len() - 1].to_vec()));
+    v.push(neg_bytes("rel_trailing", 10, C, ek.clone(), [ev.clone(), vec![0]].concat()));
+    v.push(neg_rec("rel_type_65", 11, C, Rec::Rel(Rel { relation_type: vec![b't'; 65], ..rel() })));
+    v.push(neg_rec("rel_origin_257", 11, C, Rec::Rel(Rel { provenance: 1, origin: vec![b'o'; 257], ..rel() })));
+    v.push(neg_rec("rel_type_empty", 12, C, Rec::Rel(Rel { relation_type: Vec::new(), ..rel() })));
+    v.push(neg_rec("rel_type_with_nul", 12, C, Rec::Rel(Rel { relation_type: b"a\0".to_vec(), ..rel() })));
+    v.push(neg_rec("rel_type_not_utf8", 12, C, Rec::Rel(Rel { relation_type: vec![0xC3, 0x28], ..rel() })));
+    v.push(neg_rec("rel_created_seq_0", 23, C, Rec::Rel(Rel { created_seq: 0, ..rel() })));
+    v.push(neg_rec("rel_provenance_4", 13, C, Rec::Rel(Rel { provenance: 4, ..rel() })));
+    v.push(neg_rec("rel_declared_with_origin", 13, C, Rec::Rel(Rel { origin: b"x".to_vec(), ..rel() })));
+    v.push(neg_rec("rel_declared_with_confidence", 13, C, Rec::Rel(Rel { confidence: 1, ..rel() })));
+    v.push(neg_rec("rel_imported_without_origin", 13, C, Rec::Rel(Rel { provenance: 1, ..rel() })));
+    v.push(neg_rec("rel_inferred_without_origin", 13, C, Rec::Rel(Rel { provenance: 3, confidence: 5, ..rel() })));
+    v.push(neg_rec(
+        "rel_algorithmic_with_confidence",
+        13,
+        C,
+        Rec::Rel(Rel { provenance: 2, origin: b"a".to_vec(), confidence: 1, ..rel() }),
+    ));
+    v.push(neg_rec(
+        "rel_inferred_confidence_1001",
+        13,
+        C,
+        Rec::Rel(Rel { provenance: 3, origin: b"m".to_vec(), confidence: 1001, ..rel() }),
+    ));
 
     // Envelope (§1.1).
     let patch = |bytes: &[u8], at: usize, to: u8| {
@@ -556,10 +661,40 @@ fn production_decode(key: &[u8], value: &[u8]) -> Result<Rec, Reject> {
         Record::IndexType { unit_type, schema_version, unit } => {
             Rec::IdxType(IdxType { unit_type: unit_type.into_bytes(), schema_version, unit_id: unit.0 })
         }
-        // Relation records (tags 0x40..=0x42) are covered by tests/relations.rs.
-        Record::Relation { .. } | Record::RelationOut { .. } | Record::RelationIn { .. } => {
-            unreachable!("no structure vector has a relation tag")
+        Record::Relation { edge, record } => {
+            use kerno_units::RelationProvenance as P;
+            let provenance = record.provenance.kind().to_byte();
+            let (origin, confidence) = match record.provenance {
+                P::Declared => (Vec::new(), 0),
+                P::Imported { source } => (source, 0),
+                P::Algorithmic { origin } => (origin, 0),
+                P::Inferred { origin, confidence_permille } => (origin, confidence_permille),
+            };
+            Rec::Rel(Rel {
+                edge_id: edge.0,
+                from: record.from.0,
+                to: record.to.0,
+                relation_type: record.relation_type.into_bytes(),
+                created_seq: record.created_seq.0,
+                provenance,
+                origin,
+                confidence,
+            })
         }
+        Record::RelationOut { unit, relation_type, edge, adjacency } => Rec::RelAdj(RelAdj {
+            tag: 0x41,
+            unit_id: unit.0,
+            relation_type: relation_type.into_bytes(),
+            edge_id: edge.0,
+            other: adjacency.other.0,
+        }),
+        Record::RelationIn { unit, relation_type, edge, adjacency } => Rec::RelAdj(RelAdj {
+            tag: 0x42,
+            unit_id: unit.0,
+            relation_type: relation_type.into_bytes(),
+            edge_id: edge.0,
+            other: adjacency.other.0,
+        }),
     })
 }
 
