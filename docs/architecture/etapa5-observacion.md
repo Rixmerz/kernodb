@@ -83,7 +83,7 @@ La última fila fue un hallazgo: la mutación se mantenía en verde, es decir, l
 | 100 000 unidades, ejecución 1 | +3,0 % | −0,2 % | −2,6 % |
 | 100 000 unidades, ejecución 2 (`--seed 7`) | −1,3 % | −0,5 % | −3,4 % |
 
-Lectura: la máquina es compartida y las diferencias de p50 de decenas de microsegundos se confunden con el ruido (hay valores negativos). En 7 de 8 mediciones el coste cumple el umbral. La excepción es `diagnostic` en 20 000 unidades, ejecución 1 (+5,9 %); en la ejecución 2 cumple (+3,6 %). El coste real está acotado por el trabajo añadido por ejecución: la huella (BLAKE3 con clave sobre el texto de la forma) y, en `diagnostic`, copiar el texto. `diagnostic` es solo por activación explícita. **Se registra como riesgo, no como bloqueante** (acta §5 y §8): con la consulta de W1 en torno a 1,3 ms el 5 % son ~65 µs, del orden del propio coste de `diagnostic`; en consultas más lentas la fracción baja.
+Lectura: la máquina es compartida y las diferencias de p50 de decenas de microsegundos se confunden con el ruido (hay valores negativos). En 11 de 12 mediciones (tres niveles en cuatro ejecuciones) el coste cumple el umbral. La excepción es `diagnostic` en 20 000 unidades, ejecución 1 (+5,9 %); en la ejecución 2 cumple (+3,6 %). El coste real está acotado por el trabajo añadido por ejecución: la huella (BLAKE3 con clave sobre el texto de la forma) y, en `diagnostic`, copiar el texto. `diagnostic` es solo por activación explícita. **Se registra como riesgo, no como bloqueante** (acta §5 y §8): con la consulta de W1 en torno a 1,3 ms el 5 % son ~65 µs, del orden del propio coste de `diagnostic`; en consultas más lentas la fracción baja.
 
 El planificador sobre W1 (E5-02, umbral ≤ 10 %) se midió de nuevo en estas mismas ejecuciones: p50/p99 +6,1 % / **+14,1 %** en 20 000 unidades (ejecución 1) y +2,6 % / +0,3 % en la ejecución 2; +2,4 % / +2,8 % y +2,2 % / −6,0 % en 100 000. Un valor fuera de umbral entre cuatro, que la segunda ejecución no reproduce. Es ruido de la máquina compartida más que un cambio (E5-03 no toca el planificador salvo por el informe al observador, que con `off` es una carga atómica); se anota para E5-05.
 
@@ -161,5 +161,5 @@ scale,query,path,p50_ms,p95_ms,p99_ms,mean_hits,build_ms
 
 ## 9. Riesgos
 
-- `diagnostic` superó el 5 % en una de ocho mediciones (§7). Riesgo registrado, no bloqueante.
+- `diagnostic` superó el 5 % en una de cuatro mediciones (§7). Riesgo registrado, no bloqueante.
 - Con contención, las observaciones se pierden (contadas en `dropped`) en lugar de esperar: un contador bajo es información, no un fallo. Si la Etapa 6 necesita registros completos bajo carga, hará falta un recolector por hilo.
