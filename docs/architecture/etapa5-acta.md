@@ -17,7 +17,7 @@ Esta acta está **aprobada** (§8). Los WP son secuenciales, como en las Etapas 
 |---|---|
 | Etapa 4 cerrada | Cumplida: [cierre de la Etapa 4](etapa4-cierre.md), aprobado el 2026-11-05. Se hereda con K-E3-8, K-E3-9 y la recomendación de M-9 |
 | Decisión abierta de ADR-0007 (§6 del cierre) | Resuelta el 2026-11-05: los índices de unidades siguen derivados y solo `rebuild_index` los escribe; tras una escritura, `query` usa la ruta de referencia hasta la siguiente reconstrucción |
-| ADR-0015 (privacidad de la observabilidad) | *Propuesto*. Ver §7, punto 1 |
+| ADR-0015 (privacidad de la observabilidad) | *Aceptado* el 2026-11-06 con la evidencia de E5-04 (§8, decisión 1; [informe](etapa5-centinelas.md)) |
 
 ## 2. Alcance
 
@@ -65,7 +65,7 @@ Del [roadmap, Etapa 5](../roadmap/README.md#etapa-5--planificador-y-observabilid
 | El plan puede inspeccionarse | — (spec §9, modo diagnóstico) | Explicación con candidatos, costes, elección y motivo (E5-01, E5-02) | pendiente |
 | El plan elegido devuelve lo mismo que la ruta de referencia | I-32 (parte del planificador) | Prueba diferencial planificador frente a referencia en CI, unidades y relaciones, con y sin índice listo (E5-02) | pendiente |
 | Fallback a la ruta de referencia registrado cuando el índice no es utilizable | I-23, I-32 | Pruebas con cada estado de frescura (E5-02) | pendiente |
-| Ninguna observación, métrica o explicación contiene literales ni contenido fuera de `diagnostic` | I-37, I-29, IU-10 | Prueba de centinelas en todos los niveles (E5-04) | pendiente |
+| Ninguna observación, métrica o explicación contiene literales ni contenido fuera de `diagnostic` | I-37, I-29, IU-10 | Prueba de centinelas en todos los niveles (E5-04) | verificado en E5-04 ([informe](etapa5-centinelas.md)) |
 | Observar no altera datos confirmados ni la secuencia de commit | I-34 (solo observaciones; la parte de optimizaciones es de la Etapa 6) | Prueba: mismas lecturas y misma secuencia con observación `off` y `diagnostic` (E5-03) | verificado en E5-03 ([informe](etapa5-observacion.md)) |
 
 ## 5. Riesgos heredados

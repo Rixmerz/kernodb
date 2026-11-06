@@ -1,6 +1,6 @@
 # Etapa 5 — Huella normalizada y plan explicable (E5-01)
 
-Contrato de E5-01 ([acta de la Etapa 5](etapa5-acta.md) §3, decisiones de §8; [ADR-0015](../adr/0015-privacidad-de-la-observabilidad.md), que sigue *Propuesto* hasta la evidencia de E5-04). El código está en `crates/kerno-units/src/fingerprint.rs` y `plan.rs`. Este paquete **no cambia ninguna consulta**: `query` y `relations_of` se comportan igual; el planificador que usa estos tipos es E5-02.
+Contrato de E5-01 ([acta de la Etapa 5](etapa5-acta.md) §3, decisiones de §8; [ADR-0015](../adr/0015-privacidad-de-la-observabilidad.md), aceptado con la evidencia de E5-04). El código está en `crates/kerno-units/src/fingerprint.rs` y `plan.rs`. Este paquete **no cambia ninguna consulta**: `query` y `relations_of` se comportan igual; el planificador que usa estos tipos es E5-02.
 
 ## 1. Huella
 

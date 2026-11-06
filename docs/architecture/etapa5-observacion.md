@@ -21,7 +21,7 @@ La clave de la huella (acta §8.4) se genera de una fuente del sistema la primer
 
 `ExecutionObservation`: `observation_id` (local, creciente), `fingerprint`, `fingerprint_text` (solo `Diagnostic`), `path` (el camino que respondió; `None` si falló antes), `plan_version` (`PLANNER_VERSION`), `commit_seq` de la instantánea, `duration_ns`, `rows_returned`, `outcome`, `fallback` y `recorded_at`.
 
-No tiene campo para un filtro, una consulta de relaciones, una unidad, una carga útil, una clave ni un mensaje de error: la consulta se reduce a su forma y se descarta, y el error se guarda como clase (`ErrorKind`), nunca su mensaje, que puede citar una clave. La prueba de centinelas sobre todos los niveles es E5-04.
+No tiene campo para un filtro, una consulta de relaciones, una unidad, una carga útil, una clave ni un mensaje de error: la consulta se reduce a su forma y se descarta, y el error se guarda como clase (`ErrorKind`), nunca su mensaje, que puede citar una clave. La prueba de centinelas sobre todos los niveles es E5-04 ([informe](etapa5-centinelas.md)).
 
 No se registran `rows_examined` ni `bytes_read`: ningún camino los cuenta y contarlos obliga a instrumentar los bucles calientes. `cache` y `learned` son de la Etapa 6 (acta §3).
 
