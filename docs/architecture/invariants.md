@@ -126,6 +126,8 @@ Mismo método que §2.2 y §2.3: cada mutación se aplicó al código citado y s
 |---|---|---|
 | `planner.rs`, `check_units`: no se comprueba el filtro de la respuesta del índice (E5-05) | I-32 | muerta por `planner::units_are_checked_against_the_filter_state_and_order` y `planner::a_failing_or_wrong_index_path_falls_back_to_the_reference`. **No la matan** `tests/index.rs` (26 pruebas) ni `tests/relations.rs` (24): sobre un almacén sano el índice no responde mal, y la validación solo la ejercen las respuestas inyectadas |
 | `fingerprint.rs`, `NormalizedQuery::of_filter`: el literal del tipo entra en la forma (E5-05) | I-37 | muerta por las 4 pruebas de `tests/sentinels.rs`; la huella de `Off` depende del literal (`depends on a literal`) |
+| `planner.rs`, `execute_units`: el camino `IndexPrimary` nunca se ejecuta (`PlanPath::IndexPrimary => None`) (E5-05) | I-32 | muerta por 14 pruebas de `tests/index.rs` (`differential_seeded`, `differential_across_scan_pages`, `rebuilt_equals_fresh`, `index_path_refuses_what_it_can_see`, entre ellas) |
+| `observation.rs`: el texto de la forma se emite desde `Fingerprint` (E5-05) | I-37 | muerta por `queries_report_what_ran` ×2 y `levels_below_diagnostic_carry_no_shape_text` ×2; la búsqueda de centinelas sola no la caza, porque el texto de la forma no lleva literales |
 | Copiar el literal en la huella o en la explicación, 4 mutaciones (E5-04) | I-37 | muertas; [etapa5-centinelas.md](etapa5-centinelas.md) §4 |
 | Nivel por defecto `Aggregate` (E5-03) | I-37 y, por la parte de observaciones, I-34 | muerta por `default_is_off_and_off_keeps_nothing`, `observing_does_not_change_the_data` (E5-03 §6) |
 
