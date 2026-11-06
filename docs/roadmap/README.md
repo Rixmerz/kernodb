@@ -61,7 +61,7 @@ La tarea de cierre de la Fase 1 (revisión adversarial, benchmarks, documentaci�
 
 ## Etapas 3–9 (especificación v0.2.0)
 
-Después de la Fase 1 el trabajo se organiza por las etapas de la [especificación v0.2.0](../spec/especificacion-arquitectonica-v0.2.0.md) §16; la [correspondencia con las fases del SAD](../spec/README.md) está en `docs/spec/`. La **Etapa 3 está cerrada** (aprobada por el propietario el 2026-11-04). La **Etapa 4 está cerrada** (aprobada por el propietario el 2026-11-05, [cierre](../architecture/etapa4-cierre.md)); el resto no ha empezado. Una etapa ya implementada y probada se salta (spec §16).
+Después de la Fase 1 el trabajo se organiza por las etapas de la [especificación v0.2.0](../spec/especificacion-arquitectonica-v0.2.0.md) §16; la [correspondencia con las fases del SAD](../spec/README.md) está en `docs/spec/`. La **Etapa 3 está cerrada** (aprobada por el propietario el 2026-11-04). La **Etapa 4 está cerrada** (aprobada por el propietario el 2026-11-05, [cierre](../architecture/etapa4-cierre.md)); la **Etapa 5 está cerrada**, pendiente de aprobación del propietario ([cierre](../architecture/etapa5-cierre.md), 2026-11-06); el resto no ha empezado. Una etapa ya implementada y probada se salta (spec §16).
 
 | Etapa | Depende de | Condición de inicio | ADR que se deciden |
 |---|---|---|---|
@@ -89,7 +89,8 @@ Después de la Fase 1 el trabajo se organiza por las etapas de la [especificaci�
 
 - **Entregables:** planificador determinista (spec §9: validar, generar candidatos, estimar coste, elegir, ejecutar, registrar, validar invariantes); explicación del plan; `ExecutionObservation` con niveles de detalle ([ejecución adaptativa](../architecture/adaptive-execution.md), ADR-0015).
 - **Aceptación:** el plan puede inspeccionarse; prueba diferencial planificador frente a ruta de referencia en CI (I-32); prueba de centinelas sin literales ni contenido en observaciones (I-37).
-- **Acta:** [etapa5-acta.md](../architecture/etapa5-acta.md) (propuesta, pendiente de aprobación del propietario).
+- **Estado: cerrada el 2026-11-06, pendiente de aprobación del propietario** ([cierre de la Etapa 5](../architecture/etapa5-cierre.md)). Planificador de los caminos existentes con explicación del plan (E5-01, E5-02), `ExecutionObservation` con niveles y retención en memoria (E5-03) y centinelas (E5-04). Los criterios de la acta §4 se cumplen; el de fallback con estado `Building` se cumple solo a nivel de plan (un snapshot no ve ese estado). Riesgos abiertos: K-E3-8, K-E3-9 (U6 sigue incumpliendo con índices y relaciones, E5-00), y sobrecoste del planificador en W1 fuera de umbral en una medición de seis (R-E5-1). I-32 (planificador) e I-37 quedan promovidas, pendientes de aprobación.
+- **Acta:** [etapa5-acta.md](../architecture/etapa5-acta.md) (aprobada por el propietario el 2026-11-05).
 
 ### Etapa 6 — Primera plasticidad operacional
 

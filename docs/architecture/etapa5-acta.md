@@ -2,14 +2,14 @@
 
 | Campo | Valor |
 |---|---|
-| Fecha | 2026-11-05 (borrador) |
-| Estado | Propuesta, pendiente de aprobación del propietario |
+| Fecha | 2026-11-05 |
+| Estado | Aprobada por el propietario el 2026-11-05 |
 | Acto | Aprobación del alcance y de los paquetes E5-00 a E5-05 por el propietario del proyecto |
 | Documentos | [Roadmap, Etapa 5](../roadmap/README.md#etapa-5--planificador-y-observabilidad) · [cierre de la Etapa 4](etapa4-cierre.md) · [ejecución adaptativa](adaptive-execution.md) · [ADR-0015](../adr/0015-privacidad-de-la-observabilidad.md) · [ADR-0016](../adr/0016-adaptacion-e-invalidacion.md) · [ADR-0007](../adr/0007-consistencia-de-indices.md) · [invariantes](invariants.md) · spec v0.2.0 §9, §16 |
 
 ## 0. Estado
 
-Esta acta es una **propuesta**. Ningún WP arranca antes de que el propietario la apruebe (§8). Los WP son secuenciales, como en las Etapas 3 y 4.
+Esta acta está **aprobada** (§8). Los WP son secuenciales, como en las Etapas 3 y 4.
 
 ## 1. Condición de inicio
 
@@ -17,7 +17,7 @@ Esta acta es una **propuesta**. Ningún WP arranca antes de que el propietario l
 |---|---|
 | Etapa 4 cerrada | Cumplida: [cierre de la Etapa 4](etapa4-cierre.md), aprobado el 2026-11-05. Se hereda con K-E3-8, K-E3-9 y la recomendación de M-9 |
 | Decisión abierta de ADR-0007 (§6 del cierre) | Resuelta el 2026-11-05: los índices de unidades siguen derivados y solo `rebuild_index` los escribe; tras una escritura, `query` usa la ruta de referencia hasta la siguiente reconstrucción |
-| ADR-0015 (privacidad de la observabilidad) | *Propuesto*. Ver §7, punto 1 |
+| ADR-0015 (privacidad de la observabilidad) | *Aceptado* el 2026-11-06 con la evidencia de E5-04 (§8, decisión 1; [informe](etapa5-centinelas.md)) |
 
 ## 2. Alcance
 
@@ -65,8 +65,8 @@ Del [roadmap, Etapa 5](../roadmap/README.md#etapa-5--planificador-y-observabilid
 | El plan puede inspeccionarse | — (spec §9, modo diagnóstico) | Explicación con candidatos, costes, elección y motivo (E5-01, E5-02) | pendiente |
 | El plan elegido devuelve lo mismo que la ruta de referencia | I-32 (parte del planificador) | Prueba diferencial planificador frente a referencia en CI, unidades y relaciones, con y sin índice listo (E5-02) | pendiente |
 | Fallback a la ruta de referencia registrado cuando el índice no es utilizable | I-23, I-32 | Pruebas con cada estado de frescura (E5-02) | pendiente |
-| Ninguna observación, métrica o explicación contiene literales ni contenido fuera de `diagnostic` | I-37, I-29, IU-10 | Prueba de centinelas en todos los niveles (E5-04) | pendiente |
-| Observar no altera datos confirmados ni la secuencia de commit | I-34 (solo observaciones; la parte de optimizaciones es de la Etapa 6) | Prueba: mismas lecturas y misma secuencia con observación `off` y `diagnostic` (E5-03) | pendiente |
+| Ninguna observación, métrica o explicación contiene literales ni contenido fuera de `diagnostic` | I-37, I-29, IU-10 | Prueba de centinelas en todos los niveles (E5-04) | verificado en E5-04 ([informe](etapa5-centinelas.md)) |
+| Observar no altera datos confirmados ni la secuencia de commit | I-34 (solo observaciones; la parte de optimizaciones es de la Etapa 6) | Prueba: mismas lecturas y misma secuencia con observación `off` y `diagnostic` (E5-03) | verificado en E5-03 ([informe](etapa5-observacion.md)) |
 
 ## 5. Riesgos heredados
 
@@ -97,4 +97,4 @@ Esta acta **no propone umbrales**. T1–T10 y U1–U6 no cambian y no se rebajan
 
 | Fecha | Decisión | Notas |
 |---|---|---|
-| — | **Pendiente** | El propietario aprueba o ajusta el alcance (§2), los paquetes (§3), los criterios (§4) y los puntos de §7 antes de que E5-00 empiece |
+| 2026-11-05 | **Aprobada** | Alcance, paquetes y criterios sin cambios. Decisiones de §7: (1) ADR-0015 se acepta con la evidencia de E5-04; (2) nivel por defecto `off`; (3) observaciones solo en memoria, con retención por tamaño y edad; (4) hash de la huella con clave local no exportada; (5) umbrales fijados antes de medir: coste de registrar una observación ≤ 5 % de la p99 de la consulta observada, sobrecoste del planificador sobre W1 ≤ 10 %; un incumplimiento se registra como riesgo y no bloquea; (6) E5-03 verifica la parte de observaciones de I-34 |

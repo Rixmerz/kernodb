@@ -11,7 +11,12 @@
 //! ```
 //!
 //! Options: `--quick`, `--dir <path>` (default: the system temp dir),
-//! `--seed <u64>` (default 0xE309), `--only U1,U3,...`, `--relations`.
+//! `--seed <u64>` (default 0xE309), `--only U1,U3,...`, `--relations`,
+//! `--indexes`.
+//!
+//! `--indexes` (E5-00, M-9): U6 builds the primary index with
+//! `rebuild_index` after loading the data and again at the start of every
+//! round, so retention runs over a database that holds index entries.
 //!
 //! `--relations` (E4-02, K-E3-8 and K-E3-9): U2 and U6 run with declared
 //! relations active. The units they create get three outgoing relations each
@@ -68,15 +73,18 @@ struct Args {
     seed: u64,
     only: Option<Vec<String>>,
     relations: bool,
+    indexes: bool,
 }
 
 fn parse_args() -> Res<Args> {
-    let mut a = Args { quick: false, dir: std::env::temp_dir(), seed: 0xE309, only: None, relations: false };
+    let mut a =
+        Args { quick: false, dir: std::env::temp_dir(), seed: 0xE309, only: None, relations: false, indexes: false };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--quick" => a.quick = true,
             "--relations" => a.relations = true,
+            "--indexes" => a.indexes = true,
             "--dir" => a.dir = PathBuf::from(it.next().ok_or("--dir needs a path")?),
             "--seed" => a.seed = it.next().ok_or("--seed needs a value")?.parse()?,
             "--only" => {
@@ -793,6 +801,9 @@ fn u6_run(a: &Args, z: &Sizes, out: &mut Vec<Verdict>, budget: RetentionBudget) 
         add_relations(&units, &mut rng, &cold, 3, 1_000)?;
         add_relations(&units, &mut rng, &hot, 3, 1_000)?;
     }
+    if a.indexes {
+        units.rebuild_index()?;
+    }
     let policy = RetentionPolicy::all(RetentionRule::KeepLast(1));
     // Low load: one writer alone, no reader (the T1-like reference).
     let low = {
@@ -819,6 +830,9 @@ fn u6_run(a: &Args, z: &Sizes, out: &mut Vec<Verdict>, budget: RetentionBudget) 
     let (mut pruned, mut retained, mut rsecs, mut calls) = (0u64, 0u64, 0f64, 0u64);
     for round in 0..z.rounds {
         add_revisions(&units, &mut rng, &cold, z.u6_revs, LEN, 1_000)?;
+        if a.indexes {
+            units.rebuild_index()?;
+        }
         settle(units.engine())?;
         let seed = a.seed ^ 0x0600 ^ round as u64;
         let b1 = window(&units, &hot, z, a.relations, seed, || {
@@ -901,9 +915,10 @@ fn main() -> Res<()> {
     let a = parse_args()?;
     let z = sizes(a.quick);
     println!(
-        "# unit_bench mode={} relations={} seed={:#x} dir={} engine=KernoDb options={:?} vfs=StdVfs rounds={}",
+        "# unit_bench mode={} relations={} indexes={} seed={:#x} dir={} engine=KernoDb options={:?} vfs=StdVfs rounds={}",
         if a.quick { "quick" } else { "full" },
         a.relations,
+        a.indexes,
         a.seed,
         a.dir.display(),
         options(),

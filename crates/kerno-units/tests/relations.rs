@@ -85,6 +85,17 @@ fn assert_equivalent<E: Engine>(snap: &UnitSnapshot<E>, units: &[UnitId], types:
                 let idx = snap.relations_of(u, dir, ty).expect("relations_of");
                 let reference = snap.reference_relations_of(u, dir, ty).expect("reference_relations_of");
                 assert_eq!(idx, reference, "unit {u} {dir:?} {ty:?}");
+                // E5-02: the planner's answer is the reference's, through the
+                // path it explains, and with no fallback on a sound store.
+                let query = RelationQuery { unit: u, direction: dir, relation_type: ty.map(Into::into) };
+                let out = snap.query_relations(&query).expect("query_relations");
+                assert_eq!(out.relations, reference, "planner vs reference, unit {u} {dir:?} {ty:?}");
+                assert_eq!(out.fallback, None, "unit {u} {dir:?} {ty:?}");
+                let key = FingerprintKey::from_bytes([0x42; 32]);
+                let plan = snap.explain_relations(&key, &query).expect("explain_relations");
+                assert_eq!(plan, snap.explain_relations(&key, &query).unwrap(), "plan is deterministic");
+                assert_eq!(plan.chosen().path, out.path, "unit {u} {dir:?} {ty:?}");
+                assert_eq!(plan.index(), None, "relations have no index state");
             }
         }
     }

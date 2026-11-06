@@ -139,17 +139,27 @@ pub enum IndexPath {
 /// Where a [`UnitSnapshot::query`] answer came from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QuerySource {
-    /// The primary index, `Ready` at the snapshot, with this watermark.
+    /// An index (`IDX_PRIMARY` or `IDX_TYPE`), `Ready` at the snapshot, with
+    /// this watermark.
     Index { watermark: CommitSeq },
-    /// The reference path, because the index was in this status.
+    /// The reference path; `index` is the status the snapshot had. The
+    /// reference answers when the index is not `Ready` (I-23), when its
+    /// estimated cost is not above any index's, and after a recorded
+    /// [`Fallback`](crate::Fallback).
     Reference { index: IndexStatus },
 }
 
-/// The units a query matched and the path that found them.
+/// The units a query matched, the path that found them and, if the planned
+/// path was abandoned, why (E5-02, [`crate::planner`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueryOutcome {
     pub units: Vec<Unit>,
     pub source: QuerySource,
+    /// The path that produced `units`.
+    pub path: crate::PlanPath,
+    /// Set when the chosen index path failed its check and the reference
+    /// path answered instead.
+    pub fallback: Option<crate::Fallback>,
 }
 
 /// Counts a build from the moment it is requested until it ends, whatever
@@ -290,8 +300,15 @@ impl<E: Engine> UnitSnapshot<E> {
     /// `Stale` or `Failed` (never `Building`, see the [module
     /// documentation](self)). A damaged `IDX_META` is an error, not a state.
     pub fn index_status(&self) -> Result<IndexStatus, UnitError> {
+        Ok(self.index_stats()?.0)
+    }
+
+    /// [`index_status`](Self::index_status) and the number of entries the
+    /// stored generation holds (`0` when none was ever built): the one
+    /// `IDX_META` read the planner costs from (E5-02).
+    pub(crate) fn index_stats(&self) -> Result<(IndexStatus, u64), UnitError> {
         let Some(raw) = self.snap.get(&key(Key::IndexMeta)?)? else {
-            return Ok(IndexStatus { state: IndexState::Stale, watermark: None });
+            return Ok((IndexStatus { state: IndexState::Stale, watermark: None }, 0));
         };
         let meta = IndexMeta::decode(&raw).map_err(|e| context(e, "IDX_META"))?;
         let seen = self.seq();
@@ -303,7 +320,8 @@ impl<E: Engine> UnitSnapshot<E> {
             BuildOutcome::Succeeded if meta.watermark == seen => IndexState::Ready,
             BuildOutcome::Succeeded => IndexState::Stale,
         };
-        Ok(IndexStatus { state, watermark: (meta.watermark.0 != 0).then_some(meta.watermark) })
+        let status = IndexStatus { state, watermark: (meta.watermark.0 != 0).then_some(meta.watermark) };
+        Ok((status, meta.entries))
     }
 
     /// Every active unit matching `filter`, in unit id order, found through
@@ -325,25 +343,7 @@ impl<E: Engine> UnitSnapshot<E> {
         }
     }
 
-    /// [`indexed_scan`](Self::indexed_scan) when the index is `Ready` at this
-    /// snapshot, else [`reference_filter`](Self::reference_filter); the
-    /// outcome says which and why, so the caller always knows what freshness
-    /// stands behind the answer (I-23).
-    pub fn query(&self, filter: &UnitFilter) -> Result<QueryOutcome, UnitError> {
-        let status = self.index_status()?;
-        match (status.state, status.watermark) {
-            (IndexState::Ready, Some(watermark)) => Ok(QueryOutcome {
-                units: self.scan_path(IndexPath::Auto, filter)?,
-                source: QuerySource::Index { watermark },
-            }),
-            _ => Ok(QueryOutcome {
-                units: self.reference_filter(filter)?,
-                source: QuerySource::Reference { index: status },
-            }),
-        }
-    }
-
-    fn scan_path(&self, path: IndexPath, filter: &UnitFilter) -> Result<Vec<Unit>, UnitError> {
+    pub(crate) fn scan_path(&self, path: IndexPath, filter: &UnitFilter) -> Result<Vec<Unit>, UnitError> {
         match (path, filter.unit_type.as_deref()) {
             (IndexPath::Primary, _) | (IndexPath::Auto, None) => self.scan_entries(filter),
             (_, Some(t)) => self.scan_type(t, filter.schema_version),
