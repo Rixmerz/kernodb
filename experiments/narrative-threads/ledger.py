@@ -3,7 +3,8 @@
 Later phases call `claude -p --model <alias> --output-format json`. Before each call,
 `Ledger.authorize(phase)` refuses it once its phase cap or the total cap is reached;
 after it, `Ledger.record(...)` appends one JSON line with the CLI's figures and locks'
-reading of the same session's transcript. The larger of the two dollar figures is what
+reading of the same session's transcript: metadata and costs only, never transcript
+content. Each session and call id is recorded once. The larger of the two dollar figures is what
 counts against the caps; when locks cannot read the transcript its figure is recorded as
 unknown (null) and the CLI's is used, never $0.
 
@@ -27,6 +28,10 @@ DEFAULT_PATH = Path(__file__).resolve().parent / "results" / "ledger.jsonl"
 
 
 class CapReached(RuntimeError):
+    pass
+
+
+class DuplicateCall(ValueError):
     pass
 
 
@@ -100,17 +105,26 @@ class Ledger:
         if self.spent() >= TOTAL_CAP_USD:
             raise CapReached(f"total cap of USD {TOTAL_CAP_USD} reached ({self.spent():.4f} spent)")
 
-    def record(self, phase: str, document: str, alias: str, result: dict[str, Any],
+    def record(self, phase: str, document: str, alias: str, result: dict[str, Any], call_id: str,
                now: datetime | None = None) -> dict:
+        """Append one call. Only metadata and costs are kept, never a prompt, an output or any
+        transcript content. A session or call id already recorded is refused (DuplicateCall)."""
         if phase not in CAPS_USD:
             raise ValueError(f"unknown phase {phase!r}")
+        if not call_id or not isinstance(call_id, str):
+            raise ValueError("every call needs a call id")
         cli = parse_cli(result)
+        if not cli["session_id"]:
+            raise ValueError("the CLI result has no session_id")
+        for e in self.entries():
+            if e["call_id"] == call_id or e["session_id"] == cli["session_id"]:
+                raise DuplicateCall(f"call {call_id} / session {cli['session_id']} is already recorded")
         locks = self.reader(cli["session_id"])
         locks_cost = locks.get("cost") if locks else None
         figures = [x for x in (cli["cli_cost_usd"], locks_cost) if x is not None]
         if not figures:
             raise ValueError("neither the CLI nor locks reported a cost; refusing to record $0")
-        entry = {"at": (now or datetime.now(UTC)).isoformat(), "phase": phase, "document": document,
+        entry = {"at": (now or datetime.now(UTC)).isoformat(), "call_id": call_id, "phase": phase, "document": document,
                  "alias": alias, "model_ids": sorted(cli["models"]), **cli,
                  "locks_cost_usd": locks_cost, "locks_turns": locks.get("turns") if locks else None,
                  "locks_transcript": locks.get("path") if locks else None,

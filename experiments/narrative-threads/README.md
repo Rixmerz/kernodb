@@ -42,7 +42,10 @@ document, alias, the model ids exactly as `modelUsage` reports them, input/outpu
 tokens, the CLI's `total_cost_usd`, and locks' cost of the same `session_id`'s transcript
 (`locks.usage`, read in a separate process; locks' store is never opened). The larger of
 the two counts against the caps; when locks cannot find the transcript its figure is `null`
-and the CLI's is used. A call can overshoot a cap; the next one is refused.
+and the CLI's is used. A call can overshoot a cap; the next one is refused. Each call is
+recorded with its `session_id` and a call id, and either one seen before is refused, so no
+execution counts twice. The ledger keeps metadata and costs only: never a prompt, an output
+or any transcript content.
 
 ## Reproduce
 
