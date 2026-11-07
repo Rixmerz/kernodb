@@ -1,0 +1,13 @@
+[project]
+name = "narrative-threads-experiment"
+version = "0.1.0"
+description = "Kerno narrative-thread retrieval experiment (outside the Cargo workspace)"
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
