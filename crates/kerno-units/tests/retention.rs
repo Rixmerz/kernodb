@@ -20,11 +20,14 @@
 //! IU-8 with retention (`snapshot_vs_retention`) is in `tests/history.rs`;
 //! the model-based retention rounds are in `tests/policies.rs`.
 
+mod harness;
+
 use std::ops::Bound;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use harness::units::{Target, open_units};
 use kerno_core::Durability;
 use kerno_core::contract::{Options, Snapshot, TxnEngine};
 use kerno_storage::KernoDb;
@@ -429,7 +432,13 @@ fn every_point_policy() -> RetentionPolicy {
 /// job. `per_cs` is [`RetentionPacing::units_per_change_set`] (E3-09b): with
 /// 1, the call writes one change set per unit and a crash may keep any
 /// prefix of them.
-fn retention_every_point<E: TxnEngine>(kind: CrashKind, durability: Durability, per_cs: usize) {
+///
+/// Every store is opened through [`open_units`], which runs `KernoDb` with
+/// inline flushes and compactions: with the background flusher, whether a
+/// WAL rotation (and its sync) lands between the retention change sets
+/// depends on thread timing, so the crash points differed between runs and
+/// sometimes none of them could lose a deferred change set (issue #24).
+fn retention_every_point<E: Target>(kind: CrashKind, durability: Durability, per_cs: usize) {
     let config = || {
         let mut c = cfg();
         c.engine.durability = durability;
@@ -443,7 +452,7 @@ fn retention_every_point<E: TxnEngine>(kind: CrashKind, durability: Durability, 
         cs.commit()
     };
     let disk = SimVfs::new(9);
-    let db = open::<E>(&disk, &config());
+    let db = open_units::<E>(disk.as_vfs(), &config()).expect("open");
     let ids = every_point_setup(&db);
     let before = raw(&db);
     let heads: Vec<Unit> = ids.iter().map(|id| db.get_unit(*id).unwrap().unwrap()).collect();
@@ -484,7 +493,7 @@ fn retention_every_point<E: TxnEngine>(kind: CrashKind, durability: Durability, 
     let mut states = vec![before.clone()];
     for k in 1..r.change_sets.len() {
         let disk = SimVfs::new(9);
-        let db = open::<E>(&disk, &config());
+        let db = open_units::<E>(disk.as_vfs(), &config()).expect("open");
         every_point_setup(&db);
         let budget = RetentionBudget { max_units: k * per_cs, ..RetentionBudget::default() };
         db.run_retention(&every_point_policy(), budget).unwrap();
@@ -498,7 +507,7 @@ fn retention_every_point<E: TxnEngine>(kind: CrashKind, durability: Durability, 
     let finished = |d: &Dump| -> Dump { d.iter().filter(|(k, _)| k[0] != 0x30 && k[0] != 0x31).cloned().collect() };
     let want_user = {
         let disk = SimVfs::new(9);
-        let db = open::<E>(&disk, &config());
+        let db = open_units::<E>(disk.as_vfs(), &config()).expect("open");
         every_point_setup(&db);
         db.run_retention(&every_point_policy(), RetentionBudget::default()).unwrap();
         user(&db, ids[0]).unwrap();
@@ -515,7 +524,7 @@ fn retention_every_point<E: TxnEngine>(kind: CrashKind, durability: Durability, 
     for point in 1..=total {
         let ctx = format!("{kind:?} {durability:?} before mutating op #{point} of {total}");
         let disk = SimVfs::new(9);
-        let db = open::<E>(&disk, &config());
+        let db = open_units::<E>(disk.as_vfs(), &config()).expect("open");
         every_point_setup(&db);
         disk.crash_after(point, kind);
         let acked = db.run_retention(&every_point_policy(), RetentionBudget::default()).is_ok();
@@ -524,8 +533,7 @@ fn retention_every_point<E: TxnEngine>(kind: CrashKind, durability: Durability, 
         assert!(disk.has_crashed(), "{ctx}: the crash did not fire");
         let image = disk.take_crash_image().expect("crash image");
         let after_cfg = UnitConfig { ids: Arc::new(CounterIds::new(1_000)), ..config() };
-        let db = UnitDb::<E>::open(image.as_vfs(), Path::new(DIR), &after_cfg)
-            .unwrap_or_else(|e| panic!("{ctx}: reopen: {e}"));
+        let db = open_units::<E>(image.as_vfs(), &after_cfg).unwrap_or_else(|e| panic!("{ctx}: reopen: {e}"));
         let got = raw(&db);
         verified(&db, &ctx);
         assert!(states.contains(&got), "{ctx}: not a prefix of the change sets (a unit's retention half applied?)");
