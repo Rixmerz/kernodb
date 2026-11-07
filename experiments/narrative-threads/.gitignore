@@ -1,0 +1,4 @@
+# Corpus texts over 1 MB: `uv run python fetch.py` downloads them and checks their hash.
+corpus/d-gutenberg-2701.txt
+.venv/
+__pycache__/
