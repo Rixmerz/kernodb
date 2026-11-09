@@ -1,0 +1,291 @@
+{
+ "document": "c-gutenberg-244.txt",
+ "sha256": "6810564e981523ea439b7b2008bb318379cb649951c1b3c8e1e5b9cc26de4840",
+ "status": "draft: pending human review",
+ "prompt_version": "q1",
+ "alias": "haiku",
+ "windows": [
+  {
+   "index": 0,
+   "start": 0,
+   "end": 244165,
+   "asked": 30,
+   "call_id": "questions:q1:c-gutenberg-244.txt:w0",
+   "model_ids": [
+    "claude-haiku-5-5"
+   ],
+   "charged_usd": 0.03127291
+  }
+ ],
+ "questions": [
+  {
+   "id": "c01",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does Watson's view of Holmes change from their first meetings to the end of the novel?",
+   "reference_answer": "Watson begins irritated by Holmes's conceit after the 'Book of Life' exchange and judges him merely clever and vain. By the end, after the arrest, he calls Holmes's detection nearly an exact science and urges that his merits be publicly recognised. His regard moves from rivalry to admiration.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "c02",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does Holmes's attitude toward the official detectives and public credit develop across the story?",
+   "reference_answer": "Early on Holmes calls Gregson the smartest of the Scotland Yarders while dismissing the force as conventional. Later he treats public credit as a joke, and at the end he says that what people believe one has done matters more than what one actually does. His view moves from professional rivalry toward a cynical indifference to recognition.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "c03",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the poison motif introduced in Holmes's early conversation with Watson return at the climax of the case?",
+   "reference_answer": "In the first chapter Holmes casually admits that he dabbles with poisons, and Stamford describes him as a man who might test an alkaloid on a friend. At the climax the death of Drebber and Stangerson is revealed to be a poisoning with pearly grey pills, and Holmes uses the pills to test the truth. The motif that began as a personal quirk becomes the mechanism of the murders.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "c04",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does Holmes's account of what knowledge is worth to a detective change between his early remarks and his final explanation?",
+   "reference_answer": "Early on Holmes says the brain is like an attic that should hold only useful tools, so he refuses to learn the Solar System. At the end he argues that strange, out-of-the-common details are a guide rather than a hindrance, because they show the method more clearly. The rule about what to keep moves from exclusion to using unusual facts as clues.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "c05",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the wedding ring change from a found object in the Brixton Road to the symbol of Jefferson Hope's revenge?",
+   "reference_answer": "The ring first appears as an unexplained object that falls from the dead man's body and is recognised as a bride's ring. Holmes later uses a duplicate to lure the killer, and the ring is revealed as Hope's memento of Lucy. In the end Hope uses it as the final sign of his vengeance, so the ring moves from clue to moral emblem.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "c06",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How is Jefferson Hope's appearance and identity transformed between his first meeting with Lucy and his arrival at the Salt Lake grave-side?",
+   "reference_answer": "At first Hope is introduced as a tall, savage-looking but spruce young hunter who wins Lucy's regard. After his grief and years of pursuit, the Mormon Cowper can barely recognise him in the ragged wanderer with a ghastly white face. The change is physical as well as emotional, and it marks the shift from a suitor into an avenger.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "c07",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How do Watson's health and nerves develop from his first meeting with Holmes to the events at the cell and the Lauriston house?",
+   "reference_answer": "Early in the story Watson says he is too weak for noise or excitement and wants a quiet companion. Later, at the murder scene and during the arrest, he is shaken, and his nerves tingle as he thinks of the death. His fragile state recurs as a constant undercurrent of the narration.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "c08",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the providence motif in Part II's desert prayer return in Hope's final confession?",
+   "reference_answer": "In the desert, the dying adventurer and little Lucy kneel and pray, and the man reassures her that God will not mind an irregular prayer. Much later, Hope says that Providence would never let his guilty hand choose anything but the poison. The theme of divine judgment moves from innocent faith to a justification of vengeance.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "c09",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the countdown of the Mormon Council's grace period shape John Ferrier's sense of time from the Prophet's ultimatum to the final days?",
+   "reference_answer": "Brigham Young gives Ferrier a month to make his daughter choose, and the warnings then count down from twenty-nine. Ferrier's hope for rescue shrinks with each number, and when he sees three days left he gives up hope of escape. The countdown turns an abstract ultimatum into an accelerating sense of dread.",
+   "evidence": [
+    {
+     "start": 166505,
+     "end": 166578
+    }
+   ],
+   "evidence_rejected": 1,
+   "needs_review": false
+  },
+  {
+   "id": "c10",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does Holmes's and then Hope's disguise develop from the old-woman ruse to the cab disguise that ends in arrest?",
+   "reference_answer": "Holmes is outwitted when a supposed old woman, the false Mrs. Sawyer, vanishes from a cab, and he admires the disguise as an incomparable acting job. Hope has the same ability: he appears as a cabman who has grown his beard, and this disguise lets him reach the Baker Street trap. The disguise thread moves from a failed pursuit to the success that brings the killer in.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "c11",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does Holmes's use of the street boys develop from their first report to the moment the cab arrives for Hope's arrest?",
+   "reference_answer": "Holmes first sends the street boys out to search the cab trade and tells them that only Wiggins should report. At the end Wiggins announces the cab downstairs, and the same boy brings the killer to the trap. The street arab network thus moves from search to delivery.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "c12",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does Hope's grief over Lucy turn into a settled purpose of revenge in the years after the mountains?",
+   "reference_answer": "At the grave of John Ferrier Hope first wishes to die and then decides that the only thing that can ease his grief is retribution. Years later he tells Drebber that he has hunted him across two continents and that he always escaped. His grief becomes a single, patient aim.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "c13",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does fear inside the Mormon community develop from the Council's secret power to Cowper's warning to Hope?",
+   "reference_answer": "Early the narrator notes that the secret powers of the Church make every man fear his neighbour, so no one speaks of what is nearest his heart. Later Cowper refuses to talk to Hope, saying that contact would cost him his life. The fear shows how the theme of silent terror is maintained across the Utah chapters.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "c14",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does Lucy Ferrier's life develop from her happiness at the gate to the marriage Hope learns of at the Endowment House?",
+   "reference_answer": "After Hope's departure Lucy walks back into the house as the happiest girl in Utah. Her happiness is shattered when the Council gives her to Drebber, and Cowper tells Hope that she was married the day before and was dying. Her arc runs from hope to forced marriage to a death that Hope's ring marks.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "c15",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the Study in Scarlet image from Holmes's speech return in the final remarks about the story's title?",
+   "reference_answer": "In chapter IV Holmes describes the murder as a scarlet thread running through the colourless skein of life, and he calls the case a study in scarlet. At the end Watson says the story's title records what the detectives gained, a testimonial. The title, first a flourish of Holmes, becomes ironic about public recognition.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "c16",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the press account of the Brixton murder change from the first newspaper theories to the final Echo report?",
+   "reference_answer": "The Daily Telegraph first blames political refugees and revolutionists, citing the German name and the inscription. The Echo later reports a romantic feud involving love and Mormonism, and it credits Scotland Yard with the capture. The press narrative moves from political conspiracy to a personal feud and from an unexplained crime to an official triumph.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "c17",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does Holmes's early prediction of the murderer's cigar and boots become confirmed in his final account?",
+   "reference_answer": "Holmes first describes the murderer as a man of more than six feet who wore square-toed boots and smoked a Trichinopoly cigar. Later he explains that the cigar detail and the nails were confirmed by the evidence in the room. The early inference is a link in the chain that leads to the conclusion.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "c18",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does Gregson's approach to the case change from his dismissal of Holmes's question to his claim of having cleared the case?",
+   "reference_answer": "When Holmes asks whether Gregson has enquired about any crucial point, Gregson answers in an offended voice that he has said all he has to say. Later Gregson describes the hat-maker clue and boasts that he has made the whole case as clear as day. His method moves from dismissing Holmes's question to claiming credit for a clue he had only recently been prompted to pursue.",
+   "evidence": [
+    {
+     "start": 52419,
+     "end": 52491
+    }
+   ],
+   "evidence_rejected": 1,
+   "needs_review": false
+  },
+  {
+   "id": "c19",
+   "window": 0,
+   "type": "causal",
+   "question": "Why did Holmes believe the murderer would return to Lauriston Gardens, and why did he come back?",
+   "reference_answer": "Holmes reasons that the killer dropped the ring while stooping over the body and would therefore return to look for it after reading the advertisement. Hope did return, because he discovered his loss after leaving the house. The ring linked the cause (the dropped ring) to the effect (the return and the capture).",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "c20",
+   "window": 0,
+   "type": "causal",
+   "question": "Why was Lucy Ferrier given to Drebber in marriage, and what decided the matter?",
+   "reference_answer": "The Council of Four decided that Lucy would be the test of the faith, and the Elders offered her to Stangerson's or Drebber's sons. Later it emerged that the rival claims were argued in council, and Drebber's party was stronger, so the Prophet gave her to him. The Council's decision of power, not Lucy's choice, caused the marriage.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "c21",
+   "window": 0,
+   "type": "causal",
+   "question": "Why did John Ferrier decide to flee Utah, and what made the escape urgent?",
+   "reference_answer": "Ferrier first planned to leave Utah at the end of the month and to avoid submitting his daughter to the Prophet's wish. When the warnings counted down and he refused to let Stangerson and Drebber see Lucy, the threat became immediate. His refusal to submit caused the danger that forced the flight.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "c22",
+   "window": 0,
+   "type": "causal",
+   "question": "Why did Stangerson die when he did, and what made his death follow from Drebber's failure to appear?",
+   "reference_answer": "Drebber had arranged to rejoin Stangerson at Halliday's Private Hotel if he missed the last train. When Drebber did not appear, Stangerson suspected that something had happened, and his caution made him a target for the killer. The missed meeting led Hope to the hotel and to the murder.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "c23",
+   "window": 0,
+   "type": "evolution",
+   "question": "How does Jefferson Hope's plan for revenge evolve from the grave of John Ferrier to his method in London?",
+   "reference_answer": "At the grave Hope resolves that his only comfort will be thorough retribution brought by his own hand. Years later in London he has a precise plan that gives each man a pill from a box, so that the choice of death is shared. The plan moves from a general vow of revenge to a deliberate, staged poisoning.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "c24",
+   "window": 0,
+   "type": "evolution",
+   "question": "How does Lestrade's theory about the murder change from accusing Stangerson to admitting that he was wrong?",
+   "reference_answer": "Gregson says Lestrade is pursuing Stangerson as the murderer, while Lestrade has indeed set out after him. When Lestrade reports the secretary's death, he confesses that his belief in Stangerson's guilt was wrong. His theory moves from a confident suspicion to an admitted mistake.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "c25",
+   "window": 0,
+   "type": "evolution",
+   "question": "How does Holmes's plan to bait the killer with the ring evolve into the final trap at Baker Street?",
+   "reference_answer": "Holmes first proposes baiting the line with the ring if no other method works. He does not need the ring in the end, since the killer is taken by a cabman sent up from the street. The bait changes from the ring itself to a cab that brings Hope into the handcuffs.",
+   "evidence": [
+    {
+     "start": 121503,
+     "end": 121536
+    }
+   ],
+   "evidence_rejected": 1,
+   "needs_review": false
+  }
+ ],
+ "rejected_quotes": 47,
+ "model_ids": [
+  "claude-haiku-5-5"
+ ]
+}

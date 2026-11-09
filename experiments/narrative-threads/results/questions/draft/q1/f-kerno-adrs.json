@@ -1,0 +1,603 @@
+{
+ "document": "f-kerno-adrs.txt",
+ "sha256": "b6c12d5c539eb674f9e1b357fafbd1e8ce57e7c4b250ee3c82445a4e389c1035",
+ "status": "draft: pending human review",
+ "prompt_version": "q1",
+ "alias": "haiku",
+ "windows": [
+  {
+   "index": 0,
+   "start": 0,
+   "end": 120496,
+   "asked": 30,
+   "call_id": "questions:q1:f-kerno-adrs.txt:w0",
+   "model_ids": [
+    "claude-haiku-5-5"
+   ],
+   "charged_usd": 0.03995071
+  }
+ ],
+ "questions": [
+  {
+   "id": "f01",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How did the agent-memory write p99 risk move from the ADR-0001 decision conditions to the Phase 1 exit measurement?",
+   "reference_answer": "ADR-0001 made bounded read/write queues its first condition and named the agent-memory write p99 (3.7x the B+ tree) as the case to fix. The Phase 1 follow-up later records that the exit measurement on the M0 VM class does not meet T1, with other failures documented in the Phase 1 report.",
+   "evidence": [
+    {
+     "start": 13168,
+     "end": 13579
+    },
+    {
+     "start": 17482,
+     "end": 17724
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "f02",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How did the finding about damage in the middle of a WAL carry through M0, ADR-0003 and ADR-0013?",
+   "reference_answer": "M0 found that mid-WAL damage treated as a broken tail silently lost confirmed commits, rated medium-high. ADR-0003 lists that corrected behaviour among the real failures that motivated its integrity rules. ADR-0013 then encodes the distinction in WAL-R5, which looks for a later frame with a synced_len beyond the break before accepting a broken tail.",
+   "evidence": [
+    {
+     "start": 3402,
+     "end": 3537
+    },
+    {
+     "start": 33600,
+     "end": 34044
+    },
+    {
+     "start": 70786,
+     "end": 70945
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "f03",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How is the choice of identifier codec tied to the still-pending key-management ADR?",
+   "reference_answer": "ADR-0005 makes the random token with persisted mapping the default codec. The key-based alternative is deferred until ADR-0006 defines key provider and rotation. ADR-0006 is still Pendiente, so the alternative cannot be built yet.",
+   "evidence": [
+    {
+     "start": 41788,
+     "end": 41895
+    },
+    {
+     "start": 44883,
+     "end": 44993
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "f04",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How did the public transaction API evolve from the M0 Engine trait to what Phase 1 is meant to expose?",
+   "reference_answer": "The M0 Engine trait was only an internal comparison contract without read-modify-write transactions, cursors or categorized errors. ADR-0002 lists the public Phase 1 API it must expose (begin_write, commit, abort, snapshot, sync, durability mode). ADR-0010 leaves the single public facade and semver policy for later.",
+   "evidence": [
+    {
+     "start": 56542,
+     "end": 56770
+    },
+    {
+     "start": 25358,
+     "end": 25598
+    },
+    {
+     "start": 57655,
+     "end": 57808
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "f05",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the derived-artifact contract in ADR-0018 build on the gap left by ADR-0007 and ADR-0011, and what does it expect to apply first?",
+   "reference_answer": "ADR-0018 starts from the fact that ADR-0007 covers index freshness and ADR-0011 covers embedding metadata, but no shared contract covers all derived data. Its follow-up is to apply the contract first to Stage 4 indexes and Stage 6 optimizations, and only then to Stage 8 embeddings.",
+   "evidence": [
+    {
+     "start": 117856,
+     "end": 118063
+    },
+    {
+     "start": 120269,
+     "end": 120393
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "f06",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the ADR-0016 reference path move from a Stage 5 asset to a guarantee that adaptation must respect?",
+   "reference_answer": "Stage 5 left the deterministic planner, the reference path and a differential test in CI. ADR-0016 turns the reference path into guarantee G2: it must remain compiled and tested even when unused, and the planner falls back to it on any unmet precondition or doubt.",
+   "evidence": [
+    {
+     "start": 109011,
+     "end": 109273
+    },
+    {
+     "start": 113453,
+     "end": 113563
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "f07",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the deletion problem first observed in M0 connect to ADR-0009, which is still pending, and to the range-tombstone requirement in ADR-0001?",
+   "reference_answer": "M0 showed that physical deletion depends on the engine: freed B+ tree pages and old LSM versions keep bytes. ADR-0009 remains Pendiente, but ADR-0001 already requires range tombstones and targeted compaction as a retention and suppression requirement, so the engine-level work is fixed before the policy is decided.",
+   "evidence": [
+    {
+     "start": 54996,
+     "end": 55222
+    },
+    {
+     "start": 13580,
+     "end": 13715
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "f08",
+   "window": 0,
+   "type": "trajectory",
+   "question": "Why does the requirement to repeat M0 benchmarks on target hardware stay open after Phase 1, given how M0 was measured?",
+   "reference_answer": "ADR-0001 lists repeating the M0 benchmarks on target hardware (R-S3) as a step before closing Phase 1, and its Phase 1 follow-up says it remains open. ADR-0012 explains why: M0 ran on a virtualized environment whose fsync latency may differ strongly from a local SSD.",
+   "evidence": [
+    {
+     "start": 16965,
+     "end": 17058
+    },
+    {
+     "start": 65563,
+     "end": 65785
+    },
+    {
+     "start": 17725,
+     "end": 17785
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "f09",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the 3 KiB embedding size in the agent-memory workload connect to the B+ tree versus LSM trade-off?",
+   "reference_answer": "ADR-0011 notes that 3 KiB embeddings matter to ADR-0001 because they stress B+ tree overflow pages and LSM large blocks. In the final ADR-0001 measurements, agent memory is almost a tie, 0.97x at medium and 1.19x at small, so the size did not decide the outcome.",
+   "evidence": [
+    {
+     "start": 58810,
+     "end": 59063
+    },
+    {
+     "start": 9081,
+     "end": 9299
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "f10",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How do the brain-inspired terms in ADR-0017 map onto technical contracts defined in other ADRs, and what does ADR-0018 add to the consolidation term?",
+   "reference_answer": "ADR-0017 maps connections to Edge (ADR-0014), plasticity to statistics or priority adjustments (ADR-0016), and consolidation to derived artifacts with provenance (ADR-0018). ADR-0018 then supplies the common derived-artifact contract, covering versioning, staleness and rebuilding, that this mapping depends on.",
+   "evidence": [
+    {
+     "start": 115101,
+     "end": 115285
+    },
+    {
+     "start": 117637,
+     "end": 117855
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "f11",
+   "window": 0,
+   "type": "trajectory",
+   "question": "Why does the B+ tree have to be treated as a hard case for Buffered durability while redb's Buffered numbers are excluded from comparison?",
+   "reference_answer": "ADR-0001 marks redb's Durability::None figures as not comparable because that mode does not survive process death, and ADR-0012 generalises the rule that relaxed durability must not be compared as equal to strong durability. Kerno's Buffered guarantee therefore sets the bar, and M0 showed the CoW B+ tree struggles to meet it.",
+   "evidence": [
+    {
+     "start": 7656,
+     "end": 7753
+    },
+    {
+     "start": 61538,
+     "end": 61612
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "f12",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the temporal-validity question for relations get deferred across ADR-0014 and ADR-0010?",
+   "reference_answer": "ADR-0014 leaves weight and temporal validity out of E4-02, noting that adding them requires a decision about history. ADR-0010 keeps AsOf::Time out of Stage 3. Both push time-based reads to a later decision.",
+   "evidence": [
+    {
+     "start": 98604,
+     "end": 98762
+    },
+    {
+     "start": 57611,
+     "end": 57653
+    },
+    {
+     "start": 99645,
+     "end": 99817
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "f13",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How did the WAL header synchronisation question move from an open owner decision to a closed fix?",
+   "reference_answer": "ADR-0013 first flags that the WAL header is not synced at W-1, so a broken header can hide frames with synced_len 0, and leaves the choice to the owner. The revision then closed it: the writer syncs the header at W-1 and WAL-R6 rejects valid frames under a broken header.",
+   "evidence": [
+    {
+     "start": 80672,
+     "end": 80806
+    },
+    {
+     "start": 81522,
+     "end": 81686
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "f14",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How did the ADR-0016 treatment of cached results change from the first proposal to the owner's guarantees?",
+   "reference_answer": "The first proposal let a result cache be reused when the read data had not changed, with an exception for that proof. The owner guarantees G4 remove that exception: a cached result is bound to its snapshot's commit sequence and serves only that sequence until a later ADR defines such a proof.",
+   "evidence": [
+    {
+     "start": 112793,
+     "end": 113136
+    }
+   ],
+   "evidence_rejected": 1,
+   "needs_review": false
+  },
+  {
+   "id": "f15",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How did the BLAKE3 decision for revision payload integrity develop from the original ADR-0008 proposal?",
+   "reference_answer": "ADR-0008 opened with CRC-32C as a provisional hash with no cryptographic guarantee, to be replaced once the decision was complete. Its acceptance on 2026-10-31 made BLAKE3-256 the integrity hash for REV_PAYLOAD, pinned to an exact version, and kept CRC-32C provisional and not a substitute.",
+   "evidence": [
+    {
+     "start": 52827,
+     "end": 53029
+    },
+    {
+     "start": 53213,
+     "end": 53465
+    },
+    {
+     "start": 53760,
+     "end": 53864
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "f16",
+   "window": 0,
+   "type": "trajectory",
+   "question": "What do the Criteria and Why-not sections say about the weight of reference workloads versus micro-benchmarks in choosing the storage engine?",
+   "reference_answer": "ADR-0001 says the reference cases (LiveSpec, Cauce, agent memory) outweigh micro-benchmarks. That weighting carries into the B+ tree rejection, which rests on the reference workloads being write-intensive, where a CoW rewrites a root-to-leaf path on every commit.",
+   "evidence": [
+    {
+     "start": 2309,
+     "end": 2407
+    },
+    {
+     "start": 14218,
+     "end": 14591
+    },
+    {
+     "start": 9470,
+     "end": 9653
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "f17",
+   "window": 0,
+   "type": "contrast",
+   "question": "Where does the ADR-0001 text say the B+ tree trails redb, and where does it say the same prototype is within target?",
+   "reference_answer": "The performance reading says the B+ tree is below redb in most workloads except sequential insert. The third-path section frames the same numbers as within ADR-0012's 2x target against redb, so the same evidence is presented as both a gap and an acceptable range.",
+   "evidence": [
+    {
+     "start": 7990,
+     "end": 8098
+    },
+    {
+     "start": 15173,
+     "end": 15660
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "f18",
+   "window": 0,
+   "type": "contrast",
+   "question": "ADR-0012 and ADR-0014 handle the question of fixing thresholds before measuring differently. What does each say?",
+   "reference_answer": "ADR-0012 deliberately sets no speed threshold before measuring and proposes thresholds only from the M0 baseline afterwards. ADR-0014 instead fixes its five criteria before the full measurement, and says which ones have a measurable threshold or test.",
+   "evidence": [
+    {
+     "start": 64636,
+     "end": 64768
+    },
+    {
+     "start": 86681,
+     "end": 86875
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "f19",
+   "window": 0,
+   "type": "contrast",
+   "question": "How does the ADR-0007 text describing the primary index differ from how E4-03 actually implements it?",
+   "reference_answer": "The accepted decision says the primary index is consistent with the commit. E4-03 implements it as a derived index with explicit freshness, so queries use the reference path after any write until a rebuild. The owner flagged this as an open point.",
+   "evidence": [
+    {
+     "start": 46624,
+     "end": 46832
+    },
+    {
+     "start": 48353,
+     "end": 48623
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "f20",
+   "window": 0,
+   "type": "contrast",
+   "question": "The ADR-0015 diagnostic level is described as including text. How does the sentinel evidence square with the privacy default?",
+   "reference_answer": "The option list says diagnostic carries fingerprint text and plan explanations, which could look like a leak. The sentinel test found no literal in any level, including diagnostic, because the text uses typed markers. So the privacy claim holds at every level.",
+   "evidence": [
+    {
+     "start": 102723,
+     "end": 103031
+    },
+    {
+     "start": 104164,
+     "end": 104252
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "f21",
+   "window": 0,
+   "type": "contrast",
+   "question": "The ADR-0003 and ADR-0013 accounts of AEAD slot placement differ. What is the difference?",
+   "reference_answer": "ADR-0003 reserves nonce and tag space per page or block from v1 and uses an incompat bit to show whether it is in use. ADR-0013 keeps the slot always present in SST blocks and MANIFEST records, but in WAL frames only when that file's header carries the AEAD bit.",
+   "evidence": [
+    {
+     "start": 29936,
+     "end": 30126
+    },
+    {
+     "start": 70996,
+     "end": 71276
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "f22",
+   "window": 0,
+   "type": "causal",
+   "question": "Why does the LSM give ADR-0001 a durability advantage that the CoW B+ tree struggles to match?",
+   "reference_answer": "In Buffered mode a CoW B+ tree needs sync points and deferred page reuse to keep a consistent prefix, and M0 showed about 87 % of simulated power cuts left the database unopenable. The LSM gets the prefix guarantee from its WAL design, and Kerno wants a relaxed durability mode, which weighs toward the LSM.",
+   "evidence": [
+    {
+     "start": 4120,
+     "end": 4426
+    }
+   ],
+   "evidence_rejected": 1,
+   "needs_review": false
+  },
+  {
+   "id": "f23",
+   "window": 0,
+   "type": "causal",
+   "question": "Why does the relation option that stores each relation as a unit write more bytes than the adjacency-index option?",
+   "reference_answer": "Option 1 makes every relation a unit, so each one inherits the unit machinery: head, REV_META, REV_PAYLOAD and ChangeSet membership. Option 2 writes a registry record plus two small index keys, so it writes fewer bytes per relation even though both hold similar data.",
+   "evidence": [
+    {
+     "start": 92392,
+     "end": 92582
+    },
+    {
+     "start": 85853,
+     "end": 86015
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "f24",
+   "window": 0,
+   "type": "causal",
+   "question": "Why does ADR-0015 use a locally keyed hash for fingerprints instead of a plain hash?",
+   "reference_answer": "A shape has only a few possible values, so a plain unkeyed hash could be reversed with a dictionary of likely shapes and literals. A local, unexported key prevents that, and the algorithm and version are recorded with each fingerprint.",
+   "evidence": [
+    {
+     "start": 105675,
+     "end": 105911
+    },
+    {
+     "start": 106035,
+     "end": 106203
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "f25",
+   "window": 0,
+   "type": "causal",
+   "question": "Why does ADR-0005 keep the random token codec as default and leave the key-based codec for later?",
+   "reference_answer": "The key-based codec needs key management, rotation and a key-loss policy first, and ADR-0006 has not defined them. The random token needs no key material, so the default can ship without blocking Phases 1 to 3, and ADR-0006 can close later.",
+   "evidence": [
+    {
+     "start": 40373,
+     "end": 40491
+    },
+    {
+     "start": 42342,
+     "end": 42470
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "f26",
+   "window": 0,
+   "type": "local",
+   "question": "What is the cost threshold for recording an execution observation in ADR-0015?",
+   "reference_answer": "The threshold, fixed before measuring, is at most 5 % of the p99 latency of the observed query.",
+   "evidence": [
+    {
+     "start": 105295,
+     "end": 105392
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "f27",
+   "window": 0,
+   "type": "local",
+   "question": "What percentage of simulated power cuts left the B+ tree database unopenable in Buffered mode?",
+   "reference_answer": "About 87 % of simulated power cuts left the B+ tree database unable to open, and another 12 % left it with damage detected on read.",
+   "evidence": [],
+   "evidence_rejected": 1,
+   "needs_review": true
+  },
+  {
+   "id": "f28",
+   "window": 0,
+   "type": "evolution",
+   "question": "How did ADR-0004's revision-storage choice move from the SAD's proposed hybrid to the accepted design?",
+   "reference_answer": "ADR-0004 first listed the SAD's snapshot-plus-delta hybrid with a depth limit as an option. The accepted decision chose a full copy per revision, with delta reserved in the kind byte, and left the hybrid as a future option subject to measurement and a new ADR.",
+   "evidence": [
+    {
+     "start": 36657,
+     "end": 36747
+    },
+    {
+     "start": 37716,
+     "end": 37926
+    },
+    {
+     "start": 38413,
+     "end": 38538
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "f29",
+   "window": 0,
+   "type": "evolution",
+   "question": "How did the index decision move from the initial proposal to the owner's approval after the W1 workload?",
+   "reference_answer": "The initial proposal kept the primary index consistent with the commit and made the costly secondary indexes derived. The W1 workload then justified a derived secondary index by type and schema version. The owner approved derived indexes with explicit freshness and required a measured write-interleaved workload before moving them into the ChangeSet.",
+   "evidence": [
+    {
+     "start": 45797,
+     "end": 45960
+    },
+    {
+     "start": 49921,
+     "end": 50204
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "f30",
+   "window": 0,
+   "type": "evolution",
+   "question": "How did the ADR-0014 relation decision move from proposed to accepted?",
+   "reference_answer": "At E4-00 the ADR stayed Propuesto, with only the rejection semantics for live relations approved, and said the final decision would come from the E4-02 prototype. It was accepted on 2026-11-05 as option 2, the registry record plus transactional adjacency indexes, on the strength of that evidence.",
+   "evidence": [
+    {
+     "start": 101241,
+     "end": 101499
+    },
+    {
+     "start": 97363,
+     "end": 97494
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  }
+ ],
+ "rejected_quotes": 3,
+ "model_ids": [
+  "claude-haiku-5-5"
+ ]
+}

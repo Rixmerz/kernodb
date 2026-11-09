@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -32,7 +33,7 @@ DRAFTS = HERE / "results" / "questions" / "draft"
 ALIAS = "haiku"
 PER_DOC = 30
 WINDOW_BYTES = 300_000
-PROMPT_VERSION = "q1"
+PROMPT_VERSION = "q2"
 
 TYPES = ["trajectory", "contrast", "causal", "evolution", "local"]
 
@@ -86,14 +87,14 @@ def shares(total: int, parts: int) -> list[int]:
 
 
 def locate(data: bytes, lo: int, hi: int, quote: str) -> tuple[int, int] | None:
-    """The quote's exact byte range inside [lo, hi), else in the document, else None."""
-    q = quote.strip().encode("utf-8")
-    if not q:
+    """The quote's byte range inside [lo, hi), else in the document, else None. Words must
+    match exactly; any run of whitespace matches any run (line-wrapped texts)."""
+    words = quote.split()
+    if not words:
         return None
-    i = data.find(q, lo, hi)
-    if i < 0:
-        i = data.find(q)
-    return (i, i + len(q)) if i >= 0 else None
+    pat = re.compile(rb"\s+".join(re.escape(w.encode("utf-8")) for w in words))
+    m = pat.search(data, lo, hi) or pat.search(data)
+    return (m.start(), m.end()) if m else None
 
 
 def ask(prompt: str) -> dict:
@@ -137,19 +138,20 @@ def run_doc(name: str, ledger: Ledger, pinned: dict) -> dict:
         if result.get("is_error"):
             raise SystemExit(f"{name} w{i}: the CLI reported an error")
         for q in answer_of(result).get("questions", []):
-            ev, rejected = [], 0
+            ev, rejected, unlocated = [], 0, []
             for quote in q.get("evidence", []):
                 span = locate(data, lo, hi, quote)
                 if span:
-                    ev.append({"start": span[0], "end": span[1]})
+                    ev.append({"start": span[0], "end": span[1], "quote": quote})
                 else:
                     rejected += 1
+                    unlocated.append(quote)
             draft["rejected_quotes"] += rejected
             draft["questions"].append({
                 "id": f"{Path(name).stem[0]}{len(draft['questions']) + 1:02d}", "window": i,
                 "type": q.get("type"), "question": q.get("question"),
                 "reference_answer": q.get("reference_answer"), "evidence": ev,
-                "evidence_rejected": rejected, "needs_review": not ev})
+                "evidence_rejected": rejected, "unlocated_quotes": unlocated, "needs_review": not ev})
         draft["windows"].append({"index": i, "start": lo, "end": hi, "asked": n, "call_id": call_id,
                                  "model_ids": ids, "charged_usd": entry["charged_usd"]})
         draft["model_ids"] = ids

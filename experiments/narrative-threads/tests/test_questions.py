@@ -20,3 +20,10 @@ def test_windows_cover_blocks_within_size():
 def test_shares_sum():
     assert shares(30, 5) == [6] * 5
     assert sum(shares(30, 4)) == 30
+
+
+def test_locate_tolerates_line_wraps_not_word_changes():
+    data = b"He said that\r\nthe whale was white."
+    s = locate(data, 0, len(data), "that the whale")
+    assert data[s[0]:s[1]] == b"that\r\nthe whale"
+    assert locate(data, 0, len(data), "that a whale") is None
