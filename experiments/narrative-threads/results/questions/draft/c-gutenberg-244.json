@@ -1,0 +1,665 @@
+{
+ "document": "c-gutenberg-244.txt",
+ "sha256": "6810564e981523ea439b7b2008bb318379cb649951c1b3c8e1e5b9cc26de4840",
+ "status": "draft: pending human review",
+ "prompt_version": "q2",
+ "alias": "haiku",
+ "windows": [
+  {
+   "index": 0,
+   "start": 0,
+   "end": 244165,
+   "asked": 30,
+   "call_id": "questions:q2:c-gutenberg-244.txt:w0",
+   "model_ids": [
+    "claude-haiku-5-5"
+   ],
+   "charged_usd": 0.015863150000000003
+  }
+ ],
+ "questions": [
+  {
+   "id": "c01",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does Watson's account of his own nerves change between the opening chapter and the end of Part I?",
+   "reference_answer": "In Chapter I Watson tells Stamford his nerves are shaken and he cannot stand noise, which is why he wants a quiet lodger. By the close, after the Brixton case, his nerves are still disturbed: even a veteran of the battlefield, he tingles at the thought of the murderer's crimes.",
+   "evidence": [
+    {
+     "start": 14978,
+     "end": 15104,
+     "quote": "I keep a bull pup,” I said, “and I object to rows because my nerves are shaken, and I get up at all sorts of ungodly hours"
+    },
+    {
+     "start": 109654,
+     "end": 109740,
+     "quote": "My nerves, which were steady enough on the field of battle tingled as I thought of it."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c02",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How is the bloodhound image used for different characters from Part I to the end of Part II?",
+   "reference_answer": "Holmes first compares Lestrade's rival, the 'old hound', with his own 'hounds and not the wolf' metaphor, placing himself among hunters. Watson later calls himself and Holmes an 'amateur bloodhound' in the cab, and in Part II the image becomes Jefferson Hope himself, a 'human bloodhound' pursuing his enemies for years.",
+   "evidence": [
+    {
+     "start": 54565,
+     "end": 54716,
+     "quote": "It’s all very well for you to laugh, Mr. Sherlock Holmes. You may be very smart and clever, but the old hound is the best, when all is said and done."
+    },
+    {
+     "start": 206668,
+     "end": 206849,
+     "quote": "Year passed into year, his black hair turned grizzled, but still he wandered on, a human bloodhound, with his mind wholly set upon the one object upon which he had devoted his life."
+    },
+    {
+     "start": 72650,
+     "end": 72785,
+     "quote": "Leaning back in the cab, this amateur bloodhound carolled away like a lark while I meditated upon the many-sidedness of the human mind."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c03",
+   "window": 0,
+   "type": "trajectory",
+   "question": "What role does Holmes's violin play across the novel, and how does Watson read it at the end of the Brixton investigation?",
+   "reference_answer": "Early on Holmes's violin is a source of irritation that Watson tolerates, and Watson remarks that a well-played violin is a treat for the gods. Later, during quiet nights of thought, the violin's wailing becomes the sound of Holmes wrestling with the problem, which Watson hears from his bed.",
+   "evidence": [
+    {
+     "start": 15356,
+     "end": 15430,
+     "quote": "A well-played violin is a treat for the gods—a badly-played one——”"
+    },
+    {
+     "start": 86603,
+     "end": 86751,
+     "quote": "long into the watches of the night I heard the low, melancholy wailings of his violin, and knew that he was still pondering over the strange problem"
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c04",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the word RACHE and the theories around it develop from Lestrade's discovery to Hope's own explanation?",
+   "reference_answer": "Lestrade first reads RACHE as the beginning of the name Rachel, a woman's name, and Holmes corrects him that it is German for 'revenge'. Much later Hope explains that he copied the word from a New York case, hoping to mislead the police toward secret societies, so the inscription was a deliberate blind.",
+   "evidence": [
+    {
+     "start": 54439,
+     "end": 54564,
+     "quote": "You mark my words, when this case comes to be cleared up you will find that a woman named Rachel has something to do with it."
+    },
+    {
+     "start": 58588,
+     "end": 58690,
+     "quote": "“‘Rache,’ is the German for ‘revenge’; so don’t lose your time looking for Miss Rachel.”"
+    },
+    {
+     "start": 228057,
+     "end": 228228,
+     "quote": "I remembered a German being found in New York with RACHE written up above him, and it was argued at the time in the newspapers that the secret societies must have done it."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c05",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the wedding ring pass from one person to another across the story, and what does it come to signify?",
+   "reference_answer": "Lestrade finds the ring in Chapter III, where it first suggests a woman's involvement. Holmes uses a copy of it as bait in the advertisement, and Hope admits he took the real ring from Lucy's body at her burial. In his confession Hope holds it up before Drebber as he dies, so it becomes the emblem of Lucy's wrong and his vengeance.",
+   "evidence": [
+    {
+     "start": 50249,
+     "end": 50329,
+     "quote": "There’s been a woman here,” he cried. “It’s a woman’s wedding-ring.”"
+    },
+    {
+     "start": 202860,
+     "end": 202901,
+     "quote": "he took the wedding-ring from her finger."
+    },
+    {
+     "start": 214250,
+     "end": 214360,
+     "quote": "I took the marriage ring from her dead finger, and I vowed that his dying eyes should rest upon that very ring"
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c06",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does Holmes's attitude to fame and recognition shift from the first chapters to the end of the novel?",
+   "reference_answer": "At the start Holmes boasts that he means to make his name famous and that no one has brought his talent to crime. By the end he gives a bitter answer that what matters is what people can be made to believe, and he jokes that the whole study was only to win the police a testimonial.",
+   "evidence": [
+    {
+     "start": 243782,
+     "end": 243863,
+     "quote": "“That’s the result of all our Study in Scarlet: to get them a testimonial!”"
+    }
+   ],
+   "evidence_rejected": 2,
+   "unlocated_quotes": [
+    "“I know well that I have it in me to make my name famous.",
+    "“What you do in this world is a matter of no consequence,” returned my companion, bitterly. “The question is, what can you make people believe that you have done.”"
+   ],
+   "needs_review": false
+  },
+  {
+   "id": "c07",
+   "window": 0,
+   "type": "trajectory",
+   "question": "What happens to Stangerson across Part II, from his first appearance as an Elder to his death?",
+   "reference_answer": "Stangerson first appears as the Elder who takes the castaway John Ferrier and Lucy into his waggon and teaches them the faith. Later he and Drebber are rivals for Lucy, and the Elder is said to have shot her father. He ends as Drebber's secretary who flees with him and is killed at Halliday's Hotel by Hope.",
+   "evidence": [
+    {
+     "start": 143938,
+     "end": 144034,
+     "quote": "“Take him, Brother Stangerson,” he said, “give him food and drink, and the child likewise."
+    },
+    {
+     "start": 200998,
+     "end": 201125,
+     "quote": "They’d both been in the party that followed them, and Stangerson had shot her father, which seemed to give him the best claim"
+    },
+    {
+     "start": 185222,
+     "end": 185257,
+     "quote": "“Shall I tell Brother Drebber?”"
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c08",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the countdown that the Mormon leadership imposes on John Ferrier develop from its announcement to the last days?",
+   "reference_answer": "Brigham Young first gives Ferrier a month to choose a husband for Lucy, and he threatens him with death. Ferrier then receives a note with twenty-nine days, and the anonymous numbers count down daily on his walls until the last day, which the story explicitly identifies as the balance of Young's month.",
+   "evidence": [
+    {
+     "start": 166505,
+     "end": 166578,
+     "quote": "“She shall have a month to choose,” said Young, rising from his seat."
+    },
+    {
+     "start": 175259,
+     "end": 175319,
+     "quote": "Twenty-nine days are given you for amendment, and then——"
+    },
+    {
+     "start": 175649,
+     "end": 175735,
+     "quote": "The twenty-nine days were evidently the balance of the month which Young had promised."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c09",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the poison pill Hope prepared from the York College laboratory connect to the test Holmes carries out in Chapter VII?",
+   "reference_answer": "Hope explains in his confession that he stole a South American alkaloid at York College and made it into soluble pills, each packed in a box beside a harmless one. Holmes later tests the two pills from Lestrade's box on a dog and discovers that one is deadly and the other inert, which confirms Hope's method.",
+   "evidence": [
+    {
+     "start": 222822,
+     "end": 222945,
+     "quote": "I worked this alkaloid into small, soluble pills, and each pill I put in a box with a similar pill made without the poison."
+    },
+    {
+     "start": 116325,
+     "end": 116425,
+     "quote": "Of the two pills in that box one was of the most deadly poison, and the other was entirely harmless."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c10",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How is Hope's aortic aneurism introduced and what does it finally do to his story?",
+   "reference_answer": "Watson discovers the aneurism when he feels Hope's chest in the station, and Hope says a doctor has told him it will burst soon. This illness explains why Hope gives his confession quickly. Hope dies of it in his cell the night after his capture.",
+   "evidence": [
+    {
+     "start": 211801,
+     "end": 211855,
+     "quote": "“Why,” I cried, “you have an aortic aneurism!”"
+    },
+    {
+     "start": 232687,
+     "end": 232811,
+     "quote": "On the very night after his capture the aneurism burst, and he was found in the morning stretched upon the floor of the cell"
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c11",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does Jefferson Hope's life change from his courtship of Lucy to his single-minded pursuit of revenge?",
+   "reference_answer": "In Part II Hope is a suitor who swears in his heart to win Lucy and to succeed in everything he undertakes. After Lucy's forced marriage and death, his strong will and endurance become directed entirely to vengeance, which he follows for decades across continents.",
+   "evidence": [
+    {
+     "start": 156713,
+     "end": 156833,
+     "quote": "He swore in his heart that he would not fail in this if human effort and human perseverance could render him successful."
+    },
+    {
+     "start": 198142,
+     "end": 198228,
+     "quote": "His strong will and untiring energy should, he determined, be devoted to that one end."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c12",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does Watson's role as recorder of the case change across the novel?",
+   "reference_answer": "At the start Watson is only a lodger who writes up Holmes's life as a reminiscence. In Part II Chapter VI he has direct access to Lestrade's note-book to record Hope's confession. In the final chapter he insists the public shall know the facts because he has them in his journal.",
+   "evidence": [
+    {
+     "start": 213357,
+     "end": 213459,
+     "quote": "I can vouch for the accuracy of the subjoined account, for I have had access to Lestrade’s note-book"
+    },
+    {
+     "start": 243865,
+     "end": 243965,
+     "quote": "“Never mind,” I answered, “I have all the facts in my journal, and the public shall know them."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c13",
+   "window": 0,
+   "type": "trajectory",
+   "question": "Why does the Mormon Council's authority matter to the Ferriers' flight, and how does the phrase 'the Holy Four' recur across the story?",
+   "reference_answer": "Brigham Young invokes the Holy Four when he threatens Ferrier in Part II Chapter III, so their orders are the reason Ferrier fears for his life. Ferrier later answers a sentinel's challenge with their name as his authority to pass, and Hope learns from Cowper that the Holy Four have issued a warrant against him.",
+   "evidence": [
+    {
+     "start": 166723,
+     "end": 166939,
+     "quote": "“It were better for you, John Ferrier,” he thundered, “that you and she were now lying blanched skeletons upon the Sierra Blanco, than that you should put your weak wills against the orders of the Holy Four!”"
+    },
+    {
+     "start": 188209,
+     "end": 188247,
+     "quote": "“The Holy Four,” answered Ferrier."
+    },
+    {
+     "start": 200055,
+     "end": 200137,
+     "quote": "There is a warrant against you from the Holy Four for assisting the Ferriers away."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c14",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does Holmes's use of the telegraph develop through the investigation?",
+   "reference_answer": "In Chapter IV Holmes sends a long telegram before going to interview Rance. In Chapter V he reports that his American telegram has been answered and his view is confirmed. In Chapter VII he explains that he telegraphed the Cleveland police about Drebber's marriage, which revealed Jefferson Hope as the rival.",
+   "evidence": [
+    {
+     "start": 58884,
+     "end": 58977,
+     "quote": "Sherlock Holmes led me to the nearest telegraph office, whence he dispatched a long telegram."
+    },
+    {
+     "start": 78689,
+     "end": 78742,
+     "quote": "“I have just had an answer to my American telegram."
+    },
+    {
+     "start": 239710,
+     "end": 239850,
+     "quote": "I telegraphed to the head of the police at Cleveland, limiting my enquiry to the circumstances connected with the marriage of Enoch Drebber."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c15",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does John Ferrier's willingness to fight the Mormons change from his first confrontation to his preparations for flight?",
+   "reference_answer": "Ferrier first threatens his visitors violently, saying he will 'start the smiting' and nearly fetches his gun. Later he quietly cleans and loads the old shotgun while he prepares to flee. His anger has turned into a quiet defensive readiness.",
+   "evidence": [
+    {
+     "start": 173352,
+     "end": 173416,
+     "quote": "“Then I’ll start the smiting,” exclaimed Ferrier furiously"
+    },
+    {
+     "start": 169790,
+     "end": 169884,
+     "quote": "he carefully cleaned and loaded the rusty old shotgun which hung upon the wall of his bedroom."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c16",
+   "window": 0,
+   "type": "causal",
+   "question": "Why did Lucy Ferrier die, according to the narrative?",
+   "reference_answer": "Lucy's death is traced to two causes: the terrible death of her father and the forced marriage to Drebber. Her father had earlier told her he would rather see her in the grave than married to either of the Mormon suitors. The narrator attributes her decline to the grief and the marriage together.",
+   "evidence": [
+    {
+     "start": 173713,
+     "end": 173798,
+     "quote": "“I would sooner see you in your grave, my girl, than the wife of either of them.”"
+    },
+    {
+     "start": 201922,
+     "end": 202120,
+     "quote": "Whether it was the terrible death of her father or the effects of the hateful marriage into which she had been forced, poor Lucy never held up her head again, but pined away and died within a month."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c17",
+   "window": 0,
+   "type": "causal",
+   "question": "Why was RACHE written in blood on the wall, according to the murderer and to Holmes?",
+   "reference_answer": "Holmes says the writing was a blind meant to send the police toward socialism and secret societies, not toward a German. Hope confesses that the impulse was a mischievous wish to mislead the police, copied from a New York case he had read about.",
+   "evidence": [
+    {
+     "start": 62970,
+     "end": 63118,
+     "quote": "As to poor Lestrade’s discovery it was simply a blind intended to put the police upon a wrong track, by suggesting Socialism and secret societies."
+    },
+    {
+     "start": 227939,
+     "end": 228056,
+     "quote": "Perhaps it was some mischievous idea of setting the police upon a wrong track, for I felt light-hearted and cheerful."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c18",
+   "window": 0,
+   "type": "causal",
+   "question": "Why was there blood on the floor of the Brixton house, and what does Holmes deduce from it about the murderer?",
+   "reference_answer": "Holmes concludes that the blood came from the murderer's nose while he was excited, not from any wound on Drebber. This matches Hope's confession that his nose bled freely during the killing, which Holmes had inferred as a sign of a robust, ruddy man.",
+   "evidence": [
+    {
+     "start": 239155,
+     "end": 239328,
+     "quote": "I had already come to the conclusion, since there were no signs of a struggle, that the blood which covered the floor had burst from the murderer’s nose in his excitement."
+    },
+    {
+     "start": 227779,
+     "end": 227854,
+     "quote": "The blood had been streaming from my nose, but I had taken no notice of it."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c19",
+   "window": 0,
+   "type": "causal",
+   "question": "Why did Jefferson Hope come to 221B Baker Street, and what made him believe the trap was safe?",
+   "reference_answer": "Holmes places an advertisement offering a found ring at Watson's address, reasoning that the murderer would miss the ring and come to reclaim it without suspecting a trap. Hope confirms that he saw the advertisement and thought it might be a plant or might be the ring he wanted.",
+   "evidence": [
+    {
+     "start": 78081,
+     "end": 78146,
+     "quote": "He would come. He will come. You shall see him within an hour?”"
+    },
+    {
+     "start": 231708,
+     "end": 231808,
+     "quote": "I saw your advertisement, and I thought it might be a plant, or it might be the ring which I wanted."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c20",
+   "window": 0,
+   "type": "causal",
+   "question": "Why was Joseph Stangerson killed, according to Jefferson Hope's own account?",
+   "reference_answer": "Hope tracked Stangerson to Halliday's Private Hotel, and after explaining Drebber's death he gave Stangerson the same choice of pills. Stangerson refused and attacked him, and Hope says he stabbed him in self-defence.",
+   "evidence": [
+    {
+     "start": 229238,
+     "end": 229344,
+     "quote": "I knew that he was staying at Halliday’s Private Hotel, and I hung about all day, but he never came out."
+    },
+    {
+     "start": 229985,
+     "end": 230142,
+     "quote": "Instead of grasping at the chance of safety which that offered him, he sprang from his bed and flew at my throat. In self-defence I stabbed him to the heart."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c21",
+   "window": 0,
+   "type": "contrast",
+   "question": "How does Gregson's confidence about Charpentier compare with what is later established about him?",
+   "reference_answer": "Gregson announces triumphantly that the man is under lock and key and that the case is solved. After Stangerson is found murdered, Holmes and the others conclude that Arthur Charpentier could not have been involved in the second killing, so Gregson's confident solution is shown to be wrong.",
+   "evidence": [
+    {
+     "start": 92702,
+     "end": 92770,
+     "quote": "“The right track! Why, sir, we have the man under lock and key.”"
+    },
+    {
+     "start": 118270,
+     "end": 118338,
+     "quote": "Young Charpentier could not have been engaged in this second affair."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c22",
+   "window": 0,
+   "type": "contrast",
+   "question": "How does Holmes's early claim that there are no crimes compare with his later admission?",
+   "reference_answer": "In Chapter II Holmes complains there are no crimes and no criminals worth his skill. After the Brixton case he admits he was wrong, so his earlier view is contradicted by the murder mystery that engages him.",
+   "evidence": [
+    {
+     "start": 34897,
+     "end": 34976,
+     "quote": "“There are no crimes and no criminals in these days,” he said, querulously."
+    },
+    {
+     "start": 38665,
+     "end": 38759,
+     "quote": "“I said just now that there were no criminals. It appears that I am wrong—look at this!”"
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c23",
+   "window": 0,
+   "type": "evolution",
+   "question": "How does Watson's opinion of Holmes's theory of observation change between the two chapters where it is discussed?",
+   "reference_answer": "Watson first dismisses the magazine article on observation and deduction as ineffable twaddle and something only an armchair theorist would write. After the Brixton case he tells Holmes that he has brought detection as near to an exact science as it will ever be brought, so his scepticism turns into full admiration.",
+   "evidence": [
+    {
+     "start": 29622,
+     "end": 29745,
+     "quote": "“What ineffable twaddle!” I cried, slapping the magazine down on the table, “I never read such rubbish in my life.”"
+    },
+    {
+     "start": 63715,
+     "end": 63855,
+     "quote": "“I shall never do that,” I answered; “you have brought detection as near an exact science as it ever will be brought in this world.”"
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c24",
+   "window": 0,
+   "type": "evolution",
+   "question": "How does John Ferrier's relationship with the Mormons change from his arrival to his decision to leave Utah?",
+   "reference_answer": "When the Mormons rescue him in the desert, Ferrier accepts any terms they set. Years later he refuses to submit to the Prophet and says he does not care about 'knuckling under' to any man, so he plans to leave Utah for good.",
+   "evidence": [
+    {
+     "start": 143747,
+     "end": 143806,
+     "quote": "“Guess I’ll come with you on any terms,” said Ferrier"
+    },
+    {
+     "start": 168960,
+     "end": 169050,
+     "quote": "I don’t care about knuckling under to any man, as these folk do to their darned prophet."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c25",
+   "window": 0,
+   "type": "evolution",
+   "question": "How does Lestrade's theory of the case change from the Rachel idea to the end of the investigation?",
+   "reference_answer": "Lestrade first insists that a woman named Rachel is behind the crime. Later Gregson reports that Lestrade has abandoned that line and gone after the secretary Stangerson, which turns out to be a wrong track too, since Stangerson is himself murdered.",
+   "evidence": [
+    {
+     "start": 54307,
+     "end": 54438,
+     "quote": "Mean? Why, it means that the writer was going to put the female name Rachel, but was disturbed before he or she had time to finish."
+    },
+    {
+     "start": 93730,
+     "end": 93960,
+     "quote": "The fun of it is,” he cried, “that that fool Lestrade, who thinks himself so smart, has gone off upon the wrong track altogether. He is after the secretary Stangerson, who had no more to do with the crime than the babe unborn."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c26",
+   "window": 0,
+   "type": "evolution",
+   "question": "How does Holmes's willingness to explain his method change between Chapter IV and the final chapter?",
+   "reference_answer": "In Chapter IV Holmes refuses to reveal much more of the case, saying he does not want to seem an ordinary man. By the end, after the arrest, he invites the detectives and Watson to ask any question and promises to answer, and he walks through his full chain of reasoning.",
+   "evidence": [
+    {
+     "start": 63447,
+     "end": 63505,
+     "quote": "I’m not going to tell you much more of the case, Doctor."
+    },
+    {
+     "start": 123851,
+     "end": 123975,
+     "quote": "You are very welcome to put any questions that you like to me now, and there is no danger that I will refuse to answer them."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c27",
+   "window": 0,
+   "type": "local",
+   "question": "In what month and year did John Ferrier die, according to the inscription on his grave?",
+   "reference_answer": "The grave-marker inscription reads that John Ferrier, formerly of Salt Lake City, died on August 4th, 1860.",
+   "evidence": [
+    {
+     "start": 197054,
+     "end": 197076,
+     "quote": "Died August 4th, 1860."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c28",
+   "window": 0,
+   "type": "local",
+   "question": "At what number on which street was the house in which Drebber's body was found?",
+   "reference_answer": "Drebber's body was found at Number 3, Lauriston Gardens, off the Brixton Road, an empty house that the narrator describes as having an ill-omened look.",
+   "evidence": [
+    {
+     "start": 42772,
+     "end": 42837,
+     "quote": "Number 3, Lauriston Gardens wore an ill-omened and minatory look."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  }
+ ],
+ "rejected_quotes": 2,
+ "model_ids": [
+  "claude-haiku-5-5"
+ ]
+}
