@@ -18,7 +18,6 @@
 
 mod harness;
 
-
 use harness::cache_script::{open, queries, relation_queries, seed, write};
 use harness::units::Target;
 use kerno_testkit::emulated::Emulated;
