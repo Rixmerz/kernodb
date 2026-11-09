@@ -39,8 +39,9 @@ pub mod types;
 pub mod verify;
 
 pub use cache::{
-    CacheConfig, CacheEntry, CacheError, CacheFallbackCause, CacheStats, CachedResult, DeleteReason, Dependencies,
-    Dependency, Evidence, Lookup, OPTIMIZATION_VERSION, ResultCache, Switch, Transition, TransitionRecord,
+    CacheConfig, CacheEntry, CacheError, CacheFallbackCause, CacheStats, CachedQuery, CachedResult, DeleteReason,
+    Dependencies, Dependency, Evidence, Lookup, MissCause, OPTIMIZATION_VERSION, ResultCache, Switch, Transition,
+    TransitionRecord,
 };
 pub use clock::{Clock, CounterIds, FixedClock, SystemClock, UnitIdSource, UuidV7Source};
 pub use codec::{ChangeSetRecord, CsMember, Key, LayerMeta, Record, RevisionMeta, UnitHead};

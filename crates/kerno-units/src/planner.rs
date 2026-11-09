@@ -62,6 +62,9 @@ use std::ops::Bound;
 
 use kerno_core::contract::{Engine, Snapshot};
 
+use std::time::Duration;
+
+use crate::cache::{CacheEntry, CacheFallbackCause, CachedQuery, CachedResult, Dependencies, Evidence, Lookup};
 use crate::codec::{Key, TAG_REL, TAG_REL_IN, TAG_REL_OUT};
 use crate::db::{Relation, Unit, UnitSnapshot, corruption};
 use crate::error::UnitError;
@@ -252,6 +255,17 @@ impl<E: Engine> UnitSnapshot<E> {
     /// decision.
     fn decide_units(&self, filter: &UnitFilter) -> Result<(IndexStatus, Decision), UnitError> {
         let (status, entries) = self.index_stats()?;
+        self.decide_units_with(filter, status, entries)
+    }
+
+    /// [`decide_units`](Self::decide_units) over the status and entry count of
+    /// an `IDX_META` read the caller already made.
+    fn decide_units_with(
+        &self,
+        filter: &UnitFilter,
+        status: IndexStatus,
+        entries: u64,
+    ) -> Result<(IndexStatus, Decision), UnitError> {
         // The type range is only worth reading when the type index can answer.
         let type_probe = match (status.state, filter.unit_type.as_deref()) {
             (IndexState::Ready, Some(t)) => Some(match Key::type_range(t, filter.schema_version) {
@@ -303,9 +317,7 @@ impl<E: Engine> UnitSnapshot<E> {
     /// was the reference after the chosen one failed its check.
     pub fn query(&self, filter: &UnitFilter) -> Result<QueryOutcome, UnitError> {
         let started = self.observer.begin();
-        let outcome = self.decide_units(filter).and_then(|(status, decision)| {
-            self.execute_units(filter, status, decision.chosen().path, |via, f| self.scan_path(via, f))
-        });
+        let outcome = self.answer_units(filter);
         if let Some(started) = started {
             let ended = outcome
                 .as_ref()
@@ -314,6 +326,118 @@ impl<E: Engine> UnitSnapshot<E> {
             self.observer.finish(started, Observed::Units(filter), self.seq(), ended);
         }
         outcome
+    }
+
+    /// Steps 1 to 7 for units without learned state: what `query` was before
+    /// the result cache existed.
+    fn plan_units(&self, filter: &UnitFilter) -> Result<QueryOutcome, UnitError> {
+        self.decide_units(filter).and_then(|(status, decision)| {
+            self.execute_units(filter, status, decision.chosen().path, |via, f| self.scan_path(via, f))
+        })
+    }
+
+    /// `query` with the result cache as the first thing considered (E6-02).
+    ///
+    /// * Cache off (the default): [`plan_units`](Self::plan_units), after one
+    ///   atomic load.
+    /// * On: the entry for this very query is served only if every dependency
+    ///   it recorded matches the ones in force **now** (`Dependencies`, checked
+    ///   by the lookup on every use, G4) **and** its rows pass `check_units`
+    ///   like any planned path's (G5). A failed check drops the entry and the
+    ///   reference path answers (G2). Any other miss, or an invalidation, runs
+    ///   the planner and stores its answer under the dependencies of this
+    ///   snapshot.
+    ///
+    /// Nothing here reads an [`Observer`](crate::observation::Observer): what
+    /// was observed never decides whether an entry may be used (G3).
+    fn answer_units(&self, filter: &UnitFilter) -> Result<QueryOutcome, UnitError> {
+        if !self.cache.enabled() {
+            return self.plan_units(filter);
+        }
+        let query = CachedQuery::Units(filter.clone());
+        let Some(fingerprint) = self.cache.fingerprint_of(&query) else {
+            return self.plan_units(filter);
+        };
+        let (status, entries) = match self.index_stats() {
+            Ok(read) => read,
+            Err(_) => {
+                // A precondition of the lookup (a readable, consistent
+                // `IDX_META`) does not hold: the planned path runs and, being
+                // unable to read it too, returns the same error as without the
+                // cache.
+                self.cache.fallback(&fingerprint, CacheFallbackCause::PreconditionFailed);
+                return self.plan_units(filter);
+            }
+        };
+        let now = Dependencies::current(self.seq(), Some(status));
+        let mut discrepancy = None;
+        match self.cache.lookup(&fingerprint, &query, &now) {
+            Lookup::Hit(result) => {
+                let checked = match &*result {
+                    CachedResult::Units(units) => check_units(filter, units).map(|()| units),
+                    // Unreachable by construction (`CacheEntry::new`); not an answer all the same.
+                    CachedResult::Relations(_) => Err(Violation::NotMatching),
+                };
+                match checked {
+                    Ok(units) => {
+                        return Ok(QueryOutcome {
+                            units: units.clone(),
+                            source: QuerySource::Cache { index: status },
+                            path: PlanPath::ResultCache,
+                            fallback: None,
+                        });
+                    }
+                    Err(violation) => {
+                        self.cache.fallback(&fingerprint, CacheFallbackCause::Discrepancy);
+                        discrepancy = Some(Fallback {
+                            abandoned: PlanPath::ResultCache,
+                            cause: FallbackCause::Invalid(violation),
+                        });
+                    }
+                }
+            }
+            Lookup::Invalidated(_) => self.cache.fallback(&fingerprint, CacheFallbackCause::Invalidated),
+            Lookup::Disabled => self.cache.fallback(&fingerprint, CacheFallbackCause::Disabled),
+            // Already on the record, with the cause, as `Transition::Missed`.
+            Lookup::Miss | Lookup::Inactive => {}
+        }
+        let outcome = match discrepancy {
+            Some(fallback) => QueryOutcome {
+                units: self.reference_filter(filter)?,
+                source: QuerySource::Reference { index: status },
+                path: PlanPath::UnitsReference,
+                fallback: Some(fallback),
+            },
+            None => {
+                let (status, decision) = self.decide_units_with(filter, status, entries)?;
+                self.execute_units(filter, status, decision.chosen().path, |via, f| self.scan_path(via, f))?
+            }
+        };
+        self.store(fingerprint, query, now, CachedResult::Units(outcome.units.clone()));
+        Ok(outcome)
+    }
+
+    /// Stores an answer the planned or the reference path just gave, under
+    /// the dependencies of the snapshot it read. Failing to store (the cache
+    /// was switched off meanwhile, or the result is over the byte bound) never
+    /// fails the query: the cache is advisory.
+    fn store(
+        &self,
+        fingerprint: crate::fingerprint::Fingerprint,
+        query: CachedQuery,
+        now: Dependencies,
+        result: CachedResult,
+    ) {
+        // The execution that produced the answer is the evidence: one
+        // observation, no span. The observer is not consulted (G3).
+        let evidence = Evidence { observations: 1, window: Duration::ZERO };
+        if let Ok(entry) = CacheEntry::new(fingerprint, query, now, result, evidence)
+            && self.cache.create(entry).is_ok()
+        {
+            // Fails only if the cache was switched off since `create`; then
+            // there is nothing to activate.
+            let _ = self.cache.activate(&fingerprint);
+        }
     }
 
     /// Steps 5 to 7 for units. `scan` runs an index path; it is a parameter so
@@ -366,11 +490,7 @@ impl<E: Engine> UnitSnapshot<E> {
     /// (I-32).
     pub fn query_relations(&self, query: &RelationQuery) -> Result<RelationsOutcome, UnitError> {
         let started = self.observer.begin();
-        let outcome = self.decide_relations(query).and_then(|decision| {
-            self.execute_relations(query, decision.chosen().path, |q| {
-                self.relations_of(q.unit, q.direction, q.relation_type.as_deref())
-            })
-        });
+        let outcome = self.answer_relations(query);
         if let Some(started) = started {
             let ended = outcome
                 .as_ref()
@@ -379,6 +499,68 @@ impl<E: Engine> UnitSnapshot<E> {
             self.observer.finish(started, Observed::Relations(query), self.seq(), ended);
         }
         outcome
+    }
+
+    /// Steps 1 to 7 for relations without learned state.
+    fn plan_relations(&self, query: &RelationQuery) -> Result<RelationsOutcome, UnitError> {
+        self.decide_relations(query).and_then(|decision| {
+            self.execute_relations(query, decision.chosen().path, |q| {
+                self.relations_of(q.unit, q.direction, q.relation_type.as_deref())
+            })
+        })
+    }
+
+    /// `query_relations` with the result cache first; see
+    /// [`answer_units`](Self::answer_units). A relation query has no index, so
+    /// the dependencies carry none (I-23) and the checks are
+    /// `check_relations`.
+    fn answer_relations(&self, query: &RelationQuery) -> Result<RelationsOutcome, UnitError> {
+        if !self.cache.enabled() {
+            return self.plan_relations(query);
+        }
+        let cached_query = CachedQuery::Relations(query.clone());
+        let Some(fingerprint) = self.cache.fingerprint_of(&cached_query) else {
+            return self.plan_relations(query);
+        };
+        let now = Dependencies::current(self.seq(), None);
+        let mut discrepancy = None;
+        match self.cache.lookup(&fingerprint, &cached_query, &now) {
+            Lookup::Hit(result) => {
+                let checked = match &*result {
+                    CachedResult::Relations(relations) => check_relations(query, relations).map(|()| relations),
+                    CachedResult::Units(_) => Err(Violation::NotMatching),
+                };
+                match checked {
+                    Ok(relations) => {
+                        return Ok(RelationsOutcome {
+                            relations: relations.clone(),
+                            path: PlanPath::ResultCache,
+                            fallback: None,
+                        });
+                    }
+                    Err(violation) => {
+                        self.cache.fallback(&fingerprint, CacheFallbackCause::Discrepancy);
+                        discrepancy = Some(Fallback {
+                            abandoned: PlanPath::ResultCache,
+                            cause: FallbackCause::Invalid(violation),
+                        });
+                    }
+                }
+            }
+            Lookup::Invalidated(_) => self.cache.fallback(&fingerprint, CacheFallbackCause::Invalidated),
+            Lookup::Disabled => self.cache.fallback(&fingerprint, CacheFallbackCause::Disabled),
+            Lookup::Miss | Lookup::Inactive => {}
+        }
+        let outcome = match discrepancy {
+            Some(fallback) => RelationsOutcome {
+                relations: self.reference_relations_of(query.unit, query.direction, query.relation_type.as_deref())?,
+                path: PlanPath::RelationsReference,
+                fallback: Some(fallback),
+            },
+            None => self.plan_relations(query)?,
+        };
+        self.store(fingerprint, cached_query, now, CachedResult::Relations(outcome.relations.clone()));
+        Ok(outcome)
     }
 
     /// Steps 5 to 7 for relations; `adjacency` runs the index path.

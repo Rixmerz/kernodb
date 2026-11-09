@@ -53,10 +53,17 @@ pub enum PlanPath {
     RelationsReference,
     /// The adjacency range of the unit (`relations_of`).
     Adjacency,
+    /// A cached result (E6-02): learned state, not a path over the data. It is
+    /// the first thing `query` considers, before the candidates above, and it
+    /// is chosen by an exact match of every dependency, not by cost, so it is
+    /// not in [`candidates_of`](PlanPath::candidates_of) and a [`Plan`] never
+    /// lists it: the answer's `path` is what says it was used (G7).
+    ResultCache,
 }
 
 impl PlanPath {
-    /// The candidates of a kind of query, in tie-break order.
+    /// The candidates of a kind of query, in tie-break order. The
+    /// [`ResultCache`](PlanPath::ResultCache) is not one of them.
     pub fn candidates_of(kind: QueryKind) -> &'static [PlanPath] {
         match kind {
             QueryKind::Units => &[PlanPath::UnitsReference, PlanPath::IndexPrimary, PlanPath::IndexType],
