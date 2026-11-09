@@ -47,6 +47,33 @@ recorded with its `session_id` and a call id, and either one seen before is refu
 execution counts twice. The ledger keeps metadata and costs only: never a prompt, an output
 or any transcript content.
 
+## Phase 2: questions (drafts, pending human review)
+
+`questions.py` has Haiku draft 30 questions per document, with reference answers and evidence
+as verbatim quotes. Each quote is located by its exact words (any whitespace between them, for
+line-wrapped texts); a quote that is not found is counted, never repaired. Long documents are read
+in windows of at most 300 kB on block boundaries. `review_sheet.py` writes
+`results/questions/REVIEW.md` for the independent human review; nothing is frozen until it is done.
+
+Every model call is isolated: `--setting-sources ""` (no settings, plugins or hooks),
+`LOCKS_HOOKS_OFF=1`, no tools, no MCP, run in an empty temporary directory. Drafts q1 and q2 ran
+without that isolation: the person's locks hooks put project memory in front of the model, so they
+are archived under `draft/q1/` and `draft/q2/` and not used. q3 is the set under review.
+
+## Phase 3: extraction and the pipeline after the freeze
+
+| Step | File | Model / bucket |
+|---|---|---|
+| extraction (done, x2) | `extract.py`: block-range segments, relations with quotes located inside the cited segment, threads; the validator decides | Sonnet, `extraction` |
+| freeze (needs the human review) | `freeze.py`: REVIEW.md marks -> `results/questions/frozen/` with SHA-256, written once | none |
+| retrieval | `evaluate.py`: vector, expanded, threads under one 6000-byte budget, local embeddings (`BAAI/bge-small-en-v1.5`); refuses to run before the freeze | none |
+| answers | `answer.py`: answers only from the given passages, citing them; cited ids outside the context are recorded | Haiku, `queries` |
+| human evaluation | `eval_sheets.py`: `RELATIONS.md` (a 1-in-4 sample of accepted relations) and, with `--answers`, blind `ANSWERS.md` (A/B/C by hash, key in `KEY.json`) | none |
+
+Extraction x1 was too sparse (one thread on a 111-block paper) and is kept for audit; x2 asks
+for coverage and for every thread hop to be a relation, and was set without looking at any
+question. Moby Dick is read in five windows of up to 300 kB: no thread crosses a window.
+
 ## Reproduce
 
 ```bash

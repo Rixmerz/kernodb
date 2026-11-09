@@ -1,0 +1,717 @@
+{
+ "document": "f-kerno-adrs.txt",
+ "sha256": "b6c12d5c539eb674f9e1b357fafbd1e8ce57e7c4b250ee3c82445a4e389c1035",
+ "status": "draft: pending human review",
+ "prompt_version": "q2",
+ "alias": "haiku",
+ "windows": [
+  {
+   "index": 0,
+   "start": 0,
+   "end": 120496,
+   "asked": 30,
+   "call_id": "questions:q2:f-kerno-adrs.txt:w0",
+   "model_ids": [
+    "claude-haiku-5-5"
+   ],
+   "charged_usd": 0.03129348
+  }
+ ],
+ "questions": [
+  {
+   "id": "f01",
+   "window": 0,
+   "type": "trajectory",
+   "question": "¿Cómo influye el requisito de un modo de durabilidad relajada, planteado en el contexto de ADR-0001, en la decisión final del motor?",
+   "reference_answer": "El contexto de ADR-0001 dice que Kerno quiere un modo de durabilidad relajada sin perder consistencia, y que esto pesa en la elección. En la decisión, el B+ tree copy-on-write se descarta porque ofrecer esa garantía exige puntos de sincronización y reutilización diferida de páginas, mientras que en el LSM sale del propio diseño del WAL. El requisito inclina así la balanza hacia el LSM.",
+   "evidence": [
+    {
+     "start": 4310,
+     "end": 4426,
+     "quote": "Kerno quiere ofrecer un modo de durabilidad relajada sin comprometer la consistencia (ADR-0002), así que esto pesa."
+    },
+    {
+     "start": 4120,
+     "end": 4266,
+     "quote": "Ofrecer en un CoW la misma garantía requiere puntos de sincronización y reutilización diferida de páginas (diseño esbozado, no implementado)."
+    },
+    {
+     "start": 14958,
+     "end": 15170,
+     "quote": "escribe ~100× más bytes por commit pequeño, tiene peores colas en commits durables pequeños, lee peor con caché fría y no ofrece un modo de durabilidad relajada consistente sin trabajo adicional sustancial."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "f02",
+   "window": 0,
+   "type": "trajectory",
+   "question": "¿Cómo evoluciona el requisito de validar el motor en el hardware objetivo desde el seguimiento inicial de ADR-0001 hasta el estado registrado en la Fase 1?",
+   "reference_answer": "El seguimiento inicial exigía repetir los benchmarks de M0 en el hardware objetivo antes de cerrar la Fase 1. Más tarde, en el seguimiento de WP14, la medición de salida se hizo en la clase de VM de M0, no cumplió T1, y la repetición en el hardware objetivo seguía abierta. El requisito no se cerró, sino que quedó pendiente.",
+   "evidence": [
+    {
+     "start": 16965,
+     "end": 17058,
+     "quote": "Repetir los benchmarks de M0 en el hardware objetivo (riesgo R-S3) antes de cerrar la Fase 1."
+    },
+    {
+     "start": 17725,
+     "end": 17785,
+     "quote": "La repetición en el hardware objetivo (R-S3) sigue abierta."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "f03",
+   "window": 0,
+   "type": "contrast",
+   "question": "¿Por qué la correctitud no decide por sí sola entre el B+ tree y el LSM, si ambos pasan la misma batería de pruebas?",
+   "reference_answer": "Ambos prototipos pasan la misma batería compartida y ninguno devolvió datos erróneos ni retrocedió en silencio. Sin embargo, ambos tuvieron defectos reales corregidos, con sutilezas de protocolo en lugares distintos, así que la correctitud no desempata y la decisión se apoya en rendimiento, durabilidad y operación.",
+   "evidence": [
+    {
+     "start": 3043,
+     "end": 3110,
+     "quote": "Ninguno devolvió nunca datos erróneos ni retrocedió en silencio."
+    },
+    {
+     "start": 3538,
+     "end": 3776,
+     "quote": "**La correctitud no desempata**: ambas arquitecturas tienen protocolos con sutilezas, aunque en sitios distintos (invariantes de meta y páginas libres en el B+ tree; ciclo de vida de archivos y concurrencia con hilos de fondo en el LSM)."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "f04",
+   "window": 0,
+   "type": "trajectory",
+   "question": "¿Cómo cambia el diseño del historial de revisiones desde la propuesta del SAD hasta la decisión aceptada?",
+   "reference_answer": "El SAD proponía un híbrido de snapshot más delta con límite de profundidad. La decisión aceptada guarda una copia completa de la carga útil por revisión, sin deltas hasta que los benchmarks los justifiquen. El híbrido queda como evolución futura, sujeta a medición y a un ADR nuevo.",
+   "evidence": [
+    {
+     "start": 36782,
+     "end": 36930,
+     "quote": "Revision Engine separado del journal; `ChangeSet` opcional; snapshot + delta con límite de profundidad; restauración que crea una nueva revisión."
+    },
+    {
+     "start": 37765,
+     "end": 37865,
+     "quote": "cada revisión guarda su carga útil entera; no hay deltas hasta que los benchmarks los justifiquen."
+    },
+    {
+     "start": 38413,
+     "end": 38538,
+     "quote": "La opción 3 (híbrido con límite de profundidad) del SAD queda como evolución futura, sujeta a medición y a un ADR nuevo."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "f05",
+   "window": 0,
+   "type": "causal",
+   "question": "¿Por qué se postergaron los deltas en el historial de revisiones, si el diseño de M0 pedía al motor muy poco?",
+   "reference_answer": "El diseño de revisiones no exige nada del motor más allá de batches atómicos y scans por rango, así que el almacenamiento de versiones no obliga a elegir deltas. Como ningún benchmark ha justificado todavía el coste de reconstrucción de deltas, la decisión aceptada fija copia completa y deja el campo kind reservado para más adelante.",
+   "evidence": [
+    {
+     "start": 37316,
+     "end": 37404,
+     "quote": "El diseño no requiere nada del motor más allá de batches atómicos y scans por rango."
+    },
+    {
+     "start": 37765,
+     "end": 37865,
+     "quote": "cada revisión guarda su carga útil entera; no hay deltas hasta que los benchmarks los justifiquen."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "f06",
+   "window": 0,
+   "type": "evolution",
+   "question": "¿Cómo evoluciona la decisión sobre la consistencia del índice primario, desde su aceptación inicial hasta la decisión del propietario sobre el punto abierto?",
+   "reference_answer": "Inicialmente se aceptó que el índice primario fuera consistente con el commit y que los secundarios fueran derivados con estado y watermark. La implementación lo hizo derivado con frescura explícita, y el propietario aprobó esa implementación. Mantenerlo dentro de cada ChangeSet o reconstruirlo en segundo plano queda condicionado a un workload medido con escrituras intercaladas.",
+   "evidence": [
+    {
+     "start": 46624,
+     "end": 46832,
+     "quote": "Aceptada la opción recomendada: el índice primario es consistente con el commit; los índices secundarios son derivados asíncronos con estado (`ready`/`building`/`stale`/`failed`) y watermark de secuencia."
+    },
+    {
+     "start": 48392,
+     "end": 48469,
+     "quote": "Esta decisión dice que el índice primario es «consistente con el commit»."
+    },
+    {
+     "start": 48751,
+     "end": 48984,
+     "quote": "Si un workload medido lo justifica, el siguiente paso es mantenerlo dentro de cada `ChangeSet` (siempre `Ready`, con el coste de escritura que K-E3-9 ya señala) o reconstruirlo en segundo plano; el formato y el estado ya lo admiten."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "f07",
+   "window": 0,
+   "type": "contrast",
+   "question": "¿En qué se diferencian los índices de adyacencia de relaciones de los índices de unidades de ADR-0007?",
+   "reference_answer": "Los índices de unidades de ADR-0007 son derivados asíncronos con estado de frescura y watermark. Los índices de adyacencia de relaciones, en cambio, son transaccionales: se actualizan en el mismo ChangeSet que el registro, son primarios y no necesitan watermark.",
+   "evidence": [
+    {
+     "start": 50414,
+     "end": 50504,
+     "quote": "Los índices de adyacencia de relaciones no cambian: son transaccionales (ADR-0014, I-21)."
+    },
+    {
+     "start": 100320,
+     "end": 100494,
+     "quote": "Los índices de adyacencia son **primarios** (se actualizan en el mismo `ChangeSet`, ADR-0007), no secundarios con estado de frescura: E4-03 no necesita watermark para ellos."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "f08",
+   "window": 0,
+   "type": "evolution",
+   "question": "¿Cómo evoluciona la decisión sobre relaciones desde la nota de E4-00 hasta la aceptación de la opción 2?",
+   "reference_answer": "La nota de E4-00 mantenía el ADR como propuesto y fijaba la semántica de rechazo para archivar o borrar unidades con relaciones vivas, mientras la decisión final dependería del prototipo. La opción 2 de registro más índices transaccionales se aceptó el 2026-11-05 con la evidencia de E4-02.",
+   "evidence": [
+    {
+     "start": 101241,
+     "end": 101307,
+     "quote": "Sigue *Propuesto*. La decisión final sale del prototipo de E4-02."
+    },
+    {
+     "start": 101308,
+     "end": 101403,
+     "quote": "Semántica aprobada por el propietario para unidades archivadas o borradas con relaciones vivas"
+    },
+    {
+     "start": 97445,
+     "end": 97494,
+     "quote": "aceptada el 2026-11-05 con la evidencia de E4-02."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "f09",
+   "window": 0,
+   "type": "causal",
+   "question": "¿Por qué el rechazo de archivar o borrar unidades con relaciones vivas hace que la supresión física sea más sencilla y deja pendiente ADR-0009?",
+   "reference_answer": "Con el rechazo, nunca puede existir una relación apuntando a una unidad archivada o borrada, así que la supresión física no tiene relaciones colgantes que tratar. Por eso la política de supresión de ADR-0009 puede seguir pendiente mientras se mantenga ese rechazo; relajarlo a cascada o a relación colgante obligaría a resolverla.",
+   "evidence": [
+    {
+     "start": 99886,
+     "end": 100086,
+     "quote": "Con el rechazo de E4-02 no puede existir una relación hacia una unidad archivada o borrada, por lo que la supresión física no tiene relaciones colgantes que tratar mientras se mantenga ese rechazo."
+    },
+    {
+     "start": 44883,
+     "end": 44993,
+     "quote": "Pendiente. No debe codificarse ningún supuesto de este ADR de forma difícil de revertir hasta que se acepte."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "f10",
+   "window": 0,
+   "type": "causal",
+   "question": "¿Por qué la opción de unidad por relación escribe más que la opción de registro con índices de adyacencia?",
+   "reference_answer": "Cada relación como unidad hereda toda la maquinaria de una unidad: cabeza, REV_META, REV_PAYLOAD y pertenencia al ChangeSet. La opción de registro con índices escribe solo tres claves pequeñas por relación, por lo que el coste de escritura es menor.",
+   "evidence": [
+    {
+     "start": 92392,
+     "end": 92582,
+     "quote": "La opción 1 escribe *más* porque cada relación hereda la maquinaria de la unidad (cabeza, `REV_META`, `REV_PAYLOAD` y miembro del `ChangeSet`); la opción 2 escribe tres claves pequeñas."
+    },
+    {
+     "start": 86275,
+     "end": 86331,
+     "quote": "Vecinos por rango; coste: tres escrituras por relación."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "f11",
+   "window": 0,
+   "type": "trajectory",
+   "question": "¿Cómo se traslada el requisito de no guardar literales de las consultas desde el contexto de ADR-0015 hasta la prueba con centinelas?",
+   "reference_answer": "El contexto indica que la observabilidad puede filtrar literales y que la especificación exige no guardar valores sensibles por defecto. La decisión sustituye los literales por marcadores tipados antes de calcular la huella, y la prueba de centinelas comprueba que ningún valor aparece en las salidas de ningún nivel, incluido diagnostic.",
+   "evidence": [
+    {
+     "start": 102415,
+     "end": 102553,
+     "quote": "La especificación exige no guardar valores sensibles por defecto; el SAD §11.4 prohíbe registrar contenido completo, secretos y tokens."
+    },
+    {
+     "start": 104164,
+     "end": 104252,
+     "quote": "Ninguno aparece, tampoco en `diagnostic`: el texto de la forma lleva marcadores tipados."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "f12",
+   "window": 0,
+   "type": "evolution",
+   "question": "¿Cómo pasa ADR-0015 de propuesta a aceptada, y qué evidencia lo respalda?",
+   "reference_answer": "La propuesta de niveles de detalle con redacción por defecto tenía fecha de 2026-10-28. Fue aceptada el 2026-11-06 por decisión del propietario del 2026-11-05 y con la evidencia de E5-04, en particular la prueba de centinelas y la medición de coste.",
+   "evidence": [
+    {
+     "start": 66322,
+     "end": 66344,
+     "quote": "| Fecha | 2026-10-28 |"
+    },
+    {
+     "start": 105927,
+     "end": 106034,
+     "quote": "Opción 2, aceptada el 2026-11-06 con la evidencia de arriba, por decisión del propietario del 2026-11-05."
+    }
+   ],
+   "evidence_rejected": 1,
+   "unlocated_quotes": [
+    "Los literales se sustituyen por marcadores tipados antes de calcular la huella."
+   ],
+   "needs_review": false
+  },
+  {
+   "id": "f13",
+   "window": 0,
+   "type": "contrast",
+   "question": "¿Qué ocurre con el umbral de coste de la observabilidad al medirlo, y cómo se trata el incumplimiento?",
+   "reference_answer": "El umbral fijado antes de medir era de un 5 % sobre la p99 de la consulta observada. El nivel diagnostic en 20 000 unidades, ejecución 1, llegó a +5,9 %, por lo que se registró como riesgo sin bloquear la aceptación, dado que diagnostic solo se activa de forma explícita.",
+   "evidence": [
+    {
+     "start": 105319,
+     "end": 105392,
+     "quote": "Umbral fijado antes de medir: ≤ 5 % de la p99 de la consulta observada."
+    }
+   ],
+   "evidence_rejected": 1,
+   "unlocated_quotes": [
+    "`diagnostic` en 20 000 unidades, ejecución 1, queda en +5,9 % (+3,6 % en la ejecución 2). Se registra como riesgo y no bloquea (acta §8, punto 5)."
+   ],
+   "needs_review": false
+  },
+  {
+   "id": "f14",
+   "window": 0,
+   "type": "contrast",
+   "question": "¿En qué difiere la garantía G4 de ADR-0016 sobre cachés de resultados de la propuesta de decisión del mismo ADR?",
+   "reference_answer": "La propuesta de decisión permitía que una caché de resultados sirviera lecturas de otra secuencia si se probaba que los datos leídos no cambiaron. La garantía G4, fijada después por el propietario, elimina esa excepción y liga la caché a la secuencia de commit de su instantánea, hasta que un ADR posterior defina esa prueba.",
+   "evidence": [
+    {
+     "start": 112963,
+     "end": 113136,
+     "quote": "una caché de resultados además registra la secuencia de commit de la instantánea y no sirve lecturas de otra secuencia salvo prueba de que los datos leídos no cambiaron."
+    },
+    {
+     "start": 111089,
+     "end": 111213,
+     "quote": "se elimina la excepción «salvo prueba de que los datos leídos no cambiaron» hasta que un ADR posterior defina esa prueba"
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "f15",
+   "window": 0,
+   "type": "local",
+   "question": "¿Qué opción se propone para la adaptación operacional de ADR-0016?",
+   "reference_answer": "Se propone la opción 2: una única optimización reversible, como un plan reutilizable o una caché de resultados. La propuesta queda sujeta a las garantías G1 a G7 y pendiente de aprobación del propietario.",
+   "evidence": [
+    {
+     "start": 112519,
+     "end": 112615,
+     "quote": "Pendiente de aprobación del propietario. Propuesta: opción 2, sujeta a las garantías G1–G7."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "f16",
+   "window": 0,
+   "type": "contrast",
+   "question": "¿Qué papel tienen las observaciones de ejecución frente a la comprobación de validez de las rutas aprendidas en ADR-0016?",
+   "reference_answer": "Las observaciones solo proponen candidatos y estiman costes, nunca demuestran que una ruta sea válida. La validez se comprueba en cada uso: una ruta aprendida pasa por las mismas comprobaciones que la planificada, como lectura verificada, filtro, estado activo y orden.",
+   "evidence": [
+    {
+     "start": 110345,
+     "end": 110481,
+     "quote": "`ExecutionObservation` solo propone candidatos y estima costes; nunca demuestra que una ruta sea válida ni sustituye una comprobación."
+    },
+    {
+     "start": 111307,
+     "end": 111446,
+     "quote": "Una ruta aprendida pasa por las mismas comprobaciones que la planificada: lectura verificada, filtro, estado activo y orden (`check_units`)"
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "f17",
+   "window": 0,
+   "type": "trajectory",
+   "question": "¿Cómo se traducen los términos inspirados en el cerebro a conceptos técnicos del modelo, y qué queda excluido?",
+   "reference_answer": "La unidad neuronal se entiende como una Unit con identidad y ciclo de vida, no con estado dinámico propio. Las conexiones son Edge, la plasticidad son ajustes de estadísticas o prioridades y la consolidación son artefactos derivados. Quedan excluidos el olvido que borre contenido por baja frecuencia de acceso y las inferencias presentadas como declaradas.",
+   "evidence": [
+    {
+     "start": 115370,
+     "end": 115507,
+     "quote": "Rechazada en la propuesta: haría que las lecturas muten datos (spec §2) y mezclaría aprendizaje operacional con contenido (spec §10)."
+    },
+    {
+     "start": 116451,
+     "end": 116572,
+     "quote": "El «olvido» nunca borra contenido por baja frecuencia de acceso; solo políticas explícitas de retención (spec §10)."
+    },
+    {
+     "start": 116575,
+     "end": 116668,
+     "quote": "Toda «conexión» inferida guarda origen y confianza y no se presenta como declarada (I-39)."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "f18",
+   "window": 0,
+   "type": "trajectory",
+   "question": "¿Cómo se amplía el alcance de ADR-0007 y ADR-0011 hasta el contrato común de derivados de ADR-0018?",
+   "reference_answer": "ADR-0007 cubre la frescura de los índices y ADR-0011 los metadatos de embeddings, pero faltaba un contrato común para todos los derivados. ADR-0018 propone un registro común de descriptores con fuentes, versión, estado y reconstruibilidad, y lo aplicará primero a los índices de la Etapa 4 y a las optimizaciones de la Etapa 6.",
+   "evidence": [
+    {
+     "start": 117856,
+     "end": 118063,
+     "quote": "ADR-0007 cubre la frescura de índices y ADR-0011 los metadatos de embeddings; falta un contrato común para todos los derivados que diga cómo se versionan, cuándo quedan obsoletos y cómo se reconstruyen."
+    },
+    {
+     "start": 118276,
+     "end": 118551,
+     "quote": "todo derivado lleva un descriptor con fuentes (unidad y revisión exactas o rango de secuencia), método o modelo y versión, parámetros que afectan al resultado, fecha, hash de la entrada, estado (`ready`, `building`, `stale`, `failed`, `superseded`) y si es reconstruible."
+    },
+    {
+     "start": 120269,
+     "end": 120393,
+     "quote": "Aplicar el contrato a los índices de la Etapa 4 y a las optimizaciones de la Etapa 6 antes de los embeddings de la Etapa 8."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "f19",
+   "window": 0,
+   "type": "trajectory",
+   "question": "¿Cómo tratan ADR-0003 y ADR-0018 el cambio de versión de un derivado?",
+   "reference_answer": "ADR-0003 dice que cambiar la versión de un índice derivado no requiere migrar el formato físico: el índice se marca stale y se reconstruye desde la fuente. ADR-0018 propone, para un cambio de modelo o versión, crear derivados nuevos y marcar los anteriores como superseded, en lugar de reescribirlos.",
+   "evidence": [
+    {
+     "start": 31540,
+     "end": 31601,
+     "quote": "el índice se marca `stale` y se reconstruye desde la fuente."
+    },
+    {
+     "start": 119487,
+     "end": 119601,
+     "quote": "Un cambio de modelo o versión crea derivados nuevos (`superseded` para los anteriores) en lugar de reescribirlos."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "f20",
+   "window": 0,
+   "type": "trajectory",
+   "question": "¿Cómo evoluciona el estado de la congelación del formato entre ADR-0003 y ADR-0013?",
+   "reference_answer": "ADR-0003 fijaba que el formato concreto se congelaría al cerrar la Fase 1, y su seguimiento aún lo marcaba como pendiente. ADR-0013 registra la congelación del 2026-10-31: el bit DRAFT se retiró y los archivos escritos con él se rechazan como Incompatible.",
+   "evidence": [
+    {
+     "start": 27434,
+     "end": 27481,
+     "quote": "el formato concreto se congela al cerrar Fase 1"
+    },
+    {
+     "start": 35462,
+     "end": 35499,
+     "quote": "Estado de la congelación: pendiente."
+    },
+    {
+     "start": 83465,
+     "end": 83625,
+     "quote": "El bit `DRAFT` (punto 10) se retiró en la congelación del 2026-10-31; los archivos escritos con él se rechazan con `Incompatible(\"pre-freeze draft format\")`."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "f21",
+   "window": 0,
+   "type": "causal",
+   "question": "¿Por qué existe el bit DRAFT en el formato antes de la congelación?",
+   "reference_answer": "Hasta la congelación, todo archivo lleva el bit incompat 63. Sin esa marca, una base creada con el borrador podría abrirse después de la congelación y leerse mal con las reglas definitivas. Por eso, al congelar, las bases del borrador se rechazan explícitamente.",
+   "evidence": [
+    {
+     "start": 74202,
+     "end": 74285,
+     "quote": "Sin marca: una base del borrador podría abrirse tras la congelación y leerse mal."
+    },
+    {
+     "start": 73788,
+     "end": 73982,
+     "quote": "Hasta la congelación todo archivo lleva `incompat` bit 63; al congelar (WP14) el bit sale del conjunto conocido y una base del borrador se rechaza con `Incompatible(\"pre-freeze draft format\")`."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "f22",
+   "window": 0,
+   "type": "trajectory",
+   "question": "¿Cómo se resuelve la cuestión abierta sobre la cabecera del WAL entre la consecuencia descrita en ADR-0013 y su cierre en la revisión?",
+   "reference_answer": "La primera trama de cada WAL lleva synced_len 0 porque W-1 no sincronizaba la cabecera, lo que dejaba abierta la posibilidad de perder un commit confirmado si la cabecera se dañaba. La cuestión quedó como decisión del propietario, y en la revisión M1 se cerró: el escritor sincroniza la cabecera en W-1 y WAL-R6 rechaza cualquier trama válida bajo una cabecera rota.",
+   "evidence": [
+    {
+     "start": 80716,
+     "end": 80806,
+     "quote": "la primera trama de cada WAL lleva `synced_len = 0`, porque W-1 no sincroniza la cabecera."
+    },
+    {
+     "start": 81466,
+     "end": 81521,
+     "quote": "Queda como decisión del propietario (ver Seguimiento)."
+    },
+    {
+     "start": 81580,
+     "end": 81686,
+     "quote": "el escritor sincroniza la cabecera en W-1 y WAL-R6 rechaza cualquier trama válida bajo una cabecera rota."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "f23",
+   "window": 0,
+   "type": "contrast",
+   "question": "¿Por qué ante un bit ro_compat desconocido se abre la base en solo lectura, y no se rechaza ni se abre en lectura-escritura por archivo?",
+   "reference_answer": "Rechazar con Incompatible impediría leer datos que un lector v1 sí entiende. Abrir en lectura-escritura por archivo es peligroso porque una compactación reescribiría el archivo sin conservar lo que no se entiende. La solución adoptada es abrir la base entera en solo lectura.",
+   "evidence": [
+    {
+     "start": 73490,
+     "end": 73563,
+     "quote": "Rechazar con `Incompatible`: impide leer datos que un lector v1 entiende."
+    },
+    {
+     "start": 73569,
+     "end": 73701,
+     "quote": "Abrir en lectura-escritura por archivo: un escritor reescribiría ese archivo en una compactación sin conservar lo que no entiende."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "f24",
+   "window": 0,
+   "type": "trajectory",
+   "question": "¿Cómo pasa la API pública de la Etapa 3 desde el trait Engine del spike hasta la separación por crates aceptada?",
+   "reference_answer": "El trait Engine del spike era un contrato interno de comparación: no tenía transacciones read-modify-write, cursores, cancelación ni errores por categoría. Para la Etapa 3 se aceptó el crate kerno-units separado de kerno-storage, mientras que la fachada pública y la política de semver quedan para cuando exista una API estable.",
+   "evidence": [
+    {
+     "start": 56679,
+     "end": 56770,
+     "quote": "carece de transacciones read-modify-write, cursores, cancelación y errores por categoría."
+    },
+    {
+     "start": 57655,
+     "end": 57808,
+     "quote": "La fachada pública única (`kerno`, opción 1) y la política de semver se deciden cuando exista una API pública estable; esta aceptación no las fija."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "f25",
+   "window": 0,
+   "type": "trajectory",
+   "question": "¿Cómo cambia el criterio para fijar umbrales de rendimiento entre ADR-0012, ADR-0014 y ADR-0016?",
+   "reference_answer": "ADR-0012 indica que no se fijó ningún umbral de velocidad antes de medir y propone, con el baseline de M0, objetivos para la Fase 1. ADR-0014 fija sus criterios con antelación y no usa el modo --quick para elegir umbrales, y ADR-0016 exige que los umbrales se fijen antes de medir siguiendo ADR-0012.",
+   "evidence": [
+    {
+     "start": 64718,
+     "end": 64768,
+     "quote": "Con el baseline de M0 se proponen, para la Fase 1:"
+    },
+    {
+     "start": 86876,
+     "end": 86995,
+     "quote": "El banco se ejecutó antes en modo `--quick` solo para depurarlo; sus resultados no se usaron para elegir los umbrales."
+    },
+    {
+     "start": 108733,
+     "end": 108841,
+     "quote": "con umbrales fijados antes de medir (ADR-0012), incluyendo coste de mantenimiento, memoria y almacenamiento."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "f26",
+   "window": 0,
+   "type": "causal",
+   "question": "¿Por qué el codec por defecto de identificadores públicos es un token aleatorio con mapeo y no un token cifrado?",
+   "reference_answer": "El codec por defecto es el token aleatorio con mapeo porque no necesita claves que gestionar, rotar ni perder. El token cifrado queda como alternativa implementable cuando ADR-0006 defina el proveedor de claves y la rotación, que está pendiente, de modo que el camino por defecto no depende de material criptográfico.",
+   "evidence": [
+    {
+     "start": 39602,
+     "end": 39699,
+     "quote": "✔ No hay claves que gestionar, rotar o perder; un token filtrado no revela nada del ID interno."
+    },
+    {
+     "start": 42342,
+     "end": 42470,
+     "quote": "No hay material criptográfico en el camino crítico por defecto; ADR-0006 puede cerrarse después sin bloquear las fases 1–3."
+    }
+   ],
+   "evidence_rejected": 1,
+   "unlocated_quotes": [
+    "Opción 2 como codec alternativo, implementable cuando ADR-0006 defina proveedor de claves y rotación."
+   ],
+   "needs_review": false
+  },
+  {
+   "id": "f27",
+   "window": 0,
+   "type": "evolution",
+   "question": "¿Cómo evoluciona la adopción de BLAKE3 para el hash de contenido, desde la propuesta de ADR-0008 hasta su aceptación?",
+   "reference_answer": "La propuesta inicial usaba CRC-32C provisional, y añadir una dependencia criptográfica debía justificarse y entrar con la aceptación del ADR. Al aceptarse el 2026-10-31, BLAKE3-256 pasó a ser el hash de integridad de REV_PAYLOAD, con la dependencia blake3 incorporada en kerno-units en E3-02, mientras CRC-32C quedó provisional.",
+   "evidence": [
+    {
+     "start": 52671,
+     "end": 52826,
+     "quote": "Añadir la dependencia exige justificar que ni la biblioteca estándar ni el manifiesto actual la cubren, y entra con la aceptación de este ADR, no antes."
+    },
+    {
+     "start": 53281,
+     "end": 53465,
+     "quote": "Ni la biblioteca estándar ni el manifiesto tenían un hash criptográfico, y por eso la dependencia `blake3` (sin funciones por defecto, solo `std`) entró en `kerno-units` con E3-02."
+    },
+    {
+     "start": 53760,
+     "end": 53864,
+     "quote": "CRC-32C (`alg = 0`) sigue siendo provisional, sin garantía criptográfica, y no sustituye a BLAKE3-256."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "f28",
+   "window": 0,
+   "type": "local",
+   "question": "¿Qué le ocurre al handle de Kerno tras un fsync fallido?",
+   "reference_answer": "El handle queda envenenado y no se reintenta asumiendo que los datos llegaron al disco. La recuperación decide con lo que realmente está en disco.",
+   "evidence": [
+    {
+     "start": 21496,
+     "end": 21585,
+     "quote": "el handle queda envenenado y la recuperación decide con lo que realmente está en disco."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "f29",
+   "window": 0,
+   "type": "local",
+   "question": "¿Cuál es el nivel de observabilidad por defecto, y cómo se activa el nivel diagnostic?",
+   "reference_answer": "El nivel por defecto es off. El nivel diagnostic solo se activa de forma explícita.",
+   "evidence": [
+    {
+     "start": 106204,
+     "end": 106279,
+     "quote": "El nivel por defecto es `off`; `diagnostic` solo se activa explícitamente."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "f30",
+   "window": 0,
+   "type": "local",
+   "question": "¿Qué formato tienen los tokens por defecto de los identificadores públicos?",
+   "reference_answer": "El formato es k{versión}_ seguido de base32 de 128 bits aleatorios, con un prefijo de tipo opcional definido por la aplicación.",
+   "evidence": [
+    {
+     "start": 41581,
+     "end": 41704,
+     "quote": "con formato `k{versión}_{base32 de 128 bits aleatorios}` y, opcionalmente, un prefijo de tipo definido por la aplicación."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  }
+ ],
+ "rejected_quotes": 3,
+ "model_ids": [
+  "claude-haiku-5-5"
+ ]
+}

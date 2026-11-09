@@ -1,0 +1,384 @@
+{
+ "document": "d-gutenberg-2701.txt",
+ "sha256": "6e2084a6a9e597062bb3e22b1727dfc037c6bc4d23c4f61eae366bddc11accc3",
+ "status": "draft: pending human review",
+ "prompt_version": "q1",
+ "alias": "haiku",
+ "windows": [
+  {
+   "index": 0,
+   "start": 0,
+   "end": 299616,
+   "asked": 6,
+   "call_id": "questions:q1:d-gutenberg-2701.txt:w0",
+   "model_ids": [
+    "claude-haiku-5-5"
+   ],
+   "charged_usd": 0.13279105
+  },
+  {
+   "index": 1,
+   "start": 299618,
+   "end": 599050,
+   "asked": 6,
+   "call_id": "questions:q1:d-gutenberg-2701.txt:w1",
+   "model_ids": [
+    "claude-haiku-5-5"
+   ],
+   "charged_usd": 0.13244455
+  },
+  {
+   "index": 2,
+   "start": 599052,
+   "end": 898697,
+   "asked": 6,
+   "call_id": "questions:q1:d-gutenberg-2701.txt:w2",
+   "model_ids": [
+    "claude-haiku-5-5"
+   ],
+   "charged_usd": 0.14118605
+  },
+  {
+   "index": 3,
+   "start": 898699,
+   "end": 1197993,
+   "asked": 6,
+   "call_id": "questions:q1:d-gutenberg-2701.txt:w3",
+   "model_ids": [
+    "claude-haiku-5-5"
+   ],
+   "charged_usd": 0.13061655
+  },
+  {
+   "index": 4,
+   "start": 1197995,
+   "end": 1234329,
+   "asked": 6,
+   "call_id": "questions:q1:d-gutenberg-2701.txt:w4",
+   "model_ids": [
+    "claude-haiku-5-5"
+   ],
+   "charged_usd": 0.00609321
+  }
+ ],
+ "questions": [
+  {
+   "id": "d01",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does Ishmael's attitude toward Queequeg change from their first night together to their becoming bosom friends?",
+   "reference_answer": "Ishmael starts out suspicious of Queequeg, the 'dark complexioned' harpooneer, and plans to get into bed before him. After a shared pipe and conversation, Queequeg declares them married in his country's sense of bosom friends, and Ishmael has come to see him as a fellow man. The shift from fear to affection runs across the Spouter-Inn chapters and the chapter on the bosom friend.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "d02",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does Stubb's stance toward Captain Ahab move from defiance to advice to accept Ahab's insults?",
+   "reference_answer": "When Ahab kicks him with the ivory leg, Stubb refuses to be treated like a dog and says he will not tamely accept it. In the later dream account, however, he reports that a figure advised him to treat Ahab's kicks as honors and never to kick back. Flask is then told to leave the old man alone, so the second mate has moved from open resistance to deliberate submission.",
+   "evidence": [],
+   "evidence_rejected": 3,
+   "needs_review": true
+  },
+  {
+   "id": "d03",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does Ishmael's unease about Captain Ahab develop from the time he signs on until Ahab finally appears on deck?",
+   "reference_answer": "Before ever seeing Ahab, Ishmael feels sympathy and sorrow for him, mixed with a vague awe. Once at sea, he admits he has been trying not to think about the captain he has never met. When Ahab finally stands on the quarterdeck, Ishmael's unease has grown into foreboding. The change runs from curiosity and pity, through deliberate avoidance, to dread.",
+   "evidence": [],
+   "evidence_rejected": 3,
+   "needs_review": true
+  },
+  {
+   "id": "d04",
+   "window": 0,
+   "type": "causal",
+   "question": "Why is Ahab so moody and savage, according to the account given before the voyage, and what physical loss is linked to it?",
+   "reference_answer": "Peleg attributes Ahab's moodiness and savagery to losing his leg to a whale on the previous voyage. The later description of the ivory leg, fashioned from a sperm whale's jaw, shows that the injury is permanent and visible every day. The cause is set down in Chapter 16 and its effect is seen in Chapter 28, many pages apart.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "d05",
+   "window": 0,
+   "type": "evolution",
+   "question": "How does the price of Ishmael's lay change during the signing of the articles, and who proposes each figure?",
+   "reference_answer": "Ishmael expects to be offered about the 275th lay. Bildad proposes the 777th, which is far too small. Peleg raises the offer to the 300th, and Bildad protests that it would take bread from widows and orphans. Peleg finally settles on the 300th lay for Ishmael, so the figure moves from Ishmael's expectation through Bildad's low offer to the final compromise.",
+   "evidence": [],
+   "evidence_rejected": 4,
+   "needs_review": true
+  },
+  {
+   "id": "d06",
+   "window": 0,
+   "type": "contrast",
+   "question": "How does Captain Peleg's treatment of Queequeg's cannibalism differ between his first hail and his final signing of the papers?",
+   "reference_answer": "At first Peleg hails the pair and states that he lets no cannibals aboard unless they show their papers. Once Queequeg has shown his harpooning skill, Peleg waves the papers aside and invites him aboard, even though he is the same man who had refused. The contrast shows that Peleg's suspicion gives way to admiration for Queequeg's skill, not to any change in the facts about his background.",
+   "evidence": [
+    {
+     "start": 213098,
+     "end": 213154
+    }
+   ],
+   "evidence_rejected": 1,
+   "needs_review": false
+  },
+  {
+   "id": "d07",
+   "window": 1,
+   "type": "trajectory",
+   "question": "How does Ahab's relationship to the white whale change from the quarter-deck oath, where he blames the whale for his lost leg, to the later account of his monomania?",
+   "reference_answer": "In the quarter-deck scene Ahab blames Moby Dick directly for dismembering him and swears to chase the whale across every sea. Later, Ishmael explains that Ahab's grief over his leg hardened into a wild vindictiveness that made the whale the embodiment of all evil, so the revenge became a monomania rather than a grievance over one injury.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "d08",
+   "window": 1,
+   "type": "contrast",
+   "question": "How does the narrator's view of whether a whale is a fish contrast with Linnaeus's ruling on the matter?",
+   "reference_answer": "Linnaeus formally separated whales from fish, citing their warm hearts, lungs, and other traits. Ishmael rejects that ruling and deliberately takes the old view that the whale is a fish, backing it with the authority of Jonah. The contrast sets up his own unorthodox classification method.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "d09",
+   "window": 1,
+   "type": "causal",
+   "question": "Why do the harpooneers eat in the captain's cabin and dine as the captain's guests even though they are not officers in the usual sense?",
+   "reference_answer": "The harpooneers are treated as officers because the whale fishery gives them command in the boat and sometimes on deck. The sea's political maxim that officers live apart from the men before the mast therefore places them aft, where they take meals in the captain's cabin. Their dinner is then held after the mates', as the residuary legatees of the cabin feast.",
+   "evidence": [],
+   "evidence_rejected": 3,
+   "needs_review": true
+  },
+  {
+   "id": "d10",
+   "window": 1,
+   "type": "evolution",
+   "question": "How does Starbuck's stance toward Ahab's hunt change from his open protest at the quarter-deck to his later state of mind?",
+   "reference_answer": "At the quarter-deck Starbuck openly protests that he came to hunt whales, not to satisfy his captain's vengeance, though he says he will still fight the white whale. By the later Dusk chapter he has been bent to Ahab's will and describes his role as obeying while rebelling, hating the captain yet pitying him. His position moves from open objection to reluctant, divided submission.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "d11",
+   "window": 1,
+   "type": "trajectory",
+   "question": "How does the legend of Moby Dick grow from the rumors among whalemen to the Town-Ho's account of him?",
+   "reference_answer": "Early on, Ishmael describes rumors that spread among whalemen, which grow until whalemen declare Moby Dick ubiquitous and immortal, since immortality is ubiquity in time. In the Town-Ho story, the white whale is introduced by the same reputation, described as a famous and deadly immortal monster. The reputation survives and is confirmed across retellings.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "d12",
+   "window": 1,
+   "type": "local",
+   "question": "Which part of Ahab's body did Moby Dick take in the first encounter?",
+   "reference_answer": "Moby Dick bit off Ahab's leg with his sickle-shaped lower jaw during the encounter in which Ahab, armed with a knife, struck at the whale. The wound is the origin of Ahab's later obsession.",
+   "evidence": [],
+   "evidence_rejected": 1,
+   "needs_review": true
+  },
+  {
+   "id": "d13",
+   "window": 2,
+   "type": "trajectory",
+   "question": "How does the narrator's bond with Queequeg, first described as a dangerous tie during the monkey-rope episode, develop until Queequeg's rescue of Tashtego?",
+   "reference_answer": "In the monkey-rope chapter the narrator is tied to Queequeg by a line that makes them 'wedded' for better or worse, so that if Queequeg sinks the narrator would be dragged down with him. Many chapters later, when Tashtego falls into the head, the narrator reports that his 'brave Queequeg' dived to the rescue, so the bond has become one of loyalty and courage. The relationship moves from forced peril to proven devotion.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "d14",
+   "window": 2,
+   "type": "trajectory",
+   "question": "How does the narrator's claim about savagery change between the early chapters and the later remark on cannibalism?",
+   "reference_answer": "Early on the narrator says that long exile makes a whale-hunter a savage, and he calls himself one who owes allegiance only to the King of the Cannibals. Later, when discussing the eating of whale flesh, he widens the charge, asking who is not a cannibal and turning the accusation on civilized meat-eaters. The idea of savagery moves from a self-description of the whaleman to a general indictment of humankind.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "d15",
+   "window": 2,
+   "type": "trajectory",
+   "question": "How does the narrator's presentation of the Sperm Whale's head as an unreadable mystery develop from Ahab's address to the head to the narrator's own physiognomy chapter?",
+   "reference_answer": "When Ahab hangs the sperm whale's head from the ship, it looks to him like the Sphinx, and he begs it to speak and reveal its secret, but it stays silent. Chapters later the narrator turns the same image into a physiognomical puzzle, describing the brow as a firmament 'pleated with riddles' and inviting the reader to try reading it. The head moves from a mute oracle that Ahab questions to a text the narrator dares the reader to decipher.",
+   "evidence": [],
+   "evidence_rejected": 3,
+   "needs_review": true
+  },
+  {
+   "id": "d16",
+   "window": 2,
+   "type": "contrast",
+   "question": "How does the rule that a fast-fish belongs to the party fast to it stand against the Lord Warden's claim to the stranded whale?",
+   "reference_answer": "The narrator's first whaling law states that a fast-fish belongs to the party fast to it, which here means the mariners who harpooned and beached the whale. The Lord Warden's agent nonetheless seizes the whale as a royal prerogative, and when the mariners ask whether the Duke had any part in taking it, the answer is only that 'It is his.' The legal principle of possession by capture is overridden by a claim of status, which the narrator presents as a contrast to the fishermen's rule.",
+   "evidence": [
+    {
+     "start": 869803,
+     "end": 869850
+    },
+    {
+     "start": 879271,
+     "end": 879330
+    }
+   ],
+   "evidence_rejected": 1,
+   "needs_review": false
+  },
+  {
+   "id": "d17",
+   "window": 2,
+   "type": "causal",
+   "question": "Why does the Right Whale sink after death more often than the Sperm Whale, given how its bone is described earlier in the text?",
+   "reference_answer": "The Right Whale's head carries whalebone in the form of blinds, which the narrator describes as hanging in hundreds of slats from the crown bone. Much later, explaining why dead whales sink, he attributes the Right Whale's greater tendency to sink to the weight of this bone, with its blinds sometimes exceeding a ton. The Sperm Whale, having none of this incumbrance, is far less liable to sink. The earlier anatomical description supplies the cause of a later observed accident.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "d18",
+   "window": 2,
+   "type": "evolution",
+   "question": "How does Ahab's answer to whether he will hunt the White Whale develop into the route he plans through the Straits of Sunda?",
+   "reference_answer": "When the Jeroboam's captain asks whether Ahab intends to hunt the White Whale, Ahab simply answers 'Aye', fixing the goal. Later, approaching the Straits of Sunda, the narrator reports that Ahab plans a circumnavigating cruise past the known Sperm Whale grounds, reserving the Line in the Pacific as the place where he will give battle to Moby Dick. The bare declaration becomes a full itinerary built around that single purpose.",
+   "evidence": [],
+   "evidence_rejected": 3,
+   "needs_review": true
+  },
+  {
+   "id": "d19",
+   "window": 3,
+   "type": "trajectory",
+   "question": "How does Pip's state change from his first panic in the whale-boat to his later life aboard the Pequod, and what does Ahab do with him?",
+   "reference_answer": "Pip begins as a bright, joyful boy whose brightness is blurred by the panic of the whale-boat, and after being abandoned at sea he returns to the ship as an apparent idiot. Later Ahab adopts him into his own cabin, so Pip moves from the ship's outcast to a figure of intimacy and dependence. The text frames his madness as a kind of heavenly sense rather than simple loss.",
+   "evidence": [],
+   "evidence_rejected": 3,
+   "needs_review": true
+  },
+  {
+   "id": "d20",
+   "window": 3,
+   "type": "contrast",
+   "question": "Stubb orders Pip back into the sea and later his own crew abandons him, but how do the crew later judge Stubb's conduct toward Pip?",
+   "reference_answer": "In the chase Stubb justifies leaving Pip with a money argument, saying a whale is worth thirty times a boy like Pip. Much later, Pip recalls that Stubb deserted him, which shows the abandonment was remembered as betrayal rather than as the sensible economics Stubb claimed. The contrast is between Stubb's business-like reasoning in the moment and the lasting moral judgment it earns.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "d21",
+   "window": 3,
+   "type": "causal",
+   "question": "Why does Ahab refuse the captain of the Rachel, who begs him to help search for his lost son?",
+   "reference_answer": "Ahab refuses because his single purpose, the pursuit of the White Whale, has become a fixed force that overrides all human claims. Chapter 128 shows him dismissing the father's plea with the claim that he cannot spare the time. Chapter 130 later describes that same purpose as a constant gaze that dominates the crew, which explains why his personal and paternal feeling does not move him.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "d22",
+   "window": 3,
+   "type": "evolution",
+   "question": "How does the coffin prepared for Queequeg change its purpose from its first mention to its final use on the ship?",
+   "reference_answer": "The coffin begins as a funeral box that the carpenter makes from dark, heathenish planks at Queequeg's request. When Queequeg recovers, the coffin is kept as a sea-chest, and later Starbuck orders the carpenter to convert it into a life-buoy for the ship's stern. The proposal moves from burial to a sea-chest and finally to a practical flotation device.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "d23",
+   "window": 3,
+   "type": "trajectory",
+   "question": "How does the nailed doubloon change in meaning for Ahab and the crew from the early chapters to the moment of the first chase?",
+   "reference_answer": "At first the doubloon is a riveted gold coin nailed to the mainmast that the crew revere as the White Whale's talisman. Ahab later claims it as his reward for first sighting the whale, and in the chase he declares that Fate reserved it for him alone. Its meaning moves from a sacred emblem shared by the crew to a personal prize tied to Ahab's pursuit.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "d24",
+   "window": 3,
+   "type": "trajectory",
+   "question": "How does Ahab's trust in his navigation instruments change from the quadrant incident to the later log and line episode?",
+   "reference_answer": "Ahab first smashes his quadrant in anger, declaring that he will no longer steer by it and will rely on the compass and dead reckoning. After the thunder turns the compasses and the log line parts, he again blames the storm and the sea rather than his own choices. Across these episodes his distrust of the instruments grows, and he increasingly treats all navigation as subject to his own will.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "d25",
+   "window": 4,
+   "type": "trajectory",
+   "question": "How does the Parsee's prophecy about Ahab's death change between the first day and the final encounter with the whale?",
+   "reference_answer": "Ahab treats the Parsee's warnings with contempt at first, but after the Parsee vanishes he wonders how the prophecy can hold, since the Parsee was to go before him and yet be seen again. When the Parsee's body appears lashed to the whale, Ahab accepts that the prophecy has come true and tries to hold the Parsee to the rest of his word. The prophecy has moved from something Ahab dismisses to something he reads as the hearse he has been promised.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "d26",
+   "window": 4,
+   "type": "contrast",
+   "question": "Ahab tells the crew to disregard omens, but how does his private attitude toward omens differ from what he says to them?",
+   "reference_answer": "Publicly Ahab tells the men to laugh at omens and cry encore, claiming that drowning things rise twice before they sink. Privately he admits that he had said the same to Starbuck about his broken boat and is trying to drive out of others' hearts a belief that is fixed in his own. The contrast shows that his bravado covers a fear he cannot shake.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "d27",
+   "window": 4,
+   "type": "causal",
+   "question": "Why does Ahab die the way he does, given what he said earlier about what could kill him?",
+   "reference_answer": "Earlier, as the sharks gather around the boat, Ahab declares that hemp alone can kill him and that no coffin or hearse can be his. He later stoops to clear the line that is running out and is caught round the neck, which is the rope he had named. His death is caused by the line he remained tied to in his pursuit, so his own words prophesy the manner of his end.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "d28",
+   "window": 4,
+   "type": "evolution",
+   "question": "How does Starbuck's objection to the chase change from the second day to the third day?",
+   "reference_answer": "On the second day Starbuck argues that they should not keep chasing the whale because it will swamp the last man, calling the pursuit impiety. On the third day he changes the frame of his plea: he tells Ahab it is not too late to desist and that the whale does not seek Ahab, but Ahab is the one who seeks the whale. The proposal moves from a warning about the danger to the crew to an accusation that Ahab is the one driving the chase.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "d29",
+   "window": 4,
+   "type": "trajectory",
+   "question": "How does the idea that the pursuit will end on a third day develop across the chapters?",
+   "reference_answer": "Ahab first says that two days have passed and the third will come tomorrow, and that the whale will rise once more only to spout his last. Starbuck later develops this into a reading of three days in a single pursuit as morning, noon and evening, with the third day being the end. The third-day count moves from Ahab's assertion of a prophecy to Starbuck's sense of the chase's finish.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  },
+  {
+   "id": "d30",
+   "window": 4,
+   "type": "trajectory",
+   "question": "How does Ahab's relationship with his ivory leg develop from its loss in the first day's fight to its replacement by the carpenter that night?",
+   "reference_answer": "When the boat is smashed, Ahab's ivory leg is snapped off, leaving only a short splinter, and he has to lean on Starbuck. The carpenter tells him he put good work into the leg, and Ahab later says he has lost a leg but his ship is still sound. That night the carpenter makes him a new leg from the broken keel of his wrecked craft, so the dead wood of the ship replaces the bone he lost.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "needs_review": true
+  }
+ ],
+ "rejected_quotes": 65,
+ "model_ids": [
+  "claude-haiku-5-5"
+ ]
+}

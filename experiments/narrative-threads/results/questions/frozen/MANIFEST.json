@@ -1,0 +1,29 @@
+{
+ "frozen_at": "2026-11-09T08:03:23.360059+00:00",
+ "files": {
+  "a-kerno-SAD.json": {
+   "sha256": "f2425519285f024a6d25a892c95e1d034e30aca4dba8cf39a0433d7d9d9fc157",
+   "questions": 29
+  },
+  "b-arxiv-2609.00063v1.json": {
+   "sha256": "ff44ceaa2925ad7e5610086dc80c6c0ea9b0e8c050315038bd8aa4324da52d69",
+   "questions": 30
+  },
+  "c-gutenberg-244.json": {
+   "sha256": "019c8c87eeff37eed3b6d065760f89c9c54096b6b00184688a11b731911bb5b1",
+   "questions": 26
+  },
+  "d-gutenberg-2701.json": {
+   "sha256": "b7e906796f67caa1b8ca9879ef43e2f5d9bac3d1d3560bd16975117a2a02c1a4",
+   "questions": 28
+  },
+  "e-arxiv-2606.05658v1.json": {
+   "sha256": "876ee71a291742316b724ce7d7a1cfcc8a282cc42ffad19dcc4f65f8a4954aea",
+   "questions": 29
+  },
+  "f-kerno-adrs.json": {
+   "sha256": "858edb168c5bbf4f45ea54cb7cceb571df825182ebe6bbf0b50ba8d69d02b0ae",
+   "questions": 30
+  }
+ }
+}

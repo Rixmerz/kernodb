@@ -1,0 +1,280 @@
+{
+ "reviewer": [
+  "claude-opus-5-5"
+ ],
+ "sampled": 54,
+ "judged": 54,
+ "justifiable": 39,
+ "verdicts": [
+  {
+   "index": 0,
+   "justifiable": true,
+   "reason": "s4 says each open topic will be settled in an ADR, and s15 lists those ADRs."
+  },
+  {
+   "index": 1,
+   "justifiable": false,
+   "reason": "The plan item is not resolved. The quote describes a different, index-free implementation."
+  },
+  {
+   "index": 2,
+   "justifiable": true,
+   "reason": "The pending state and watermark for derived indexes are expanded into explicit status values."
+  },
+  {
+   "index": 3,
+   "justifiable": false,
+   "reason": "The two quotes restate the same claim. The intro does not develop it further."
+  },
+  {
+   "index": 4,
+   "justifiable": false,
+   "reason": "The annotation count and the table caption only share a topic."
+  },
+  {
+   "index": 5,
+   "justifiable": true,
+   "reason": "The conclusion builds on the RQ1 finding that the models fail to reject false hypotheses."
+  },
+  {
+   "index": 6,
+   "justifiable": true,
+   "reason": "Holmes later explains how he knew about Afghanistan, which settles the earlier unexplained deduction."
+  },
+  {
+   "index": 7,
+   "justifiable": true,
+   "reason": "The ring's origin is explained by Hope's confession."
+  },
+  {
+   "index": 8,
+   "justifiable": true,
+   "reason": "The plan to bait with the ring is carried out in the advertisement."
+  },
+  {
+   "index": 9,
+   "justifiable": true,
+   "reason": "The arrest introduced in s18 is elaborated in s27."
+  },
+  {
+   "index": 10,
+   "justifiable": false,
+   "reason": "A bare name on a grave does not show a link to Hope's promise to Lucy."
+  },
+  {
+   "index": 11,
+   "justifiable": true,
+   "reason": "The vow of revenge develops into years of pursuit."
+  },
+  {
+   "index": 12,
+   "justifiable": true,
+   "reason": "Watson's wound sets up Holmes's Afghanistan deduction."
+  },
+  {
+   "index": 13,
+   "justifiable": true,
+   "reason": "The white-whale phantom foreshadows Ahab's call to look out for the white whale."
+  },
+  {
+   "index": 14,
+   "justifiable": true,
+   "reason": "The plan to ship together continues into their close companionship."
+  },
+  {
+   "index": 15,
+   "justifiable": true,
+   "reason": "Peleg expands on the Ahab he introduced earlier."
+  },
+  {
+   "index": 16,
+   "justifiable": true,
+   "reason": "Ahab, unseen until then, finally appears on deck."
+  },
+  {
+   "index": 17,
+   "justifiable": true,
+   "reason": "Ahab's appearance on deck continues into his exchange with Stubb."
+  },
+  {
+   "index": 18,
+   "justifiable": true,
+   "reason": "Setting out to board the Pequod leads into Queequeg signing on."
+  },
+  {
+   "index": 19,
+   "justifiable": true,
+   "reason": "Book II continues the classification system laid out in Book I."
+  },
+  {
+   "index": 20,
+   "justifiable": false,
+   "reason": "This is a pun on 'mask'. Ahab masking himself and striking through the whale's mask are different ideas."
+  },
+  {
+   "index": 21,
+   "justifiable": true,
+   "reason": "The history of Moby Dick explains the dismasting Ahab refers to."
+  },
+  {
+   "index": 22,
+   "justifiable": true,
+   "reason": "The Affidavit explicitly refers back to and builds on the previous chapter."
+  },
+  {
+   "index": 23,
+   "justifiable": false,
+   "reason": "A whale sighting does not resolve Ahab's reasons for keeping up ordinary whaling."
+  },
+  {
+   "index": 24,
+   "justifiable": true,
+   "reason": "The later section explains how the stowaway crew came to be."
+  },
+  {
+   "index": 25,
+   "justifiable": true,
+   "reason": "The pump incident elaborates the Radney–Steelkilt conflict that was introduced earlier."
+  },
+  {
+   "index": 26,
+   "justifiable": false,
+   "reason": "The two sections only share the theme of authorities being wrong about whales."
+  },
+  {
+   "index": 27,
+   "justifiable": true,
+   "reason": "The narrative explicitly picks up again after Stubb's supper."
+  },
+  {
+   "index": 28,
+   "justifiable": true,
+   "reason": "The text explicitly returns to the sperm whale's head hanging at the ship's side."
+  },
+  {
+   "index": 29,
+   "justifiable": false,
+   "reason": "Both deal with the head, but the shared topic is the only link."
+  },
+  {
+   "index": 30,
+   "justifiable": true,
+   "reason": "The explanation of ambergris accounts for Stubb's ruse."
+  },
+  {
+   "index": 31,
+   "justifiable": false,
+   "reason": "The sections follow one another in sequence, but the quote shows no link to the squid."
+  },
+  {
+   "index": 32,
+   "justifiable": true,
+   "reason": "The foreshadowed 'wild fires' come true in Pip's madness."
+  },
+  {
+   "index": 33,
+   "justifiable": true,
+   "reason": "The story returns to the Ahab–Pip bond established earlier."
+  },
+  {
+   "index": 34,
+   "justifiable": false,
+   "reason": "The two passages take opposing views of fire, which is a contrast, not development, and the stated direction is wrong."
+  },
+  {
+   "index": 35,
+   "justifiable": true,
+   "reason": "The warning to leave the whale alone foreshadows the boat being bitten in two."
+  },
+  {
+   "index": 36,
+   "justifiable": true,
+   "reason": "The measurements expand on the Tranque skeleton."
+  },
+  {
+   "index": 37,
+   "justifiable": true,
+   "reason": "The order for a new leg is followed up as the carpenter makes it."
+  },
+  {
+   "index": 38,
+   "justifiable": true,
+   "reason": "The taunt refers to the coffin that had become the life-buoy."
+  },
+  {
+   "index": 39,
+   "justifiable": false,
+   "reason": "The hemp prophecy is not fulfilled on the first day of the chase."
+  },
+  {
+   "index": 40,
+   "justifiable": true,
+   "reason": "Ahab's claim to the doubloon calls back to the doubloon episode."
+  },
+  {
+   "index": 41,
+   "justifiable": true,
+   "reason": "The 'second hearse' prophecy is fulfilled when the ship sinks."
+  },
+  {
+   "index": 42,
+   "justifiable": true,
+   "reason": "The coffin rising from the sea answers the image of all coffins sinking."
+  },
+  {
+   "index": 43,
+   "justifiable": false,
+   "reason": "Two similar self-assertions by Ahab do not show development."
+  },
+  {
+   "index": 44,
+   "justifiable": true,
+   "reason": "The sinking leads into the epilogue."
+  },
+  {
+   "index": 45,
+   "justifiable": false,
+   "reason": "The quotes about lowering the boats do not connect to the handshake."
+  },
+  {
+   "index": 46,
+   "justifiable": true,
+   "reason": "The contributions section explicitly addresses the gap stated in the intro."
+  },
+  {
+   "index": 47,
+   "justifiable": true,
+   "reason": "The reflection results rely on the evaluator mechanism described earlier."
+  },
+  {
+   "index": 48,
+   "justifiable": false,
+   "reason": "Future work proposes improvements and does not resolve anything."
+  },
+  {
+   "index": 49,
+   "justifiable": false,
+   "reason": "Wide confidence intervals and collapsing metrics do not contradict each other."
+  },
+  {
+   "index": 50,
+   "justifiable": true,
+   "reason": "The benchmark results support the decision to adopt an LSM."
+  },
+  {
+   "index": 51,
+   "justifiable": true,
+   "reason": "The decision criteria explicitly rely on the method in ADR-0012."
+  },
+  {
+   "index": 52,
+   "justifiable": true,
+   "reason": "ADR-0004 is explicitly stated to depend on ADR-0008."
+  },
+  {
+   "index": 53,
+   "justifiable": true,
+   "reason": "ADR-0016 follows the privacy rules set in ADR-0015."
+  }
+ ]
+}

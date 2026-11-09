@@ -1,0 +1,576 @@
+{
+ "document": "b-arxiv-2609.00063v1.txt",
+ "sha256": "463a3f35b466c7f95b90cb0a42c30547e4eb8281fe4fa4ccc66c43476a3209dc",
+ "status": "draft: pending human review",
+ "prompt_version": "q1",
+ "alias": "haiku",
+ "windows": [
+  {
+   "index": 0,
+   "start": 0,
+   "end": 27778,
+   "asked": 30,
+   "call_id": "questions:q1:b-arxiv-2609.00063v1.txt:w0",
+   "model_ids": [
+    "claude-haiku-5-5"
+   ],
+   "charged_usd": 0.0260007
+  }
+ ],
+ "questions": [
+  {
+   "id": "b01",
+   "window": 0,
+   "type": "local",
+   "question": "Which eight LLMs are evaluated in the study?",
+   "reference_answer": "Mistral, Deepseek-R1, Deepseek-V3, Gemini Flash, Gemini Pro, Qwen, GPT-4o, and Llama-4-Maverick. The models were chosen mainly for API access and free-tier limits, and GPT-4o is the one exception, with responses collected manually.",
+   "evidence": [
+    {
+     "start": 9896,
+     "end": 10056
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "b02",
+   "window": 0,
+   "type": "local",
+   "question": "How many annotation points does the final annotated dataset contain?",
+   "reference_answer": "The final dataset contains 1,067 annotation points. They cover whether each provided paper is real and, for real papers, five further criteria.",
+   "evidence": [
+    {
+     "start": 12926,
+     "end": 13078
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "b03",
+   "window": 0,
+   "type": "local",
+   "question": "Who validated the ground truth for the 17 causal hypotheses?",
+   "reference_answer": "Four expert clinicians validated the hypotheses, which gives the study ground truth for their validity.",
+   "evidence": [
+    {
+     "start": 8006,
+     "end": 8118
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "b04",
+   "window": 0,
+   "type": "local",
+   "question": "How many scientific articles does the prompt ask each LLM to provide when it finds a hypothesis supported?",
+   "reference_answer": "Up to three scientific articles. The prompt asks for these only when the hypothesis is supported.",
+   "evidence": [
+    {
+     "start": 4439,
+     "end": 4644
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "b05",
+   "window": 0,
+   "type": "local",
+   "question": "How many of the 17 hypotheses are supported, and why does the authors' mix of claims matter?",
+   "reference_answer": "11 of the 17 hypotheses are supported, so the set mixes supported and unsupported claims. The authors say this keeps the evaluation meaningful and lets it test whether an LLM can reject false claims.",
+   "evidence": [
+    {
+     "start": 8323,
+     "end": 8561
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "b06",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the paper's verdict on LLM trustworthiness shift from the abstract to the conclusion?",
+   "reference_answer": "The abstract says LLMs cannot yet be trusted fully to verify causal relationships from the biomedical literature. The conclusion turns this into a practical rule: LLMs should be used with caution and should not be relied on as autonomous tools for evidence-based biomedical reasoning.",
+   "evidence": [
+    {
+     "start": 2088,
+     "end": 2250
+    },
+    {
+     "start": 25482,
+     "end": 25691
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "b07",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the abstract's finding about recall and rejection carry into the RQ1 classification results?",
+   "reference_answer": "The abstract reports strong recall but poor rejection of unsupported hypotheses. The RQ1 results match this, with specificity between 0.17 and 0.50, which means many false causal hypotheses are accepted.",
+   "evidence": [
+    {
+     "start": 1899,
+     "end": 2087
+    },
+    {
+     "start": 14754,
+     "end": 14932
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "b08",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the concern about hallucination raised in the methods section reappear in the conclusion?",
+   "reference_answer": "Section 2 says returning real articles, valid DOIs, abstracts and quotes shows whether an LLM grounds its reasoning or hallucinates. The conclusion reports that LLMs struggle to reference real, traceable evidence and often produce hallucinated citations.",
+   "evidence": [
+    {
+     "start": 9618,
+     "end": 9851
+    },
+    {
+     "start": 25073,
+     "end": 25325
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "b09",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the introduction's account of the research gap connect to the abstract's framing of the open question?",
+   "reference_answer": "The introduction says prior work has not studied LLM retrieval for substantiating causal claims. The abstract then frames the open question as whether LLMs can ground causal conclusions in verified scientific evidence.",
+   "evidence": [
+    {
+     "start": 3797,
+     "end": 3938
+    },
+    {
+     "start": 992,
+     "end": 1214
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "b10",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How is the high-stakes framing in the abstract developed in the introduction?",
+   "reference_answer": "The abstract names healthcare as a high-stakes domain where LLM reliability needs evaluation. The introduction extends this to medical and legal settings and calls for caution and careful assessment of the pitfalls of relying on these models.",
+   "evidence": [
+    {
+     "start": 813,
+     "end": 991
+    },
+    {
+     "start": 3038,
+     "end": 3241
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "b11",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does ground truth from clinicians relate to the accuracy range reported for the models?",
+   "reference_answer": "Each model's conclusion is judged correct or incorrect by comparing it with the clinician-derived ground truth. The resulting accuracy of the LLMs ranges from 0.53 to 0.82, which the authors describe as moderate overall performance.",
+   "evidence": [
+    {
+     "start": 11099,
+     "end": 11332
+    },
+    {
+     "start": 14200,
+     "end": 14391
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "b12",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the paper link the search reasoning of each LLM to the quality of its evidence?",
+   "reference_answer": "The search-process section says DeepSeek-R1, ChatGPT and Gemini Pro show more sophisticated reasoning, while Mistral, Qwen and DeepSeek-V3 rely on surface keyword searches. The RQ2 results match this: DeepSeek-R1 and Gemini Pro give the most real papers and correct URLs, while Qwen and Mistral give few or none.",
+   "evidence": [
+    {
+     "start": 19876,
+     "end": 20106
+    },
+    {
+     "start": 17732,
+     "end": 17955
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "b13",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the evaluation move from judging the hypothesis to judging the evidence?",
+   "reference_answer": "Section 2 notes that a model can label a hypothesis as true while hallucinating article details, so the authors judge the evidence separately. RQ2 then checks whether the hypotheses classified as true are backed by scientific sources.",
+   "evidence": [
+    {
+     "start": 12239,
+     "end": 12443
+    },
+    {
+     "start": 16078,
+     "end": 16181
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "b14",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the number of references the LLMs produce relate to how many of them are reliable?",
+   "reference_answer": "The prompt asks for up to three articles per supported hypothesis. The models produce roughly 42 to 48 papers and URLs each, but the share of valid evidence varies widely, so the number of references does not guarantee reliable support.",
+   "evidence": [
+    {
+     "start": 4439,
+     "end": 4644
+    },
+    {
+     "start": 17956,
+     "end": 18237
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "b15",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does Llama-4-Maverick's standing change across the paper?",
+   "reference_answer": "Llama-4-Maverick leads the classification results, with the highest F1 (0.88), specificity (0.50) and correct conclusions (0.82). It is the only model with a real abstract, at 17% accuracy, and it still lags in the evidence results.",
+   "evidence": [
+    {
+     "start": 22955,
+     "end": 23067
+    },
+    {
+     "start": 16855,
+     "end": 16993
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "b16",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does Gemini Pro's account of its own retrieval relate to its evidence results?",
+   "reference_answer": "Gemini Pro says it can provide titles, DOI links and summaries of scientific literature from the web. Its evidence results are strong: it achieves the highest share of real papers (0.58) and correct URLs (0.44).",
+   "evidence": [
+    {
+     "start": 24046,
+     "end": 24152
+    },
+    {
+     "start": 22630,
+     "end": 22891
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "b17",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does Mistral's described search method relate to its evidence results?",
+   "reference_answer": "Mistral describes keyword searches across PubMed, Web of Science and Google Scholar, but mainly gives illustrative examples without causal analysis. Its evidence is the weakest, with 0% correct URLs.",
+   "evidence": [
+    {
+     "start": 22012,
+     "end": 22197
+    },
+    {
+     "start": 16541,
+     "end": 16648
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "b18",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How do the six annotation criteria in the abstract correspond to the annotation scheme described in Section 2?",
+   "reference_answer": "The abstract says evidence is annotated on six criteria, for 1,067 points in total. Section 2 explains that the first check is whether a paper is real, followed by five criteria for each real paper, which makes six.",
+   "evidence": [
+    {
+     "start": 1726,
+     "end": 1898
+    },
+    {
+     "start": 12926,
+     "end": 13078
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "b19",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How is the association check defined in the annotation step, and what do the results show about associations?",
+   "reference_answer": "Annotators check whether non-supporting papers report only an association rather than a direct causal relationship. The results show that association counts are low across all models (0–3), so only a small part of the evidence reports associations.",
+   "evidence": [
+    {
+     "start": 11992,
+     "end": 12158
+    },
+    {
+     "start": 18727,
+     "end": 19015
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "b20",
+   "window": 0,
+   "type": "contrast",
+   "question": "Do retrieval-using models consistently outperform models that rely on internal knowledge, and what is the exception?",
+   "reference_answer": "Models that retrieve external documents generally give better evidence, with more real papers, valid URLs and accurate quotes. The authors then note that retrieval does not guarantee the best performance, since Llama-4-Maverick has the top F1 and conclusion accuracy while emphasizing internal reasoning.",
+   "evidence": [
+    {
+     "start": 24153,
+     "end": 24374
+    },
+    {
+     "start": 24375,
+     "end": 24617
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "b21",
+   "window": 0,
+   "type": "contrast",
+   "question": "GPT-4o is described as a retrieval model, yet how does its conclusion accuracy compare with its quote accuracy?",
+   "reference_answer": "GPT-4o is weak at classifying hypotheses, with recall of 0.54 and the fewest correct conclusions (9 of 17). Yet it is the best at producing real quotes, with 41% accuracy, far above the other models.",
+   "evidence": [
+    {
+     "start": 14653,
+     "end": 14753
+    },
+    {
+     "start": 16994,
+     "end": 17146
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "b22",
+   "window": 0,
+   "type": "contrast",
+   "question": "Does DeepSeek-R1's description of its own search method agree with its statement about retrieving external documents?",
+   "reference_answer": "DeepSeek-R1 describes a MeSH-term and keyword search that checks for causal relations. Yet it also says it does not retrieve external documents or search the web, so its responses come from internal knowledge.",
+   "evidence": [
+    {
+     "start": 20226,
+     "end": 20388
+    },
+    {
+     "start": 23511,
+     "end": 23689
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "b23",
+   "window": 0,
+   "type": "contrast",
+   "question": "Do the two Gemini models behave alike in their retrieval claims and in their evidence results?",
+   "reference_answer": "Both Gemini models say they can retrieve web information, but Gemini Flash says it does not do so for this prompt, while Gemini Pro says it can provide titles, DOI links and summaries. Gemini Pro then produces far more real papers (28) and correct URLs (21) than most models, so the two models differ in evidence quality too.",
+   "evidence": [
+    {
+     "start": 23899,
+     "end": 24152
+    },
+    {
+     "start": 17732,
+     "end": 17955
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "b24",
+   "window": 0,
+   "type": "contrast",
+   "question": "Does a larger model size reliably predict better conclusions in the results?",
+   "reference_answer": "The authors say larger models generally perform better. But GPT-4o, the largest model at 1.7T parameters, has the fewest correct conclusions, while Llama-4-Maverick at 400B total parameters has the most.",
+   "evidence": [
+    {
+     "start": 22575,
+     "end": 22629
+    },
+    {
+     "start": 22892,
+     "end": 23067
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "b25",
+   "window": 0,
+   "type": "causal",
+   "question": "Why do Mistral and Qwen perform poorly on specificity and on real papers?",
+   "reference_answer": "The authors say Mistral and Qwen are the smallest models, around 12B and 30B parameters, and that their size likely explains their low specificity and low share of real papers. They also do not retrieve external documents, so their answers rely on internal knowledge.",
+   "evidence": [
+    {
+     "start": 22374,
+     "end": 22574
+    },
+    {
+     "start": 23511,
+     "end": 23689
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "b26",
+   "window": 0,
+   "type": "causal",
+   "question": "Why do LLMs often fail to supply correct sources even when they do provide papers?",
+   "reference_answer": "The authors attribute this to hallucinated citations or to an inability to extract source information accurately from real papers. The same hallucination problem is later cited as a main limitation in the conclusion.",
+   "evidence": [
+    {
+     "start": 9618,
+     "end": 9851
+    },
+    {
+     "start": 16649,
+     "end": 16854
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "b27",
+   "window": 0,
+   "type": "causal",
+   "question": "Why is it unlikely that the LLMs memorized the hypotheses during training?",
+   "reference_answer": "The hypotheses were not on the web when the study was conducted, so the LLMs could not have used them in training. They also came from prior work and were validated by clinicians, which supports a fair test.",
+   "evidence": [
+    {
+     "start": 4645,
+     "end": 5098
+    },
+    {
+     "start": 7806,
+     "end": 8005
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "b28",
+   "window": 0,
+   "type": "causal",
+   "question": "Why does GPT-4o show stronger evidence extraction than the other models?",
+   "reference_answer": "GPT-4o says it retrieves and analyzes external scientific documents and bibliographic records. The authors say this is why it extracts evidence from source documents better than the other models.",
+   "evidence": [
+    {
+     "start": 23690,
+     "end": 23898
+    },
+    {
+     "start": 17147,
+     "end": 17361
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "b29",
+   "window": 0,
+   "type": "evolution",
+   "question": "How does the authors' view of the scale of their study change from the introduction to the conclusion?",
+   "reference_answer": "The introduction defends the small set of 17 hypotheses by pointing to their unseen status, clinician validation and the large annotation effort. The conclusion treats the findings as preliminary and says they should be further investigated on a larger scale.",
+   "evidence": [
+    {
+     "start": 4645,
+     "end": 5098
+    },
+    {
+     "start": 25326,
+     "end": 25481
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "b30",
+   "window": 0,
+   "type": "evolution",
+   "question": "How does the interpretation of model size change from the first explanation given to the later qualification?",
+   "reference_answer": "The authors first say the small size of Mistral and Qwen likely explains their poor specificity and few real papers. They later qualify this, saying model size alone does not fully explain performance, and that architecture, training data and retrieval also matter.",
+   "evidence": [
+    {
+     "start": 22374,
+     "end": 22574
+    },
+    {
+     "start": 23068,
+     "end": 23372
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  }
+ ],
+ "rejected_quotes": 0,
+ "model_ids": [
+  "claude-haiku-5-5"
+ ]
+}

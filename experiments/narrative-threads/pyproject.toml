@@ -3,7 +3,9 @@ name = "narrative-threads-experiment"
 version = "0.1.0"
 description = "Kerno narrative-thread retrieval experiment (outside the Cargo workspace)"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "fastembed>=0.9.1",
+]
 
 [dependency-groups]
 dev = ["pytest>=8"]
