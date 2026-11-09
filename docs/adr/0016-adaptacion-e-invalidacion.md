@@ -2,9 +2,9 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | Propuesto |
+| Estado | Aceptado (2026-11-09) |
 | Fecha | 2026-10-28 |
-| Decisores | Propietario del proyecto (pendiente) |
+| Decisores | Propietario del proyecto |
 | Relacionado con | [especificación v0.2.0](../spec/especificacion-arquitectonica-v0.2.0.md) §2, §9, §10, §15; [ejecución adaptativa](../architecture/adaptive-execution.md); ADR-0007, ADR-0012, ADR-0015, ADR-0018; invariantes I-32…I-36 |
 
 ## Contexto
@@ -44,7 +44,7 @@ Una optimización aprendida solo puede activarse si cumple todas estas garantía
 
 ## Decisión
 
-Pendiente de aprobación del propietario. Propuesta: opción 2, sujeta a las garantías G1–G7. El estado aprendido es un dato derivado: se guarda separado de los datos de usuario, no participa en transacciones de usuario, se reconstruye desde observaciones o se descarta. Invalidación por número de versión: cada optimización registra las versiones de esquema, índices y estadísticas de las que depende, y se comprueba antes de usarla; una caché de resultados además registra la secuencia de commit de la instantánea y no sirve lecturas de otra secuencia salvo prueba de que los datos leídos no cambiaron.
+Aceptada por el propietario el 2026-11-09: opción 2, sujeta a las garantías G1–G7. El estado aprendido es un dato derivado: se guarda separado de los datos de usuario, no participa en transacciones de usuario, se reconstruye desde observaciones o se descarta. Invalidación por número de versión: cada optimización registra las versiones de esquema, índices y estadísticas de las que depende, y se comprueba antes de cada uso; una caché de resultados además registra la secuencia de commit de su instantánea y no sirve lecturas de otra secuencia (G4).
 
 ## Consecuencias
 

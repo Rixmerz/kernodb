@@ -26,7 +26,7 @@ Reglas:
 | [0013](0013-formato-v1-y-protocolo-del-motor.md) | Formato v1 y protocolo del motor | Propuesto (WP06; se acepta antes de congelar v1 en WP14) |
 | [0014](0014-representacion-fisica-de-relaciones.md) | Representación física de relaciones | Aceptado (2026-11-05, E4-02: opción 2) |
 | [0015](0015-privacidad-de-la-observabilidad.md) | Privacidad de la observabilidad | Aceptado el 2026-11-06 con la evidencia de E5-04 (spec v0.2.0 §17.11) |
-| [0016](0016-adaptacion-e-invalidacion.md) | Adaptación operacional e invalidación | Propuesto (spec v0.2.0 §17.12; se decide en la Etapa 6) |
+| [0016](0016-adaptacion-e-invalidacion.md) | Adaptación operacional e invalidación | Aceptado (2026-11-09; garantías G1–G7) |
 | [0017](0017-semantica-de-la-unidad-neuronal.md) | Semántica de la «unidad neuronal» | Propuesto (spec v0.2.0 §17.13; se decide al iniciar la Etapa 3) |
 | [0018](0018-versionado-y-reconstruccion-de-derivados.md) | Versionado y reconstrucción de artefactos derivados | Propuesto (spec v0.2.0 §17.14; se decide antes de la Etapa 8) |
 
