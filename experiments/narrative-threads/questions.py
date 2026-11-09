@@ -17,6 +17,8 @@ block boundaries, each asked for its share of the 30 questions.
 from __future__ import annotations
 
 import argparse
+import os
+import tempfile
 import hashlib
 import json
 import re
@@ -33,7 +35,7 @@ DRAFTS = HERE / "results" / "questions" / "draft"
 ALIAS = "haiku"
 PER_DOC = 30
 WINDOW_BYTES = 300_000
-PROMPT_VERSION = "q2"
+PROMPT_VERSION = "q3"
 
 TYPES = ["trajectory", "contrast", "causal", "evolution", "local"]
 
@@ -97,10 +99,19 @@ def locate(data: bytes, lo: int, hi: int, quote: str) -> tuple[int, int] | None:
     return (m.start(), m.end()) if m else None
 
 
-def ask(prompt: str) -> dict:
+def isolated_call() -> tuple[list[str], dict[str, str]]:
+    """argv and env of one model call that sees only its prompt: no settings, plugins or hooks
+    (a hook of the person's tools would put its memory in front of the model), no tools, no MCP."""
     argv = ["claude", "-p", "--model", ALIAS, "--output-format", "json", "--tools", "",
-            "--strict-mcp-config", "--json-schema", json.dumps(SCHEMA)]
-    out = subprocess.run(argv, input=prompt, capture_output=True, text=True, timeout=900)
+            "--strict-mcp-config", "--setting-sources", "", "--json-schema", json.dumps(SCHEMA)]
+    env = {**os.environ, "LOCKS_HOOKS_OFF": "1"}
+    return argv, env
+
+
+def ask(prompt: str) -> dict:
+    argv, env = isolated_call()
+    with tempfile.TemporaryDirectory() as cwd:
+        out = subprocess.run(argv, input=prompt, capture_output=True, text=True, timeout=900, env=env, cwd=cwd)
     return json.loads(out.stdout)
 
 

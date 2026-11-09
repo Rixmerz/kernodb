@@ -27,3 +27,11 @@ def test_locate_tolerates_line_wraps_not_word_changes():
     s = locate(data, 0, len(data), "that the whale")
     assert data[s[0]:s[1]] == b"that\r\nthe whale"
     assert locate(data, 0, len(data), "that a whale") is None
+
+
+def test_model_calls_are_isolated_from_hooks_and_settings():
+    from questions import isolated_call
+    argv, env = isolated_call()
+    assert env["LOCKS_HOOKS_OFF"] == "1"
+    assert argv[argv.index("--setting-sources") + 1] == ""
+    assert argv[argv.index("--tools") + 1] == ""

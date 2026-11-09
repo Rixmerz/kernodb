@@ -47,6 +47,19 @@ recorded with its `session_id` and a call id, and either one seen before is refu
 execution counts twice. The ledger keeps metadata and costs only: never a prompt, an output
 or any transcript content.
 
+## Phase 2: questions (drafts, pending human review)
+
+`questions.py` has Haiku draft 30 questions per document, with reference answers and evidence
+as verbatim quotes. Each quote is located by its exact words (any whitespace between them, for
+line-wrapped texts); a quote that is not found is counted, never repaired. Long documents are read
+in windows of at most 300 kB on block boundaries. `review_sheet.py` writes
+`results/questions/REVIEW.md` for the independent human review; nothing is frozen until it is done.
+
+Every model call is isolated: `--setting-sources ""` (no settings, plugins or hooks),
+`LOCKS_HOOKS_OFF=1`, no tools, no MCP, run in an empty temporary directory. Drafts q1 and q2 ran
+without that isolation: the person's locks hooks put project memory in front of the model, so they
+are archived under `draft/q1/` and `draft/q2/` and not used. q3 is the set under review.
+
 ## Reproduce
 
 ```bash
