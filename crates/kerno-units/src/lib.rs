@@ -16,9 +16,11 @@
 //! ADR-0007). E5-01 adds the normalized query fingerprint ([`fingerprint`],
 //! ADR-0015) and the explainable plan ([`plan`]); E5-02 the deterministic
 //! planner that `query` follows ([`planner`]); E5-03 the optional
-//! `ExecutionObservation` ([`observation`]). This crate stays separate
+//! `ExecutionObservation` ([`observation`]). E6-01 adds the dependency model and
+//! learned-state store of the result cache ([`cache`]). This crate stays separate
 //! from `kerno-storage`.
 
+pub mod cache;
 pub mod clock;
 pub mod codec;
 pub mod db;
@@ -36,6 +38,10 @@ pub mod retention;
 pub mod types;
 pub mod verify;
 
+pub use cache::{
+    CacheConfig, CacheEntry, CacheError, CacheFallbackCause, CacheStats, CachedResult, DeleteReason, Dependencies,
+    Dependency, Evidence, Lookup, OPTIMIZATION_VERSION, ResultCache, Switch, Transition, TransitionRecord,
+};
 pub use clock::{Clock, CounterIds, FixedClock, SystemClock, UnitIdSource, UuidV7Source};
 pub use codec::{ChangeSetRecord, CsMember, Key, LayerMeta, Record, RevisionMeta, UnitHead};
 pub use db::{
