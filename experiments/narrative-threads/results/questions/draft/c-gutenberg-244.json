@@ -1,0 +1,654 @@
+{
+ "document": "c-gutenberg-244.txt",
+ "sha256": "6810564e981523ea439b7b2008bb318379cb649951c1b3c8e1e5b9cc26de4840",
+ "status": "draft: pending human review",
+ "prompt_version": "q3",
+ "alias": "haiku",
+ "windows": [
+  {
+   "index": 0,
+   "start": 0,
+   "end": 244165,
+   "asked": 30,
+   "call_id": "questions:q3:c-gutenberg-244.txt:w0",
+   "model_ids": [
+    "claude-haiku-5-5"
+   ],
+   "charged_usd": 0.033021510000000004
+  }
+ ],
+ "questions": [
+  {
+   "id": "c01",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does Watson's opinion of Sherlock Holmes change from their first days in Baker Street to the end of the case?",
+   "reference_answer": "Early on Watson finds Holmes conceited and his theories absurd, and he resents him. By the end, after the Brixton Road and Stangerson investigations and the capture, Watson calls Holmes's work an exact science, so his view has moved from irritation to admiration.",
+   "evidence": [
+    {
+     "start": 34798,
+     "end": 34895,
+     "quote": "“This fellow may be very clever,” I said to myself, “but he is certainly very conceited.”"
+    },
+    {
+     "start": 63715,
+     "end": 63855,
+     "quote": "“I shall never do that,” I answered; “you have brought detection as near an exact science as it ever will be brought in this world.”"
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c02",
+   "window": 0,
+   "type": "trajectory",
+   "question": "What does Holmes say about theorizing before the evidence is complete, and how does he later revise his own confidence after the pill experiment fails?",
+   "reference_answer": "Holmes first warns that theorizing before having all the evidence biases the judgment. When the dog survives the first pill, he admits he should have had more faith in the chain of deductions, and he realizes that facts that seem to contradict a reasoning chain usually have another interpretation.",
+   "evidence": [
+    {
+     "start": 42321,
+     "end": 42452,
+     "quote": "“No data yet,” he answered. “It is a capital mistake to theorize before you have all the evidence. It biases the judgment.”"
+    },
+    {
+     "start": 116153,
+     "end": 116324,
+     "quote": "I ought to know by this time that when a fact appears to be opposed to a long train of deductions, it invariably proves to be capable of bearing some other interpretation."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c03",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How is Watson's composure under pressure presented, from his war experience to the Brixton Road investigation?",
+   "reference_answer": "At Maiwand, Watson says he saw his comrades hacked to pieces without losing his nerve. Later, after the body at Lauriston Gardens, his nerves tingle, and he is shaken by the dead man's face. His steadiness on the battlefield does not carry over to the detective work.",
+   "evidence": [
+    {
+     "start": 75492,
+     "end": 75566,
+     "quote": "I saw my own comrades hacked to pieces at Maiwand without losing my nerve."
+    },
+    {
+     "start": 109654,
+     "end": 109740,
+     "quote": "My nerves, which were steady enough on the field of battle tingled as I thought of it."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c04",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the RACHE message on the wall develop as a clue, from Holmes's first dismissal to the explanation given later by the murderer?",
+   "reference_answer": "Lestrade reads RACHE as the start of the name Rachel, and Holmes mocks him for chasing a woman, noting that Rache is German for revenge. Later the murderer says he wrote it to imitate a German, after a New York case, so the police would suspect secret societies. The clue was a deliberate decoy from the start.",
+   "evidence": [
+    {
+     "start": 58591,
+     "end": 58687,
+     "quote": "‘Rache,’ is the German for ‘revenge’; so don’t lose your time looking for Miss Rachel."
+    },
+    {
+     "start": 228057,
+     "end": 228228,
+     "quote": "I remembered a German being found in New York with RACHE written up above him, and it was argued at the time in the newspapers that the secret societies must have done it."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c05",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the wedding ring move through the story, from the Lauriston Gardens scene to its final fate?",
+   "reference_answer": "The ring falls from the body at Lauriston Gardens and is used as bait in Holmes's advertisement. The murderer loses it, goes back for it, and later takes it from Lucy's finger. At the end he holds it up to Drebber as the last thing he sees before the poison takes effect.",
+   "evidence": [
+    {
+     "start": 50246,
+     "end": 50329,
+     "quote": "“There’s been a woman here,” he cried. “It’s a woman’s wedding-ring.”"
+    },
+    {
+     "start": 202827,
+     "end": 202901,
+     "quote": "and then, snatching up her hand, he took the wedding-ring from her finger."
+    },
+    {
+     "start": 227380,
+     "end": 227456,
+     "quote": "I laughed as I saw it, and held Lucy’s marriage ring in front of his eyes."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c06",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does John Ferrier's position on his daughter marrying a Mormon change, and what does it show about his refusal?",
+   "reference_answer": "Early on Ferrier has long resolved never to let his daughter marry a Mormon, though he keeps silent in public. Once the Elders press their claim, he openly tells their young representatives that he would sooner see her dead than married to either of them. His private principle becomes an open defiance.",
+   "evidence": [
+    {
+     "start": 159787,
+     "end": 159919,
+     "quote": "He had always determined, deep down in his resolute heart, that nothing would ever induce him to allow his daughter to wed a Mormon."
+    },
+    {
+     "start": 173623,
+     "end": 173798,
+     "quote": "“The young canting rascals!” he exclaimed, wiping the perspiration from his forehead; “I would sooner see you in your grave, my girl, than the wife of either of them.”"
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c07",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How is the countersign exchanged by the Mormon sentinels used, from the garden scene to the mountain pass?",
+   "reference_answer": "In the garden the two Mormon men exchange the sign 'Nine to seven!' and the reply 'Seven to five!', which Hope memorises. At the pass the sentinel challenges with 'Nine from seven', and Hope answers 'Seven from five', which lets the fugitives through. The memorised phrase is what gets them past the guard.",
+   "evidence": [
+    {
+     "start": 185259,
+     "end": 185326,
+     "quote": "“Pass it on to him, and from him to the others. Nine to seven!”"
+    },
+    {
+     "start": 188348,
+     "end": 188390,
+     "quote": "“Nine from seven,” cried the sentinel."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c08",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does Holmes's use of street children develop from his early remark about them to the organised search for the cab driver?",
+   "reference_answer": "Holmes first notes that the street Arabs go everywhere and hear everything and only need organisation. He later says he set up a detective corps of them and sent them to every cab proprietor in London, which is how the murderer, a cabman, was found.",
+   "evidence": [
+    {
+     "start": 91764,
+     "end": 91891,
+     "quote": "These youngsters, however, go everywhere and hear everything. They are as sharp as needles, too; all they want is organisation."
+    },
+    {
+     "start": 241357,
+     "end": 241520,
+     "quote": "I therefore organized my Street Arab detective corps, and sent them systematically to every cab proprietor in London until they ferreted out the man that I wanted."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c09",
+   "window": 0,
+   "type": "trajectory",
+   "question": "What role does Holmes's violin play in the story, and how is it linked to his moods across the early and later chapters?",
+   "reference_answer": "In the early chapters the violin reflects Holmes's thoughts and moods, with melancholy or cheerful chords depending on what is on his mind. In the Brixton Road chapter Watson hears his violin late into the night while Holmes ponders the problem. The instrument stands for his unresolved thinking.",
+   "evidence": [
+    {
+     "start": 25020,
+     "end": 25075,
+     "quote": "Clearly they reflected the thoughts which possessed him"
+    },
+    {
+     "start": 86603,
+     "end": 86689,
+     "quote": "long into the watches of the night I heard the low, melancholy wailings of his violin,"
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c10",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How do Hope's pill boxes travel from his York College memory to Holmes's test, and what does the test show?",
+   "reference_answer": "Hope made pills from an alkaloid stolen at York College and kept one box of poisoned pills and one of harmless pills. He gave Drebber and Stangerson the choice of the boxes. Holmes later tests the pills he had from Lestrade, showing that one was deadly and the other harmless, which confirms his theory.",
+   "evidence": [
+    {
+     "start": 222822,
+     "end": 222945,
+     "quote": "I worked this alkaloid into small, soluble pills, and each pill I put in a box with a similar pill made without the poison."
+    },
+    {
+     "start": 116325,
+     "end": 116425,
+     "quote": "Of the two pills in that box one was of the most deadly poison, and the other was entirely harmless."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c11",
+   "window": 0,
+   "type": "trajectory",
+   "question": "Why does Watson call the book he is writing and Holmes's final answer about publicity the 'Study in Scarlet', and how is the title's meaning changed by the end?",
+   "reference_answer": "Holmes first describes the case as a study in scarlet, the scarlet thread of murder running through the colourless skein of life. At the end, he ironically says the result of their study is to get the detectives a testimonial. The phrase goes from a romantic image of the case to a bitter joke about the credit.",
+   "evidence": [
+    {
+     "start": 72145,
+     "end": 72259,
+     "quote": "I might not have gone but for you, and so have missed the finest study I ever came across: a study in scarlet, eh?"
+    },
+    {
+     "start": 243782,
+     "end": 243863,
+     "quote": "“That’s the result of all our Study in Scarlet: to get them a testimonial!”"
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c12",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does Watson's role in the case develop, from being Holmes's companion to being the one who records the story?",
+   "reference_answer": "Watson starts as a lodger who is curious about Holmes and assists in the Brixton Road affair. He keeps a journal from which the account of Jefferson Hope's confession is taken. At the end he decides to publish the true facts despite the newspaper's praise for the detectives.",
+   "evidence": [
+    {
+     "start": 208522,
+     "end": 208613,
+     "quote": "as duly recorded in Dr. Watson’s Journal, to which we are already under such obligations."
+    },
+    {
+     "start": 243898,
+     "end": 243965,
+     "quote": "I have all the facts in my journal, and the public shall know them."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c13",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How do Holmes's remarks about Lestrade and Gregson change, from his early comments to the later case?",
+   "reference_answer": "At first Holmes calls them quick and energetic but conventional, and says Gregson is the smartest of the Scotland Yarders. When the newspaper credits them with the capture, Holmes mocks it as the credit of the detectives, and says the glory belongs to the Yard officers. Holmes's praise becomes sarcasm.",
+   "evidence": [
+    {
+     "start": 243171,
+     "end": 243319,
+     "quote": "It is an open secret that the credit of this smart capture belongs entirely to the well-known Scotland Yard officials, Messrs. Lestrade and Gregson."
+    }
+   ],
+   "evidence_rejected": 1,
+   "unlocated_quotes": [
+    "“Gregson is the smartest of the Scotland Yarders,” my friend remarked; “he and Lestrade are the pick of a bad lot.”"
+   ],
+   "needs_review": false
+  },
+  {
+   "id": "c14",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does Jefferson Hope's idea of vengeance develop from the grave of John Ferrier to his confession in prison?",
+   "reference_answer": "After Ferrier's grave, Hope decides that his only relief is complete retribution by his own hand. At the end he justifies the poisoning by saying there is no satisfaction in vengeance unless the offender knows why punishment has come, and he presents himself as an officer of justice. His vengeance becomes a moral claim.",
+   "evidence": [
+    {
+     "start": 197994,
+     "end": 198141,
+     "quote": "he felt that the only one thing which could assuage his grief would be thorough and complete retribution, brought by his own hand upon his enemies."
+    },
+    {
+     "start": 218913,
+     "end": 219057,
+     "quote": "There is no satisfaction in vengeance unless the offender has time to realize who it is that strikes him, and why retribution has come upon him."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c15",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the number countdown from Brigham Young's ultimatum shape the Ferriers' fear?",
+   "reference_answer": "Young gives Ferrier a month, and the threatening note says twenty-nine days are given. Each morning the number on the walls drops, from 28 to 27 and then down, until the last day arrives. The shrinking count makes the Ferriers feel helpless and drives them to flee.",
+   "evidence": [
+    {
+     "start": 175256,
+     "end": 175322,
+     "quote": "“Twenty-nine days are given you for amendment, and then——”"
+    },
+    {
+     "start": 178179,
+     "end": 178299,
+     "quote": "That morning had shown the figure 2 upon the wall of his house, and the next day would be the last of the allotted time."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c16",
+   "window": 0,
+   "type": "causal",
+   "question": "Why does Holmes conclude that the victim was poisoned, and what supports this conclusion?",
+   "reference_answer": "Holmes sniffs the dead man's lips early on and later explains that the smell was slightly sour. Combined with the look of horror on the victim's face and the absence of any wound, this leads him to conclude that poison was forced on the man, since no other explanation fits the facts.",
+   "evidence": [
+    {
+     "start": 49671,
+     "end": 49772,
+     "quote": "Finally, he sniffed the dead man’s lips, and then glanced at the soles of his patent leather boots."
+    },
+    {
+     "start": 237259,
+     "end": 237398,
+     "quote": "Having sniffed the dead man’s lips I detected a slightly sour smell, and I came to the conclusion that he had had poison forced upon him."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c17",
+   "window": 0,
+   "type": "causal",
+   "question": "Why was Jefferson Hope identified as the suspect from the Cleveland telegram?",
+   "reference_answer": "Holmes's Cleveland inquiry revealed that Drebber had sought legal protection against Jefferson Hope. That earlier event goes back to Cleveland, when Drebber recognised Hope in the street and had him detained. That makes Hope the obvious suspect, so the telegram led straight to him.",
+   "evidence": [
+    {
+     "start": 207108,
+     "end": 207242,
+     "quote": "It chanced, however, that Drebber, looking from his window, had recognized the vagrant in the street, and had read murder in his eyes."
+    },
+    {
+     "start": 239878,
+     "end": 240053,
+     "quote": "It told me that Drebber had already applied for the protection of the law against an old rival in love, named Jefferson Hope, and that this same Hope was at present in Europe."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c18",
+   "window": 0,
+   "type": "causal",
+   "question": "Why does Lucy Ferrier die, and what earlier event sets it in motion?",
+   "reference_answer": "Brigham Young offers Lucy the choice between the sons of Stangerson and Drebber, which forces her into an unwanted marriage. After her father's death she is married to Drebber, and she pines away and dies within a month. Her death comes from the forced marriage and the loss of her father.",
+   "evidence": [
+    {
+     "start": 165989,
+     "end": 166103,
+     "quote": "Stangerson has a son, and Drebber has a son, and either of them would gladly welcome your daughter to their house."
+    },
+    {
+     "start": 201922,
+     "end": 202120,
+     "quote": "Whether it was the terrible death of her father or the effects of the hateful marriage into which she had been forced, poor Lucy never held up her head again, but pined away and died within a month."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c19",
+   "window": 0,
+   "type": "causal",
+   "question": "Why did the murderer write RACHE on the wall, according to Holmes and to the murderer himself?",
+   "reference_answer": "Holmes says the writing was a ruse to divert inquiry toward socialists and secret societies, and that a German would not print the letter that way. The murderer confirms that he copied a New York case, believing the London police would be puzzled in the same way. Both accounts treat it as a deliberate false trail.",
+   "evidence": [
+    {
+     "start": 63386,
+     "end": 63446,
+     "quote": "It was simply a ruse to divert inquiry into a wrong channel."
+    },
+    {
+     "start": 228229,
+     "end": 228388,
+     "quote": "I guessed that what puzzled the New Yorkers would puzzle the Londoners, so I dipped my finger in my own blood and printed it on a convenient place on the wall."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c20",
+   "window": 0,
+   "type": "causal",
+   "question": "Why did Jefferson Hope's wedding ring come back into play as bait, and why did the murderer respond to the advertisement?",
+   "reference_answer": "Holmes reasons that the murderer had dropped the ring while stooping over Drebber's body and would come back for it. Holmes uses the advertisement as bait. The murderer later admits he sent an accomplice because he thought the ad might be a trap or the ring he had lost.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "unlocated_quotes": [
+    "“The ring, man, the ring: that was what he came back for. If we have no other way of catching him, we can always bait our line with the ring.”",
+    "“I saw your advertisement, and I thought it might be a plant, or it might be the ring which I wanted.”"
+   ],
+   "needs_review": true
+  },
+  {
+   "id": "c21",
+   "window": 0,
+   "type": "contrast",
+   "question": "How do the newspapers and Holmes differ on the likely motive for the Brixton Road murder?",
+   "reference_answer": "The Daily Telegraph and the other papers blame political refugees and revolutionists because of the German name and the wall inscription. Holmes rejects this, arguing that robbery was not the motive and that a deliberate, methodical killing points to a private wrong, perhaps a woman.",
+   "evidence": [
+    {
+     "start": 87315,
+     "end": 87494,
+     "quote": "The German name of the victim, the absence of all other motive, and the sinister inscription on the wall, all pointed to its perpetration by political refugees and revolutionists."
+    },
+    {
+     "start": 237845,
+     "end": 238010,
+     "quote": "And now came the great question as to the reason why. Robbery had not been the object of the murder, for nothing was taken. Was it politics, then, or was it a woman?"
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c22",
+   "window": 0,
+   "type": "contrast",
+   "question": "How do Holmes and Gregson differ in their method of asking for information about the murder?",
+   "reference_answer": "Gregson asked the Cleveland police only about Stangerson and would not say more. Holmes asked a sharper question about Drebber's marriage and the earlier rival, which opened the trail to Hope. Holmes's focus on the decisive detail is what distinguishes his approach from Gregson's.",
+   "evidence": [
+    {
+     "start": 52300,
+     "end": 52417,
+     "quote": "“Nothing else? Is there no circumstance on which this whole case appears to hinge? Will you not telegraph again?”"
+    },
+    {
+     "start": 239710,
+     "end": 239850,
+     "quote": "I telegraphed to the head of the police at Cleveland, limiting my enquiry to the circumstances connected with the marriage of Enoch Drebber."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c23",
+   "window": 0,
+   "type": "contrast",
+   "question": "How does Holmes respond to the public credit given to the Scotland Yard detectives for the capture?",
+   "reference_answer": "Early in the story Holmes says the detectives will get the credit whatever happens, and he calls being an unofficial personage the reason. When the Echo praises them, he says that what you do in the world matters less than what people believe you did. He treats the public credit as cynical and unimportant.",
+   "evidence": [
+    {
+     "start": 40982,
+     "end": 41140,
+     "quote": "Supposing I unravel the whole matter, you may be sure that Gregson, Lestrade, and Co. will pocket all the credit. That comes of being an unofficial personage."
+    }
+   ],
+   "evidence_rejected": 1,
+   "unlocated_quotes": [
+    "“What you do in this world is a matter of no consequence,” returned my companion, bitterly. “The question is, what can you make people believe that you have done.”"
+   ],
+   "needs_review": false
+  },
+  {
+   "id": "c24",
+   "window": 0,
+   "type": "evolution",
+   "question": "How does the detectives' theory of the suspect develop from the first description to Holmes's identification of Jefferson Hope?",
+   "reference_answer": "Holmes first describes the murderer from the evidence as a tall, square-toed man smoking a Trichinopoly cigar. Later he reasons that the murderer must have been the cabman, so he identifies Jefferson Hope as a jarvey. The suspect moves from a physical sketch to a named individual through deduction.",
+   "evidence": [
+    {
+     "start": 57799,
+     "end": 58007,
+     "quote": "There has been murder done, and the murderer was a man. He was more than six feet high, was in the prime of life, had small feet for his height, wore coarse, square-toed boots and smoked a Trichinopoly cigar."
+    },
+    {
+     "start": 240812,
+     "end": 240947,
+     "quote": "All these considerations led me to the irresistible conclusion that Jefferson Hope was to be found among the jarveys of the Metropolis."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c25",
+   "window": 0,
+   "type": "evolution",
+   "question": "How do the detectives' suspects change between their first and second reports on the case?",
+   "reference_answer": "Gregson first announces that Arthur Charpentier is under lock and key. Lestrade then reports that Stangerson has been murdered, and Gregson concedes that Charpentier could not have been involved in the second crime. Their suspects shift from Charpentier to Stangerson, and Holmes's conclusion is different from both.",
+   "evidence": [
+    {
+     "start": 92702,
+     "end": 92770,
+     "quote": "“The right track! Why, sir, we have the man under lock and key.”"
+    },
+    {
+     "start": 118270,
+     "end": 118338,
+     "quote": "Young Charpentier could not have been engaged in this second affair."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c26",
+   "window": 0,
+   "type": "evolution",
+   "question": "How does Jefferson Hope's plan for dealing with Drebber change, from the first problem he describes to the chance that resolves it?",
+   "reference_answer": "Hope's first problem is how to lure Drebber to the Brixton Road house. He considers taking him to a deserted lane in the country. In the end Drebber's drunkenness leads him to a gin palace, and that gives Hope the opportunity to take him to the house.",
+   "evidence": [
+    {
+     "start": 219625,
+     "end": 219709,
+     "quote": "How to get Drebber to that house was the difficult problem which I had now to solve."
+    },
+    {
+     "start": 221580,
+     "end": 221756,
+     "quote": "I might take him right out into the country, and there in some deserted lane have my last interview with him. I had almost decided upon this, when he solved the problem for me."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c27",
+   "window": 0,
+   "type": "evolution",
+   "question": "How do the Ferriers' escape plans change from the month they first expect to the night they actually leave?",
+   "reference_answer": "At first Ferrier plans to leave Utah at the end of the month and to wait for Jefferson Hope's return. When the threat grows, Hope arrives unannounced, and they flee at night through the window with the horses. The plan changes from a leisurely departure to a night escape.",
+   "evidence": [],
+   "evidence_rejected": 2,
+   "unlocated_quotes": [
+    "“We have a clear month before us; at the end of that, I guess we had best shin out of Utah.”",
+    "“To-morrow is your last day, and unless you act to-night you are lost.”"
+   ],
+   "needs_review": true
+  },
+  {
+   "id": "c28",
+   "window": 0,
+   "type": "local",
+   "question": "Where was Watson wounded, and by what?",
+   "reference_answer": "Watson was struck on the shoulder by a Jezail bullet at the fatal battle of Maiwand. The bullet shattered the bone and grazed the subclavian artery.",
+   "evidence": [
+    {
+     "start": 1819,
+     "end": 1932,
+     "quote": "There I was struck on the shoulder by a Jezail bullet, which shattered the bone and grazed the subclavian artery."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c29",
+   "window": 0,
+   "type": "local",
+   "question": "What age is the little girl whom John Ferrier rescues in the desert?",
+   "reference_answer": "The little girl is about five years old. She is the child Ferrier carries across the Alkali Plain and later adopts as Lucy Ferrier.",
+   "evidence": [
+    {
+     "start": 129166,
+     "end": 129268,
+     "quote": "As he spoke he unwrapped the grey shawl and extricated a pretty little girl of about five years of age"
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "c30",
+   "window": 0,
+   "type": "local",
+   "question": "What is the address of the rooms Holmes and Watson take in London?",
+   "reference_answer": "Holmes and Watson take rooms at 221B, Baker Street. They inspect the suite and move in together.",
+   "evidence": [
+    {
+     "start": 16692,
+     "end": 16817,
+     "quote": "We met next day as he had arranged, and inspected the rooms at No. 221B, Baker Street, of which he had spoken at our meeting."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  }
+ ],
+ "rejected_quotes": 6,
+ "model_ids": [
+  "claude-haiku-5-5"
+ ]
+}

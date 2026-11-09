@@ -1,0 +1,718 @@
+{
+ "document": "a-kerno-SAD.txt",
+ "sha256": "87e8b9d383e5838fe4aa731956fbeebd5e5fa961c1655379b6e34b5cf826774c",
+ "status": "draft: pending human review",
+ "prompt_version": "q3",
+ "alias": "haiku",
+ "windows": [
+  {
+   "index": 0,
+   "start": 0,
+   "end": 51865,
+   "asked": 30,
+   "call_id": "questions:q3:a-kerno-SAD.txt:w0",
+   "model_ids": [
+    "claude-haiku-5-5"
+   ],
+   "charged_usd": 0.01977991
+  }
+ ],
+ "questions": [
+  {
+   "id": "a01",
+   "window": 0,
+   "type": "evolution",
+   "question": "¿Cómo evoluciona la decisión sobre el motor de almacenamiento físico desde que se plantea como pregunta abierta hasta su resolución en la 0.2.0?",
+   "reference_answer": "En la 0.1.0 el motor físico era una pregunta abierta que no debía darse por resuelta, y la selección se tenía que basar en evidencia y no en popularidad. La versión 0.2.0 registra que ADR-0001 quedó Aceptado el 2026-10-28 con LSM nivelado, junto con el protocolo de commit y las reglas de versionado.",
+   "evidence": [
+    {
+     "start": 17625,
+     "end": 17745,
+     "quote": "La selección queda pendiente de ADR-0001 y no debe basarse solo en popularidad o en resultados publicados por terceros."
+    },
+    {
+     "start": 9493,
+     "end": 9720,
+     "quote": "Resueltos: la elección del motor físico (**LSM nivelado**, ADR-0001), el protocolo de commit, la sincronización y la recuperación (ADR-0002) y las reglas de versionado e integridad (ADR-0003), todos Aceptados el 2026-10-28;"
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "a02",
+   "window": 0,
+   "type": "trajectory",
+   "question": "¿Qué trayectoria sigue la congelación del formato binario v1 y qué condición la gobierna?",
+   "reference_answer": "El formato v1 está documentado, pero sigue como candidato a congelación hasta que el propietario acepte ADR-0013, que nace en la Fase 1 como requisito de la congelación. El plan además exige aprobar el formato y la semántica de commit antes de crear bases de datos de usuarios.",
+   "evidence": [
+    {
+     "start": 9721,
+     "end": 9937,
+     "quote": "la representación binaria concreta es el [formato v1](../file-format/v1.md), que sigue siendo **candidato a congelación** hasta que el propietario acepte [ADR-0013](../adr/0013-formato-v1-y-protocolo-del-motor.md)."
+    },
+    {
+     "start": 38854,
+     "end": 38949,
+     "quote": "ADR-0013 (formato v1 y protocolo del motor) nace en la Fase 1 y es requisito de la congelación"
+    },
+    {
+     "start": 49212,
+     "end": 49299,
+     "quote": "Aprobar el formato y la semántica de commit antes de crear bases de datos de usuarios."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "a03",
+   "window": 0,
+   "type": "contrast",
+   "question": "¿Cómo se contrasta el tratamiento de un servidor de red en la primera versión frente a la visión de un futuro servidor Kerno?",
+   "reference_answer": "La primera versión excluye explícitamente un servidor de red, servicio gestionado o protocolo remoto. Sin embargo, el documento anticipa que un futuro servidor necesitará autenticación, TLS, aislamiento de tenants y administración propios, así que lo deja para más adelante.",
+   "evidence": [
+    {
+     "start": 6813,
+     "end": 6869,
+     "quote": "Servidor de red, servicio gestionado o protocolo remoto."
+    },
+    {
+     "start": 27695,
+     "end": 27815,
+     "quote": "Un futuro servidor Kerno necesitará controles de autenticación, TLS, aislamiento de tenants y administración propios."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "a04",
+   "window": 0,
+   "type": "causal",
+   "question": "¿Por qué la búsqueda vectorial exacta se implementa antes que los índices aproximados como HNSW?",
+   "reference_answer": "El documento exige medir antes de especializar: HNSW u otras estructuras solo se justifican por workloads y métricas. Por eso la búsqueda exacta sirve como baseline, y los índices aproximados deben compararse contra ella en recall, latencia, memoria y disco.",
+   "evidence": [
+    {
+     "start": 10895,
+     "end": 10981,
+     "quote": "HNSW, LSM, B+ tree, grafo u otras estructuras se justifican por workloads y métricas."
+    },
+    {
+     "start": 27246,
+     "end": 27404,
+     "quote": "Primero se implementará búsqueda vectorial exacta como baseline; los índices aproximados deberán medirse contra ella en recall, latencia, memoria y disco."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "a05",
+   "window": 0,
+   "type": "contrast",
+   "question": "¿En qué difiere la estrategia de almacenamiento de revisiones que se propone de la que realmente se ha construido?",
+   "reference_answer": "El diseño evalúa un modelo híbrido de snapshots completos y deltas estructurales, y el ADR-0004 propone snapshot más delta con límite de profundidad. La implementación de la Etapa 3, sin embargo, usa solo revisiones de copia completa, porque los deltas no se implementaron.",
+   "evidence": [
+    {
+     "start": 20776,
+     "end": 20854,
+     "quote": "Se evaluará un modelo híbrido de snapshots completos y deltas estructurales."
+    }
+   ],
+   "evidence_rejected": 1,
+   "unlocated_quotes": [
+    "Lo construido: revisiones de copia completa (§8.2 y §8.3; los deltas no se implementan, decisión 4 de la Etapa 3)."
+   ],
+   "needs_review": false
+  },
+  {
+   "id": "a06",
+   "window": 0,
+   "type": "trajectory",
+   "question": "¿Cómo cambia el estatus de la gestión de índices derivados desde el ADR-0007 pendiente hasta la decisión del propietario de 2026-11-05?",
+   "reference_answer": "ADR-0007 aparece en la lista de ADR como pendiente, con la pregunta de qué índices participan en transacciones. Más tarde, en la etapa 4, el propietario decide mantener los índices de unidades como derivados, reconstruibles con su propio ChangeSet, hasta que un workload justifique incluirlos en cada ChangeSet.",
+   "evidence": [
+    {
+     "start": 36106,
+     "end": 36185,
+     "quote": "**ADR-0007 — Consistencia y reconstrucción de índices.** Estado: Pendiente."
+    },
+    {
+     "start": 22670,
+     "end": 22843,
+     "quote": "Se mantienen derivados hasta que un workload con escrituras intercaladas justifique mantenerlos dentro de cada `ChangeSet` (decisión del propietario, 2026-11-05, ADR-0007)."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "a07",
+   "window": 0,
+   "type": "causal",
+   "question": "¿Por qué un índice atrasado no puede presentarse como si estuviera al día, según las reglas de consistencia y los criterios de publicación?",
+   "reference_answer": "La consulta debe aplicar una estrategia documentada cuando el índice está atrasado, y no debe fingir frescura. Además, una discrepancia conocida entre índices e información fuente que se oculte al consumidor bloquea la publicación de una beta.",
+   "evidence": [
+    {
+     "start": 25326,
+     "end": 25540,
+     "quote": "Si el índice está atrasado, Kerno debe aplicar una estrategia documentada, como esperar, consultar una ruta exacta alternativa o devolver un estado de no disponibilidad para esa consulta; no debe fingir frescura."
+    },
+    {
+     "start": 47381,
+     "end": 47472,
+     "quote": "una discrepancia conocida entre índices e información fuente que se oculte al consumidor."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "a08",
+   "window": 0,
+   "type": "trajectory",
+   "question": "¿Cómo evoluciona la gestión de identificadores públicos desde las opciones iniciales hasta la fase de implementación?",
+   "reference_answer": "Inicialmente la estrategia predeterminada de identificador público es una cuestión abierta entre token aleatorio con mapeo o token cifrado reversible. El documento introduce después una abstracción IdentifierCodec, y la Fase 4 la convierte en una política inicial de IDs públicos.",
+   "evidence": [
+    {
+     "start": 8854,
+     "end": 8960,
+     "quote": "Estrategia predeterminada de identificador público: token aleatorio con mapeo o token cifrado reversible."
+    },
+    {
+     "start": 13463,
+     "end": 13556,
+     "quote": "La representación pública será intercambiable mediante una abstracción `IdentifierCodec`."
+    },
+    {
+     "start": 41080,
+     "end": 41135,
+     "quote": "`IdentifierCodec` y política inicial de IDs públicos;"
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "a09",
+   "window": 0,
+   "type": "contrast",
+   "question": "¿Qué diferencia hay entre el orden temporal de UUIDv7 y el orden de los commits en Kerno?",
+   "reference_answer": "UUIDv7 aporta un orden temporal aproximado, pero no define el orden transaccional de Kerno. Ese orden lo asigna la base mediante una secuencia monotónica, según la especificación de RFC 9562 que solo define el campo temporal del identificador.",
+   "evidence": [
+    {
+     "start": 13280,
+     "end": 13461,
+     "quote": "UUIDv7 ofrece orden temporal aproximado, pero no será el orden transaccional de Kerno: el orden de commits se representará mediante una secuencia monotónica asignada por la base."
+    },
+    {
+     "start": 49853,
+     "end": 49887,
+     "quote": "Define UUIDv7 y su campo temporal."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "a10",
+   "window": 0,
+   "type": "causal",
+   "question": "¿Por qué no se cifran bits del UUIDv7 para producir un identificador público?",
+   "reference_answer": "El documento prohíbe cifrar selectivamente bits del UUIDv7 ni inventar transformaciones propias, porque la seguridad sin criptografía casera exige usar algoritmos y bibliotecas consolidados. Kerno solo define la integración y la gestión de claves.",
+   "evidence": [
+    {
+     "start": 13918,
+     "end": 14009,
+     "quote": "No se cifrarán selectivamente bits del UUIDv7 ni se inventará una transformación propia."
+    },
+    {
+     "start": 10756,
+     "end": 10858,
+     "quote": "Se utilizan algoritmos y bibliotecas consolidados; Kerno define la integración y el manejo de claves."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "a11",
+   "window": 0,
+   "type": "trajectory",
+   "question": "¿Cómo se trata la durabilidad de una escritura confirmada a lo largo del documento, desde la regla de commit hasta los criterios de publicación?",
+   "reference_answer": "La regla de escritura dice que no se confirma antes de cumplir la garantía de durabilidad prometida por la configuración. Esa misma garantía vuelve a aparecer en M0 como comparación que no debe mezclar durabilidad fuerte con relajada, y en los criterios de la beta, donde la pérdida reproducible de una operación confirmada bloquea la publicación.",
+   "evidence": [
+    {
+     "start": 16809,
+     "end": 16915,
+     "quote": "No se confirma una escritura antes de cumplir la garantía de durabilidad prometida por la configuración."
+    },
+    {
+     "start": 44295,
+     "end": 44402,
+     "quote": "No comparar durabilidad fuerte de una opción con durabilidad relajada de otra como si fueran equivalentes."
+    },
+    {
+     "start": 47189,
+     "end": 47291,
+     "quote": "una pérdida reproducible de una operación confirmada bajo la configuración de durabilidad prometida"
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "a12",
+   "window": 0,
+   "type": "local",
+   "question": "¿Qué modelo de concurrencia se acuerda para escritores y lectores dentro de una base de datos?",
+   "reference_answer": "Se acuerda un único escritor activo por base de datos y varios lectores concurrentes dentro del mismo proceso. No se promete escritura multi-proceso en la versión inicial.",
+   "evidence": [
+    {
+     "start": 11798,
+     "end": 11837,
+     "quote": "- Un escritor activo por base de datos."
+    },
+    {
+     "start": 11838,
+     "end": 11894,
+     "quote": "- Varios lectores concurrentes dentro del mismo proceso."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "a13",
+   "window": 0,
+   "type": "local",
+   "question": "¿Cómo se entrega Kerno en su despliegue inicial?",
+   "reference_answer": "Kerno se ejecuta embebido en el proceso consumidor y expone una biblioteca Rust. La CLI local usa la misma biblioteca pública y no hay servidor ni autenticación de red en el MVP.",
+   "evidence": [
+    {
+     "start": 11305,
+     "end": 11391,
+     "quote": "Kerno se ejecutará embebido en el proceso consumidor y expondrá una biblioteca Rust."
+    },
+    {
+     "start": 11478,
+     "end": 11535,
+     "quote": "No habrá un servidor ni autenticación de red en el MVP."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "a14",
+   "window": 0,
+   "type": "evolution",
+   "question": "¿Cómo evoluciona la restauración de una revisión desde la propuesta de ADR-0004 hasta lo implementado en la Etapa 3?",
+   "reference_answer": "El ADR-0004 propone que la restauración cree una nueva revisión, y la sección 8.3 fija que no se borran revisiones posteriores. La Etapa 3 implementa restore como una operación que añade una revisión nueva, lo que cumple lo propuesto.",
+   "evidence": [
+    {
+     "start": 35104,
+     "end": 35147,
+     "quote": "restauración que crea una nueva revisión."
+    },
+    {
+     "start": 21043,
+     "end": 21199,
+     "quote": "Restaurar una revisión producirá una nueva revisión equivalente al contenido histórico seleccionado; no borrará silenciosamente revisiones posteriores."
+    },
+    {
+     "start": 19486,
+     "end": 19540,
+     "quote": "`restore` que añade una revisión nueva (§8.3, I-22)"
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "a15",
+   "window": 0,
+   "type": "causal",
+   "question": "¿Por qué el journal de recuperación se mantiene separado del historial de revisiones y la auditoría?",
+   "reference_answer": "El journal se debe separar porque el documento busca no convertirlo en un historial permanente. Aunque los sistemas pueden compartir secuencias de commit o metadatos, no comparten la misma política de retención.",
+   "evidence": [
+    {
+     "start": 5632,
+     "end": 5726,
+     "quote": "Separar el journal de recuperación del historial permanente de revisiones y de la auditoría."
+    },
+    {
+     "start": 18996,
+     "end": 19132,
+     "quote": "Estos sistemas pueden compartir secuencias de commit o metadatos, pero no compartirán implícitamente la misma política de retención."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "a16",
+   "window": 0,
+   "type": "trajectory",
+   "question": "¿Cómo se extiende la supresión de datos a capas derivadas, y qué se deja fuera de la versión 0.2.0?",
+   "reference_answer": "La política de borrado de embeddings debe aplicarse también a vectores, chunks, índices y colas pendientes. Sin embargo, la supresión física y la diferencia estructural quedan fuera de la Etapa 3 y dependen de ADR-0009 y ADR-0008, que siguen pendientes.",
+   "evidence": [
+    {
+     "start": 26780,
+     "end": 26871,
+     "quote": "**Borrado:** aplicar la política también a vectores, chunks, índices y colas pendientes."
+    },
+    {
+     "start": 19644,
+     "end": 19737,
+     "quote": "Quedan fuera la supresión física (ADR-0009, K-E3-6) y la diferencia estructural (ADR-0008)."
+    },
+    {
+     "start": 36936,
+     "end": 37005,
+     "quote": "**ADR-0009 — Supresión, retención y backups.** Estado: Pendiente."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "a17",
+   "window": 0,
+   "type": "contrast",
+   "question": "¿Cómo se contrastan la propuesta de crates del repositorio y el estado real del código en la 0.2.0?",
+   "reference_answer": "La estructura de nueve crates es lógica y no obligatoria desde el primer día. En la 0.2.0 solo existen kerno-core, kerno-testkit y kerno-storage, y el resto de los crates de la lista son propuesta de la 0.1.0 que no existen.",
+   "evidence": [
+    {
+     "start": 15628,
+     "end": 15718,
+     "quote": "Esta estructura es lógica, no una obligación de crear nueve crates desde el primer día."
+    },
+    {
+     "start": 32436,
+     "end": 32508,
+     "quote": "Los demás crates de la lista son la propuesta de la 0.1.0 y no existen."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "a18",
+   "window": 0,
+   "type": "evolution",
+   "question": "¿Qué se espera de la Fase 1 y cómo se refleja su estado en la 0.2.0?",
+   "reference_answer": "El plan original pedía un motor experimental que demostrara invariantes de persistencia y superara la matriz inicial de recuperación. La 0.2.0 registra que la Fase 1 tiene implementación completa, aunque algunos exit items siguen abiertos con su motivo documentado.",
+   "evidence": [
+    {
+     "start": 40285,
+     "end": 40396,
+     "quote": "Salida: motor experimental que demuestra invariantes de persistencia y pasa la matriz inicial de recuperación."
+    },
+    {
+     "start": 2203,
+     "end": 2308,
+     "quote": "Estado de la Fase 0 (cerrada) y de la Fase 1 (implementación completa; exit items abiertos y su motivo)."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "a19",
+   "window": 0,
+   "type": "causal",
+   "question": "¿Por qué el núcleo persistente no debe empezar hasta cerrar M0?",
+   "reference_answer": "Cada tema debe resolverse en un ADR antes de que sus supuestos queden codificados de forma difícil de revertir. ADR-0001 debe cerrarse antes de congelar el formato físico, y por eso el plan retrasa la implementación del núcleo hasta cerrar M0.",
+   "evidence": [
+    {
+     "start": 9311,
+     "end": 9457,
+     "quote": "Cada tema deberá resolverse en un Architecture Decision Record (ADR) antes de que sus supuestos queden codificados de forma difícil de revertir."
+    },
+    {
+     "start": 33762,
+     "end": 33842,
+     "quote": "Consecuencia: esta decisión debe cerrarse antes de congelar el formato físico."
+    },
+    {
+     "start": 49303,
+     "end": 49388,
+     "quote": "Empezar la implementación del núcleo persistente únicamente después de cerrar M0."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "a20",
+   "window": 0,
+   "type": "contrast",
+   "question": "¿Qué se promete y qué no se promete sobre la inmutabilidad del historial de revisiones?",
+   "reference_answer": "La restauración no borra silenciosamente revisiones posteriores, así que el historial no se pierde por operaciones de restauración. Pero el documento no promete inmutabilidad ilimitada ni que cualquier eliminación se refleje al instante en todos los soportes secundarios.",
+   "evidence": [
+    {
+     "start": 21043,
+     "end": 21199,
+     "quote": "Restaurar una revisión producirá una nueva revisión equivalente al contenido histórico seleccionado; no borrará silenciosamente revisiones posteriores."
+    },
+    {
+     "start": 21671,
+     "end": 21796,
+     "quote": "No se promete inmutabilidad ilimitada ni que toda eliminación pueda reflejarse instantáneamente en cada soporte secundario."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "a21",
+   "window": 0,
+   "type": "trajectory",
+   "question": "¿Cómo evoluciona la idea de un EXPLAIN de consultas desde su mención como futuro hasta la versión de la Etapa 5?",
+   "reference_answer": "El documento describe un futuro EXPLAIN que mostrará índices usados, filtros, costes observados y si intervino una estructura derivada. La Etapa 5 implementa explain_filter y explain_relations, que muestran el plan sin literales.",
+   "evidence": [
+    {
+     "start": 25783,
+     "end": 25896,
+     "quote": "Un futuro `EXPLAIN` mostrará índices usados, filtros, costes observados y si intervino una estructura derivada."
+    },
+    {
+     "start": 23401,
+     "end": 23478,
+     "quote": "`explain_filter` y `explain_relations` muestran el plan sin literales (I-37)."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "a22",
+   "window": 0,
+   "type": "trajectory",
+   "question": "¿Cómo se pasa de la visión de búsqueda híbrida en la sección de IA al plan de fases?",
+   "reference_answer": "La sección 10 describe la evolución prevista como búsqueda textual, vectorial y filtros, con búsqueda exacta primero como baseline. El plan de fases lo materializa en la Fase 5 con vectores exactos, adaptador de embeddings y ranking híbrido inicial.",
+   "evidence": [
+    {
+     "start": 26998,
+     "end": 27102,
+     "quote": "La evolución prevista es búsqueda textual (p. ej. BM25) + búsqueda vectorial + filtros estructurados."
+    },
+    {
+     "start": 41452,
+     "end": 41497,
+     "quote": "- vectores exactos y adaptador de embeddings;"
+    },
+    {
+     "start": 41539,
+     "end": 41566,
+     "quote": "- ranking híbrido inicial."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "a23",
+   "window": 0,
+   "type": "causal",
+   "question": "¿Por qué no se crean índices automáticamente en Kerno?",
+   "reference_answer": "Cada índice consume disco, memoria y trabajo de mantenimiento, así que su definición debe ser explícita. En la Etapa 4 se aplica esa regla: ningún índice se crea sin un workload que lo justifique.",
+   "evidence": [
+    {
+     "start": 24707,
+     "end": 24822,
+     "quote": "No se crearán todos los índices automáticamente. Cada índice consume disco, memoria y trabajo de mantenimiento;"
+    },
+    {
+     "start": 22151,
+     "end": 22188,
+     "quote": "ningún índice se crea sin workload."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "a24",
+   "window": 0,
+   "type": "evolution",
+   "question": "¿Cómo evolucionan los prototipos de la Fase 0 hasta su uso como referencia en la estructura del repositorio?",
+   "reference_answer": "La Fase 0 pedía prototipos pequeños y comparables de B+ tree copy-on-write y LSM, sin pretender que fueran motores de producción. En la 0.2.0 los spikes spike-btree y spike-lsm quedan congelados como línea base de rendimiento.",
+   "evidence": [
+    {
+     "start": 39508,
+     "end": 39623,
+     "quote": "prototipos pequeños y comparables para B+ tree copy-on-write y LSM, sin pretender que sean motores de producción;"
+    },
+    {
+     "start": 32559,
+     "end": 32629,
+     "quote": "`spike-btree` y `spike-lsm` congelados como línea base de rendimiento"
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "a25",
+   "window": 0,
+   "type": "contrast",
+   "question": "¿Cómo se contrasta la regla de no fijar umbrales antes de medir con el tratamiento de los incumplimientos de la Etapa 3?",
+   "reference_answer": "La metodología dice que no se establece un umbral de velocidad antes de medir el baseline. Aun así, la Etapa 3 documenta incumplimientos de U2 y U6 que el propietario aceptó sin rebajar umbrales.",
+   "evidence": [
+    {
+     "start": 44405,
+     "end": 44523,
+     "quote": "No establecer un umbral de velocidad antes de medir el baseline; definir objetivos después de conocer los resultados."
+    },
+    {
+     "start": 19909,
+     "end": 20011,
+     "quote": "Ambos son incumplimientos documentados que el propietario aceptó el 2026-11-04, sin rebajar umbrales."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "a26",
+   "window": 0,
+   "type": "causal",
+   "question": "¿Por qué la generación de embeddings queda fuera del núcleo de Kerno?",
+   "reference_answer": "El núcleo almacena vectores y ofrece contratos de búsqueda, pero no descarga modelos ni exige internet. El criterio de aceptación de M0 exige que no haya dependencia funcional obligatoria de IA, red o proveedor externo.",
+   "evidence": [
+    {
+     "start": 25993,
+     "end": 26150,
+     "quote": "Kerno almacenará vectores y ofrecerá contratos de búsqueda; no descargará modelos, no exigirá acceso a internet y no generará embeddings en el núcleo."
+    },
+    {
+     "start": 45200,
+     "end": 45276,
+     "quote": "No hay una dependencia funcional obligatoria de IA, red o proveedor externo."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "a27",
+   "window": 0,
+   "type": "trajectory",
+   "question": "¿Cómo se trata SQL a lo largo del documento, desde los no objetivos hasta la primera tanda de commits?",
+   "reference_answer": "SQL aparece primero como no objetivo, ya que la primera API será tipada y programática. Se confirma en el diseño de la API de consultas y se excluye también de la primera tanda de commits.",
+   "evidence": [
+    {
+     "start": 6933,
+     "end": 7003,
+     "quote": "SQL completo y su parser; la primera API será tipada y programática."
+    },
+    {
+     "start": 25635,
+     "end": 25670,
+     "quote": "SQL no entra en el alcance inicial."
+    },
+    {
+     "start": 49432,
+     "end": 49537,
+     "quote": "No empezar por HNSW, embeddings, SQL, un lenguaje de grafos, un servidor de red ni un sistema de agentes."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "a28",
+   "window": 0,
+   "type": "local",
+   "question": "¿Qué papel tienen los casos de uso de referencia como LiveSpec, Cauce y memoria de agentes en el diseño?",
+   "reference_answer": "Los casos de uso son workloads de evaluación y no dependencias del motor. Tampoco son modelos que deban imponerse a todos los usuarios.",
+   "evidence": [
+    {
+     "start": 6641,
+     "end": 6764,
+     "quote": "Estos casos serán workloads de evaluación, no dependencias del motor ni modelos que deban imponerse a todos los usuarios."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "a29",
+   "window": 0,
+   "type": "local",
+   "question": "¿Cuánto dura la Fase 0 según el plan de implementación?",
+   "reference_answer": "La Fase 0, de spike arquitectónico y decisiones, tiene una duración estimada de una a dos semanas.",
+   "evidence": [
+    {
+     "start": 39252,
+     "end": 39317,
+     "quote": "### Fase 0 — Spike arquitectónico y decisiones (1–2 semanas)"
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "a30",
+   "window": 0,
+   "type": "evolution",
+   "question": "¿Cómo trata el documento la versión 0.1.0 frente a las actualizaciones de la 0.2.0?",
+   "reference_answer": "Las decisiones posteriores se registran en ADRs, y un cambio en un ADR se publica como nueva versión del SAD en lugar de editar el texto. La 0.2.0 solo enumera sus cambios, así que todo lo que no figura conserva el texto de la 0.1.0, aunque la Fase 1 lo haya superado en detalle.",
+   "evidence": [
+    {
+     "start": 1190,
+     "end": 1313,
+     "quote": "cuando un ADR cambia algo de este documento, se publica una nueva versión del SAD en lugar de editar esta silenciosamente."
+    },
+    {
+     "start": 1372,
+     "end": 1428,
+     "quote": "todo lo que no figura ahí conserva el texto de la 0.1.0"
+    },
+    {
+     "start": 32436,
+     "end": 32508,
+     "quote": "Los demás crates de la lista son la propuesta de la 0.1.0 y no existen."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  }
+ ],
+ "rejected_quotes": 1,
+ "model_ids": [
+  "claude-haiku-5-5"
+ ]
+}
