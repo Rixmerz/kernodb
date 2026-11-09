@@ -175,6 +175,8 @@ pub enum Outcome {
 pub enum PlanKind {
     Reference,
     Planned,
+    /// Learned state: a cached result (E6-02).
+    Cache,
 }
 
 impl PlanKind {
@@ -182,6 +184,7 @@ impl PlanKind {
         match path {
             PlanPath::UnitsReference | PlanPath::RelationsReference => PlanKind::Reference,
             PlanPath::IndexPrimary | PlanPath::IndexType | PlanPath::Adjacency => PlanKind::Planned,
+            PlanPath::ResultCache => PlanKind::Cache,
         }
     }
 }
@@ -217,12 +220,13 @@ impl ExecutionObservation {
     }
 }
 
-const PATHS: [PlanPath; 5] = [
+const PATHS: [PlanPath; 6] = [
     PlanPath::UnitsReference,
     PlanPath::IndexPrimary,
     PlanPath::IndexType,
     PlanPath::RelationsReference,
     PlanPath::Adjacency,
+    PlanPath::ResultCache,
 ];
 
 fn slot(path: PlanPath) -> usize {
@@ -248,7 +252,7 @@ pub struct ObservationStats {
     pub evicted: u64,
     /// Records kept now.
     pub retained: usize,
-    by_path: [u64; 5],
+    by_path: [u64; 6],
 }
 
 impl ObservationStats {

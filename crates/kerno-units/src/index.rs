@@ -147,6 +147,10 @@ pub enum QuerySource {
     /// estimated cost is not above any index's, and after a recorded
     /// [`Fallback`](crate::Fallback).
     Reference { index: IndexStatus },
+    /// The result cache (E6-02): rows an earlier read stored, served because
+    /// every dependency still matched and they passed the checks of the
+    /// planned path. `index` is the status the snapshot has now.
+    Cache { index: IndexStatus },
 }
 
 /// The units a query matched, the path that found them and, if the planned
