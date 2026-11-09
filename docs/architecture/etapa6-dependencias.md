@@ -2,7 +2,7 @@
 
 Contrato de E6-01 ([acta de la Etapa 6](etapa6-acta.md) §3 y decisiones de §8). El código está en `crates/kerno-units/src/cache.rs`. Garantías: [ADR-0016](../adr/0016-adaptacion-e-invalidacion.md) (G4 dependencias explícitas y versionadas, G7 registro de transiciones); privacidad: [ADR-0015](../adr/0015-privacidad-de-la-observabilidad.md). Campos de partida: [ejecución adaptativa](adaptive-execution.md), [huella y plan](etapa5-huella-y-plan.md), [observación](etapa5-observacion.md).
 
-E6-01 **no conecta** la caché a `query()` ni al planificador: eso es E6-02. Nada del crate lee `ResultCache` salvo que un llamante lo pida. No cambia el formato persistente ni ningún otro crate.
+E6-01 **no conecta** la caché a `query()` ni al planificador: eso es E6-02, descrito en [etapa6-integracion.md](etapa6-integracion.md) (desde allí `lookup` recibe además la consulta exacta, `CacheEntry::new` la guarda, y existe `Transition::Missed`; lo que sigue describe el modelo y el almacén tal como los fijó E6-01). No cambia el formato persistente ni ningún otro crate.
 
 ## 1. Modelo de dependencias (G4)
 
@@ -21,7 +21,7 @@ Una `CacheEntry` está clavada por la `Fingerprint` de la consulta (la huella co
 - **La comprobación va antes de cada uso.** `ResultCache::lookup(fingerprint, &Dependencies::current(...))` compara el conjunto de la entrada con el vigente (`Dependencies::first_change`) en el orden de la tabla. La primera que difiere se devuelve en `Lookup::Invalidated(dependency)` y la entrada se elimina (I-35). Un estado de índice ausente en un lado y presente en el otro cuenta como cambio de `IndexState`.
 - `version_of` da el número de cada dependencia. Una consulta de relaciones no tiene índice (I-23) y un índice que nunca se construyó no tiene `watermark`: en ambos casos la versión es `None` y se compara como tal.
 
-Resultados posibles de `lookup`: `Hit` (entrada activa, dentro de su edad y con todas las dependencias iguales), `Miss`, `Inactive` (creada y no activada), `Invalidated(dependency)` y `Disabled`. Un `Hit` no sustituye la validación del planificador (G5): eso es E6-02.
+Resultados posibles de `lookup`: `Hit` (entrada activa, dentro de su edad y con todas las dependencias iguales), `Miss`, `Inactive` (creada y no activada), `Invalidated(dependency)` y `Disabled`. Un `Hit` no sustituye la validación del planificador (G5): `query` pasa las filas por `check_units` / `check_relations` antes de devolverlas (E6-02).
 
 ## 2. Almacén
 
@@ -44,6 +44,7 @@ Cada decisión sobre una optimización deja un `TransitionRecord`:
 | `Created { evidence }` | `create`; la `Evidence` son `observations` (≥ 1) y la ventana que cubren. La entrada aún no sirve |
 | `Activated` | `activate`; activar una entrada ya activa no registra |
 | `Used` | un `lookup` sirvió la entrada |
+| `Missed { cause }` | (E6-02) un `lookup` no encontró qué servir: `NoEntry`, `OtherQuery` (la entrada es de otra consulta de la misma forma), `NotActive` o `Expired` |
 | `Fallback { cause }` | `fallback`, con `PreconditionFailed`, `Invalidated`, `Disabled` o `Discrepancy` (esta última también elimina la entrada) |
 | `Invalidated { dependency }` | `lookup` encontró que cambió esa dependencia |
 | `Enabled` / `Disabled { switch }` | interruptor `Global` o `Query` |
@@ -104,6 +105,6 @@ Dos mutaciones más, sobre el borrado:
 | Se comenta `st.drop_all_entries(DeleteReason::Disabled, now);` de `set_enabled` | `disabled_stores_nothing_and_reads_nothing` y `every_transition_leaves_a_record` `FAILED`; `16 passed; 2 failed` |
 | Se comenta `st.entries.clear();` de `clear` | `clear_deletes_all_state_and_keeps_the_switches` `FAILED`; `17 passed; 1 failed` |
 
-## 7. Qué queda para E6-02
+## 7. Qué quedaba para E6-02
 
-Conectar `lookup`/`create`/`activate`/`fallback` al camino de `query`, validar las filas servidas antes de devolverlas (G5), y decidir cuándo una observación justifica crear la entrada. Hasta entonces `ResultCache` no la usa nadie en el crate.
+Conectar `lookup`/`create`/`activate`/`fallback` al camino de `query`, validar las filas servidas antes de devolverlas (G5), y decidir cuándo una observación justifica crear la entrada. Hecho en [etapa6-integracion.md](etapa6-integracion.md).

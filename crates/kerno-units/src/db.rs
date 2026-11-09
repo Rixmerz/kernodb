@@ -313,6 +313,9 @@ pub struct UnitDb<E: TxnEngine> {
     /// Where `query` and `query_relations` report (E5-03); shared with every
     /// snapshot.
     observer: Arc<crate::observation::Observer>,
+    /// The result cache (E6-02): off until a caller switches it on; shared
+    /// with every snapshot. In memory only, outside every transaction.
+    cache: Arc<crate::cache::ResultCache>,
 }
 
 fn layer_mark_key() -> Vec<u8> {
@@ -469,6 +472,7 @@ impl<E: TxnEngine> UnitDb<E> {
                 policy_cache: Arc::default(),
                 index_builds: AtomicUsize::new(0),
                 observer: Arc::default(),
+                cache: Arc::default(),
             }),
             Err(e) => {
                 let _ = engine.close();
@@ -490,6 +494,12 @@ impl<E: TxnEngine> UnitDb<E> {
     /// sets a level.
     pub fn observer(&self) -> &crate::observation::Observer {
         &self.observer
+    }
+
+    /// The result cache of this database (E6-02): **off** by default. While it
+    /// is off, `query` and `query_relations` behave exactly as without it.
+    pub fn result_cache(&self) -> &crate::cache::ResultCache {
+        &self.cache
     }
 
     pub(crate) fn check_poisoned(&self) -> Result<(), UnitError> {
@@ -577,7 +587,13 @@ impl<E: TxnEngine> UnitDb<E> {
         let snap = self.engine.snapshot()?;
         let stable = before.is_multiple_of(2) && self.policy_epoch.load(Ordering::SeqCst) == before;
         let policies = stable.then(|| (before, self.policy_cache.clone()));
-        Ok(UnitSnapshot { snap, fallback: self.cfg.default_policy, policies, observer: self.observer.clone() })
+        Ok(UnitSnapshot {
+            snap,
+            fallback: self.cfg.default_policy,
+            policies,
+            observer: self.observer.clone(),
+            cache: self.cache.clone(),
+        })
     }
 
     /// The history policy in force for `unit_type` (see the [module
@@ -648,6 +664,8 @@ pub struct UnitSnapshot<E: Engine> {
     pub(crate) policies: Option<(u64, Arc<PolicyCache>)>,
     /// The database's observer: `query` reports to it.
     pub(crate) observer: Arc<crate::observation::Observer>,
+    /// The database's result cache: `query` and `query_relations` consult it.
+    pub(crate) cache: Arc<crate::cache::ResultCache>,
 }
 
 impl<E: Engine> UnitSnapshot<E> {

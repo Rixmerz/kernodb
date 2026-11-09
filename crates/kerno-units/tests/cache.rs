@@ -134,16 +134,19 @@ fn a_commit_invalidates_the_cached_result_of_an_earlier_snapshot<E: Target>() {
     // Fill the cache from a real read, with the dependencies of its snapshot.
     let snap = db.snapshot().unwrap();
     let filter = &filters()[0];
+    let uq = CachedQuery::Units(filter.clone());
     let fp = *snap.explain_filter(&key, filter).unwrap().fingerprint();
     let outcome = snap.query(filter).unwrap();
     let before = deps_of(&snap, true);
-    cache.create(CacheEntry::new(fp, before, CachedResult::Units(outcome.units.clone()), ev).unwrap()).unwrap();
+    cache
+        .create(CacheEntry::new(fp, uq.clone(), before, CachedResult::Units(outcome.units.clone()), ev).unwrap())
+        .unwrap();
     cache.activate(&fp).unwrap();
 
     // Another snapshot at the same sequence has the same dependencies: served.
     let same = db.snapshot().unwrap();
     assert_eq!(deps_of(&same, true), before);
-    match cache.lookup(&fp, &deps_of(&same, true)) {
+    match cache.lookup(&fp, &uq, &deps_of(&same, true)) {
         Lookup::Hit(r) => assert_eq!(*r, CachedResult::Units(outcome.units.clone())),
         other => panic!("expected a hit, got {other:?}"),
     }
@@ -158,7 +161,7 @@ fn a_commit_invalidates_the_cached_result_of_an_earlier_snapshot<E: Target>() {
     let now = deps_of(&after, true);
     assert_ne!(now.commit_seq, before.commit_seq);
     let expected = before.first_change(&now).expect("a commit changes a dependency");
-    match cache.lookup(&fp, &now) {
+    match cache.lookup(&fp, &uq, &now) {
         Lookup::Invalidated(d) => assert_eq!(d, expected),
         other => panic!("expected Invalidated, got {other:?}"),
     }
@@ -168,32 +171,37 @@ fn a_commit_invalidates_the_cached_result_of_an_earlier_snapshot<E: Target>() {
     // a commit (the index generation is written through a change set), so the
     // sequence moves and the entry of the old snapshot is not served.
     let outcome = after.query(filter).unwrap();
-    cache.create(CacheEntry::new(fp, now, CachedResult::Units(outcome.units.clone()), ev).unwrap()).unwrap();
+    cache
+        .create(CacheEntry::new(fp, uq.clone(), now, CachedResult::Units(outcome.units.clone()), ev).unwrap())
+        .unwrap();
     cache.activate(&fp).unwrap();
     db.rebuild_index().unwrap();
     let rebuilt = db.snapshot().unwrap();
     assert!(rebuilt.seq() > after.seq(), "a rebuild commits");
     let rebuilt_deps = deps_of(&rebuilt, true);
     let expected = now.first_change(&rebuilt_deps).expect("a rebuild changes a dependency");
-    match cache.lookup(&fp, &rebuilt_deps) {
+    match cache.lookup(&fp, &uq, &rebuilt_deps) {
         Lookup::Invalidated(d) => assert_eq!(d, expected),
         other => panic!("expected Invalidated, got {other:?}"),
     }
-    cache.create(CacheEntry::new(fp, rebuilt_deps, CachedResult::Units(outcome.units), ev).unwrap()).unwrap();
+    cache
+        .create(CacheEntry::new(fp, uq.clone(), rebuilt_deps, CachedResult::Units(outcome.units), ev).unwrap())
+        .unwrap();
     cache.activate(&fp).unwrap();
-    assert!(matches!(cache.lookup(&fp, &rebuilt_deps), Lookup::Hit(_)));
+    assert!(matches!(cache.lookup(&fp, &uq, &rebuilt_deps), Lookup::Hit(_)));
 
     // A relation query records no index status and its entry is keyed apart.
     let q = relation_query(ids[0]);
+    let rq = CachedQuery::Relations(q.clone());
     let rfp = *rebuilt.explain_relations(&key, &q).unwrap().fingerprint();
     assert_ne!(rfp, fp);
     let rows = rebuilt.query_relations(&q).unwrap().relations;
     let rdeps = deps_of(&rebuilt, false);
-    cache.create(CacheEntry::new(rfp, rdeps, CachedResult::Relations(rows), ev).unwrap()).unwrap();
+    cache.create(CacheEntry::new(rfp, rq.clone(), rdeps, CachedResult::Relations(rows), ev).unwrap()).unwrap();
     cache.activate(&rfp).unwrap();
-    assert!(matches!(cache.lookup(&rfp, &rdeps), Lookup::Hit(_)));
+    assert!(matches!(cache.lookup(&rfp, &rq, &rdeps), Lookup::Hit(_)));
     let moved = Dependencies { commit_seq: CommitSeq(rdeps.commit_seq.0 + 1), ..rdeps };
-    assert!(matches!(cache.lookup(&rfp, &moved), Lookup::Invalidated(Dependency::CommitSeq)));
+    assert!(matches!(cache.lookup(&rfp, &rq, &moved), Lookup::Invalidated(Dependency::CommitSeq)));
 }
 
 /// Drives every transition for one fingerprint and returns everything the
@@ -202,7 +210,7 @@ fn drive(cache: &ResultCache, fp: Fingerprint, entry: &CacheEntry, deps: Depende
     let mut say = |what: &str, text: String| tail.push_str(&format!("[{what}] {text}\n"));
     cache.create(entry.clone()).unwrap();
     cache.activate(&fp).unwrap();
-    say("lookup", format!("{:?}", cache.lookup(&fp, &deps).clone_without_rows()));
+    say("lookup", format!("{:?}", cache.lookup(&fp, entry.query(), &deps).clone_without_rows()));
     for cause in [
         CacheFallbackCause::PreconditionFailed,
         CacheFallbackCause::Invalidated,
@@ -230,7 +238,7 @@ fn drive(cache: &ResultCache, fp: Fingerprint, entry: &CacheEntry, deps: Depende
         };
         cache.create(entry.clone()).unwrap();
         cache.activate(&fp).unwrap();
-        say("invalidated", format!("{:?}", cache.lookup(&fp, &now).clone_without_rows()));
+        say("invalidated", format!("{:?}", cache.lookup(&fp, entry.query(), &now).clone_without_rows()));
     }
     cache.create(entry.clone()).unwrap();
     cache.create(entry.clone()).unwrap(); // replaces
@@ -281,38 +289,47 @@ fn no_filter_literal_in_any_transition_record_at_any_level<E: Target>() {
         let mut text = String::new();
         let mut reported = Vec::new();
 
-        let mut jobs: Vec<(Fingerprint, CachedResult, Dependencies)> = Vec::new();
+        let mut jobs: Vec<(Fingerprint, CachedQuery, CachedResult, Dependencies)> = Vec::new();
         for f in filters() {
             let fp = *snap.explain_filter(&key, &f).unwrap().fingerprint();
             let rows = snap.query(&f).unwrap().units;
-            jobs.push((fp, CachedResult::Units(rows), deps_of(&snap, true)));
+            jobs.push((fp, CachedQuery::Units(f.clone()), CachedResult::Units(rows), deps_of(&snap, true)));
         }
         let q = relation_query(ids[0]);
         let fp = *snap.explain_relations(&key, &q).unwrap().fingerprint();
         let rows = snap.query_relations(&q).unwrap().relations;
-        jobs.push((fp, CachedResult::Relations(rows), deps_of(&snap, false)));
+        jobs.push((fp, CachedQuery::Relations(q.clone()), CachedResult::Relations(rows), deps_of(&snap, false)));
 
         // Control: the rows the cache is about to hold do contain the sentinels,
         // so a search of the records for them is a search that could succeed.
-        let held = format!("{:?}", jobs.iter().map(|j| &j.1).collect::<Vec<_>>());
+        let held = format!("{:?}", jobs.iter().map(|j| &j.2).collect::<Vec<_>>());
         for (what, needles) in wanted.iter().filter(|(w, _)| !["provenance origin", "provenance source"].contains(w)) {
             assert!(needles.iter().any(|n| held.contains(n.as_str())), "control: the cached rows hold the {what}");
         }
 
         let ev = evidence_from(&db.observer().stats());
-        for (fp, result, deps) in jobs {
-            let entry = CacheEntry::new(fp, deps, result, ev).unwrap();
+        for (fp, query, result, deps) in jobs {
+            let entry = CacheEntry::new(fp, query, deps, result, ev).unwrap();
             reported.push(fp);
             drive(&cache, fp, &entry, deps, &mut text);
         }
         // A refusal of each kind: the errors are output under search too.
         let units_fp = reported[0];
         let rel_deps = deps_of(&snap, false);
+        let any_units = || CachedQuery::Units(UnitFilter::default());
         let bad = [
-            CacheEntry::new(units_fp, rel_deps, CachedResult::Units(Vec::new()), ev),
-            CacheEntry::new(units_fp, deps_of(&snap, true), CachedResult::Relations(Vec::new()), ev),
+            CacheEntry::new(units_fp, any_units(), rel_deps, CachedResult::Units(Vec::new()), ev),
+            CacheEntry::new(units_fp, any_units(), deps_of(&snap, true), CachedResult::Relations(Vec::new()), ev),
             CacheEntry::new(
                 units_fp,
+                CachedQuery::Relations(relation_query(ids[0])),
+                deps_of(&snap, true),
+                CachedResult::Units(Vec::new()),
+                ev,
+            ),
+            CacheEntry::new(
+                units_fp,
+                any_units(),
                 deps_of(&snap, true),
                 CachedResult::Units(Vec::new()),
                 Evidence { observations: 0, window: Duration::ZERO },

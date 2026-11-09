@@ -72,8 +72,8 @@ use crate::clock::{Clock, SystemClock};
 use crate::codec::LAYER_VERSION;
 use crate::db::{Relation, Unit};
 use crate::error::UnitError;
-use crate::fingerprint::{Fingerprint, QueryKind};
-use crate::index::{IndexState, IndexStatus};
+use crate::fingerprint::{Fingerprint, FingerprintKey, NormalizedQuery, QueryKind, RelationQuery};
+use crate::index::{IndexState, IndexStatus, UnitFilter};
 use crate::planner::PLANNER_VERSION;
 use crate::types::{CommitSeq, RelationProvenance, Timestamp};
 
@@ -222,6 +222,34 @@ impl CachedResult {
     }
 }
 
+/// The query a result answers, **with its literals**. A [`Fingerprint`] is the
+/// query's shape and ignores them (ADR-0015): `unit_type = "a"` and
+/// `unit_type = "b"` share one. An entry that served a query of the same shape
+/// but other literals would return another query's rows, so the entry keeps
+/// the exact query and [`ResultCache::lookup`] serves it only to an equal one.
+/// It lives in memory next to the rows it answers and is never logged.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CachedQuery {
+    Units(UnitFilter),
+    Relations(RelationQuery),
+}
+
+impl CachedQuery {
+    pub fn kind(&self) -> QueryKind {
+        match self {
+            CachedQuery::Units(_) => QueryKind::Units,
+            CachedQuery::Relations(_) => QueryKind::Relations,
+        }
+    }
+
+    fn normalized(&self) -> NormalizedQuery {
+        match self {
+            CachedQuery::Units(filter) => NormalizedQuery::of_filter(filter),
+            CachedQuery::Relations(query) => NormalizedQuery::of_relations(query),
+        }
+    }
+}
+
 /// Why an optimization was created (spec §9): how many observations proposed
 /// it and over how long. Counters only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -236,25 +264,28 @@ pub struct Evidence {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CacheEntry {
     fingerprint: Fingerprint,
+    query: CachedQuery,
     dependencies: Dependencies,
     result: Arc<CachedResult>,
     evidence: Evidence,
 }
 
 impl CacheEntry {
-    /// An entry for the query of `fingerprint`. Refused when it could not be
-    /// explained truthfully: the result is of the other kind of query, the
+    /// An entry for `query`, whose shape has `fingerprint`. Refused when it
+    /// could not be explained truthfully: the query or the result is of the
+    /// other kind of query than the fingerprint's, the
     /// index status does not match the kind (a unit query records one, a
     /// relation query none, as in [`Plan::new`](crate::Plan::new)), or there
     /// is no evidence.
     pub fn new(
         fingerprint: Fingerprint,
+        query: CachedQuery,
         dependencies: Dependencies,
         result: CachedResult,
         evidence: Evidence,
     ) -> Result<Self, CacheError> {
         let kind = fingerprint.kind();
-        if result.kind() != kind {
+        if result.kind() != kind || query.kind() != kind {
             return Err(CacheError::KindMismatch);
         }
         if dependencies.index.is_some() != (kind == QueryKind::Units) {
@@ -263,11 +294,15 @@ impl CacheEntry {
         if evidence.observations == 0 {
             return Err(CacheError::NoEvidence);
         }
-        Ok(CacheEntry { fingerprint, dependencies, result: Arc::new(result), evidence })
+        Ok(CacheEntry { fingerprint, query, dependencies, result: Arc::new(result), evidence })
     }
 
     pub fn fingerprint(&self) -> &Fingerprint {
         &self.fingerprint
+    }
+
+    pub fn query(&self) -> &CachedQuery {
+        &self.query
     }
 
     pub fn dependencies(&self) -> &Dependencies {
@@ -284,7 +319,7 @@ impl CacheEntry {
 pub enum CacheError {
     /// The cache is off, globally or for this query: nothing is written.
     Disabled,
-    /// The result is of the other kind of query than the fingerprint's.
+    /// The query or the result is of the other kind of query than the fingerprint's.
     KindMismatch,
     /// The index status is absent for a unit query or present for a relation query.
     IndexStatus { kind: QueryKind },
@@ -300,7 +335,9 @@ impl fmt::Display for CacheError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CacheError::Disabled => f.write_str("the result cache is disabled"),
-            CacheError::KindMismatch => f.write_str("the result is not of the fingerprint's kind of query"),
+            CacheError::KindMismatch => {
+                f.write_str("the query or the result is not of the fingerprint's kind of query")
+            }
             CacheError::IndexStatus { kind } => write!(f, "the index status does not match a {kind:?} query"),
             CacheError::NoEvidence => f.write_str("a cache entry needs at least one observation as evidence"),
             CacheError::TooLarge => f.write_str("the result is larger than the cache's byte bound"),
@@ -382,6 +419,21 @@ pub enum CacheFallbackCause {
     Discrepancy,
 }
 
+/// Why a lookup found nothing to serve (the planner then runs a path without
+/// learned state).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MissCause {
+    /// No entry for the fingerprint.
+    NoEntry,
+    /// An entry exists but another query of the same shape (other literals)
+    /// owns it. It is left alone: its dependencies say nothing about this one.
+    OtherQuery,
+    /// The entry exists but was never activated.
+    NotActive,
+    /// The entry was older than `max_age` and was dropped.
+    Expired,
+}
+
 /// Why an entry was deleted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DeleteReason {
@@ -409,6 +461,10 @@ pub enum Transition {
     Activated,
     /// An active entry served a lookup.
     Used,
+    /// A lookup found nothing to serve, for this cause.
+    Missed {
+        cause: MissCause,
+    },
     Fallback {
         cause: CacheFallbackCause,
     },
@@ -456,7 +512,8 @@ pub enum Lookup {
     /// An active entry whose dependencies all match the current ones. The
     /// planner still validates the rows before returning them (G5).
     Hit(Arc<CachedResult>),
-    /// No entry (or it had expired and was dropped).
+    /// No entry, an entry of another query of the same shape, or one that had
+    /// expired and was dropped. A [`Transition::Missed`] says which.
     Miss,
     /// An entry exists but was never activated.
     Inactive,
@@ -499,6 +556,9 @@ struct Slot {
 struct State {
     config: CacheConfig,
     clock: Arc<dyn Clock>,
+    /// The local key of the fingerprints this store uses; generated on first
+    /// use (`None` until then, or if the system could not give one).
+    key: Option<FingerprintKey>,
     disabled_queries: HashSet<Fingerprint>,
     entries: HashMap<Fingerprint, Slot>,
     bytes: usize,
@@ -574,6 +634,16 @@ impl State {
         }
     }
 
+    /// Forgets entries, log and counters without a record; how many entries.
+    fn wipe(&mut self) -> u64 {
+        let entries = self.entries.len() as u64;
+        self.entries.clear();
+        self.bytes = 0;
+        self.log.clear();
+        self.stats = CacheStats::default();
+        entries
+    }
+
     /// Drops every entry, leaving one `Deleted` record each.
     fn drop_all_entries(&mut self, reason: DeleteReason, at: Timestamp) {
         let mut all: Vec<(u64, Fingerprint)> = self.entries.iter().map(|(f, s)| (s.seq, *f)).collect();
@@ -608,6 +678,7 @@ impl ResultCache {
             state: Mutex::new(State {
                 config: CacheConfig::default(),
                 clock: Arc::new(SystemClock),
+                key: None,
                 disabled_queries: HashSet::new(),
                 entries: HashMap::new(),
                 bytes: 0,
@@ -741,11 +812,13 @@ impl ResultCache {
         Ok(())
     }
 
-    /// The entry for `fingerprint`, if it may be used at `now`: the cache is
-    /// on for the query, the entry is active, within its age, and **every
+    /// The entry for `query` (whose shape has `fingerprint`), if it may be
+    /// used at `now`: the cache is on for the query, the entry answers this
+    /// very query (same literals), is active, within its age, and **every
     /// dependency matches `now`** (G4). A dependency that does not match
-    /// drops the entry and is named in [`Lookup::Invalidated`].
-    pub fn lookup(&self, fingerprint: &Fingerprint, now: &Dependencies) -> Lookup {
+    /// drops the entry and is named in [`Lookup::Invalidated`]. Every outcome
+    /// but [`Lookup::Disabled`] leaves a record (G7).
+    pub fn lookup(&self, fingerprint: &Fingerprint, query: &CachedQuery, now: &Dependencies) -> Lookup {
         if !self.enabled() {
             return Lookup::Disabled;
         }
@@ -755,18 +828,27 @@ impl ResultCache {
         }
         let at = st.clock.now();
         let oldest_kept = at.0.saturating_sub(st.config.max_age_micros());
-        let Some((created_at, active, deps)) =
-            st.entries.get(fingerprint).map(|s| (s.created_at, s.active, s.entry.dependencies))
+        let Some((created_at, active, same_query, deps)) = st
+            .entries
+            .get(fingerprint)
+            .map(|s| (s.created_at, s.active, s.entry.query == *query, s.entry.dependencies))
         else {
+            st.record(Some(*fingerprint), Transition::Missed { cause: MissCause::NoEntry }, None, at);
             return Lookup::Miss;
         };
         st.stats.reads = st.stats.reads.saturating_add(1);
         if created_at.0 < oldest_kept {
             st.remove(fingerprint, Some(DeleteReason::EvictedByAge), at);
             st.stats.evicted = st.stats.evicted.saturating_add(1);
+            st.record(Some(*fingerprint), Transition::Missed { cause: MissCause::Expired }, Some(&deps), at);
+            return Lookup::Miss;
+        }
+        if !same_query {
+            st.record(Some(*fingerprint), Transition::Missed { cause: MissCause::OtherQuery }, Some(&deps), at);
             return Lookup::Miss;
         }
         if !active {
+            st.record(Some(*fingerprint), Transition::Missed { cause: MissCause::NotActive }, Some(&deps), at);
             return Lookup::Inactive;
         }
         if let Some(dependency) = deps.first_change(now) {
@@ -781,6 +863,29 @@ impl ResultCache {
         st.record(Some(*fingerprint), Transition::Used, Some(&deps), at);
         st.stats.hits = st.stats.hits.saturating_add(1);
         Lookup::Hit(result)
+    }
+
+    /// The fingerprint of `query` under this store's key, which is generated
+    /// on first use. `None` when the system cannot give a key: the planner
+    /// then runs without the cache. Fingerprints of this store are not
+    /// comparable with another store's or an observer's.
+    pub fn fingerprint_of(&self, query: &CachedQuery) -> Option<Fingerprint> {
+        let mut st = self.lock();
+        if st.key.is_none() {
+            st.key = FingerprintKey::generate().ok();
+        }
+        st.key.as_ref().map(|key| query.normalized().fingerprint(key))
+    }
+
+    /// Replaces the fingerprint key, for reproducible tests. Fingerprints are
+    /// comparable only under one key, so all learned state is dropped, as in
+    /// [`clear`](Self::clear), and so are the per-query switches, which are
+    /// keyed by fingerprint. The global switch stays.
+    pub fn set_key(&self, key: FingerprintKey) {
+        let mut st = self.lock();
+        st.key = Some(key);
+        st.disabled_queries.clear();
+        st.wipe();
     }
 
     /// Records that a query fell back to the reference path for `cause`. A
@@ -815,12 +920,8 @@ impl ResultCache {
     /// deletion itself is on the record. Data is not affected (I-34).
     pub fn clear(&self) {
         let mut st = self.lock();
-        let entries = st.entries.len() as u64;
         let now = st.clock.now();
-        st.entries.clear();
-        st.bytes = 0;
-        st.log.clear();
-        st.stats = CacheStats::default();
+        let entries = st.wipe();
         st.record(None, Transition::Cleared { entries }, None, now);
     }
 
@@ -862,6 +963,29 @@ mod tests {
         NormalizedQuery::of_filter(&UnitFilter { unit_type: None, schema_version: Some(1) }).fingerprint(&key)
     }
 
+    /// The query a fingerprint stands for in these tests: its kind decides.
+    fn query_of(f: &Fingerprint) -> CachedQuery {
+        match f.kind() {
+            QueryKind::Units => {
+                CachedQuery::Units(UnitFilter { unit_type: Some("literal".into()), schema_version: None })
+            }
+            QueryKind::Relations => CachedQuery::Relations(RelationQuery {
+                unit: crate::types::UnitId([1; 16]),
+                direction: crate::types::Direction::Out,
+                relation_type: None,
+            }),
+        }
+    }
+
+    fn look(c: &ResultCache, f: &Fingerprint, d: &Dependencies) -> Lookup {
+        c.lookup(f, &query_of(f), d)
+    }
+
+    /// `CacheEntry::new` for the query `query_of(&f)` stands for.
+    fn new_entry(f: Fingerprint, d: Dependencies, r: CachedResult, e: Evidence) -> Result<CacheEntry, CacheError> {
+        CacheEntry::new(f, query_of(&f), d, r, e)
+    }
+
     fn ready(watermark: u64) -> Option<IndexStatus> {
         Some(IndexStatus { state: IndexState::Ready, watermark: Some(CommitSeq(watermark)) })
     }
@@ -875,7 +999,7 @@ mod tests {
     }
 
     fn entry_for(f: Fingerprint, d: Dependencies) -> CacheEntry {
-        CacheEntry::new(f, d, CachedResult::Units(Vec::new()), evidence()).unwrap()
+        new_entry(f, d, CachedResult::Units(Vec::new()), evidence()).unwrap()
     }
 
     fn entry(d: Dependencies) -> CacheEntry {
@@ -989,14 +1113,14 @@ mod tests {
             };
             let (c, _) = active();
             // Unchanged dependencies: served.
-            assert!(matches!(c.lookup(&fp("t"), &base), Lookup::Hit(_)), "{dependency}: control");
+            assert!(matches!(look(&c, &fp("t"), &base), Lookup::Hit(_)), "{dependency}: control");
             // Exactly this one changed: not served, and named.
-            match c.lookup(&fp("t"), &now) {
+            match look(&c, &fp("t"), &now) {
                 Lookup::Invalidated(d) => assert_eq!(d, dependency, "{dependency}"),
                 other => panic!("{dependency}: expected Invalidated, got {other:?}"),
             }
             // The entry is gone: the old dependencies do not bring it back.
-            assert!(matches!(c.lookup(&fp("t"), &base), Lookup::Miss), "{dependency}: dropped");
+            assert!(matches!(look(&c, &fp("t"), &base), Lookup::Miss), "{dependency}: dropped");
             let last = c.records().into_iter().rev().find(|r| matches!(r.transition, Transition::Invalidated { .. }));
             let last = last.unwrap_or_else(|| panic!("{dependency}: no Invalidated record"));
             assert_eq!(last.transition, Transition::Invalidated { dependency });
@@ -1010,10 +1134,10 @@ mod tests {
             // A fresh entry per probe: a mismatch drops it.
             let (c, _) = active();
             let now = Dependencies { commit_seq: CommitSeq(seq), ..deps(10) };
-            assert!(!matches!(c.lookup(&fp("t"), &now), Lookup::Hit(_)), "served seq {seq}");
+            assert!(!matches!(look(&c, &fp("t"), &now), Lookup::Hit(_)), "served seq {seq}");
         }
         let (c, _) = active();
-        assert!(matches!(c.lookup(&fp("t"), &deps(10)), Lookup::Hit(_)), "control: its own seq is served");
+        assert!(matches!(look(&c, &fp("t"), &deps(10)), Lookup::Hit(_)), "control: its own seq is served");
     }
 
     #[test]
@@ -1031,29 +1155,29 @@ mod tests {
         };
         // A unit query without an index status, or a relation query with one.
         assert_eq!(
-            CacheEntry::new(fp("t"), Dependencies::current(CommitSeq(1), None), units(), evidence()),
+            new_entry(fp("t"), Dependencies::current(CommitSeq(1), None), units(), evidence()),
             Err(CacheError::IndexStatus { kind: QueryKind::Units })
         );
         assert_eq!(
-            CacheEntry::new(rel_fp, deps(1), relations(), evidence()),
+            new_entry(rel_fp, deps(1), relations(), evidence()),
             Err(CacheError::IndexStatus { kind: QueryKind::Relations })
         );
-        assert!(CacheEntry::new(rel_fp, Dependencies::current(CommitSeq(1), None), relations(), evidence()).is_ok());
+        assert!(new_entry(rel_fp, Dependencies::current(CommitSeq(1), None), relations(), evidence()).is_ok());
         // A result of the other kind.
-        assert_eq!(CacheEntry::new(fp("t"), deps(1), relations(), evidence()), Err(CacheError::KindMismatch));
+        assert_eq!(new_entry(fp("t"), deps(1), relations(), evidence()), Err(CacheError::KindMismatch));
         // No evidence.
         let none = Evidence { observations: 0, window: Duration::ZERO };
-        assert_eq!(CacheEntry::new(fp("t"), deps(1), units(), none), Err(CacheError::NoEvidence));
+        assert_eq!(new_entry(fp("t"), deps(1), units(), none), Err(CacheError::NoEvidence));
     }
 
     #[test]
     fn an_entry_is_not_served_until_activated() {
         let (c, _) = on();
         c.create(entry(deps(10))).unwrap();
-        assert!(matches!(c.lookup(&fp("t"), &deps(10)), Lookup::Inactive));
+        assert!(matches!(look(&c, &fp("t"), &deps(10)), Lookup::Inactive));
         assert_eq!(c.activate(&fp_other()), Err(CacheError::NoEntry));
         c.activate(&fp("t")).unwrap();
-        assert!(matches!(c.lookup(&fp("t"), &deps(10)), Lookup::Hit(_)));
+        assert!(matches!(look(&c, &fp("t"), &deps(10)), Lookup::Hit(_)));
         // Activating twice records once.
         c.activate(&fp("t")).unwrap();
         let activations = kinds(&c).iter().filter(|t| **t == Transition::Activated).count();
@@ -1067,7 +1191,7 @@ mod tests {
         let now = deps(10);
         assert_eq!(c.create(entry(now)), Err(CacheError::Disabled));
         assert_eq!(c.activate(&fp("t")), Err(CacheError::Disabled));
-        assert!(matches!(c.lookup(&fp("t"), &now), Lookup::Disabled));
+        assert!(matches!(look(&c, &fp("t"), &now), Lookup::Disabled));
         c.fallback(&fp("t"), CacheFallbackCause::Disabled);
         let s = c.stats();
         assert_eq!((s.enabled, s.entries, s.bytes, s.reads, s.writes, s.hits), (false, 0, 0, 0, 0, 0));
@@ -1080,7 +1204,7 @@ mod tests {
         c.set_enabled(false);
         assert_eq!(c.stats().entries, 0);
         let reads = c.stats().reads;
-        assert!(matches!(c.lookup(&fp("t"), &now), Lookup::Disabled));
+        assert!(matches!(look(&c, &fp("t"), &now), Lookup::Disabled));
         assert_eq!(c.stats().reads, reads, "a disabled lookup reads no entry");
         assert_eq!(c.create(entry(now)), Err(CacheError::Disabled));
         assert_eq!(c.stats().entries, 0);
@@ -1099,11 +1223,11 @@ mod tests {
         assert!(!c.query_enabled(&fp("t")));
         assert!(c.query_enabled(&fp_other()));
         assert_eq!(c.stats().entries, 1);
-        assert!(matches!(c.lookup(&fp("t"), &deps(10)), Lookup::Disabled));
+        assert!(matches!(look(&c, &fp("t"), &deps(10)), Lookup::Disabled));
         assert_eq!(c.create(entry(deps(10))), Err(CacheError::Disabled));
         assert_eq!(c.activate(&fp("t")), Err(CacheError::Disabled));
         // The other query is not affected.
-        assert!(matches!(c.lookup(&fp_other(), &deps(10)), Lookup::Hit(_)));
+        assert!(matches!(look(&c, &fp_other(), &deps(10)), Lookup::Hit(_)));
         // And it comes back.
         c.enable_query(fp("t"));
         c.create(entry(deps(10))).unwrap();
@@ -1122,14 +1246,14 @@ mod tests {
         let s = c.stats();
         assert_eq!((s.entries, s.evicted), (2, 1));
         // The oldest went: its lookup misses, the others hit.
-        assert!(matches!(c.lookup(&fps[0], &deps(10)), Lookup::Miss));
-        assert!(matches!(c.lookup(&fps[1], &deps(10)), Lookup::Hit(_)));
-        assert!(matches!(c.lookup(&fps[2], &deps(10)), Lookup::Hit(_)));
+        assert!(matches!(look(&c, &fps[0], &deps(10)), Lookup::Miss));
+        assert!(matches!(look(&c, &fps[1], &deps(10)), Lookup::Hit(_)));
+        assert!(matches!(look(&c, &fps[2], &deps(10)), Lookup::Hit(_)));
         assert!(kinds(&c).contains(&Transition::Deleted { reason: DeleteReason::EvictedBySize }));
         // Shrinking the bound drops now.
         c.set_config(CacheConfig { max_entries: 1, ..CacheConfig::default() }).unwrap();
         assert_eq!(c.stats().entries, 1);
-        assert!(matches!(c.lookup(&fps[2], &deps(10)), Lookup::Hit(_)));
+        assert!(matches!(look(&c, &fps[2], &deps(10)), Lookup::Hit(_)));
     }
 
     fn unit_of(len: usize) -> Unit {
@@ -1158,7 +1282,7 @@ mod tests {
         assert!(one >= 1000);
         c.set_config(CacheConfig { max_bytes: one * 2 + one / 2, ..CacheConfig::default() }).unwrap();
         for t in ["a", "b", "c"] {
-            let e = CacheEntry::new(fp(t), deps(10), big.clone(), evidence()).unwrap();
+            let e = new_entry(fp(t), deps(10), big.clone(), evidence()).unwrap();
             c.create(e).unwrap();
         }
         let s = c.stats();
@@ -1166,7 +1290,7 @@ mod tests {
         // A result larger than the whole bound is refused, and nothing changes.
         c.set_config(CacheConfig { max_bytes: one - 1, ..CacheConfig::default() }).unwrap();
         assert_eq!(c.stats().entries, 0, "shrinking the bound drops what no longer fits");
-        let e = CacheEntry::new(fp("z"), deps(10), big, evidence()).unwrap();
+        let e = new_entry(fp("z"), deps(10), big, evidence()).unwrap();
         assert_eq!(c.create(e), Err(CacheError::TooLarge));
         assert_eq!(c.stats().entries, 0);
     }
@@ -1178,10 +1302,10 @@ mod tests {
         c.create(entry_for(fp("a"), deps(10))).unwrap();
         c.activate(&fp("a")).unwrap();
         clock.set(Timestamp(T0.0 + 99));
-        assert!(matches!(c.lookup(&fp("a"), &deps(10)), Lookup::Hit(_)), "within its age");
+        assert!(matches!(look(&c, &fp("a"), &deps(10)), Lookup::Hit(_)), "within its age");
         // Past its age: not served, dropped, and counted.
         clock.set(Timestamp(T0.0 + 101));
-        assert!(matches!(c.lookup(&fp("a"), &deps(10)), Lookup::Miss));
+        assert!(matches!(look(&c, &fp("a"), &deps(10)), Lookup::Miss));
         assert_eq!(c.stats().entries, 0);
         assert!(kinds(&c).contains(&Transition::Deleted { reason: DeleteReason::EvictedByAge }));
         // Creating drops the entries that aged without being looked up.
@@ -1189,7 +1313,7 @@ mod tests {
         clock.set(Timestamp(T0.0 + 300));
         c.create(entry_for(fp("c"), deps(10))).unwrap();
         assert_eq!(c.stats().entries, 1);
-        assert!(matches!(c.lookup(&fp("b"), &deps(10)), Lookup::Miss));
+        assert!(matches!(look(&c, &fp("b"), &deps(10)), Lookup::Miss));
     }
 
     #[test]
@@ -1200,7 +1324,7 @@ mod tests {
         c.create(entry(deps(10))).unwrap();
         c.activate(&fp("t")).unwrap();
         for _ in 0..4 {
-            c.lookup(&fp("t"), &deps(10));
+            look(&c, &fp("t"), &deps(10));
         }
         let records = c.records();
         assert_eq!(records.len(), 3, "at most max_log_records");
@@ -1236,11 +1360,11 @@ mod tests {
 
         c.create(entry(deps(10))).unwrap(); // Created (with its evidence)
         c.activate(&f).unwrap(); // Activated
-        c.lookup(&f, &deps(10)); // Used
+        look(&c, &f, &deps(10)); // Used
         c.fallback(&f, CacheFallbackCause::PreconditionFailed); // Fallback with each cause
         c.fallback(&f, CacheFallbackCause::Invalidated);
         c.fallback(&f, CacheFallbackCause::Disabled);
-        c.lookup(&f, &Dependencies { commit_seq: CommitSeq(11), ..deps(10) }); // Invalidated (the commit_seq)
+        look(&c, &f, &Dependencies { commit_seq: CommitSeq(11), ..deps(10) }); // Invalidated (the commit_seq)
         c.create(entry_for(g, deps(10))).unwrap();
         c.activate(&g).unwrap();
         c.fallback(&g, CacheFallbackCause::Discrepancy); // Fallback, then Deleted(Discrepancy)
@@ -1290,7 +1414,7 @@ mod tests {
     #[test]
     fn records_carry_versions_and_the_fingerprint_and_nothing_else() {
         let (c, _) = active();
-        c.lookup(&fp("t"), &deps(10));
+        look(&c, &fp("t"), &deps(10));
         let records = c.records();
         assert!(records.len() >= 4);
         for r in &records {
@@ -1317,12 +1441,12 @@ mod tests {
     fn clear_deletes_all_state_and_keeps_the_switches() {
         let (c, _) = active();
         c.disable_query(fp_other());
-        c.lookup(&fp("t"), &deps(10));
+        look(&c, &fp("t"), &deps(10));
         c.clear();
         let s = c.stats();
         assert_eq!((s.entries, s.bytes, s.reads, s.writes, s.hits, s.evicted), (0, 0, 0, 0, 0, 0));
         assert_eq!(kinds(&c), [Transition::Cleared { entries: 1 }]);
-        assert!(matches!(c.lookup(&fp("t"), &deps(10)), Lookup::Miss));
+        assert!(matches!(look(&c, &fp("t"), &deps(10)), Lookup::Miss));
         // The switches are not learned state.
         assert!(c.enabled());
         assert!(!c.query_enabled(&fp_other()));
@@ -1338,16 +1462,16 @@ mod tests {
             panic!("poison the cache");
         })
         .join();
-        assert!(matches!(c.lookup(&fp("t"), &deps(10)), Lookup::Hit(_)));
+        assert!(matches!(look(&c, &fp("t"), &deps(10)), Lookup::Hit(_)));
     }
 
     #[test]
     fn a_hit_shares_the_result_without_copying_it() {
         let (c, _) = on();
-        let e = CacheEntry::new(fp("t"), deps(10), CachedResult::Units(vec![unit_of(10)]), evidence()).unwrap();
+        let e = new_entry(fp("t"), deps(10), CachedResult::Units(vec![unit_of(10)]), evidence()).unwrap();
         c.create(e).unwrap();
         c.activate(&fp("t")).unwrap();
-        let (Lookup::Hit(a), Lookup::Hit(b)) = (c.lookup(&fp("t"), &deps(10)), c.lookup(&fp("t"), &deps(10))) else {
+        let (Lookup::Hit(a), Lookup::Hit(b)) = (look(&c, &fp("t"), &deps(10)), look(&c, &fp("t"), &deps(10))) else {
             panic!("expected two hits");
         };
         assert!(Arc::ptr_eq(&a, &b));
