@@ -26,12 +26,19 @@
 //! The paths must return the same units; the run stops if they do not. The
 //! threshold of the workload (§3) is evaluated and printed at the end.
 //!
+//! E6-04 measures the result cache (`--cache`, see [`cache_section`]): the
+//! same stream of reads is run with the cache off and on, in rounds that
+//! alternate the two, over W1 (80 % reads that repeat, 20 % interleaved
+//! writes) and over a stream with no repeated read, the worst case. The
+//! thresholds are those of the Stage 6 acta (§6) and are not parameters.
+//!
 //! ```text
 //! cargo run --release -p kerno-units --example index_bench            # full
 //! cargo run --release -p kerno-units --example index_bench -- --quick # smoke
+//! cargo run --release -p kerno-units --example index_bench -- --cache # E6-04
 //! ```
 //!
-//! Options: `--quick`, `--dir <path>`, `--seed <u64>`.
+//! Options: `--quick`, `--cache`, `--dir <path>`, `--seed <u64>`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -42,8 +49,8 @@ use kerno_core::vfs::StdVfs;
 use kerno_storage::KernoDb;
 use kerno_testkit::rng::Rng;
 use kerno_units::{
-    ChangeMeta, CounterIds, FixedClock, IndexPath, IndexState, NewUnit, ObservationLevel, QuerySource, Timestamp, Unit,
-    UnitConfig, UnitDb, UnitFilter, UnitId, UnitSnapshot,
+    ChangeMeta, CounterIds, FixedClock, IndexPath, IndexState, NewUnit, ObservationLevel, PlanPath, QuerySource,
+    Timestamp, Unit, UnitConfig, UnitDb, UnitFilter, UnitId, UnitSnapshot, UnitUpdate,
 };
 
 type Res<T> = Result<T, Box<dyn std::error::Error>>;
@@ -233,12 +240,254 @@ fn observation_cost(db: &Units, qs: &[Query]) -> Res<(f64, Vec<(ObservationLevel
     Ok((best(0, 2), added))
 }
 
+// ---- E6-04: the result cache against the cache off -------------------------
+
+/// Thresholds of the Stage 6 acta (§6), fixed before measuring (§8, decision
+/// 4). Percent changes of the cache on over the cache off.
+const W1_P50_MUST_GAIN: f64 = 20.0;
+const W1_P99_MAY_LOSE: f64 = 5.0;
+const WORST_P99_MAY_LOSE: f64 = 5.0;
+
+/// Rounds per comparison; each round runs the stream once with the cache off
+/// and once on, the order flipping every round.
+const CACHE_ROUNDS: usize = 5;
+
+/// W1 as the acta (§8, decision 5) sizes it: 80 % reads, 20 % writes. One
+/// write, then [`READS_PER_WRITE`] reads of one query: the first read after a
+/// write cannot be served (every commit moves `commit_seq`), the other three
+/// repeat it.
+const READS_PER_WRITE: usize = 4;
+
+/// One step of a stream: an optional write, then reads of `qs[i]`.
+struct Block {
+    write: bool,
+    reads: Vec<usize>,
+}
+
+/// What a stream is run against and how it is shaped.
+struct Load<'a> {
+    label: &'static str,
+    scale: usize,
+    qs: &'a [Query],
+    blocks: Vec<Block>,
+    /// Rebuild the index after each write (untimed), so every read can use
+    /// it, as the E6-00 baseline did. Without it the first write leaves the
+    /// index `Stale` and every read is the reference scan.
+    rebuild: bool,
+    /// The unit each write updates: no unit is added, so the sets stay the same size.
+    target: UnitId,
+}
+
+#[derive(Clone, Copy)]
+struct Run {
+    p50: f64,
+    p95: f64,
+    p99: f64,
+    timed: usize,
+    hits: usize,
+}
+
+/// One query per type, in type order: the cache's slot is one per shape, and
+/// all of these share the shape `type = ?`.
+fn by_type(active: &[Entry]) -> Vec<Query> {
+    queries_of_types(active, (0..TYPES).collect())
+}
+
+fn queries_of_types(active: &[Entry], types: Vec<u64>) -> Vec<Query> {
+    types
+        .into_iter()
+        .map(|t| {
+            let mut ids: Vec<UnitId> = active.iter().filter(|(ut, _, _)| *ut == t).map(|e| e.2).collect();
+            ids.sort();
+            Query { filter: UnitFilter { unit_type: Some(format!("t{t:03}")), schema_version: None }, ids }
+        })
+        .collect()
+}
+
+/// Query `n` of a stream: 37 is coprime with the 100 types, so consecutive
+/// queries differ and a type comes back only after all the others.
+fn nth_query(n: usize) -> usize {
+    n * 37 % TYPES as usize
+}
+
+fn write_one(db: &Units, target: UnitId, n: usize) -> Res<()> {
+    let mut cs = db.begin_changeset(ChangeMeta::default())?;
+    let update = UnitUpdate { payload: vec![(n % 251) as u8; PAYLOAD], schema_version: None, metadata: None };
+    cs.update(target, update, None)?;
+    cs.commit()?;
+    Ok(())
+}
+
+/// Runs the stream once with the cache `on` or off and times every read after
+/// a 10 % warm-up. Writes and index rebuilds are not timed.
+fn run_stream(db: &Units, load: &Load, on: bool) -> Res<Run> {
+    let cache = db.result_cache();
+    cache.set_enabled(false);
+    cache.clear();
+    cache.set_enabled(on);
+    let total: usize = load.blocks.iter().map(|b| b.reads.len()).sum();
+    let warm = (total / 10).max(1);
+    let (mut seen, mut hits) = (0, 0);
+    let mut samples = Vec::with_capacity(total);
+    for (n, block) in load.blocks.iter().enumerate() {
+        if block.write {
+            write_one(db, load.target, n)?;
+            if load.rebuild {
+                db.rebuild_index()?;
+            }
+        }
+        let snap = db.snapshot()?;
+        for &i in &block.reads {
+            let q = &load.qs[i];
+            let t = Instant::now();
+            let out = snap.query(&q.filter)?;
+            let ns = t.elapsed().as_nanos() as u64;
+            if out.units.iter().map(|u| u.id).collect::<Vec<_>>() != q.ids {
+                return Err("the cache and the reference disagree".into());
+            }
+            let served = out.path == PlanPath::ResultCache;
+            if served && !on {
+                return Err("the cache is off but an answer came from it".into());
+            }
+            if load.rebuild && out.path == PlanPath::UnitsReference {
+                return Err("the index is not Ready: the baseline would be the reference scan".into());
+            }
+            if seen >= warm {
+                samples.push(ns);
+                hits += usize::from(served);
+            }
+            seen += 1;
+        }
+    }
+    let stats = cache.stats();
+    if !on && (stats.reads, stats.writes, stats.hits) != (0, 0, 0) {
+        return Err("the cache is off but took part".into());
+    }
+    cache.set_enabled(false);
+    let timed = samples.len();
+    Ok(Run {
+        p50: percentile(&mut samples, 0.50),
+        p95: percentile(&mut samples, 0.95),
+        p99: percentile(&mut samples, 0.99),
+        timed,
+        hits,
+    })
+}
+
+fn pct(on: f64, off: f64) -> f64 {
+    (on / off - 1.0) * 100.0
+}
+
+/// The p50 and p99 of the cache on over the cache off, in percent, taking
+/// the best round of each (the method of E6-00) or the median round.
+fn deltas(on: &[Run], off: &[Run], best: bool) -> (f64, f64) {
+    let pick = |rs: &[Run], f: fn(&Run) -> f64| {
+        let mut v: Vec<f64> = rs.iter().map(f).collect();
+        v.sort_by(f64::total_cmp);
+        if best { v[0] } else { v[v.len() / 2] }
+    };
+    (pct(pick(on, |r| r.p50), pick(off, |r| r.p50)), pct(pick(on, |r| r.p99), pick(off, |r| r.p99)))
+}
+
+fn verdict(ok: bool) -> &'static str {
+    if ok { "PASS" } else { "FAIL" }
+}
+
+/// Runs `load` for [`CACHE_ROUNDS`] rounds, off and on alternating, prints
+/// every round and the comparison with the thresholds. `w1` selects which
+/// thresholds apply: those of W1 (p50 gain and p99 loss) or the worst case.
+fn compare(db: &Units, load: &Load, w1: bool) -> Res<()> {
+    let (mut off, mut on) = (Vec::new(), Vec::new());
+    for round in 0..CACHE_ROUNDS {
+        let order = if round % 2 == 0 { [false, true] } else { [true, false] };
+        for mode in order {
+            let r = run_stream(db, load, mode)?;
+            println!(
+                "cache,{},{},{},{round},{},{},{:.3},{:.3},{:.3}",
+                load.scale,
+                load.label,
+                if mode { "on" } else { "off" },
+                r.timed,
+                r.hits,
+                r.p50,
+                r.p95,
+                r.p99
+            );
+            if mode { &mut on } else { &mut off }.push(r);
+        }
+    }
+    let rate =
+        |rs: &[Run]| rs.iter().map(|r| r.hits).sum::<usize>() as f64 / rs.iter().map(|r| r.timed).sum::<usize>() as f64;
+    let head = format!("# {} {}", load.scale, load.label);
+    println!("{head}: cache-on reads served by the cache: {:.1} %", rate(&on) * 100.0);
+    if !w1 && on.iter().any(|r| r.hits != 0) {
+        return Err("the stream without repeats was served from the cache".into());
+    }
+    for (name, best) in [("best round", true), ("median round", false)] {
+        let (p50, p99) = deltas(&on, &off, best);
+        let (limit, text) = if w1 {
+            (
+                W1_P99_MAY_LOSE,
+                format!("p50 {p50:+.1} % (needs <= -{W1_P50_MUST_GAIN:.0} %: {})", verdict(p50 <= -W1_P50_MUST_GAIN)),
+            )
+        } else {
+            (WORST_P99_MAY_LOSE, format!("p50 {p50:+.1} % (not a threshold)"))
+        };
+        println!(
+            "{head}: cache on vs off, {name}: {text}, p99 {p99:+.1} % (needs <= +{limit:.0} %: {})",
+            verdict(p99 <= limit)
+        );
+    }
+    Ok(())
+}
+
+/// E6-04. `scale` units; the stream without repeats runs at every scale, W1
+/// at the first only (a write plus an index rebuild per block).
+fn cache_section(base: &std::path::Path, seed: u64, quick: bool) -> Res<()> {
+    // (units, reads without repeats, W1 blocks with the index kept Ready, W1 blocks with the index left stale)
+    let scales: &[(usize, usize, usize, usize)] =
+        if quick { &[(2_000, 200, 20, 10)] } else { &[(20_000, 4_000, 400, 150), (100_000, 1_500, 0, 0)] };
+    println!("cache,scale,load,cache,round,timed_reads,served,p50_ms,p95_ms,p99_ms");
+    for &(n, norepeat, ready, stale) in scales {
+        let dir = TempDir(base.join(format!("kerno-cache-bench-{}-{n}", std::process::id())));
+        let _ = std::fs::remove_dir_all(&dir.0);
+        std::fs::create_dir_all(&dir.0)?;
+        let db = Units::open(StdVfs::shared(), &dir.0, &config())?;
+        let active = load(&db, n, seed)?;
+        db.rebuild_index()?;
+        let qs = by_type(&active);
+        let target = active[0].2;
+        let stream = |blocks: usize, writes: bool| -> Vec<Block> {
+            (0..blocks)
+                .map(|b| Block { write: writes, reads: vec![nth_query(b); if writes { READS_PER_WRITE } else { 1 }] })
+                .collect()
+        };
+        let plan = [
+            ("no-repeat", false, norepeat, false, false),
+            ("w1-index-ready", true, ready, true, true),
+            ("w1-index-stale", true, stale, false, true),
+        ];
+        for (label, w1, blocks, rebuild, writes) in plan {
+            if blocks == 0 {
+                continue;
+            }
+            let case = Load { label, scale: n, qs: &qs, blocks: stream(blocks, writes), rebuild, target };
+            compare(&db, &case, w1)?;
+        }
+        db.close()?;
+    }
+    Ok(())
+}
+
 fn main() -> Res<()> {
     let args: Vec<String> = std::env::args().collect();
     let quick = args.iter().any(|a| a == "--quick");
     let arg = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
     let base = arg("--dir").map_or_else(std::env::temp_dir, PathBuf::from);
     let seed: u64 = arg("--seed").map_or(Ok(42), |s| s.parse())?;
+    if args.iter().any(|a| a == "--cache") {
+        return cache_section(&base, seed, quick);
+    }
     let scales: &[(usize, usize)] = if quick { &[(2_000, 40)] } else { &[(20_000, 220), (100_000, 110)] };
     let mut justified_at_100k = false;
     println!("scale,query,path,p50_ms,p95_ms,p99_ms,mean_hits,build_ms");
