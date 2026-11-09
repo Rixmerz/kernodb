@@ -3,19 +3,19 @@
 | Campo | Valor |
 |---|---|
 | Fecha | 2026-11-09 |
-| Estado | **Propuesta**, pendiente de aprobación del propietario |
+| Estado | **Aprobada** el 2026-11-09 (decisión delegada por el propietario) |
 | Acto | Propuesta de alcance y de los paquetes E6-00 a E6-05 |
 | Documentos | [Roadmap, Etapa 6](../roadmap/README.md#etapa-6--primera-plasticidad-operacional) · [cierre de la Etapa 5](etapa5-cierre.md) · [ADR-0016](../adr/0016-adaptacion-e-invalidacion.md) (aceptado, G1–G7) · [ADR-0015](../adr/0015-privacidad-de-la-observabilidad.md) · [ADR-0018](../adr/0018-versionado-y-reconstruccion-de-derivados.md) · [ejecución adaptativa](adaptive-execution.md) · [invariantes](invariants.md) · spec v0.2.0 §9, §15.5, §16 |
 
 ## 0. Estado
 
-Esta acta es una **propuesta** (§8). Los WP son secuenciales, como en las Etapas 3 a 5.
+Esta acta está **aprobada** (§8). Los WP son secuenciales, como en las Etapas 3 a 5.
 
 ## 1. Condición de inicio
 
 | Condición | Estado |
 |---|---|
-| Etapa 5 cerrada | **Pendiente**: el [cierre](etapa5-cierre.md) espera la aprobación del propietario, con la promoción de I-32 (planificador) e I-37 y las limitaciones H-1 y H-2 |
+| Etapa 5 cerrada | Cumplida: [cierre](etapa5-cierre.md) aprobado el 2026-11-09, con la promoción de I-32 (planificador) e I-37 y las limitaciones H-1 y H-2 |
 | ADR-0016 (adaptación e invalidación) | *Aceptado* el 2026-11-09, sujeto a G1–G7 |
 | ADR-0018 (versionado de derivados) | *Propuesto*. Solo hace falta si el estado aprendido se persiste (§7, punto 3) |
 | Experimento de hilos narrativos | Cerrado con NO-GO ([informe](../../experiments/narrative-threads/results/REPORT.md)); no afecta a esta etapa ni al formato persistente |
@@ -104,4 +104,4 @@ T1–T10 y U1–U6 no cambian. Propuesta, a fijar en E6-00 antes de medir:
 
 | Fecha | Decisión | Notas |
 |---|---|---|
-| — | pendiente | Requiere antes la aprobación del cierre de la Etapa 5 |
+| 2026-11-09 | **Aprobada** | El propietario delegó las decisiones («lo mejor y más correcto, toma tú las riendas»). Decisiones de §7: (1) caché de resultados por huella y `commit_seq` (opción b), confirmable con la medición base de E6-00: si esa medición muestra que la opción (a) gana más, se registra aquí antes de E6-01; (2) desactivada por defecto hasta cumplir §6; (3) estado solo en memoria con cota de tamaño y edad; (4) umbrales de §6 tal como están, fijados antes de medir; (5) carga: W1 con 80 % de lecturas repetidas y 20 % de escrituras intercaladas, más la carga sin repetición como peor caso |

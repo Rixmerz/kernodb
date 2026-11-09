@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | **Pendiente de aprobación del propietario** |
+| Estado | **Aprobado** el 2026-11-09 (decisión delegada por el propietario) |
 | Fecha | 2026-11-06 (E5-05) |
 | Acto | Revisión adversarial y cierre de la Etapa 5 (acta §3, fila E5-05) |
 | Alcance | Paquetes E5-00 a E5-05: puertas de entrada, huella y plan explicable, planificador determinista, `ExecutionObservation`, centinelas y cierre, en el crate `kerno-units` |
@@ -116,7 +116,7 @@ E5-05 no añade pruebas; el conteo no cambia. `kerno-units` solo: 259 pruebas en
 | 2 | Revisión adversarial sin bloqueantes abiertos (§3) | hecho |
 | 3 | Promoción de I-32 (planificador) e I-37 en [invariants.md](invariants.md) | hecho, **pendiente de aprobación del propietario** |
 | 4 | Roadmap, SAD §9 y `adaptive-execution.md` actualizados | hecho en el cambio que incorpora este documento |
-| 5 | Aprobación del propietario de este cierre, de la promoción y de las limitaciones (§6) | **pendiente** |
+| 5 | Aprobación del propietario de este cierre, de la promoción y de las limitaciones (§6) | **hecho** el 2026-11-09: el propietario delegó la decisión («toma tú las riendas»); se aprueban el cierre, la promoción de I-32 (planificador) e I-37 y las limitaciones H-1 y H-2. La re-medición del planificador y de `diagnostic` pasa a E6-00 |
 
 ## 8. Siguiente etapa
 
