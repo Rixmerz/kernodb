@@ -2,3 +2,5 @@
 corpus/d-gutenberg-2701.txt
 .venv/
 __pycache__/
+# Embeddings: rebuilt by retrieve.py from the corpus (keyed by SHA-256 and model).
+results/index/
