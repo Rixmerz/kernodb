@@ -17,16 +17,15 @@ block boundaries, each asked for its share of the 30 questions.
 from __future__ import annotations
 
 import argparse
-import os
-import tempfile
 import hashlib
 import json
 import re
-import subprocess
 import sys
 from pathlib import Path
 
 from ledger import CapReached, Ledger
+from model_call import answer_of
+from model_call import ask as _ask
 from segment import segment
 
 HERE = Path(__file__).resolve().parent
@@ -99,32 +98,6 @@ def locate(data: bytes, lo: int, hi: int, quote: str) -> tuple[int, int] | None:
     return (m.start(), m.end()) if m else None
 
 
-def isolated_call() -> tuple[list[str], dict[str, str]]:
-    """argv and env of one model call that sees only its prompt: no settings, plugins or hooks
-    (a hook of the person's tools would put its memory in front of the model), no tools, no MCP."""
-    argv = ["claude", "-p", "--model", ALIAS, "--output-format", "json", "--tools", "",
-            "--strict-mcp-config", "--setting-sources", "", "--json-schema", json.dumps(SCHEMA)]
-    env = {**os.environ, "LOCKS_HOOKS_OFF": "1"}
-    return argv, env
-
-
-def ask(prompt: str) -> dict:
-    argv, env = isolated_call()
-    with tempfile.TemporaryDirectory() as cwd:
-        out = subprocess.run(argv, input=prompt, capture_output=True, text=True, timeout=900, env=env, cwd=cwd)
-    return json.loads(out.stdout)
-
-
-def answer_of(result: dict) -> dict:
-    so = result.get("structured_output")
-    if isinstance(so, dict):
-        return so
-    text = (result.get("result") or "").strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1].rsplit("```", 1)[0]
-    return json.loads(text)
-
-
 def run_doc(name: str, ledger: Ledger, pinned: dict) -> dict:
     data = (CORPUS / name).read_bytes()
     wins = windows(data)
@@ -140,7 +113,7 @@ def run_doc(name: str, ledger: Ledger, pinned: dict) -> dict:
             continue
         ledger.authorize("eval")
         prompt = INSTRUCTIONS.format(n=n, local=max(1, n // 6)) + data[lo:hi].decode("utf-8")
-        result = ask(prompt)
+        result = _ask(ALIAS, SCHEMA, prompt, timeout=900)
         call_id = f"questions:{PROMPT_VERSION}:{name}:w{i}"
         entry = ledger.record("eval", name, ALIAS, result, call_id)
         ids = entry["model_ids"]

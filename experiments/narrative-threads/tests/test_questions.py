@@ -30,8 +30,8 @@ def test_locate_tolerates_line_wraps_not_word_changes():
 
 
 def test_model_calls_are_isolated_from_hooks_and_settings():
-    from questions import isolated_call
-    argv, env = isolated_call()
+    from model_call import isolated_call
+    argv, env = isolated_call("haiku", {"type": "object"})
     assert env["LOCKS_HOOKS_OFF"] == "1"
     assert argv[argv.index("--setting-sources") + 1] == ""
     assert argv[argv.index("--tools") + 1] == ""
