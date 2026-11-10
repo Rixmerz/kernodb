@@ -420,8 +420,11 @@ fn compare(db: &Units, load: &Load, w1: bool) -> Res<()> {
         |rs: &[Run]| rs.iter().map(|r| r.hits).sum::<usize>() as f64 / rs.iter().map(|r| r.timed).sum::<usize>() as f64;
     let head = format!("# {} {}", load.scale, load.label);
     println!("{head}: cache-on reads served by the cache: {:.1} %", rate(&on) * 100.0);
-    if !w1 && on.iter().any(|r| r.hits != 0) {
-        return Err("the stream without repeats was served from the cache".into());
+    // A type comes back only after the other `TYPES - 1`, so the one entry a
+    // shape keeps can serve at most one read in `TYPES`. More than that means
+    // the stream is not the worst case it claims to be.
+    if !w1 && on.iter().any(|r| r.hits > r.timed.div_ceil(TYPES as usize) + 1) {
+        return Err("the stream without repeats was served from the cache beyond its recurrences".into());
     }
     for (name, best) in [("best round", true), ("median round", false)] {
         let (p50, p99) = deltas(&on, &off, best);

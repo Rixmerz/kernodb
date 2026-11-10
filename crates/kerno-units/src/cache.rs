@@ -44,6 +44,11 @@
 //! * **Bounded** by size and age ([`CacheConfig`]): at most `max_entries`
 //!   entries and `max_bytes` (estimated) of results, none older than
 //!   `max_age`. The oldest go first.
+//! * **Admission** (E6-04b): the planner stores an answer only if
+//!   [`ResultCache::worth_storing`] says so. One entry fits per query shape,
+//!   so a query of the same shape and other literals replaces the entry; an
+//!   entry that served nothing is replaced only by a newcomer seen twice.
+//!   A stream of queries that never repeat then copies and evicts nothing.
 //! * [`ResultCache::clear`] deletes all learned state: entries, log and
 //!   counters. It keeps the switches, like `Observer::clear` keeps the level.
 //!
@@ -551,6 +556,9 @@ struct Slot {
     bytes: usize,
     /// Insertion order: the lowest is the oldest.
     seq: u64,
+    /// Lookups this entry has served. An entry that served none is
+    /// unproven: see [`ResultCache::worth_storing`].
+    hits: u64,
 }
 
 struct State {
@@ -561,6 +569,11 @@ struct State {
     key: Option<FingerprintKey>,
     disabled_queries: HashSet<Fingerprint>,
     entries: HashMap<Fingerprint, Slot>,
+    /// Per fingerprint, the last query [`ResultCache::worth_storing`] declined
+    /// once. A fingerprint is a query *shape*, so this holds at most one query
+    /// per shape (a handful) and needs no bound of its own. In memory only,
+    /// like the entries, and dropped with them.
+    declined: HashMap<Fingerprint, CachedQuery>,
     bytes: usize,
     next_slot: u64,
     next_id: u64,
@@ -638,6 +651,7 @@ impl State {
     fn wipe(&mut self) -> u64 {
         let entries = self.entries.len() as u64;
         self.entries.clear();
+        self.declined.clear();
         self.bytes = 0;
         self.log.clear();
         self.stats = CacheStats::default();
@@ -681,6 +695,7 @@ impl ResultCache {
                 key: None,
                 disabled_queries: HashSet::new(),
                 entries: HashMap::new(),
+                declined: HashMap::new(),
                 bytes: 0,
                 next_slot: 1,
                 next_id: 1,
@@ -715,6 +730,7 @@ impl ResultCache {
         } else {
             st.record(None, Transition::Disabled { switch }, None, now);
             st.drop_all_entries(DeleteReason::Disabled, now);
+            st.declined.clear();
         }
     }
 
@@ -727,6 +743,7 @@ impl ResultCache {
         let now = st.clock.now();
         st.record(Some(fingerprint), Transition::Disabled { switch: Switch::Query }, None, now);
         st.remove(&fingerprint, Some(DeleteReason::Disabled), now);
+        st.declined.remove(&fingerprint);
     }
 
     /// Undoes [`disable_query`](Self::disable_query).
@@ -783,7 +800,8 @@ impl ResultCache {
         let seq = st.next_slot;
         st.next_slot = st.next_slot.saturating_add(1);
         st.bytes = st.bytes.saturating_add(bytes);
-        st.entries.insert(fp, Slot { entry, active: false, created_at: now, bytes, seq });
+        st.entries.insert(fp, Slot { entry, active: false, created_at: now, bytes, seq, hits: 0 });
+        st.declined.remove(&fp);
         st.stats.writes = st.stats.writes.saturating_add(1);
         st.prune_entries(now);
         Ok(())
@@ -857,12 +875,53 @@ impl ResultCache {
             st.stats.invalidations = st.stats.invalidations.saturating_add(1);
             return Lookup::Invalidated(dependency);
         }
-        let Some(result) = st.entries.get(fingerprint).map(|s| s.entry.result.clone()) else {
+        let Some(slot) = st.entries.get_mut(fingerprint) else {
             return Lookup::Miss;
         };
+        slot.hits = slot.hits.saturating_add(1);
+        let result = slot.entry.result.clone();
         st.record(Some(*fingerprint), Transition::Used, Some(&deps), at);
         st.stats.hits = st.stats.hits.saturating_add(1);
         Lookup::Hit(result)
+    }
+
+    /// Whether the answer to `query`, just computed at `now`, is worth the
+    /// copy that storing it costs. Advisory, and called by the planner between
+    /// a miss and [`create`](Self::create); it records nothing.
+    ///
+    /// One entry fits per query shape, so a query of the same shape but other
+    /// literals replaces the entry that is there. That is a bad trade when
+    /// the entry never served anything: a stream of queries that never repeat
+    /// would pay a copy of every result, and the eviction of the last, to
+    /// serve nobody. So a newcomer **replaces an unproven entry only on its
+    /// second sighting**: the first is declined and remembered (in memory,
+    /// one query per shape). Stored at once are: the first query of a shape,
+    /// the same query as the entry's, a newcomer to an entry that has served
+    /// a lookup, and a newcomer to an entry whose dependencies no longer
+    /// match `now` (it can serve nobody). The cost of the rule is that a
+    /// query alternating with an unproven one of its shape is stored one
+    /// miss later; what it buys is that a stream of unique queries no longer
+    /// copies or evicts anything. `false` also while the cache is off for the
+    /// query.
+    pub fn worth_storing(&self, fingerprint: &Fingerprint, query: &CachedQuery, now: &Dependencies) -> bool {
+        if !self.enabled() {
+            return false;
+        }
+        let mut st = self.lock();
+        if st.disabled_queries.contains(fingerprint) {
+            return false;
+        }
+        let Some(slot) = st.entries.get(fingerprint) else {
+            return true;
+        };
+        if slot.hits > 0 || slot.entry.query == *query || slot.entry.dependencies.first_change(now).is_some() {
+            return true;
+        }
+        if st.declined.get(fingerprint) == Some(query) {
+            return true;
+        }
+        st.declined.insert(*fingerprint, query.clone());
+        false
     }
 
     /// The fingerprint of `query` under this store's key, which is generated
@@ -1476,5 +1535,81 @@ mod tests {
         };
         assert!(Arc::ptr_eq(&a, &b));
         assert_eq!(a.kind(), QueryKind::Units);
+    }
+
+    /// The query of the shape `fp("t")` stands for with the literal `t`.
+    fn query_with(t: &str) -> CachedQuery {
+        CachedQuery::Units(UnitFilter { unit_type: Some(t.into()), schema_version: None })
+    }
+
+    /// An active entry of `fp("t")` answering `query_with(t)`, read at `d`.
+    fn store_active(c: &ResultCache, t: &str, d: Dependencies) {
+        let e = CacheEntry::new(fp("t"), query_with(t), d, CachedResult::Units(Vec::new()), evidence()).unwrap();
+        c.create(e).unwrap();
+        c.activate(&fp("t")).unwrap();
+    }
+
+    #[test]
+    fn a_newcomer_replaces_an_unproven_entry_only_on_its_second_sighting() {
+        let (c, _) = on();
+        let now = deps(10);
+        assert!(c.worth_storing(&fp("t"), &query_with("a"), &now), "an empty slot takes the first query");
+        store_active(&c, "a", now);
+        let log = c.records().len();
+
+        assert!(c.worth_storing(&fp("t"), &query_with("a"), &now), "the entry's own query is always stored");
+        assert!(!c.worth_storing(&fp("t"), &query_with("b"), &now), "first sighting of a newcomer: declined");
+        assert!(c.worth_storing(&fp("t"), &query_with("b"), &now), "second sighting: stored");
+        assert_eq!(c.records().len(), log, "deciding records nothing and stores nothing");
+        assert_eq!(c.stats().entries, 1);
+
+        // Storing it forgets the sighting: the next newcomer starts again.
+        store_active(&c, "b", now);
+        assert!(!c.worth_storing(&fp("t"), &query_with("c"), &now));
+        assert!(!c.worth_storing(&fp("t"), &query_with("d"), &now), "one remembered per shape: c did not count twice");
+    }
+
+    #[test]
+    fn a_proven_or_dead_entry_is_replaced_at_once() {
+        let (c, _) = on();
+        store_active(&c, "a", deps(10));
+        assert!(!c.worth_storing(&fp("t"), &query_with("b"), &deps(10)));
+        c.clear();
+        store_active(&c, "a", deps(10));
+        // It served a lookup: it earned its slot's turnover.
+        assert!(matches!(c.lookup(&fp("t"), &query_with("a"), &deps(10)), Lookup::Hit(_)));
+        assert!(c.worth_storing(&fp("t"), &query_with("b"), &deps(10)), "proven");
+
+        // An entry no snapshot at `now` can use is no reason to decline.
+        c.clear();
+        store_active(&c, "a", deps(10));
+        assert!(c.worth_storing(&fp("t"), &query_with("b"), &deps(11)), "its commit_seq moved on");
+    }
+
+    #[test]
+    fn nothing_is_worth_storing_while_the_cache_is_off_for_the_query() {
+        let (c, _) = on();
+        assert!(c.worth_storing(&fp("t"), &query_with("a"), &deps(10)));
+        c.disable_query(fp("t"));
+        assert!(!c.worth_storing(&fp("t"), &query_with("a"), &deps(10)));
+        c.enable_query(fp("t"));
+        c.set_enabled(false);
+        assert!(!c.worth_storing(&fp("t"), &query_with("a"), &deps(10)));
+    }
+
+    #[test]
+    fn declined_sightings_do_not_outlive_the_learned_state() {
+        let (c, _) = on();
+        store_active(&c, "a", deps(10));
+        assert!(!c.worth_storing(&fp("t"), &query_with("b"), &deps(10)));
+        c.clear();
+        store_active(&c, "a", deps(10));
+        assert!(!c.worth_storing(&fp("t"), &query_with("b"), &deps(10)), "clear forgot the sighting of b");
+
+        assert!(!c.worth_storing(&fp("t"), &query_with("c"), &deps(10)));
+        c.set_enabled(false);
+        c.set_enabled(true);
+        store_active(&c, "a", deps(10));
+        assert!(!c.worth_storing(&fp("t"), &query_with("c"), &deps(10)), "switching off forgot the sighting of c");
     }
 }
