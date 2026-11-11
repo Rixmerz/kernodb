@@ -5,7 +5,7 @@
 | Fecha | 2026-11-11 |
 | Estado | **Aprobada** el 2026-11-11 (decisión delegada por el propietario; revocable) |
 | Acto | Propuesta de alcance y de los paquetes E7-00 a E7-06 |
-| Documentos | [Roadmap, Etapa 7](../roadmap/README.md#etapa-7--memoria-asociativa) · [cierre de la Etapa 6](etapa6-cierre.md) · [ADR-0011](../adr/0011-vectores-y-recuperacion-hibrida.md) (aceptado el 2026-11-11) · [conjunto de evaluación](etapa7-conjunto-evaluacion.md) · [ADR-0014](../adr/0014-representacion-fisica-de-relaciones.md) · [ADR-0015](../adr/0015-privacidad-de-la-observabilidad.md) · [ADR-0018](../adr/0018-versionado-y-reconstruccion-de-derivados.md) (propuesto) · [invariantes](invariants.md) · spec v0.2.0 §11, §12, §16 |
+| Documentos | [Roadmap, Etapa 7](../roadmap/README.md#etapa-7--memoria-asociativa) · [cierre de la Etapa 6](etapa6-cierre.md) · [ADR-0011](../adr/0011-vectores-y-recuperacion-hibrida.md) (aceptado el 2026-11-11) · [conjunto de evaluación](etapa7-conjunto-evaluacion.md) · [consulta asociativa (E7-01)](etapa7-consulta-asociativa.md) · [ADR-0014](../adr/0014-representacion-fisica-de-relaciones.md) · [ADR-0015](../adr/0015-privacidad-de-la-observabilidad.md) · [ADR-0018](../adr/0018-versionado-y-reconstruccion-de-derivados.md) (propuesto) · [invariantes](invariants.md) · spec v0.2.0 §11, §12, §16 |
 
 ## 0. Estado
 
