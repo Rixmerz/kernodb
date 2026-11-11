@@ -23,6 +23,7 @@
 //! stays separate from `kerno-storage`.
 
 pub mod assoc;
+pub mod assoc_rank;
 pub mod cache;
 pub mod clock;
 pub mod codec;
