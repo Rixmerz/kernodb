@@ -21,7 +21,7 @@ Los paquetes **no son secuenciales**: §3.1 indica cuáles corren a la vez. Ning
 | Etapa 7 en curso | E7-00 y E7-01 hechos; E7-02 es el siguiente. **No bloquea**: los paquetes E9A no tocan sus archivos |
 | ADR-0009 (supresión, retención y backups) | **Pendiente, no aceptado.** No bloquea E9A-00a, E9A-01 ni E9A-02. **Bloquea** cualquier API de supresión y la entrada en la Etapa 8. E9A-00b es la puerta |
 | ADR-0015 (privacidad de la observabilidad) | Aceptado el 2026-11-06. Es la base de E9A-02 |
-| ADR-0013 (formato v1) | **Estado contradictorio entre fuentes** (§2.4). No bloquea ningún E9A; sí bloquea las migraciones de la Etapa 9 |
+| ADR-0013 (formato v1) | **Resuelto el 2026-11-11** (§7, punto 3): aceptado y formato v1 congelado el 2026-10-31. No bloquea ningún E9A; las migraciones de la Etapa 9 siguen pendientes como trabajo propio |
 | Etapa 8 | No empieza. Su condición en el roadmap es ADR-0018 y ADR-0009 aceptados. Propuesta de esta acta, revocable: que E9A-00b y E9A-02 estén cerrados antes de que la Etapa 8 escriba ningún derivado |
 
 ## 2. Alcance
@@ -51,14 +51,14 @@ Los paquetes **no son secuenciales**: §3.1 indica cuáles corren a la vez. Ning
 - **Comparaciones con SQLite y umbrales frente a SQLite.** SQLite aparece solo en `spikes/storage/spike-bench/Cargo.toml`; ningún crate de `crates/` lo usa, y ningún E9A lo necesita. Los umbrales son del propietario (pendiente 3 del roadmap; ADR-0012).
 - **Revisión de K-E3-7** («las lecturas comprueban menos que `verify_units`»). Las lecturas de unidades y relaciones están en `kerno-units/src/db.rs`, y la consulta asociativa de la Etapa 7 las usa: `assoc.rs:327` llama a `UnitSnapshot::reference_relations_of`. Revisarlas ahora mezclaría dos superficies en una sola revisión. **Recomendación:** hacerla en la Etapa 9, después de E7-06.
 - **Backups y ventanas de expiración** (parte de ADR-0009). La decisión es del ADR; la implementación es de la Etapa 9.
-- **Fuzzing con cobertura** (E9A-04): solo si el propietario aprueba la dependencia (§7, punto 2).
+- **Fuzzing con cobertura** (E9A-04): aprobado el 2026-11-11 (§7, punto 2); corre después de E9A-03.
 - **Umbrales de latencia** en estrés o fuzzing. ADR-0012 sigue *Propuesto*; ningún E9A fija umbrales de latencia.
 - **Escala `large` del benchmark** ([informe F1](../testing/f1-report.md) §5.1). Es una medición de la Fase 1, no una prueba de la Etapa 9.
 - **Cambios de `Config::default`.** Ningún E9A cambia valores por defecto.
 
 ### 2.4 Discrepancias encontradas al leer (no corregidas aquí)
 
-1. **Estado de ADR-0013.** Su propio texto dice «Aceptado (2026-10-31), condicionado a…». `docs/adr/README.md` dice «Propuesto (WP06; se acepta antes de congelar v1 en WP14)». El roadmap dice que la congelación del formato v1 está pendiente y que ADR-0013 «sigue Propuesto». [`crates/kerno-storage/DESIGN.md`](../../crates/kerno-storage/DESIGN.md) dice «congelado el 2026-10-31 (ADR-0013)» y que el bit `DRAFT` está retirado; [invariantes I-15](invariants.md) dice que, mientras la congelación esté pendiente, todo archivo lleva `DRAFT`. El propietario debe fijar un estado único antes de cualquier migración.
+1. **Estado de ADR-0013 (resuelta el 2026-11-11, §7 punto 3).** La congelación se ejecutó el 2026-10-31 y ADR-0013 está aceptado desde esa fecha; las fuentes que decían lo contrario se corrigieron en la misma fecha. Texto original del punto: su propio texto dice «Aceptado (2026-10-31), condicionado a…». `docs/adr/README.md` dice «Propuesto (WP06; se acepta antes de congelar v1 en WP14)». El roadmap dice que la congelación del formato v1 está pendiente y que ADR-0013 «sigue Propuesto». [`crates/kerno-storage/DESIGN.md`](../../crates/kerno-storage/DESIGN.md) dice «congelado el 2026-10-31 (ADR-0013)» y que el bit `DRAFT` está retirado; [invariantes I-15](invariants.md) dice que, mientras la congelación esté pendiente, todo archivo lleva `DRAFT`. El propietario debe fijar un estado único antes de cualquier migración.
 2. **Fase del fuzzing.** El roadmap lo pone en la Etapa 9. El [threat model §6.2](../security/threat-model.md) y el SAD (Fase 6) lo ponen en la Fase 6. Esta acta no decide la fase: trata el fuzzing con cobertura como puerta (E9A-04).
 3. **Comentario de estrés.** El comentario de `group_commit.rs` dice «10^4 commits»; el código hace 4 × 1 500 y 4 × 1 000. Lo corrige E9A-05 si toca ese archivo; si no, un cambio de documentación aparte.
 
@@ -72,7 +72,7 @@ Todos escriben solo en los archivos indicados. Ninguno cambia `src/` de `kerno-s
 | **E9A-01** Qué sobrevive a un borrado (solo medición) | Prueba de extremo a extremo: escribir valores con centinelas, borrar con `delete` y `delete_range`, y observar en cada etapa (antes de flush, tras `compact_range`, tras cierre limpio, tras reapertura) qué archivos del directorio siguen conteniendo el centinela. Sin política ni API nueva | E9A-00a | `crates/kerno-storage/tests/suppression_survival.rs` | E9A-02, E9A-03, E9A-05 |
 | **E9A-02** I-29 en `kerno-storage` | Centinelas en claves y valores. Provocar cada variante de `Error`, `verify()` sobre daño, `inspect()` y `metrics()`. Comprobar que ningún `Display` ni `Debug` contiene un centinela ni su forma ASCII | — (ADR-0015 aceptado) | `crates/kerno-storage/tests/redaction.rs` | E9A-01, E9A-03, E9A-05 |
 | **E9A-03** Propiedades de apertura | proptest sobre una base creada: muta un archivo (WAL, SST o MANIFEST) con bit flips, truncamientos y reescritura con CRC recalculado; abre en lectura-escritura y en solo lectura y llama a `verify()` | — | `crates/kerno-storage/tests/open_properties.rs` | E9A-01, E9A-02, E9A-05 |
-| **E9A-04** Fuzzing con cobertura | Un objetivo por decodificador (14) y uno para la apertura, con cargo-fuzz en `crates/kerno-storage/fuzz/`, fuera del workspace, con corpus comprometido. No bloqueante en CI | Aprobación de la dependencia y de la cadena de herramientas (§7, punto 2) | `crates/kerno-storage/fuzz/**` | cualquiera, cuando haya aprobación |
+| **E9A-04** Fuzzing con cobertura | Un objetivo por decodificador (14) y uno para la apertura, con cargo-fuzz en `crates/kerno-storage/fuzz/`, fuera del workspace, con corpus comprometido. No bloqueante en CI | E9A-03; dependencia y cadena de herramientas aprobadas el 2026-11-11 (§7, punto 2) | `crates/kerno-storage/fuzz/**` | — (corre después de E9A-03) |
 | **E9A-05** Estrés del ciclo de vida | Ciclos de escrituras concurrentes (4 escritores), borrados y `delete_range`, `compact_range`, `sync()`, cierre limpio, reapertura y `verify()`. Comparación con el modelo en cada reapertura | — | `crates/kerno-storage/tests/lifecycle_soak.rs` | E9A-01, E9A-02, E9A-03 |
 | **E9A-00b** Decisión sobre ADR-0009 | Elegir la opción 1, 2 o 3 y aceptar ADR-0009, o dejarlo pendiente y prohibir cualquier API de supresión | E9A-00a, E9A-01 | `docs/adr/0009-*.md`, `docs/adr/README.md` | — (decisión del propietario) |
 | **E9A-06** Cierre | Revisión adversarial de E9A-01…05. Promoción de I-29 para `kerno-storage` si E9A-02 pasa. Actualización de [invariantes](invariants.md) (I-27…I-30 siguen en «Fase 4»), [threat model](../security/threat-model.md) (T-06, T-08, T-09) y, si cambia lo que declara, [DESIGN.md](../../crates/kerno-storage/DESIGN.md) | E9A-00b, E9A-01…05 | `docs/architecture/etapa9-adelanto-cierre.md`, `invariants.md`, `threat-model.md` | — |
@@ -81,7 +81,7 @@ Todos escriben solo en los archivos indicados. Ninguno cambia `src/` de `kerno-s
 
 - **Ahora, junto con E7-02 a E7-06:** E9A-00a, E9A-01, E9A-02, E9A-03 y E9A-05. Cada uno crea un archivo nuevo en `crates/kerno-storage/tests/`. Ninguno modifica `tests/common/`, `tests/shared.rs` ni `src/`, así que no hay conflictos entre ellos.
 - **Después de E9A-01 y de la decisión del propietario:** E9A-00b.
-- **Cuando el propietario apruebe la dependencia:** E9A-04. No necesita a los demás.
+- **Después de E9A-03** (dependencia aprobada el 2026-11-11, §7, punto 2): E9A-04. No necesita a los demás.
 - **Al final:** E9A-06, después de E9A-00b y de E9A-01 a E9A-05.
 - **Fuera de todo paquete E9A:** `crates/kerno-units` y `crates/kerno-testkit`. Si un E9A necesita un ayudante de `kerno-testkit`, lo copia en su propio archivo; no lo añade a la crate compartida.
 - **Hallazgo en `src/`:** si un E9A encuentra un fallo real en `kerno-storage/src`, lo registra como hallazgo y no lo corrige. La corrección es un paquete aparte, que se acepta por separado.
@@ -102,7 +102,7 @@ Comunes a todos los paquetes con código: `cargo fmt --all --check`; `cargo clip
   Cada predicción pasa, o se registra como contradicha con la salida real. Ninguna se corrige para que pase. La prueba se etiqueta como **observación del comportamiento actual**, no como contrato, para que no fije una decisión de ADR-0009. Mutación de prueba: `compact_range` que no descarta valores cubiertos; P2 debe fallar.
 - **E9A-02.** La prueba produce **las siete** variantes de `kerno_core::Error` (`Io`, `Corruption`, `Locked`, `InvalidArgument`, `Poisoned`, `Incompatible`, `ReadOnly`); si falta una, la prueba falla. No aparece ningún centinela, ni en bytes ni en su forma ASCII, en `Display` ni en `Debug`, en `Issue`, en `VerifyReport`, en `inspect()` ni en `metrics()`. Mutación de prueba: añadir la clave con `{:?}` al mensaje de `sst.rs:332`, con la tabla ausente, y la prueba debe fallar. Si E9A-02 pasa, I-29 queda promovida para `kerno-storage`, **pendiente de aprobación del propietario**.
 - **E9A-03.** Cero pánicos. Cero aperturas que devuelvan datos distintos del modelo. Los únicos errores aceptados son `Corruption` e `Incompatible`. Mutación de prueba: quitar la comprobación de CRC de un bloque SST en la copia; la prueba debe fallar.
-- **E9A-04.** Con aprobación: un objetivo por decodificador más uno para la apertura, 30 minutos por objetivo en máquina local, cero fallos, cero entradas que tarden más de 1 s, corpus y entradas que fallan comprometidos en el repositorio.
+- **E9A-04.** Aprobado el 2026-11-11: un objetivo por decodificador más uno para la apertura, 30 minutos por objetivo en máquina local, cero fallos, cero entradas que tarden más de 1 s, corpus y entradas que fallan comprometidos en el repositorio.
 - **E9A-05.** 200 ciclos por defecto (`KERNO_SOAK_CYCLES`), 4 escritores. Cero commits confirmados perdidos (la secuencia recuperada es al menos la última confirmada). `verify()` sin hallazgos en cada reapertura y contenido igual al modelo. Mutación de prueba: no escribir el checkpoint `CLEAN` en el cierre; la prueba debe fallar.
 - **E9A-06.** Ningún hallazgo bloqueante abierto. El informe lleva los comandos y su salida real.
 
@@ -114,7 +114,7 @@ Comunes a todos los paquetes con código: `cargo fmt --all --check`; `cargo clip
 | Fallos críticos resueltos o marcados como bloqueantes | Cada hallazgo se registra en el informe de E9A-06 | pendiente |
 | I-29 verificada | E9A-02 (solo `kerno-storage`). Las observaciones de la Etapa 5 ya las cubre I-37 y ADR-0015 | pendiente |
 | I-27, I-28, I-30 verificadas | Fuera de esta acta (§2.3) | pendiente, Etapa 9 |
-| Fuzzing de entradas externas | E9A-03 en el árbol; E9A-04 con cobertura, si se aprueba | pendiente |
+| Fuzzing de entradas externas | E9A-03 en el árbol; E9A-04 con cobertura, aprobado el 2026-11-11 | pendiente |
 | Pruebas de estrés | E9A-05, además de las pruebas que ya existen (§2.2) | pendiente |
 | ADR-0009 antes de la Etapa 8 | E9A-00b | pendiente, decisión del propietario |
 
@@ -144,8 +144,8 @@ No existe invariante de supresión. Si ADR-0009 se acepta, la Etapa 8 propondrá
 ## 7. Decisiones que el propietario debe tomar
 
 1. **Aceptar ADR-0009 (E9A-00b).** No está incluida en la delegación del 2026-11-11, que cubre solo la pendiente 1. Sin decisión, la Etapa 8 no entra y ningún código de supresión se escribe. Recomendación: decidir después de E9A-01, con sus resultados delante.
-2. **Dependencia de fuzzing con cobertura (E9A-04).** cargo-fuzz exige `libfuzzer-sys` y un toolchain nightly, y eso es una dependencia nueva en el sentido de la escalera de `ponytail`. Recomendación: decidirlo después de E9A-03, cuando se sepa qué cobertura falta.
-3. **Estado único de ADR-0013** (§2.4, punto 1). Antes de cualquier migración.
+2. **Dependencia de fuzzing con cobertura (E9A-04): aprobada el 2026-11-11** en estos términos: cargo-fuzz con `libfuzzer-sys` y un toolchain nightly, solo en `crates/kerno-storage/fuzz`, fuera del workspace, no bloqueante en CI, y ejecutado después de E9A-03. Motivo de la pregunta original: cargo-fuzz exige `libfuzzer-sys` y un toolchain nightly, y eso es una dependencia nueva en el sentido de la escalera de `ponytail`. Recomendación original: decidirlo después de E9A-03, cuando se sepa qué cobertura falta (ya decidido).
+3. **Estado único de ADR-0013** (§2.4, punto 1). **Resuelta el 2026-11-11:** ADR-0013 está **Aceptado** (2026-10-31) y el formato v1 está congelado desde ese día. Lo confirman el propio ADR-0013, `crates/kerno-storage/src/format/features.rs` y `header.rs` (rechazan el bit `DRAFT` como «pre-freeze draft format») y `crates/kerno-storage/DESIGN.md`. La fila de ADR-0013 en el índice de ADR, la línea del roadmap, I-15 y la cabecera de [`v1.md`](../file-format/v1.md) se corrigen en esa fecha.
 4. **Cuándo revisar K-E3-7.** Recomendación: Etapa 9, después de E7-06 (§2.3).
 
 ## 8. Riesgos
@@ -155,7 +155,7 @@ No existe invariante de supresión. Si ADR-0009 se acepta, la Etapa 8 propondrá
 | R-E9A-1 | ADR-0009 sin aceptar retrasa la Etapa 8 | E9A-00b, decisión del propietario. Ningún código de supresión antes |
 | R-E9A-2 | E9A-01 fija un comportamiento que ADR-0009 después cambia | Las pruebas se etiquetan como observación; las predicciones se registran antes de ejecutar |
 | R-E9A-3 | I-29 se verifica sobre errores, verificación y métricas, pero `kerno-storage` no tiene capa de logs. Cuando la haya, la regla vuelve a aplicarse | E9A-02 se repite con cada capa nueva que emita texto |
-| R-E9A-4 | Las pruebas aleatorias de semilla fija no crecen en cobertura | E9A-03 usa un caso por semilla propia y `PROPTEST_CASES`; E9A-04 solo si se aprueba |
+| R-E9A-4 | Las pruebas aleatorias de semilla fija no crecen en cobertura | E9A-03 usa un caso por semilla propia y `PROPTEST_CASES`; E9A-04, aprobado el 2026-11-11 |
 | R-E9A-5 | Estrés y fuzzing alargan la CI junto con la Etapa 7 | E9A-05 con 200 ciclos por defecto; no entra en la CI hasta medirlo |
 | R-E9A-6 | T-09 sigue abierto aunque ADR-0009 se acepte: sin borrado físico garantizado, y el borrado criptográfico depende de ADR-0006 pendiente | Límite declarado en el threat model; no se promete borrado físico |
 | R-E9A-7 | K-E3-7 queda sin revisar hasta la Etapa 9 | Aceptado por diseño el 2026-11-04 con recomendación de revisión en la Etapa 9 |
@@ -169,3 +169,4 @@ Las decisiones de §2.3 y §7 quedan en sus dueños. Esta acta no cambia ningún
 | Fecha | Decisión | Notas |
 |---|---|---|
 | 2026-11-11 | **Aprobada por delegación del propietario, revocable** | El propietario delegó la decisión pendiente 1 del roadmap y pidió el trabajo de endurecimiento en `kerno-storage` que no dependa de las Etapas 7 ni 8, en paralelo con la Etapa 7. Lo que se decide aquí: lo que afecta a datos derivados (ADR-0009 en su parte de criterios, I-29) se adelanta; el fuzzing, el estrés y las propiedades de apertura son los endurecimientos de `kerno-storage` que corren ahora. El resto queda en la Etapa 9. ADR-0009 no se acepta por esta delegación (§7, punto 1) |
+| 2026-11-11 | **Decisiones del propietario:** fuzzing con cobertura aprobado en los términos de §7, punto 2 (E9A-04 después de E9A-03); estado de ADR-0013 resuelto (§7, punto 3) | ADR-0009 sigue sin decidir (§7, punto 1) |

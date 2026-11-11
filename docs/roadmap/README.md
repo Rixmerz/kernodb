@@ -51,9 +51,9 @@ Estado a 2026-10-29. WP01–WP13b están integrados y probados en `kerno-storage
 | Paquete | Estado |
 |---|---|
 | WP01–WP13b | Integrados (formato v1, motor LSM, MANIFEST como log de ediciones, *range tombstones*, lectura de solo lectura, group commit, transacciones read-modify-write) |
-| WP14 | Integrado **parcialmente**: `kill -9` real con 200 iteraciones y barrido de 1000 semillas en verde; benchmarks medidos en la clase de VM de M0 con **T1 sin cumplir** y otros incumplimientos documentados. **Pendientes**: registro de LazyFS, benchmarks en la máquina objetivo (C-09), escala `large` completa y la **congelación del formato v1** (ADR-0013 sigue «Propuesto») |
+| WP14 | Integrado **parcialmente**: `kill -9` real con 200 iteraciones y barrido de 1000 semillas en verde; benchmarks medidos en la clase de VM de M0 con **T1 sin cumplir** y otros incumplimientos documentados. **Pendientes**: registro de LazyFS, benchmarks en la máquina objetivo (C-09), escala `large` completa. La **congelación del formato v1** se ejecutó el 2026-10-31 con ADR-0013 aceptado ese día: esta celda decía que seguía pendiente y que ADR-0013 estaba en «Propuesto», texto anterior desactualizado |
 
-La Fase 1 **no está cerrada**: la condición de inicio de la etapa 3 (formato v1 congelado con ADR-0013 aceptado) no se cumple todavía, y la revisión de contingencia de ADR-0001 por T1 es una decisión abierta del propietario.
+La Fase 1 **no estaba cerrada** a 2026-10-29: la condición de inicio de la etapa 3 (formato v1 congelado con ADR-0013 aceptado) no se cumplía entonces, y la revisión de contingencia de ADR-0001 por T1 es una decisión abierta del propietario. Estado a 2026-11-11: el formato v1 se congeló y ADR-0013 quedó aceptado el 2026-10-31, y la Fase 1 quedó cerrada ([acta E3-00](../architecture/etapa3-acta-e3-00.md)).
 
 ### Benchmarks de cierre de la Fase 1 y SQLite como baseline
 
@@ -65,7 +65,7 @@ Después de la Fase 1 el trabajo se organiza por las etapas de la [especificaci�
 
 | Etapa | Depende de | Condición de inicio | ADR que se deciden |
 |---|---|---|---|
-| 3 Unidades, revisiones y procedencia | Etapa 2 (Fase 1) | Fase 1 cerrada: WP14 integrado, formato v1 congelado con ADR-0013 aceptado (a 2026-10-29 **pendiente**: ver el estado de WP14 arriba) | 0004, 0008, 0010, 0017 |
+| 3 Unidades, revisiones y procedencia | Etapa 2 (Fase 1) | Fase 1 cerrada: WP14 integrado, formato v1 congelado con ADR-0013 aceptado (congelación ejecutada el 2026-10-31; a 2026-10-29 estaba **pendiente**: ver el estado de WP14 arriba) | 0004, 0008, 0010, 0017 |
 | 4 Relaciones e índices | 3 | API de unidades estable (ADR-0010 aceptado) | 0007, 0014 |
 | 5 Planificador y observabilidad | 4 | Consultas por filtro y relación con ruta de referencia probada | 0015 |
 | 6 Primera plasticidad operacional | 5 | Planificador determinista con prueba diferencial en CI | 0016 |
@@ -117,6 +117,12 @@ Después de la Fase 1 el trabajo se organiza por las etapas de la [especificaci�
 
 ### Decisiones pendientes del propietario para estas etapas
 
-1. **Orden de seguridad frente a IA:** el SAD hace la seguridad (Fase 4) antes que búsqueda e IA (Fase 5); la especificación la deja en la Etapa 9. Propuesta: adelantar a antes de la Etapa 8 lo que afecta a derivados (supresión, ADR-0009; redacción de logs, I-29) y dejar el resto en la Etapa 9.
+1. **Orden de seguridad frente a IA (resuelta el 2026-11-11 por delegación del propietario, en el [acta de adelanto de la Etapa 9](../architecture/etapa9-adelanto-acta.md), §10):** el SAD hace la seguridad (Fase 4) antes que búsqueda e IA (Fase 5); la especificación la deja en la Etapa 9. Propuesta: adelantar a antes de la Etapa 8 lo que afecta a derivados (supresión, ADR-0009; redacción de logs, I-29) y dejar el resto en la Etapa 9.
 2. Aceptar o modificar ADR-0014…0018 en las etapas indicadas.
 3. Umbrales de benchmark frente a SQLite, si se quieren como criterio y no solo como informe.
+
+### Decisiones del propietario de 2026-11-11
+
+1. **Punto de corte en E7-05.** Si el ranking no cumple los umbrales de calidad del [acta de la Etapa 7](../architecture/etapa7-acta.md) (§6.2), la Etapa 8 no empieza hasta que el propietario decida cómo seguir.
+2. **Comparación con SQLite antes de la Etapa 8, como informe sin umbrales.** La comparación con SQLite, entregable de la Etapa 9, se adelanta antes de la Etapa 8 como informe sin umbrales, sobre las cargas que ambos motores pueden ejecutar. La pendiente 3 (umbrales frente a SQLite) sigue abierta.
+3. **Caso de uso real antes de 1.0.** Antes de un 1.0 se construye un caso de uso pequeño y real (memoria para un agente) que usa solo la API pública, como lo usaría un tercero.
