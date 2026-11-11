@@ -20,18 +20,43 @@
 //!   never a value that was not written;
 //! * `verify()` and the read-only open leave the directory unchanged.
 //!
-//! Threshold (acta §5): 2 000 cases per file type and per mode, overridable
-//! with `PROPTEST_CASES`; each case has its own seed, printed on failure, and
-//! `failure_persistence` is off so that no regression file is written.
-//! Re-run one case with `OPEN_PROPERTIES_SEED=<seed>` (all six properties
-//! then run only that seed).
+//! Threshold (acta §5): 2 000 cases per file type and per mode.
+//!
+//! Seeding. The default run is deterministic: proptest draws the case seeds
+//! from a fixed base seed (`DEFAULT_BASE_SEED`), so every run of every CI job
+//! on the same `Cargo.lock` executes the same 2 000 cases per property and a
+//! pull request cannot go red on a case nobody has seen. (Before this, the
+//! proptest RNG seed was `RngSeed::Random`, taken from the operating system on
+//! every run, so each run drew fresh cases.) The cases themselves are
+//! `u64` seeds; a failure prints `seed = <n>` and the label of the case, which
+//! ends with the command that re-runs it. `failure_persistence` is off, so no
+//! regression file is written or read. A proptest upgrade in `Cargo.lock`
+//! changes the sequence drawn from the base seed: explore widely when bumping.
+//!
+//! Exploring further (these do not run in CI):
+//!
+//! * more cases: `PROPTEST_CASES=50000 cargo test -p kerno-storage --release
+//!   --test open_properties`;
+//! * other cases: add `OPEN_PROPERTIES_BASE_SEED=<u64>` (for instance
+//!   `$RANDOM$RANDOM`); the same base seed and case count repeat the same
+//!   cases;
+//! * one case: `OPEN_PROPERTIES_SEED=<seed>` (all six properties then run only
+//!   that seed).
+//!
+//! A failure found this way is either a defect of `src/` (pin it as a named
+//! known-failure test and exclude its class here, as for F-E9A-03-1) or a
+//! defect of the model or mutation (fix it here, as for the WAL payload below).
 //!
 //! Limit of the rewrite: a CRC cannot tell a rewritten user value from the
 //! real one, so rewrites with a recomputed CRC target only structure: the
 //! common headers, the footer, the meta blocks, the offset array and count of
-//! a data block, the header and first payload bytes of a WAL frame, and the
-//! MANIFEST records. A rewrite of a value byte would make the "no different
-//! data" property unsatisfiable by design.
+//! a data block, the 32-byte header of a WAL frame, and the MANIFEST records.
+//! A rewrite of a value byte would make the "no different data" property
+//! unsatisfiable by design. The same holds for the payload of a WAL frame,
+//! including its first bytes: they are the operation kind and the lengths of
+//! the key and the value, so a resealed rewrite re-reads the same bytes as
+//! another well-formed commit that the engine rightly applies. See
+//! `resealed_wal_payload_rewrite_is_another_valid_commit_not_damage`.
 //!
 //! Mutation record (acta §3.2), run on a copy of the tree: `open_block`
 //! (src/format/block.rs) with its CRC comparison replaced by `false && ...`.
@@ -56,12 +81,14 @@ use kerno_storage::format::block::{BLOCK_TRAILER_LEN, open_block, reseal_block};
 use kerno_storage::format::header::{HEADER_LEN, reseal_header};
 use kerno_storage::format::manifest::{RECORD_HEADER_LEN, reseal_record};
 use kerno_storage::format::sst::{FOOTER_LEN, decode_footer, decode_index, reseal_footer};
-use kerno_storage::format::wal::{FRAME_HEADER_LEN, reseal_frame};
+use kerno_storage::format::wal::{FRAME_HEADER_LEN, check_frame, reseal_frame};
 use kerno_storage::{AccessMode, Background, CloseBudget, Config, KernoDb, TestConfig, VerifyOptions, verify};
 use kerno_testkit::harness::{Model, apply, diff, read_all};
 use kerno_testkit::rng::Rng;
 use kerno_testkit::vfs::{DirImage, SimVfs, assert_dir_unchanged};
 use proptest::prelude::*;
+use proptest::strategy::ValueTree;
+use proptest::test_runner::{RngSeed, TestRunner};
 
 const DIR: &str = "/db";
 const DB_ID: [u8; 16] = [0xd1; 16];
@@ -215,9 +242,10 @@ fn units(ty: FileType, name: &Path, bytes: &[u8]) -> Vec<Unit> {
                 if end > bytes.len() {
                     break;
                 }
-                // The frame header and the first payload bytes (op count and
-                // first operation); the rest of the payload is user data.
-                let targets = at..(at + FRAME_HEADER_LEN + 3).min(end);
+                // The frame header only. The payload is user data: even its
+                // first bytes (operation kind, key length) can be rewritten
+                // into another well-formed commit (see the head of this file).
+                let targets = at..at + FRAME_HEADER_LEN;
                 out.push(Unit { start: at, end, targets, skip: Some(at + 4..at + 8), seal: Seal::Frame });
                 at = end;
             }
@@ -428,18 +456,40 @@ fn probe(case: &str, image: &DirImage, access: AccessMode) -> bool {
 /// One case: mutate, then read-write or read-only open plus `verify()`.
 fn case(ty: FileType, access: AccessMode, seed: u64) -> bool {
     let (image, what) = mutate(ty, seed);
-    let label = format!("{ty:?}/{access:?} seed {seed}: {what}");
+    let label = format!(
+        "{ty:?}/{access:?} seed {seed}: {what} [re-run: OPEN_PROPERTIES_SEED={seed} cargo test -p kerno-storage \
+         --release --test open_properties]"
+    );
     probe(&label, &image, access)
 }
 
+/// Base seed of the default run: the case seeds of CI come from it.
+const DEFAULT_BASE_SEED: u64 = 0x4b45_524e_4f5f_4539;
+
+/// An unsigned integer from the environment. A value that does not parse is a
+/// panic, not a silent fallback: a mistyped seed must not turn into a
+/// different run.
+fn env_u64(name: &str) -> Option<u64> {
+    let v = std::env::var(name).ok()?;
+    Some(v.trim().parse().unwrap_or_else(|_| panic!("{name}={v:?} is not an unsigned integer")))
+}
+
 fn proptest_config() -> ProptestConfig {
-    let cases = std::env::var("PROPTEST_CASES").ok().and_then(|s| s.parse().ok()).unwrap_or(2000);
-    ProptestConfig { cases, failure_persistence: None, max_shrink_iters: 0, ..ProptestConfig::default() }
+    let cases = env_u64("PROPTEST_CASES").map_or(2000, |n| u32::try_from(n).expect("PROPTEST_CASES fits in u32"));
+    ProptestConfig {
+        cases,
+        // Fixed, so that a run draws the same cases as any other run: see the
+        // head of this file. Never `RngSeed::Random`.
+        rng_seed: RngSeed::Fixed(env_u64("OPEN_PROPERTIES_BASE_SEED").unwrap_or(DEFAULT_BASE_SEED)),
+        failure_persistence: None,
+        max_shrink_iters: 0,
+        ..ProptestConfig::default()
+    }
 }
 
 /// The seed of the case, or the one in `OPEN_PROPERTIES_SEED`.
 fn seed_strategy() -> BoxedStrategy<u64> {
-    match std::env::var("OPEN_PROPERTIES_SEED").ok().and_then(|s| s.parse::<u64>().ok()) {
+    match env_u64("OPEN_PROPERTIES_SEED") {
         Some(s) => Just(s).boxed(),
         None => any::<u64>().boxed(),
     }
@@ -565,4 +615,134 @@ fn mutations_reach_both_outcomes_and_change_the_file() {
         assert!(opened > 0, "{ext}: no mutated directory ever opened");
         assert!(changed > 200, "{ext}: only {changed} of 300 mutations changed the file");
     }
+}
+
+// ---- the WAL payload is not a rewrite target ----------------------------------
+
+/// The file and byte range of the frame of `image` whose first commit starts
+/// with a point operation on `key`.
+fn wal_frame_of(image: &DirImage, key: &str) -> (PathBuf, Range<usize>) {
+    for name in files_with(image, "wal") {
+        let bytes = &image.files[&name];
+        for u in units(FileType::Wal, &name, bytes).into_iter().skip(1) {
+            let frame = &bytes[u.start..u.end];
+            let Ok(f) = check_frame(frame, u.start as u64, false, le_u64(frame, 8)) else { continue };
+            if f.commits[0].points.first().is_some_and(|(k, _)| k == key.as_bytes()) {
+                return (name, u.start..u.end);
+            }
+        }
+    }
+    panic!("no WAL frame starts with a point operation on {key}");
+}
+
+/// Root cause of the WAL failures that `wal_read_write` and `wal_read_only`
+/// used to hit at random (seeds 17787922088759419750, 23721, 30333, 213101,
+/// 219857, 360354, 437914 and 444753; 7 of the seeds 0..500 000, about 1 case
+/// in 70 000 per property, so roughly 1 CI run in 20 when the cases were
+/// random), shown as a fact: this is NOT a defect of `src/` but of the old
+/// model of the test. Every one of those seeds rewrites frame byte 33 or 34.
+///
+/// The old rewrite also targeted the first payload bytes of a frame. In the
+/// base, every frame is one commit of one operation whose value is 200 equal
+/// bytes. Rewriting, with the CRC resealed:
+///
+/// * the operation kind `PUT` (0x01) to `DELETE_RANGE` (0x03), at frame byte 33
+///   (seeds 17787922088759419750, 30333): the key and the 200-byte value are
+///   now read as the two bounds of a range; `key-… < "xxx…"`, so the commit is
+///   canonical and deletes nothing that existed, and the put is gone;
+/// * the key length 9 to 0x66, at frame byte 34 (seed 23721): the longer key
+///   swallows the length bytes and part of the equal value bytes, and what is
+///   left reads as a 108-byte value that ends exactly at the end of the
+///   payload.
+///
+/// In both, `check_frame` accepts the frame (every WAL-C4 rule holds and the
+/// payload is consumed to its last byte), so no format rule is broken: the
+/// bytes are a different valid history, and the engine applies exactly it, in
+/// both modes, with `verify()` reporting nothing. A CRC cannot tell this from
+/// the original, as for a rewritten value. The test pins that, per case: the
+/// rewritten frame is valid and different, the engine opens at the same
+/// sequence and shows the model with exactly that commit's effect.
+#[test]
+fn resealed_wal_payload_rewrite_is_another_valid_commit_not_damage() {
+    let b = base();
+    let last_seq = b.models.len() - 1;
+    let last = &b.models[last_seq];
+    // (key of the frame, byte of the frame, new value of that byte)
+    for (key, at, byte) in [("key-00376", 33, 0x03u8), ("key-00371", 33, 0x03), ("key-00364", 34, 0x66)] {
+        let mut image = b.image.clone();
+        let (name, r) = wal_frame_of(&image, key);
+        let number = file_number(&name);
+        let frame = &mut image.files.get_mut(&name).unwrap()[r.clone()];
+        let first_seq = le_u64(frame, 8);
+        let before = check_frame(frame, r.start as u64, false, first_seq).unwrap();
+        assert_ne!(frame[at], byte, "{key}: the rewrite changes nothing");
+        frame[at] = byte;
+        reseal_frame(frame, number);
+        let after = check_frame(frame, r.start as u64, false, first_seq)
+            .unwrap_or_else(|e| panic!("{key}: the rewritten frame is damaged after all: {e:?}"));
+        assert_ne!(after.commits, before.commits, "{key}: the rewrite did not change the commit");
+
+        // The model with the effect of the rewritten commit instead of the original.
+        let older = &b.models[first_seq as usize - 1];
+        let mut want = last.clone();
+        want.remove(key.as_bytes());
+        for c in &after.commits {
+            for (s, e) in &c.ranges {
+                assert!(older.keys().all(|k| !(k >= s && k < e)), "{key}: the range deletes data that existed");
+            }
+            for (k, v) in &c.points {
+                match v {
+                    Some(v) => want.insert(k.clone(), v.clone()),
+                    None => want.remove(k),
+                };
+            }
+        }
+        assert!(&want != last, "{key}: the expected model did not change");
+
+        for access in [AccessMode::ReadWrite, AccessMode::ReadOnly] {
+            let disk = SimVfs::restore(&image);
+            let db = open_in(&disk.as_vfs(), access).unwrap_or_else(|e| panic!("{key} {access:?}: open failed: {e}"));
+            let snap = db.snapshot().unwrap();
+            assert_eq!(snap.seq() as usize, last_seq, "{key} {access:?}");
+            let seen = read_all(&snap).unwrap();
+            assert!(
+                seen == want,
+                "{key} {access:?}: the engine does not show the rewritten commit: {}",
+                diff(&want, &seen)
+            );
+            assert_eq!(snap.get(key.as_bytes()).unwrap(), None, "{key} {access:?}");
+        }
+        let disk = SimVfs::restore(&image);
+        let report = verify(disk.as_vfs(), Path::new(DIR), &VerifyOptions::default()).unwrap();
+        assert!(report.is_ok(), "{key}: verify() reports a valid commit: {:?}", report.issues);
+    }
+}
+
+/// The mutation side of the same fact: no WAL rewrite target leaves the
+/// 32-byte frame header (and at least one frame exists).
+#[test]
+fn wal_rewrite_targets_are_the_frame_header_only() {
+    let image = &base().image;
+    let mut frames = 0;
+    for name in files_with(image, "wal") {
+        for u in units(FileType::Wal, &name, &image.files[&name]).iter().skip(1) {
+            assert_eq!(u.targets, u.start..u.start + FRAME_HEADER_LEN, "{}", name.display());
+            frames += 1;
+        }
+    }
+    assert!(frames > 0, "the base has no WAL frame");
+}
+
+/// The default run must not depend on the operating system's entropy: two
+/// runners built from the config draw the same seeds, and the config pins the
+/// RNG seed. With `RngSeed::Random` (the old behaviour) both fail.
+#[test]
+fn default_run_draws_the_same_case_seeds_every_time() {
+    assert!(matches!(proptest_config().rng_seed, RngSeed::Fixed(_)), "the proptest RNG seed is not fixed");
+    let draw = || {
+        let strategy = seed_strategy();
+        let mut runner = TestRunner::new(proptest_config());
+        (0..16).map(|_| strategy.new_tree(&mut runner).unwrap().current()).collect::<Vec<u64>>()
+    };
+    assert_eq!(draw(), draw());
 }
