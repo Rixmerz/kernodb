@@ -37,7 +37,9 @@ use crate::format::limits::{MAX_BLOCK_SIZE, MAX_SEQ, MIN_BLOCK_SIZE};
 use crate::format::manifest::FileMeta;
 use crate::format::props::Props;
 use crate::format::rangedel::Fragment;
-use crate::format::sst::{IndexEntry, SstBuilder, SstExpect, file_meta, open_sst_from, read_data_block};
+use crate::format::sst::{
+    IndexEntry, SstBuilder, SstExpect, check_filter_holds_index_keys, file_meta, open_sst_from, read_data_block,
+};
 use crate::iter::InternalIterator;
 use crate::stats::{Stats, bump};
 
@@ -347,6 +349,8 @@ impl Table {
             let size = src.len();
             (open_sst_from(&mut src, &ex).map_err(|e| read_error(&name, e))?, size)
         };
+        // SST-V3 over what the open holds (F-E9A-03-1): `get` trusts the filter.
+        check_filter_holds_index_keys(&opened).map_err(|e| format_error(&name, e))?;
         Ok(Table {
             number: meta.number,
             size,

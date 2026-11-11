@@ -86,12 +86,28 @@ Alcance: el formato v1 ([`v1.md`](../file-format/v1.md)) y el motor `kerno-stora
 - Una instantánea viva retiene archivos obsoletos mientras exista (`snapshot_retained_bytes` lo expone, `compact_range` informa `pinned_files`). `delete_range` y `compact_range` son **mecanismo**: hacen desaparecer las lápidas y los puntos cubiertos de los archivos vivos, sin política de retención ni garantía de supresión (ADR-0009 pendiente; `crates/kerno-storage/DESIGN.md` enumera lo que puede sobrevivir). T-09 sigue **abierto**.
 - Ninguna documentación ni mensaje del producto debe describir `delete` o `compact_range` como borrado seguro.
 
-### 6.6 Resumen del estado
+### 6.6 El filtro bloom de una SST: hallazgo F-E9A-03-1
+
+**Hallazgo (E9A-03).** Un bloque de filtro cuyos bits se reescribieron y se resellaron con un CRC válido pasaba toda comprobación de la apertura, y `get` respondía «no existe» para claves que la tabla contiene, sin error, mientras un `scan` las devolvía. Es T-04 con un efecto concreto: el filtro es un derivado de las claves de la tabla que el motor consulta **antes** de leer el bloque de datos, y un CRC no distingue un filtro honesto de uno reescrito por quien puede recalcularlo. Reproducido con una base de 357 claves visibles: con el filtro de cada tabla a cero, `get` ocultaba 307, en lectura-escritura y en solo lectura.
+
+**Qué detectaba `verify()` antes.** Con `deep` (el modo que lee los bloques de datos) ya informaba SST-V3, «toda clave de punto está en el filtro», sin bytes de claves (I-29): un `Issue` por tabla afectada. Sin `deep` no informaba nada, porque solo ejecuta las comprobaciones de apertura, y la apertura no miraba el filtro más allá de su forma (SST-O7).
+
+**Qué se hace ahora.**
+
+- *Apertura del motor (`Table::open`) y `verify()` sin `deep`.* El índice de la tabla, que la apertura ya tiene en memoria, da la última clave de cada bloque de datos, y esa clave es una clave de punto de la tabla (SST-R2 lo exige al leer el bloque). Si el filtro no la contiene, la tabla se rechaza con SST-V3 (`Corruption`; en `verify()`, un `Issue`). Cuesta un hash por bloque de datos y ninguna lectura de bloque, así que `get` no paga nada por desconfiar del filtro. Un filtro puesto a cero o sobrescrito en bloque ya no abre. La comprobación vive en el motor y en `verify()`, no en el códec puro `open_sst`: este conserva el orden de reglas congelado de v1.md §13.1 y no cambia ningún archivo válido ni el formato.
+- *`verify()` con `deep`.* Sin cambios de regla: SST-V3 sigue sondeando el filtro con cada clave que lee. Es la comprobación que alcanza a un filtro al que solo le faltan claves interiores de un bloque.
+- Ninguna comprobación nueva compara `nbits` o `k` con el número de entradas: el formato fija los límites que el lector acepta (`k` 1..=30, `nbits` ≥ 64, múltiplo de 8) y los valores del escritor (`k` = 7, 10 bits por clave) solo describen a este escritor, no son una regla de lectura. Exigirlos rechazaría archivos que el formato declara válidos.
+
+**Residuo (no se cierra sin autenticación).** La comprobación de la apertura es parcial a propósito: un filtro al que solo le faltan claves interiores de un bloque se abre y `get` responde «no existe» para ellas sin error. Solo `verify()` con `deep` lo informa (SST-V3). Cerrarlo en la ruta de lectura exigiría leer el bloque de datos para dudar de cada «no», lo que elimina el propósito del filtro; y cerrarlo del todo frente a una reescritura deliberada exige que el motor pueda distinguir un bloque que escribió él de uno reescrito, es decir AEAD por bloque (ADR-0006, pendiente; la ranura está reservada, §6.3). Tampoco se detecta un filtro con bits de más (saturado): el formato lo permite y solo cuesta rendimiento, porque cada `get` pasa a leer un bloque de datos. Por eso el motor **no** afirma proteger frente a una reescritura deliberada: la comprobación de la apertura y SST-V3 detectan corrupción y descuidos, no a un atacante que sepa qué claves ocultar. Quien necesite esa garantía antes de ADR-0006 debe ejecutar `verify()` con `deep` sobre el directorio antes de confiar en él. T-04 sigue **abierto**.
+
+Pruebas: `tests/open_properties.rs` (`resealed_zeroed_filter_is_refused_at_open_and_reported_by_verify`, `known_limit_get_trusts_a_resealed_filter_missing_interior_keys`, y el filtro de nuevo entre los blancos de reescritura), `tests/verify.rs::verify_detects_bloom_missing_key`, `tests/redaction.rs`.
+
+### 6.7 Resumen del estado
 
 | Amenaza | Estado al cerrar la Fase 1 |
 |---|---|
 | T-01, T-02 | Cubiertas y probadas (matriz de fallos, `kill -9` real, barridos de `SimVfs`); el registro con un dispositivo con pérdida de páginas (LazyFS) está pendiente ([informe F1](../testing/f1-report.md)) |
-| T-03, T-04 | Abiertas: sin cifrado ni autenticación; ranura reservada |
+| T-03, T-04 | Abiertas: sin cifrado ni autenticación; ranura reservada. Un filtro de SST reescrito con CRC válido se rechaza en la apertura si no contiene la última clave de un bloque, y `verify()` con `deep` informa el resto (§6.6); `get` sobre un filtro que solo oculta claves interiores no puede detectarse sin AEAD |
 | T-05 | Límites de clave, valor y lote comprobados en `kerno-storage` (`Config::limits`) |
 | T-06 | Mitigada con validación y suite de archivos fabricados; fuzzing pendiente (Fase 6) |
 | T-08 | Mensajes de error sin contenido |
