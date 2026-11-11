@@ -16,7 +16,7 @@ pub const QUERIES: &str = include_str!("../../../kerno-testkit/data/assoc-eval/q
 
 const T0: Timestamp = Timestamp(1_700_000_000_000_000);
 
-fn story_provenance(p: &StoryProvenance) -> RelationProvenance {
+pub fn story_provenance(p: &StoryProvenance) -> RelationProvenance {
     match p {
         StoryProvenance::Declared => RelationProvenance::Declared,
         StoryProvenance::Imported(source) => RelationProvenance::Imported { source: source.clone().into_bytes() },
@@ -40,10 +40,20 @@ fn kind_of(k: EvalKind) -> ProvenanceKind {
 /// One change set per step with the step's actor and source; returns the unit
 /// id of each corpus index. A step is the commit sequence of its change set.
 pub fn load_corpus<E: TxnEngine>(corpus: &assoc_eval::Corpus) -> (UnitDb<E>, Vec<UnitId>) {
+    let (db, ids, _) = load_corpus_with_relations(corpus);
+    (db, ids)
+}
+
+/// [`load_corpus`] that also returns the id of each corpus relation, by its
+/// corpus index.
+pub fn load_corpus_with_relations<E: TxnEngine>(
+    corpus: &assoc_eval::Corpus,
+) -> (UnitDb<E>, Vec<UnitId>, Vec<RelationId>) {
     let mut c = UnitConfig::with_sources(Arc::new(FixedClock::new(T0)), Arc::new(CounterIds::new(1)));
     c.engine = Options::small_for_tests();
     let db = UnitDb::<E>::open(SimVfs::new(1).as_vfs(), Path::new("/db"), &c).expect("open");
     let mut ids = Vec::with_capacity(corpus.units.len());
+    let mut rel_ids = Vec::with_capacity(corpus.relations.len());
     let (mut next_unit, mut next_rel) = (0, 0);
     for change in &corpus.changes {
         let meta = ChangeMeta {
@@ -64,13 +74,16 @@ pub fn load_corpus<E: TxnEngine>(corpus: &assoc_eval::Corpus) -> (UnitDb<E>, Vec
         }
         while let Some(r) = corpus.relations.get(next_rel).filter(|r| r.step == change.step) {
             let (from, to) = (ids[r.from as usize], ids[r.to as usize]);
-            cs.create_relation(from, to, &r.relation_type, story_provenance(&r.provenance)).expect("create relation");
+            rel_ids.push(
+                cs.create_relation(from, to, &r.relation_type, story_provenance(&r.provenance))
+                    .expect("create relation"),
+            );
             next_rel += 1;
         }
         let info = cs.commit().expect("commit change set");
         assert_eq!(info.commit_seq.0, change.step, "a step is a commit sequence");
     }
-    (db, ids)
+    (db, ids, rel_ids)
 }
 
 /// A query of the frozen set with the hard maxima as limit and budget.
