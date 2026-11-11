@@ -62,14 +62,16 @@ Del [roadmap, Etapa 6](../roadmap/README.md#etapa-6--primera-plasticidad-operaci
 
 | Criterio | Invariante / garantía | Evidencia prevista | Estado |
 |---|---|---|---|
-| Mejora neta medida frente al modo desactivado, con umbrales fijados antes | — | E6-04, umbrales de §6 | pendiente |
-| Equivalencia de resultados | I-32, G1 | Prueba diferencial activada / desactivada / invalidada a mitad (E6-02); no se apoya en comprobaciones de completitud en consulta (H-1) | pendiente |
-| Fallback a un plan válido, registrado, ante precondición, invalidación, desactivación o discrepancia | I-33, G2, G3 | Inyección de fallos y observaciones falsificadas (E6-02) | pendiente |
-| Invalidación probada por cada dependencia | I-35, G4 | Un caso por dependencia declarada (E6-01) | pendiente |
-| Invalidar, desactivar o borrar no altera datos | I-34, G6 | E6-03 | pendiente |
-| Desactivación verificada | I-36, G6 | E6-03 | pendiente |
-| La ruta aprendida pasa las mismas validaciones | G5 | Mutaciones (E6-02) | pendiente |
-| Trazabilidad sin literales | G7, I-37 | Recorrido de transiciones y centinelas (E6-04) | pendiente |
+| Mejora neta medida frente al modo desactivado, con umbrales fijados antes | — | E6-04, umbrales de §6 | **no afirmado** (E6-05): p50 de W1 cumple; p99 de W1 no se certifica; la caché queda desactivada por defecto ([cierre](etapa6-cierre.md) §4) |
+| Equivalencia de resultados | I-32, G1 | Prueba diferencial activada / desactivada / invalidada a mitad (E6-02); no se apoya en comprobaciones de completitud en consulta (H-1) | **cumplido** (E6-02; [cierre](etapa6-cierre.md) §2) |
+| Fallback a un plan válido, registrado, ante precondición, invalidación, desactivación o discrepancia | I-33, G2, G3 | Inyección de fallos y observaciones falsificadas (E6-02) | **cumplido** (E6-02; registro en la caché, no en la observación: H-6) |
+| Invalidación probada por cada dependencia | I-35, G4 | Un caso por dependencia declarada (E6-01) | **cumplido** (E6-01) |
+| Invalidar, desactivar o borrar no altera datos | I-34, G6 | E6-03 | **cumplido** (E6-03) |
+| Desactivación verificada | I-36, G6 | E6-03 | **cumplido** (E6-03); la parte de coste de la mutación «caché apagada» sobrevive (H-7) |
+| La ruta aprendida pasa las mismas validaciones | G5 | Mutaciones (E6-02) | **cumplido** (E6-05, mutación de `check_units` muerta) |
+| Trazabilidad sin literales | G7, I-37 | Recorrido de transiciones y centinelas (E6-04) | **cumplido** (E6-04, E6-04b) |
+
+Estado de la etapa (E6-05): **cerrada, pendiente de aprobación del propietario** ([cierre](etapa6-cierre.md)). La mejora neta no queda afirmada, así que la caché sigue desactivada por defecto (§8, decisión 2).
 
 ## 5. Riesgos
 

@@ -61,7 +61,7 @@ La tarea de cierre de la Fase 1 (revisión adversarial, benchmarks, documentaci�
 
 ## Etapas 3–9 (especificación v0.2.0)
 
-Después de la Fase 1 el trabajo se organiza por las etapas de la [especificación v0.2.0](../spec/especificacion-arquitectonica-v0.2.0.md) §16; la [correspondencia con las fases del SAD](../spec/README.md) está en `docs/spec/`. La **Etapa 3 está cerrada** (aprobada por el propietario el 2026-11-04). La **Etapa 4 está cerrada** (aprobada por el propietario el 2026-11-05, [cierre](../architecture/etapa4-cierre.md)); la **Etapa 5 está cerrada**, pendiente de aprobación del propietario ([cierre](../architecture/etapa5-cierre.md), 2026-11-06); el resto no ha empezado. Una etapa ya implementada y probada se salta (spec §16).
+Después de la Fase 1 el trabajo se organiza por las etapas de la [especificación v0.2.0](../spec/especificacion-arquitectonica-v0.2.0.md) §16; la [correspondencia con las fases del SAD](../spec/README.md) está en `docs/spec/`. La **Etapa 3 está cerrada** (aprobada por el propietario el 2026-11-04). La **Etapa 4 está cerrada** (aprobada por el propietario el 2026-11-05, [cierre](../architecture/etapa4-cierre.md)); la **Etapa 5 está cerrada**, pendiente de aprobación del propietario ([cierre](../architecture/etapa5-cierre.md), 2026-11-06); la **Etapa 6 está cerrada**, pendiente de aprobación del propietario ([cierre](../architecture/etapa6-cierre.md), 2026-11-11), con la caché desactivada por defecto; el resto no ha empezado. Una etapa ya implementada y probada se salta (spec §16).
 
 | Etapa | Depende de | Condición de inicio | ADR que se deciden |
 |---|---|---|---|
@@ -96,6 +96,7 @@ Después de la Fase 1 el trabajo se organiza por las etapas de la [especificaci�
 
 - **Entregables:** una única optimización reversible (plan reutilizable o caché invalidada por secuencia), con los metadatos de spec §9 y desactivación global y por consulta (ADR-0016).
 - **Aceptación:** mejora neta medida frente al modo desactivado con umbrales fijados antes de medir; equivalencia de resultados (I-32, I-33); invalidación probada por dependencia (I-35); invalidar no altera datos (I-34); desactivación verificada (I-36).
+- **Estado: cerrada el 2026-11-11, pendiente de aprobación del propietario** ([cierre de la Etapa 6](../architecture/etapa6-cierre.md)). Única optimización: caché de resultados ligada a `commit_seq` (E6-01 a E6-03), usada por el planificador con su fallback registrado (E6-02); medición y centinelas (E6-04, E6-04b). **La caché queda desactivada por defecto.** Criterios: equivalencia, fallback, invalidación por dependencia, reversibilidad, desactivación y trazabilidad sin literales cumplidos; **mejora neta no afirmada**: el p50 de W1 cumple (−97,8 %), el p99 de W1 no se certifica (+0,5 % a +7,8 % en cuatro corridas) y el peor caso sin repeticiones cumple en la medición emparejada (coste real −0,6 % a +0,5 %) pero no en todas las corridas. Umbrales sin cambios. Riesgos abiertos: H-3, H-5, H-6 y H-7 del cierre. I-33 a I-36 quedan promovidas, pendientes de aprobación.
 
 ### Etapa 7 — Memoria asociativa
 

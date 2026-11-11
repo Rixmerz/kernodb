@@ -308,6 +308,8 @@ El ciclo de vida del historial debe considerar datos personales, backups, índic
 >
 > **Estado (2026-11-06, Etapa 5, pendiente de aprobación del propietario):** `query` y `query_relations` pasan por un planificador determinista de los siete pasos de §9 sobre los caminos que ya existían (referencia, índice primario, `IDX_TYPE` y adyacencia). Elige el utilizable de menor coste con las estadísticas que la capa ya tiene, valida la respuesta y, si el índice falla o responde mal, responde la ruta de referencia y lo registra. `explain_filter` y `explain_relations` muestran el plan sin literales (I-37). Las observaciones (`ExecutionObservation`) están desactivadas por defecto, viven en memoria con retención acotada, no escriben en el motor y no cambian la secuencia de commit (parte de observaciones de I-34). Las optimizaciones aprendidas y la caché son de la Etapa 6. Cierre: [etapa5-cierre.md](etapa5-cierre.md).
 
+> **Estado (2026-11-11, Etapa 6, cerrada pendiente de aprobación del propietario):** la única optimización aprendida es una caché de resultados por huella de consulta y `commit_seq` (G4), **desactivada por defecto**. `query` y `query_relations` la consultan antes del planificador: un acierto pasa `check_units`/`check_relations`; cualquier fallo, invalidación, desactivación o discrepancia ejecuta el planificador o la ruta de referencia y lo registra en el registro de transiciones de la caché (G7). Las observaciones no deciden si una entrada se usa (G3). La mejora neta no se afirma: el p50 de W1 cumple (−97,8 %), el p99 de W1 no se certifica. Cierre: [etapa6-cierre.md](etapa6-cierre.md).
+
 ### 9.1 Secuencia de implementación
 
 | Orden | Estructura | Caso principal | Condición de entrada |
