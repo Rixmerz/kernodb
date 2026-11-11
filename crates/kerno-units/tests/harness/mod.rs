@@ -2,5 +2,6 @@
 //! includes it uses only part of it.
 #![allow(dead_code)]
 
+pub mod assoc;
 pub mod cache_script;
 pub mod units;

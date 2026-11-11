@@ -22,6 +22,13 @@
 //! * `levels_below_diagnostic_carry_no_shape_text` — the structural half of
 //!   I-37: `fingerprint_text` exists at `diagnostic` only, and it is the
 //!   placeholder shape.
+//! * `no_sentinel_in_any_associative_plan_observation_or_error` (E7-02) — the
+//!   same search for associative queries: the sentinels are the relation
+//!   types, the actor and the source of the change set, the bounds of the
+//!   window and of the depth, and the seeds' identifiers. The plan and the
+//!   observations carry none of them at any level; the errors a caller gets
+//!   carry none of the content (a rejected query quotes its own bounds back to
+//!   its caller, so those numbers are searched in the observer only).
 
 mod harness;
 
@@ -49,6 +56,14 @@ const S_ORIGIN: &[u8] = b"SNT-ORIGIN-e4079b3d";
 const S_OVERSIZE: &str = "SNT-OVERSIZE-0d6c52e8-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 /// The value of the schema version filter, as a number a text search can find.
 const S_VERSION: u32 = 4_071_337_791;
+/// The actor and the source of the change set that creates the data (E7-02: the
+/// filters of an associative query compare against them).
+const S_ACTOR: &[u8] = b"SNT-ACTOR-3b9d70e1";
+const S_CS_SOURCE: &[u8] = b"SNT-CSSOURCE-a85c14f6";
+/// An upper bound of a window, as a number a text search can find.
+const S_WINDOW: u64 = 4_071_337_792;
+/// A depth far over the hard maximum: a rejected query that quotes it.
+const S_DEPTH: u32 = 4_071_337_795;
 
 /// Each sentinel in every form a `Debug` or `Display` of it could take: the
 /// text, the decimal list of a byte slice (`{:?}` of a `Vec<u8>`) and hex.
@@ -68,6 +83,8 @@ fn sentinels() -> Vec<(&'static str, Vec<String>)> {
         ("provenance origin", forms(S_ORIGIN)),
         ("oversize type", forms(S_OVERSIZE.as_bytes())),
         ("schema version", vec![S_VERSION.to_string()]),
+        ("change set actor", forms(S_ACTOR)),
+        ("change set source", forms(S_CS_SOURCE)),
     ]
 }
 
@@ -87,7 +104,9 @@ const LEVELS: [ObservationLevel; 4] =
 /// Two units that carry every sentinel, related by three relations whose type
 /// and provenance carry the rest. Returns their ids.
 fn plant<E: Target>(db: &UnitDb<E>) -> [UnitId; 2] {
-    let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
+    let meta =
+        ChangeMeta { actor: Some(S_ACTOR.to_vec()), source: Some(S_CS_SOURCE.to_vec()), ..ChangeMeta::default() };
+    let mut cs = db.begin_changeset(meta).unwrap();
     let new = |schema| NewUnit {
         unit_type: S_TYPE.into(),
         schema_version: schema,
@@ -138,7 +157,9 @@ fn literal_free_fingerprints(key: &FingerprintKey, ids: [UnitId; 2]) -> Vec<Fing
     let relations = relation_queries(ids[1]).into_iter().map(|q| {
         NormalizedQuery::of_relations(&RelationQuery { relation_type: q.relation_type.map(|_| "other".into()), ..q })
     });
-    units.chain(relations).map(|q| q.fingerprint(key)).collect()
+    let assoc = assoc_queries(ids).into_iter().chain(rejected_assoc_queries(ids));
+    let assoc = assoc.map(|q| NormalizedQuery::of_assoc(&literal_free(&q)));
+    units.chain(relations).chain(assoc).map(|q| q.fingerprint(key)).collect()
 }
 
 /// Every fingerprint the layer reported, in plans and records, is one of a
@@ -223,11 +244,18 @@ fn no_sentinel_in_any_observability_explanation_or_error_output<E: Target>() {
         snap.query(&filters()[2]).unwrap(),
         snap.query_relations(&relation_queries(ids[0])[0]).unwrap()
     );
-    for (what, needles) in wanted.iter().filter(|(w, _)| !["oversize type", "provenance origin"].contains(w)) {
+    let not_in_these_answers = ["oversize type", "provenance origin", "change set actor", "change set source"];
+    for (what, needles) in wanted.iter().filter(|(w, _)| !not_in_these_answers.contains(w)) {
         assert!(
             needles.iter().any(|n| answer.contains(n.as_str())),
             "control: the answer to the caller must hold the {what} sentinel"
         );
+    }
+    // The change set holds the actor and the source: the filters of the
+    // associative queries compare against them, so they must exist to be found.
+    let recorded = format!("{:?}", snap.change_set(CommitSeq(1)).unwrap());
+    for (what, needles) in wanted.iter().filter(|(w, _)| w.starts_with("change set")) {
+        assert!(needles.iter().any(|n| recorded.contains(n.as_str())), "control: the change set must hold the {what}");
     }
     drop(snap);
 
@@ -287,6 +315,12 @@ fn observed_output_after_damage<E: Target>(db: &UnitDb<E>, level: ObservationLev
             Err(e) => out.push_str(&format!("[relations error] {e} | {e:?}\n")),
         }
     }
+    for q in assoc_queries(ids) {
+        match snap.assoc_query(&q) {
+            Ok(o) => out.push_str(&format!("[assoc] {:?} {:?}\n", o.path, o.fallback)),
+            Err(e) => out.push_str(&format!("[assoc error] {e} | {e:?}\n")),
+        }
+    }
     if let Err(e) = db.rebuild_index() {
         out.push_str(&format!("[rebuild error] {e} | {e:?}\n"));
     }
@@ -299,6 +333,143 @@ fn observed_output_after_damage<E: Target>(db: &UnitDb<E>, level: ObservationLev
     out
 }
 
+/// Associative queries with the sentinels as literals: every field that holds
+/// one is set.
+fn assoc_queries(ids: [UnitId; 2]) -> Vec<AssocQuery> {
+    let mut all = AssocQuery::new(vec![ids[0], ids[1]], 2, 10, 100);
+    all.direction = AssocDirection::Out;
+    all.relation_types = Some([S_REL_TYPE.to_owned(), S_OVERSIZE.to_owned()].into());
+    all.window = Some(SeqWindow { lo: CommitSeq(1), hi: CommitSeq(S_WINDOW) });
+    all.provenance.kinds = Some([ProvenanceKind::Imported, ProvenanceKind::Inferred].into());
+    all.provenance.actor = Some(S_ACTOR.to_vec());
+    all.provenance.source = Some(S_CS_SOURCE.to_vec());
+    let mut inwards = all.clone();
+    inwards.direction = AssocDirection::In;
+    inwards.provenance.source = Some(S_SOURCE.to_vec());
+    let mut plain = AssocQuery::new(vec![ids[0]], 3, 10, 100);
+    plain.relation_types = Some([S_REL_TYPE.to_owned()].into());
+    vec![all, inwards, plain]
+}
+
+/// Queries the model rejects, carrying sentinel numbers, and one that starts at
+/// a unit that is not there. Their errors quote the caller's own bounds back to
+/// the caller; the observer must not.
+fn rejected_assoc_queries(ids: [UnitId; 2]) -> Vec<AssocQuery> {
+    let mut inverted = AssocQuery::new(vec![ids[0]], 1, 1, 1);
+    inverted.window = Some(SeqWindow { lo: CommitSeq(S_WINDOW + 1), hi: CommitSeq(S_WINDOW) });
+    inverted.relation_types = Some([S_REL_TYPE.to_owned()].into());
+    inverted.provenance.actor = Some(S_ACTOR.to_vec());
+    let deep = AssocQuery::new(vec![ids[0]], S_DEPTH, 1, 1);
+    let mut ghost = AssocQuery::new(vec![UnitId([0xEE; 16])], 1, 1, 1);
+    ghost.provenance.source = Some(S_CS_SOURCE.to_vec());
+    vec![inverted, deep, ghost]
+}
+
+/// Everything the layer says about the associative queries of one level, as
+/// text: `(the plans, outcomes and observations, the errors)`.
+fn assoc_output<E: Target>(db: &UnitDb<E>, level: ObservationLevel, ids: [UnitId; 2]) -> (String, String) {
+    db.observer().clear();
+    db.observer().set_level(level).unwrap();
+    db.observer().set_key(FingerprintKey::from_bytes([7; 32]));
+    let key = FingerprintKey::from_bytes([7; 32]);
+    let snap = db.snapshot().unwrap();
+    let (mut out, mut errors) = (String::new(), String::new());
+    let mut shapes = Vec::new();
+    for q in assoc_queries(ids) {
+        let plan = snap.explain_assoc(&key, &q).unwrap();
+        shapes.push(*plan.fingerprint());
+        out.push_str(&format!("[explain_assoc] {plan:?} {:?} {}\n", plan.fingerprint(), plan.fingerprint()));
+        let o = snap.assoc_query(&q).unwrap();
+        out.push_str(&format!("[assoc path] {:?} {:?}\n", o.path, o.fallback));
+    }
+    for q in rejected_assoc_queries(ids) {
+        match snap.assoc_query(&q) {
+            Ok(_) => panic!("{q:?} must be rejected"),
+            Err(e) => errors.push_str(&format!("[assoc error] {e} | {e:?}\n")),
+        }
+    }
+    out.push_str(&format!("[stats] {:?}\n", db.observer().stats()));
+    let records = db.observer().records();
+    for r in &records {
+        shapes.push(r.fingerprint);
+        out.push_str(&format!("[record] {r:#?}\n"));
+    }
+    // Every fingerprint is one of the literal-free shapes of these queries.
+    assert_shape_only(shapes, &literal_free_fingerprints(&key, ids), level);
+    (out, errors)
+}
+
+/// The same query with other literals: another seed, type set, bounds, kinds,
+/// actor and source (the kind set keeps its structure: set or not).
+fn literal_free(q: &AssocQuery) -> AssocQuery {
+    let mut other = AssocQuery::new(vec![UnitId([9; 16])], 1, 1, 1);
+    other.direction = q.direction;
+    other.relation_types = q.relation_types.as_ref().map(|_| ["other".to_owned()].into());
+    other.window = q.window.map(|_| SeqWindow { lo: CommitSeq(1), hi: CommitSeq(2) });
+    other.provenance.kinds = q.provenance.kinds.as_ref().map(|_| [ProvenanceKind::Declared].into());
+    other.provenance.actor = q.provenance.actor.as_ref().map(|_| b"other".to_vec());
+    other.provenance.source = q.provenance.source.as_ref().map(|_| b"other".to_vec());
+    other
+}
+
+/// Identifiers in the forms a `Debug` or `Display` of them takes.
+fn id_forms(id: UnitId) -> Vec<String> {
+    let list = id.0.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(", ");
+    vec![id.to_string(), list]
+}
+
+fn no_sentinel_in_any_associative_plan_observation_or_error<E: Target>() {
+    let db = open::<E>();
+    let ids = plant(&db);
+    let content = sentinels();
+    let window = ("window bound", vec![S_WINDOW.to_string(), (S_WINDOW + 1).to_string()]);
+    let depth = ("depth", vec![S_DEPTH.to_string()]);
+    let identifiers =
+        [("seed", id_forms(ids[0])), ("seed", id_forms(ids[1])), ("absent seed", id_forms(UnitId([0xEE; 16])))];
+
+    // The search can find what it looks for: the answer to the caller holds
+    // the relation type; the errors hold the caller's bounds and the absent seed.
+    let snap = db.snapshot().unwrap();
+    let answer = format!("{:?}", snap.assoc_query(&assoc_queries(ids)[2]).unwrap().result);
+    assert!(answer.contains(S_REL_TYPE), "control: the answer must hold the relation type: {answer}");
+    drop(snap);
+
+    db.rebuild_index().unwrap();
+    let mut outputs = Vec::new();
+    for level in LEVELS {
+        outputs.push((level, assoc_output(&db, level, ids)));
+    }
+    for (level, (out, errors)) in &outputs {
+        for (what, needles) in content.iter().chain([&window, &depth]).chain(identifiers.iter()) {
+            for n in needles {
+                assert!(!out.contains(n.as_str()), "{what} sentinel {n:?} leaked at level {level:?}:\n{out}");
+            }
+        }
+        for (what, needles) in &content {
+            for n in needles {
+                assert!(
+                    !errors.contains(n.as_str()),
+                    "{what} sentinel {n:?} leaked in an error at {level:?}:\n{errors}"
+                );
+            }
+        }
+    }
+    // The search is not vacuous: the errors do quote the caller's own bounds.
+    let (_, errors) = &outputs[0].1;
+    assert!(
+        errors.contains(&S_WINDOW.to_string()),
+        "control: the rejection quotes the bounds to its caller:\n{errors}"
+    );
+    assert!(errors.contains(&ids[0].to_string()) || errors.contains(&UnitId([0xEE; 16]).to_string()), "{errors}");
+    let at = |l: ObservationLevel| &outputs.iter().find(|(lv, _)| *lv == l).unwrap().1.0;
+    assert!(at(ObservationLevel::Off).contains("[explain_assoc]"));
+    assert!(!at(ObservationLevel::Off).contains("[record]"), "off keeps nothing");
+    assert!(at(ObservationLevel::Fingerprint).contains("[record]"));
+    assert!(at(ObservationLevel::Diagnostic).contains("assoc[seeds=?unit_ids,dir=out"), "diagnostic shows the shape");
+    // Each rejected query was observed as a class.
+    assert!(at(ObservationLevel::Fingerprint).contains("Error(\n"), "rejected queries are recorded");
+}
+
 fn levels_below_diagnostic_carry_no_shape_text<E: Target>() {
     let db = open::<E>();
     let ids = plant(&db);
@@ -309,11 +480,12 @@ fn levels_below_diagnostic_carry_no_shape_text<E: Target>() {
         let snap = db.snapshot().unwrap();
         snap.query(&filters()[2]).unwrap();
         snap.query_relations(&relation_queries(ids[0])[0]).unwrap();
+        snap.assoc_query(&assoc_queries(ids)[0]).unwrap();
         let records = db.observer().records();
         match level {
             ObservationLevel::Off | ObservationLevel::Aggregate => assert!(records.is_empty(), "{level:?}"),
             ObservationLevel::Fingerprint => {
-                assert_eq!(records.len(), 2);
+                assert_eq!(records.len(), 3);
                 assert!(records.iter().all(|r| r.fingerprint_text.is_none()), "no shape text at {level:?}");
             }
             ObservationLevel::Diagnostic => {
@@ -322,7 +494,10 @@ fn levels_below_diagnostic_carry_no_shape_text<E: Target>() {
                     texts,
                     [
                         Some("units[unit_type=?text,schema_version=?u32]"),
-                        Some("relations[out:unit=?unit_id,relation_type=?text]")
+                        Some("relations[out:unit=?unit_id,relation_type=?text]"),
+                        Some(
+                            "assoc[seeds=?unit_ids,dir=out,depth=?u32,limit=?u32,budget=?u64,types=?texts,window=?seqs,kinds=?kinds,actor=?bytes,source=?bytes]"
+                        )
                     ]
                 );
             }
@@ -337,6 +512,10 @@ macro_rules! engines {
             #[test]
             fn no_sentinel_in_any_observability_explanation_or_error_output() {
                 super::no_sentinel_in_any_observability_explanation_or_error_output::<E>();
+            }
+            #[test]
+            fn no_sentinel_in_any_associative_plan_observation_or_error() {
+                super::no_sentinel_in_any_associative_plan_observation_or_error::<E>();
             }
             #[test]
             fn levels_below_diagnostic_carry_no_shape_text() {

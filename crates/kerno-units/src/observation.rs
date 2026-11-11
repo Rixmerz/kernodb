@@ -3,8 +3,8 @@
 //!
 //! An optional, in-memory record of how queries ran, kept by the [`Observer`]
 //! that every [`UnitDb`](crate::UnitDb) owns and every
-//! [`UnitSnapshot`](crate::UnitSnapshot) it hands out shares. `query` and
-//! `query_relations` report to it; nothing else does.
+//! [`UnitSnapshot`](crate::UnitSnapshot) it hands out shares. `query`,
+//! `query_relations` and `assoc_query` report to it; nothing else does.
 //!
 //! # Levels
 //!
@@ -71,6 +71,7 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
 
+use crate::assoc::AssocQuery;
 use crate::clock::{Clock, SystemClock};
 use crate::error::UnitError;
 use crate::fingerprint::{Fingerprint, FingerprintKey, NormalizedQuery, RelationQuery};
@@ -182,8 +183,10 @@ pub enum PlanKind {
 impl PlanKind {
     fn of(path: PlanPath) -> Self {
         match path {
-            PlanPath::UnitsReference | PlanPath::RelationsReference => PlanKind::Reference,
-            PlanPath::IndexPrimary | PlanPath::IndexType | PlanPath::Adjacency => PlanKind::Planned,
+            PlanPath::UnitsReference | PlanPath::RelationsReference | PlanPath::AssocReference => PlanKind::Reference,
+            PlanPath::IndexPrimary | PlanPath::IndexType | PlanPath::Adjacency | PlanPath::AssocAdjacency => {
+                PlanKind::Planned
+            }
             PlanPath::ResultCache => PlanKind::Cache,
         }
     }
@@ -220,13 +223,15 @@ impl ExecutionObservation {
     }
 }
 
-const PATHS: [PlanPath; 6] = [
+const PATHS: [PlanPath; 8] = [
     PlanPath::UnitsReference,
     PlanPath::IndexPrimary,
     PlanPath::IndexType,
     PlanPath::RelationsReference,
     PlanPath::Adjacency,
     PlanPath::ResultCache,
+    PlanPath::AssocReference,
+    PlanPath::AssocAdjacency,
 ];
 
 fn slot(path: PlanPath) -> usize {
@@ -252,7 +257,7 @@ pub struct ObservationStats {
     pub evicted: u64,
     /// Records kept now.
     pub retained: usize,
-    by_path: [u64; 6],
+    by_path: [u64; 8],
 }
 
 impl ObservationStats {
@@ -272,6 +277,7 @@ pub(crate) struct Started {
 pub(crate) enum Observed<'a> {
     Units(&'a UnitFilter),
     Relations(&'a RelationQuery),
+    Assoc(&'a AssocQuery),
 }
 
 /// What the execution ended with.
@@ -474,6 +480,7 @@ impl Observer {
         let shape = match query {
             Observed::Units(f) => NormalizedQuery::of_filter(f),
             Observed::Relations(q) => NormalizedQuery::of_relations(q),
+            Observed::Assoc(q) => NormalizedQuery::of_assoc(q),
         };
         let now = st.clock.now();
         let record = ExecutionObservation {

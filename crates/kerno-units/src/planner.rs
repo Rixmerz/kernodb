@@ -14,6 +14,10 @@
 //! | 6. Record metrics | [`QueryOutcome`] and [`RelationsOutcome`] carry the path and the fallback; `query` hands them to the [`Observer`](crate::observation::Observer) (E5-03) |
 //! | 7. Validate and fall back | the answer is checked against the query and, if the index path failed or the check fails, the **reference path answers** and the outcome says so ([`Fallback`]) |
 //!
+//! Associative queries (E7-02) go through the same steps with two candidates,
+//! [`PlanPath::AssocReference`] and [`PlanPath::AssocAdjacency`]; see
+//! [`UnitSnapshot::assoc_query`].
+//!
 //! # Determinism
 //!
 //! The decision is a pure function of the query and of what the snapshot
@@ -58,21 +62,23 @@
 //! Upgrade path: a per-type entry count in `IDX_META`, written by the build,
 //! once a workload shows the prior choosing the slower path.
 
+use std::collections::BTreeSet;
 use std::ops::Bound;
 
 use kerno_core::contract::{Engine, Snapshot};
 
 use std::time::Duration;
 
+use crate::assoc::{AssocError, AssocQuery, AssocResult};
 use crate::cache::{CacheEntry, CacheFallbackCause, CachedQuery, CachedResult, Dependencies, Evidence, Lookup};
-use crate::codec::{Key, TAG_REL, TAG_REL_IN, TAG_REL_OUT};
-use crate::db::{Relation, Unit, UnitSnapshot, corruption};
+use crate::codec::{Adjacency, Key, TAG_REL, TAG_REL_IN, TAG_REL_OUT};
+use crate::db::{Relation, Unit, UnitSnapshot, context, corruption, key};
 use crate::error::UnitError;
 use crate::fingerprint::{FingerprintKey, NormalizedQuery, QueryKind, RelationQuery};
 use crate::index::{IndexPath, IndexState, IndexStatus, QueryOutcome, QuerySource, UnitFilter};
 use crate::observation::{Ended, ErrorKind, Observed};
 use crate::plan::{Candidate, Cost, Decision, Plan, PlanError, PlanPath, Unusable, Usability};
-use crate::types::{Direction, Lifecycle};
+use crate::types::{Direction, Lifecycle, UnitId};
 
 /// Version of the planner, recorded in every observation (E5-03). Bump it
 /// when the candidates, the cost model or the choice change.
@@ -118,6 +124,10 @@ pub enum FallbackCause {
     Corrupt,
     /// The path answered something that is not an answer to the query.
     Invalid(Violation),
+    /// The path was not usable when the query was planned (the adjacency index
+    /// of an associative query is absent or inconsistent): the reference path
+    /// answered without trying it.
+    Unusable(Unusable),
 }
 
 /// What the validation of an answer found wrong (step 7).
@@ -129,6 +139,12 @@ pub enum Violation {
     NotActive,
     /// Items not in the strictly ascending order the reference path gives.
     OutOfOrder,
+    /// A relation created after the snapshot: no index entry of this snapshot
+    /// can point at it (associative queries).
+    BeyondSnapshot,
+    /// An adjacency entry whose mirror entry, on the other end of the
+    /// relation, is missing or disagrees (associative queries).
+    Unmirrored,
 }
 
 /// The relations a query matched and the path that found them.
@@ -139,6 +155,71 @@ pub struct RelationsOutcome {
     pub path: PlanPath,
     /// Set when the chosen path failed and the reference path answered.
     pub fallback: Option<Fallback>,
+}
+
+/// The answer of an associative query, the path that produced it and, if the
+/// adjacency path was abandoned, why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssocOutcome {
+    pub result: AssocResult,
+    /// The path that produced `result`.
+    pub path: PlanPath,
+    /// Set when the adjacency path was not usable or failed its check and the
+    /// reference path answered.
+    pub fallback: Option<Fallback>,
+}
+
+/// What the planner read to decide an associative query: the size of the
+/// record range and of both adjacency ranges, and the first hop.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AssocProbes {
+    all: Probe,
+    out: Probe,
+    inn: Probe,
+    /// Expansions of the first hop: seeds times followed directions.
+    expansions: u64,
+    /// Adjacency entries the first hop would read.
+    adjacent: u64,
+}
+
+impl AssocProbes {
+    #[cfg(test)]
+    pub(crate) fn new(all: Probe, out: Probe, inn: Probe, expansions: u64, adjacent: u64) -> Self {
+        AssocProbes { all, out, inn, expansions, adjacent }
+    }
+}
+
+/// Why the adjacency index cannot answer, from the three ranges the planner
+/// probed. A healthy store writes a relation's record and both entries in one
+/// change set, so the three have the same number of entries. A probe sees at
+/// most [`PROBE`] entries, so this finds what a probe can show: a complete
+/// range is the exact count and bounds the others from above.
+pub(crate) fn adjacency_unusable(all: Probe, out: Probe, inn: Probe) -> Option<Unusable> {
+    if all.found > 0 && (out.found == 0 || inn.found == 0) {
+        return Some(Unusable::AdjacencyAbsent);
+    }
+    let ranges = [all, out, inn];
+    let disagree = ranges.iter().filter(|x| x.complete).any(|x| ranges.iter().any(|y| y.found > x.found));
+    disagree.then_some(Unusable::AdjacencyInconsistent)
+}
+
+/// The associative candidates. The cost is that of the first hop, in
+/// key-value reads: the reference path reads every `REL` record for each
+/// expansion, the adjacency path the entry and the record of each neighbour.
+/// Deeper hops repeat the same trade, so the first hop decides for all.
+pub(crate) fn assoc_candidates(p: &AssocProbes) -> Vec<Candidate> {
+    let adjacency = match adjacency_unusable(p.all, p.out, p.inn) {
+        Some(why) => Usability::Unusable(why),
+        None => Usability::Usable,
+    };
+    vec![
+        Candidate {
+            path: PlanPath::AssocReference,
+            cost: Cost(p.all.found.saturating_mul(p.expansions)),
+            usability: Usability::Usable,
+        },
+        Candidate { path: PlanPath::AssocAdjacency, cost: Cost(p.adjacent.saturating_mul(2)), usability: adjacency },
+    ]
 }
 
 /// Costs of the unit candidates, in table order (reference, primary, type).
@@ -292,6 +373,41 @@ impl<E: Engine> UnitSnapshot<E> {
             None => Probe { found: 0, complete: true },
         };
         Decision::new(QueryKind::Relations, None, relation_candidates(all, adjacent)).map_err(internal)
+    }
+
+    /// Steps 1 to 4 for an associative query. The probes are the ones of
+    /// `decide_relations` plus the two whole adjacency ranges, and the first
+    /// hop of every seed.
+    fn decide_assoc(&self, q: &AssocQuery, seeds: &BTreeSet<UnitId>) -> Result<Decision, UnitError> {
+        let whole = |tag| {
+            let (start, end) = Key::tag_range(tag);
+            self.probe(&start, &end)
+        };
+        let (all, out, inn) = (whole(TAG_REL)?, whole(TAG_REL_OUT)?, whole(TAG_REL_IN)?);
+        let (mut expansions, mut adjacent) = (0u64, 0u64);
+        for &seed in seeds {
+            for dir in q.direction.directions() {
+                let tag = if *dir == Direction::Out { TAG_REL_OUT } else { TAG_REL_IN };
+                expansions += 1;
+                if let Some((start, end)) = Key::adjacency_range(tag, seed, None) {
+                    adjacent = adjacent.saturating_add(self.probe(&start, &end)?.found);
+                }
+            }
+        }
+        let probes = AssocProbes { all, out, inn, expansions, adjacent };
+        Decision::new(QueryKind::Associative, None, assoc_candidates(&probes)).map_err(internal)
+    }
+
+    /// The plan `assoc_query` follows for `q` on this snapshot: both
+    /// candidates with their cost, the one chosen and why. A query that would
+    /// be rejected has no plan. The plan holds the fingerprint of the shape of
+    /// the query under `key`, never a seed, a type, an actor, a source or a
+    /// number of the query.
+    pub fn explain_assoc(&self, key: &FingerprintKey, q: &AssocQuery) -> Result<Plan, AssocError> {
+        q.validate()?;
+        let seeds: BTreeSet<UnitId> = q.seeds.iter().copied().collect();
+        let decision = self.decide_assoc(q, &seeds)?;
+        Ok(Plan::of(NormalizedQuery::of_assoc(q).fingerprint(key), decision))
     }
 
     /// The plan `query` follows for `filter` on this snapshot, to inspect:
@@ -567,6 +683,110 @@ impl<E: Engine> UnitSnapshot<E> {
         Ok(outcome)
     }
 
+    /// An associative query through the path the planner chooses: the
+    /// traversal over the adjacency index when it is usable and cheaper, else
+    /// over the full scan of the relations. The answer is
+    /// [`UnitSnapshot::reference_assoc_query`]'s on the same snapshot (I-32),
+    /// in results, order, traces, visits and ending.
+    ///
+    /// Every hop read from the index is checked: only relations the hop asks
+    /// for ([`check_relations`]), in the reference order, created no later
+    /// than the snapshot, and with their mirror entry on the other end. If a
+    /// check fails, or the index reports damage, the whole query is answered
+    /// again by the reference path and the outcome says why ([`Fallback`]); so
+    /// it does when the index was not usable at planning time. The seeds are
+    /// checked before any path runs, and a query the model rejects never
+    /// reaches the planner.
+    ///
+    /// The cache is not consulted (acta §2.3).
+    pub fn assoc_query(&self, q: &AssocQuery) -> Result<AssocOutcome, AssocError> {
+        let started = self.observer.begin();
+        let outcome = self.plan_assoc(q);
+        if let Some(started) = started {
+            let ended = outcome
+                .as_ref()
+                .map(|o| Ended { path: o.path, rows: o.result.hits.len(), fallback: o.fallback })
+                .map_err(AssocError::kind);
+            self.observer.finish(started, Observed::Assoc(q), self.seq(), ended);
+        }
+        outcome
+    }
+
+    fn plan_assoc(&self, q: &AssocQuery) -> Result<AssocOutcome, AssocError> {
+        let seeds = self.active_seeds(q)?;
+        let decision = self.decide_assoc(q, &seeds)?;
+        self.execute_assoc(q, seeds, &decision, |unit, dir, relation_type| self.relations_of(unit, dir, relation_type))
+    }
+
+    /// Steps 5 to 7 for an associative query; `hop` reads one range of the
+    /// adjacency index.
+    fn execute_assoc(
+        &self,
+        q: &AssocQuery,
+        seeds: BTreeSet<UnitId>,
+        decision: &Decision,
+        hop: impl FnMut(UnitId, Direction, Option<&str>) -> Result<Vec<Relation>, UnitError>,
+    ) -> Result<AssocOutcome, AssocError> {
+        let abandoned = PlanPath::AssocAdjacency;
+        let mut fallback = None;
+        if decision.chosen().path == abandoned {
+            match self.indexed_traverse(q, seeds.clone(), hop) {
+                Ok(result) => return Ok(AssocOutcome { result, path: abandoned, fallback: None }),
+                Err(AssocError::IndexAnswer(v)) => {
+                    fallback = Some(Fallback { abandoned, cause: FallbackCause::Invalid(v) });
+                }
+                Err(AssocError::Unit(e)) if is_corruption(&e) => {
+                    fallback = Some(Fallback { abandoned, cause: FallbackCause::Corrupt });
+                }
+                Err(e) => return Err(e),
+            }
+        } else if let Some(Candidate { usability: Usability::Unusable(why), .. }) =
+            decision.candidates().iter().find(|c| c.path == abandoned)
+        {
+            fallback = Some(Fallback { abandoned, cause: FallbackCause::Unusable(*why) });
+        }
+        Ok(AssocOutcome { result: self.reference_traverse(q, seeds)?, path: PlanPath::AssocReference, fallback })
+    }
+
+    /// Step 7 for one hop of the adjacency path: [`check_relations`] (only the
+    /// relations asked for, in order), then, relation by relation, that none
+    /// is newer than the snapshot and that the mirror entry on the other end
+    /// exists and names this end. `relations_of` has already compared each
+    /// entry with its `REL` record, so an entry without a record or in
+    /// disagreement with it is damage, not a wrong answer.
+    ///
+    /// Not a completeness check (H-1): an entry that is missing on both ends
+    /// of a relation leaves nothing to compare. The planner's probes show it
+    /// for small stores ([`adjacency_unusable`]), `verify_units` for all.
+    pub(crate) fn check_adjacent(&self, query: &RelationQuery, relations: &[Relation]) -> Result<(), AssocError> {
+        check_relations(query, relations).map_err(AssocError::IndexAnswer)?;
+        for r in relations {
+            if r.created_seq > self.seq() {
+                return Err(AssocError::IndexAnswer(Violation::BeyondSnapshot));
+            }
+            if !self.is_mirrored(query.direction, r)? {
+                return Err(AssocError::IndexAnswer(Violation::Unmirrored));
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the entry of `r` on the other end from `dir` exists and names
+    /// this end.
+    fn is_mirrored(&self, dir: Direction, r: &Relation) -> Result<bool, UnitError> {
+        let (mirror, names) = match dir {
+            Direction::Out => {
+                (Key::RelationIn { unit: r.to, relation_type: r.relation_type.clone(), edge: r.id }, r.from)
+            }
+            Direction::In => {
+                (Key::RelationOut { unit: r.from, relation_type: r.relation_type.clone(), edge: r.id }, r.to)
+            }
+        };
+        let Some(raw) = self.snap.get(&key(mirror)?)? else { return Ok(false) };
+        let entry = Adjacency::decode(&raw).map_err(|e| context(e, &format!("mirror adjacency entry of {}", r.id)))?;
+        Ok(entry.other == names)
+    }
+
     /// Steps 5 to 7 for relations; `adjacency` runs the index path.
     fn execute_relations(
         &self,
@@ -598,6 +818,7 @@ impl<E: Engine> UnitSnapshot<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::AssocQuery;
     use crate::types::{CommitSeq, RelationId, RelationProvenance, Timestamp, UnitId};
     use crate::{ContentHash, UnitDb};
     use kerno_testkit::emulated::Emulated;
@@ -829,6 +1050,172 @@ mod tests {
         assert_eq!(out.relations, reference);
         assert_eq!(out.fallback, Some(Fallback { abandoned: PlanPath::Adjacency, cause: FallbackCause::Corrupt }));
         assert!(matches!(run(&|| Err(UnitError::InvalidArgument("x".into()))), Err(UnitError::InvalidArgument(_))));
+    }
+
+    #[test]
+    fn the_adjacency_index_is_usable_only_when_the_probes_can_agree() {
+        let p = |found, complete| Probe::new(found, complete);
+        let ok = |all, out, inn| adjacency_unusable(all, out, inn);
+        // Equal and complete, or all full: nothing to object to.
+        assert_eq!(ok(p(5, true), p(5, true), p(5, true)), None);
+        assert_eq!(ok(p(64, false), p(64, false), p(64, false)), None);
+        assert_eq!(ok(p(0, true), p(0, true), p(0, true)), None);
+        // A complete range bounds the others from above, whichever it is.
+        assert_eq!(ok(p(5, true), p(4, true), p(5, true)), Some(Unusable::AdjacencyInconsistent));
+        assert_eq!(ok(p(5, true), p(5, true), p(4, true)), Some(Unusable::AdjacencyInconsistent));
+        assert_eq!(ok(p(4, true), p(5, true), p(5, true)), Some(Unusable::AdjacencyInconsistent));
+        assert_eq!(ok(p(0, true), p(1, true), p(0, true)), Some(Unusable::AdjacencyInconsistent));
+        assert_eq!(ok(p(5, true), p(64, false), p(5, true)), Some(Unusable::AdjacencyInconsistent));
+        // A full probe is only a lower bound: fewer entries than it saw is not a disagreement.
+        assert_eq!(ok(p(64, false), p(64, false), p(63, true)), Some(Unusable::AdjacencyInconsistent));
+        assert_eq!(ok(p(64, false), p(64, false), p(64, false)), None);
+        // Relations and no entry in a direction: the index is absent, not just different.
+        assert_eq!(ok(p(3, true), p(0, true), p(3, true)), Some(Unusable::AdjacencyAbsent));
+        assert_eq!(ok(p(64, false), p(64, false), p(0, true)), Some(Unusable::AdjacencyAbsent));
+        // No relation, no entry: nothing is absent.
+        assert_eq!(ok(p(0, true), p(0, true), p(0, true)), None);
+    }
+
+    #[test]
+    fn assoc_costs_compare_the_first_hop() {
+        let p = |found, complete| Probe::new(found, complete);
+        let cost = |probes: AssocProbes| {
+            let c = assoc_candidates(&probes);
+            (c[0].path, c[1].path, c[0].cost, c[1].cost, c[1].usability)
+        };
+        // Two expansions of a 9-record scan against 4 entries read twice each.
+        let probes = AssocProbes::new(p(9, true), p(9, true), p(9, true), 2, 4);
+        assert_eq!(
+            cost(probes),
+            (PlanPath::AssocReference, PlanPath::AssocAdjacency, Cost(18), Cost(8), Usability::Usable)
+        );
+        // A tie goes to the reference path, first in table order.
+        let tie = AssocProbes::new(p(4, true), p(4, true), p(4, true), 2, 4);
+        let candidates = assoc_candidates(&tie);
+        let decision = Decision::new(QueryKind::Associative, None, candidates).unwrap();
+        assert_eq!(decision.chosen().path, PlanPath::AssocReference);
+        // An index that is not usable is never chosen, however cheap.
+        let broken = AssocProbes::new(p(9, true), p(8, true), p(9, true), 2, 0);
+        let candidates = assoc_candidates(&broken);
+        assert_eq!(candidates[1].cost, Cost(0));
+        assert_eq!(candidates[1].usability, Usability::Unusable(Unusable::AdjacencyInconsistent));
+        let decision = Decision::new(QueryKind::Associative, None, candidates).unwrap();
+        assert_eq!(decision.chosen().path, PlanPath::AssocReference);
+    }
+
+    /// One hop of the adjacency path, as a test injects it.
+    type HopAnswer<'a> = dyn Fn(UnitId, Direction, Option<&str>) -> Result<Vec<Relation>, UnitError> + 'a;
+
+    /// Three units; `a` starts two relations, and four more between `b` and
+    /// `c` make the scan costlier than the index for a query from `a`.
+    fn assoc_snapshot() -> (UnitSnapshot<Emulated<LogEngine>>, Vec<UnitId>) {
+        let (db, snap, ids) = built_snapshot();
+        drop(snap);
+        let mut cs = db.begin_changeset(crate::ChangeMeta::default()).unwrap();
+        for (from, to, t) in [(0, 1, "x"), (0, 2, "y"), (1, 2, "x"), (1, 2, "x"), (2, 1, "y"), (2, 1, "y")] {
+            cs.create_relation(ids[from], ids[to], t, RelationProvenance::Declared).unwrap();
+        }
+        cs.commit().unwrap();
+        (db.snapshot().unwrap(), ids)
+    }
+
+    fn assoc_from(ids: &[UnitId]) -> (AssocQuery, BTreeSet<UnitId>) {
+        let mut q = AssocQuery::new(vec![ids[0]], 3, 100, 1000);
+        q.direction = crate::AssocDirection::Out;
+        (q, BTreeSet::from([ids[0]]))
+    }
+
+    #[test]
+    fn a_wrong_hop_of_the_adjacency_path_falls_back_to_the_reference() {
+        let (snap, ids) = assoc_snapshot();
+        let (q, seeds) = assoc_from(&ids);
+        let decision = snap.decide_assoc(&q, &seeds).unwrap();
+        assert_eq!(decision.chosen().path, PlanPath::AssocAdjacency, "{:?}", decision.candidates());
+        let reference = snap.reference_assoc_query(&q).unwrap();
+        assert_eq!(reference.hits.len(), 2);
+        let run = |hop: &HopAnswer| snap.execute_assoc(&q, seeds.clone(), &decision, hop);
+        let right = |u, d, t: Option<&str>| snap.relations_of(u, d, t);
+
+        // A right answer: the index answers, no fallback.
+        let ok = run(&right).unwrap();
+        assert_eq!((ok.path, ok.fallback, &ok.result), (PlanPath::AssocAdjacency, None, &reference));
+
+        let mine = snap.relations_of(ids[0], Direction::Out, None).unwrap();
+        let foreign = snap.relations_of(ids[1], Direction::Out, None).unwrap();
+        let mut unordered = mine.clone();
+        unordered.reverse();
+        let mut repeated = mine.clone();
+        repeated.push(mine[1].clone());
+        let mut future = mine.clone();
+        future[0].created_seq = CommitSeq(snap.seq().0 + 1);
+        let mut forged = mine.clone();
+        forged[0].id = RelationId([0xEE; 16]);
+        let mut extra = mine.clone();
+        extra.extend(foreign);
+        let cases: [(&str, Vec<Relation>, Violation); 5] = [
+            ("a relation of another unit", extra, Violation::NotMatching),
+            ("out of order", unordered, Violation::OutOfOrder),
+            ("repeated", repeated, Violation::OutOfOrder),
+            ("created after the snapshot", future, Violation::BeyondSnapshot),
+            ("without its entries", forged, Violation::Unmirrored),
+        ];
+        for (name, answer, violation) in cases {
+            let hop = |u, d, t: Option<&str>| match u == ids[0] {
+                true => Ok(answer.clone()),
+                false => snap.relations_of(u, d, t),
+            };
+            let out = run(&hop).unwrap();
+            assert_eq!(out.result, reference, "{name}");
+            assert_eq!(out.path, PlanPath::AssocReference, "{name}");
+            assert_eq!(
+                out.fallback,
+                Some(Fallback { abandoned: PlanPath::AssocAdjacency, cause: FallbackCause::Invalid(violation) }),
+                "{name}"
+            );
+        }
+
+        // A query that follows one type reads one range per type: a hop that
+        // answers with the other types too is not the answer it was asked for.
+        let mut typed = q.clone();
+        typed.relation_types = Some(BTreeSet::from(["x".to_owned()]));
+        let typed_reference = snap.reference_assoc_query(&typed).unwrap();
+        assert_eq!(typed_reference.hits.len(), 2);
+        let widened = |u, d, _: Option<&str>| snap.relations_of(u, d, None);
+        let out = snap.execute_assoc(&typed, seeds.clone(), &decision, widened).unwrap();
+        assert_eq!(out.result, typed_reference);
+        assert_eq!(
+            out.fallback,
+            Some(Fallback {
+                abandoned: PlanPath::AssocAdjacency,
+                cause: FallbackCause::Invalid(Violation::NotMatching)
+            })
+        );
+
+        // Damage found by the index: the reference decides. An error that is not damage is not hidden.
+        let out = run(&|_, _, _| Err(corruption_error())).unwrap();
+        assert_eq!(out.result, reference);
+        assert_eq!(out.fallback, Some(Fallback { abandoned: PlanPath::AssocAdjacency, cause: FallbackCause::Corrupt }));
+        let busy = run(&|_, _, _| Err(UnitError::InvalidArgument("not damage".into())));
+        assert!(matches!(busy, Err(AssocError::Unit(UnitError::InvalidArgument(_)))), "{busy:?}");
+    }
+
+    #[test]
+    fn an_unusable_adjacency_path_is_not_run_and_the_fallback_says_why() {
+        let (snap, ids) = assoc_snapshot();
+        let (q, seeds) = assoc_from(&ids);
+        let p = |found, complete| Probe::new(found, complete);
+        let probes = AssocProbes::new(p(9, true), p(0, true), p(9, true), 1, 0);
+        let decision = Decision::new(QueryKind::Associative, None, assoc_candidates(&probes)).unwrap();
+        let out = snap.execute_assoc(&q, seeds, &decision, |_, _, _| panic!("an unusable index is not read")).unwrap();
+        assert_eq!(out.result, snap.reference_assoc_query(&q).unwrap());
+        assert_eq!(out.path, PlanPath::AssocReference);
+        assert_eq!(
+            out.fallback,
+            Some(Fallback {
+                abandoned: PlanPath::AssocAdjacency,
+                cause: FallbackCause::Unusable(Unusable::AdjacencyAbsent)
+            })
+        );
     }
 
     #[test]

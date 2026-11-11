@@ -12,6 +12,7 @@
 //! |---|---|
 //! | [`QueryKind::Units`] | [`PlanPath::UnitsReference`], [`PlanPath::IndexPrimary`], [`PlanPath::IndexType`] |
 //! | [`QueryKind::Relations`] | [`PlanPath::RelationsReference`], [`PlanPath::Adjacency`] |
+//! | [`QueryKind::Associative`] | [`PlanPath::AssocReference`], [`PlanPath::AssocAdjacency`] |
 //!
 //! A plan holds the query's [`Fingerprint`], never the query: it carries no
 //! literal and no shape text, so it can leave the process wherever a
@@ -32,7 +33,11 @@
 //!   that very state; while it is `Ready`, only `IndexType` may be unusable,
 //!   and only for lack of a `unit_type` in the filter.
 //! * **The reference paths are always usable.** They are the fallback (I-32),
-//!   so a plan always has a way to answer.
+//!   so a plan always has a way to answer. The adjacency path of an
+//!   associative query is the one other candidate that may be unusable, for
+//!   [`Unusable::AdjacencyAbsent`] or [`Unusable::AdjacencyInconsistent`]: it
+//!   has no stored state, so what the planner saw in the key ranges is the
+//!   evidence (E7-02).
 //! * **The choice is the cheapest usable candidate**, the first in table order
 //!   on a tie, and the reason is derived from it, not given: `Fallback` when
 //!   the index was not `Ready`, `LowestCost` otherwise.
@@ -53,6 +58,12 @@ pub enum PlanPath {
     RelationsReference,
     /// The adjacency range of the unit (`relations_of`).
     Adjacency,
+    /// The breadth-first traversal over `reference_relations_of`
+    /// (`reference_assoc_query`, E7-02).
+    AssocReference,
+    /// The same traversal taking each hop from the adjacency index, every
+    /// answer checked (E7-02).
+    AssocAdjacency,
     /// A cached result (E6-02): learned state, not a path over the data. It is
     /// the first thing `query` considers, before the candidates above, and it
     /// is chosen by an exact match of every dependency, not by cost, so it is
@@ -68,6 +79,7 @@ impl PlanPath {
         match kind {
             QueryKind::Units => &[PlanPath::UnitsReference, PlanPath::IndexPrimary, PlanPath::IndexType],
             QueryKind::Relations => &[PlanPath::RelationsReference, PlanPath::Adjacency],
+            QueryKind::Associative => &[PlanPath::AssocReference, PlanPath::AssocAdjacency],
         }
     }
 
@@ -88,6 +100,13 @@ pub enum Unusable {
     IndexNotReady(IndexState),
     /// `IDX_TYPE` answers only a filter that sets `unit_type`.
     NoTypeFilter,
+    /// Relations exist but the adjacency entries of a direction do not: the
+    /// index is absent (associative queries only).
+    AdjacencyAbsent,
+    /// The record range and the two adjacency ranges cannot all be complete
+    /// and equal: an entry is missing or there is one without a record
+    /// (associative queries only).
+    AdjacencyInconsistent,
 }
 
 /// Whether the planner could answer through a candidate.
@@ -115,6 +134,8 @@ pub enum Reason {
     /// The index was in this state, not `Ready`, so the query fell back to the
     /// reference path (I-23).
     Fallback { index: IndexState },
+    /// The adjacency path of an associative query could not be used (E7-02).
+    AdjacencyUnusable(Unusable),
 }
 
 /// A plan that cannot be explained truthfully; see [`Plan::new`].
@@ -160,7 +181,12 @@ impl Decision {
         }
         for c in &candidates {
             if !c.path.is_unit_index() {
-                if c.usability != Usability::Usable {
+                let may_be_unusable = c.path == PlanPath::AssocAdjacency
+                    && matches!(
+                        c.usability,
+                        Usability::Unusable(Unusable::AdjacencyAbsent | Unusable::AdjacencyInconsistent)
+                    );
+                if c.usability != Usability::Usable && !may_be_unusable {
                     return Err(PlanError::FallbackUnusable { path: c.path });
                 }
                 continue;
@@ -186,8 +212,10 @@ impl Decision {
             .min_by_key(|(_, c)| c.cost)
             .map(|(i, _)| i)
             .expect("the reference path is usable: checked above");
-        let reason = match index {
-            Some(IndexStatus { state, .. }) if state != IndexState::Ready => Reason::Fallback { index: state },
+        let adjacency = candidates.iter().find(|c| c.path == PlanPath::AssocAdjacency).map(|c| c.usability);
+        let reason = match (index, adjacency) {
+            (Some(IndexStatus { state, .. }), _) if state != IndexState::Ready => Reason::Fallback { index: state },
+            (_, Some(Usability::Unusable(why))) => Reason::AdjacencyUnusable(why),
             _ => Reason::LowestCost,
         };
         Ok(Decision { index, candidates, chosen, reason })
@@ -195,6 +223,10 @@ impl Decision {
 
     pub(crate) fn chosen(&self) -> &Candidate {
         &self.candidates[self.chosen]
+    }
+
+    pub(crate) fn candidates(&self) -> &[Candidate] {
+        &self.candidates
     }
 }
 
