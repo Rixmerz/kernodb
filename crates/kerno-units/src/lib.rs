@@ -18,8 +18,9 @@
 //! planner that `query` follows ([`planner`]); E5-03 the optional
 //! `ExecutionObservation` ([`observation`]). E6-01 adds the dependency model and
 //! learned-state store of the result cache ([`cache`]). E7-01 adds the associative
-//! query model and its reference path ([`assoc`]). This crate stays separate
-//! from `kerno-storage`.
+//! query model and its reference path ([`assoc`]); E7-02 its indexed path and its
+//! plan ([`planner`]). This crate
+//! stays separate from `kerno-storage`.
 
 pub mod assoc;
 pub mod cache;
@@ -73,7 +74,7 @@ pub use payload::{
     ContentHash, HashAlg, MAX_PAYLOAD_LEN, PayloadDecl, PayloadError, PayloadRule, VerifiedPayload, verify_payload,
 };
 pub use plan::{Candidate, Cost, Plan, PlanError, PlanPath, Reason, Unusable, Usability};
-pub use planner::{Fallback, FallbackCause, PLANNER_VERSION, RelationsOutcome, Violation};
+pub use planner::{AssocOutcome, Fallback, FallbackCause, PLANNER_VERSION, RelationsOutcome, Violation};
 pub use retention::{CompactReport, RetentionBudget, RetentionPacing, RetentionPolicy, RetentionReport, RetentionRule};
 pub use types::{
     BuildOutcome, ChangeKind, ChangePurpose, ChangeSetId, CommitSeq, Direction, HistoryPolicy, Lifecycle,

@@ -1064,6 +1064,7 @@ mod tests {
                 direction: crate::types::Direction::Out,
                 relation_type: None,
             }),
+            QueryKind::Associative => unreachable!("associative queries are never cached (E7 acta §2.3)"),
         }
     }
 
