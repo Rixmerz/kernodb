@@ -413,7 +413,9 @@ impl<E: Engine> UnitSnapshot<E> {
                 self.execute_units(filter, status, decision.chosen().path, |via, f| self.scan_path(via, f))?
             }
         };
-        self.store(fingerprint, query, now, CachedResult::Units(outcome.units.clone()));
+        if self.cache.worth_storing(&fingerprint, &query, &now) {
+            self.store(fingerprint, query, now, CachedResult::Units(outcome.units.clone()));
+        }
         Ok(outcome)
     }
 
@@ -559,7 +561,9 @@ impl<E: Engine> UnitSnapshot<E> {
             },
             None => self.plan_relations(query)?,
         };
-        self.store(fingerprint, cached_query, now, CachedResult::Relations(outcome.relations.clone()));
+        if self.cache.worth_storing(&fingerprint, &cached_query, &now) {
+            self.store(fingerprint, cached_query, now, CachedResult::Relations(outcome.relations.clone()));
+        }
         Ok(outcome)
     }
 
