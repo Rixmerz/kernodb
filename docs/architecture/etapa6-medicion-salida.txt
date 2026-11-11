@@ -1,55 +1,358 @@
+# corrida A (2026-11-11, 20 rondas, load average 0.65 al empezar)
 cache,scale,load,cache,round,timed_reads,served,p50_ms,p95_ms,p99_ms
-cache,20000,no-repeat,off,0,3600,0,0.866,1.030,1.410
-cache,20000,no-repeat,on,0,3600,0,0.947,1.301,1.589
-cache,20000,no-repeat,on,1,3600,0,0.936,1.086,1.492
-cache,20000,no-repeat,off,1,3600,0,0.857,0.957,1.018
-cache,20000,no-repeat,off,2,3600,0,0.867,1.153,1.376
-cache,20000,no-repeat,on,2,3600,0,0.937,1.109,1.575
-cache,20000,no-repeat,on,3,3600,0,0.974,1.231,1.705
-cache,20000,no-repeat,off,3,3600,0,0.913,1.369,1.809
-cache,20000,no-repeat,off,4,3600,0,0.892,1.204,1.482
-cache,20000,no-repeat,on,4,3600,0,0.958,1.088,1.231
-# 20000 no-repeat: cache-on reads served by the cache: 0.0 %
-# 20000 no-repeat: cache on vs off, best round: p50 +9.2 % (not a threshold), p99 +20.9 % (needs <= +5 %: FAIL)
-# 20000 no-repeat: cache on vs off, median round: p50 +9.2 % (not a threshold), p99 +11.7 % (needs <= +5 %: FAIL)
-cache,20000,w1-index-ready,off,0,1440,0,1.212,3.722,4.668
-cache,20000,w1-index-ready,on,0,1440,1080,0.031,4.102,5.716
-cache,20000,w1-index-ready,on,1,1440,1080,0.030,4.143,4.760
-cache,20000,w1-index-ready,off,1,1440,0,1.277,3.891,4.802
-cache,20000,w1-index-ready,off,2,1440,0,1.267,3.791,4.761
-cache,20000,w1-index-ready,on,2,1440,1080,0.028,4.144,4.977
-cache,20000,w1-index-ready,on,3,1440,1080,0.032,4.590,5.570
-cache,20000,w1-index-ready,off,3,1440,0,1.390,4.339,5.534
-cache,20000,w1-index-ready,off,4,1440,0,1.337,4.159,5.442
-cache,20000,w1-index-ready,on,4,1440,1080,0.032,4.349,5.178
+cache,20000,no-repeat,off,0,900,0,0.890,1.282,1.476
+cache,20000,no-repeat,on,0,900,9,1.146,1.422,1.645
+cache,20000,no-repeat,on,1,900,9,1.074,1.617,1.931
+cache,20000,no-repeat,off,1,900,0,1.132,1.452,1.750
+cache,20000,no-repeat,off,2,900,0,1.168,1.487,2.268
+cache,20000,no-repeat,on,2,900,9,0.890,1.347,1.727
+cache,20000,no-repeat,on,3,900,9,0.883,1.404,1.544
+cache,20000,no-repeat,off,3,900,0,0.806,0.938,0.988
+cache,20000,no-repeat,off,4,900,0,0.803,0.956,1.221
+cache,20000,no-repeat,on,4,900,9,0.815,0.954,1.105
+cache,20000,no-repeat,on,5,900,9,0.884,1.495,1.708
+cache,20000,no-repeat,off,5,900,0,0.875,1.257,1.375
+cache,20000,no-repeat,off,6,900,0,0.795,0.949,1.088
+cache,20000,no-repeat,on,6,900,9,0.852,1.001,1.121
+cache,20000,no-repeat,on,7,900,9,0.857,1.007,1.135
+cache,20000,no-repeat,off,7,900,0,0.835,1.255,1.393
+cache,20000,no-repeat,off,8,900,0,0.837,1.068,1.450
+cache,20000,no-repeat,on,8,900,9,0.844,1.016,1.286
+cache,20000,no-repeat,on,9,900,9,0.823,0.988,1.245
+cache,20000,no-repeat,off,9,900,0,0.809,0.969,1.083
+cache,20000,no-repeat,off,10,900,0,0.792,0.942,1.077
+cache,20000,no-repeat,on,10,900,9,0.836,0.952,1.053
+cache,20000,no-repeat,on,11,900,9,0.836,1.278,1.478
+cache,20000,no-repeat,off,11,900,0,0.850,1.310,3.239
+cache,20000,no-repeat,off,12,900,0,0.857,1.356,1.470
+cache,20000,no-repeat,on,12,900,9,0.857,1.177,1.362
+cache,20000,no-repeat,on,13,900,9,0.861,1.233,1.637
+cache,20000,no-repeat,off,13,900,0,0.928,1.458,1.703
+cache,20000,no-repeat,off,14,900,0,0.881,1.091,1.431
+cache,20000,no-repeat,on,14,900,9,0.926,1.355,1.792
+cache,20000,no-repeat,on,15,900,9,0.870,1.286,1.473
+cache,20000,no-repeat,off,15,900,0,0.904,1.156,1.245
+cache,20000,no-repeat,off,16,900,0,0.816,1.109,1.305
+cache,20000,no-repeat,on,16,900,9,0.815,0.987,1.182
+cache,20000,no-repeat,on,17,900,9,0.875,1.093,1.372
+cache,20000,no-repeat,off,17,900,0,0.815,1.024,1.498
+cache,20000,no-repeat,off,18,900,0,0.817,1.143,1.441
+cache,20000,no-repeat,on,18,900,9,0.861,1.320,1.485
+cache,20000,no-repeat,on,19,900,9,0.843,0.991,1.079
+cache,20000,no-repeat,off,19,900,0,0.822,0.963,1.045
+# 20000 no-repeat: cache-on reads served by the cache: 1.0 %
+# 20000 no-repeat: cache on vs off, all rounds pooled (not a threshold): p50 +2.4 %, p99 +2.7 %
+# 20000 no-repeat: cache on vs off, best round: p50 +2.9 % (not a threshold), p99 +6.5 % (needs <= +5 %: FAIL)
+# 20000 no-repeat: cache on vs off, median round: p50 +2.9 % (not a threshold), p99 +2.9 % (needs <= +5 %: PASS)
+cache,20000,w1-index-ready,off,0,360,0,1.191,3.535,4.748
+cache,20000,w1-index-ready,on,0,360,270,0.030,4.605,6.246
+cache,20000,w1-index-ready,on,1,360,270,0.029,4.436,5.455
+cache,20000,w1-index-ready,off,1,360,0,1.334,4.141,5.591
+cache,20000,w1-index-ready,off,2,360,0,1.223,3.939,5.324
+cache,20000,w1-index-ready,on,2,360,270,0.027,4.507,5.122
+cache,20000,w1-index-ready,on,3,360,270,0.027,4.329,5.239
+cache,20000,w1-index-ready,off,3,360,0,1.216,3.892,5.852
+cache,20000,w1-index-ready,off,4,360,0,1.233,3.819,5.063
+cache,20000,w1-index-ready,on,4,360,270,0.024,4.106,5.029
+cache,20000,w1-index-ready,on,5,360,270,0.025,4.292,4.803
+cache,20000,w1-index-ready,off,5,360,0,1.214,3.793,4.641
+cache,20000,w1-index-ready,off,6,360,0,1.232,4.130,5.082
+cache,20000,w1-index-ready,on,6,360,270,0.025,4.168,4.800
+cache,20000,w1-index-ready,on,7,360,270,0.027,4.348,5.406
+cache,20000,w1-index-ready,off,7,360,0,1.256,3.888,4.685
+cache,20000,w1-index-ready,off,8,360,0,1.274,4.021,5.037
+cache,20000,w1-index-ready,on,8,360,270,0.029,4.427,5.812
+cache,20000,w1-index-ready,on,9,360,270,0.029,4.190,5.101
+cache,20000,w1-index-ready,off,9,360,0,1.439,4.410,5.202
+cache,20000,w1-index-ready,off,10,360,0,1.331,4.202,5.190
+cache,20000,w1-index-ready,on,10,360,270,0.027,4.425,5.666
+cache,20000,w1-index-ready,on,11,360,270,0.030,4.448,5.691
+cache,20000,w1-index-ready,off,11,360,0,1.306,4.191,5.255
+cache,20000,w1-index-ready,off,12,360,0,1.307,4.160,5.208
+cache,20000,w1-index-ready,on,12,360,270,0.028,4.202,4.906
+cache,20000,w1-index-ready,on,13,360,270,0.026,4.320,5.268
+cache,20000,w1-index-ready,off,13,360,0,1.180,3.590,5.123
+cache,20000,w1-index-ready,off,14,360,0,1.272,4.025,5.139
+cache,20000,w1-index-ready,on,14,360,270,0.026,4.391,5.486
+cache,20000,w1-index-ready,on,15,360,270,0.025,4.185,6.177
+cache,20000,w1-index-ready,off,15,360,0,1.227,4.003,4.972
+cache,20000,w1-index-ready,off,16,360,0,1.182,3.977,4.792
+cache,20000,w1-index-ready,on,16,360,270,0.025,4.071,5.364
+cache,20000,w1-index-ready,on,17,360,270,0.029,4.298,4.928
+cache,20000,w1-index-ready,off,17,360,0,1.313,4.099,5.514
+cache,20000,w1-index-ready,off,18,360,0,1.332,4.028,4.853
+cache,20000,w1-index-ready,on,18,360,270,0.026,4.354,6.063
+cache,20000,w1-index-ready,on,19,360,270,0.029,4.455,5.196
+cache,20000,w1-index-ready,off,19,360,0,1.259,3.752,4.690
 # 20000 w1-index-ready: cache-on reads served by the cache: 75.0 %
-# 20000 w1-index-ready: cache on vs off, best round: p50 -97.7 % (needs <= -20 %: PASS), p99 +2.0 % (needs <= +5 %: PASS)
-# 20000 w1-index-ready: cache on vs off, median round: p50 -97.6 % (needs <= -20 %: PASS), p99 +7.8 % (needs <= +5 %: FAIL)
-cache,20000,w1-index-stale,off,0,540,0,92.353,111.850,132.664
-cache,20000,w1-index-stale,on,0,540,405,0.036,99.775,129.425
-cache,20000,w1-index-stale,on,1,540,405,0.036,98.031,114.543
-cache,20000,w1-index-stale,off,1,540,0,94.530,125.559,137.027
-cache,20000,w1-index-stale,off,2,540,0,92.327,117.225,135.409
-cache,20000,w1-index-stale,on,2,540,405,0.032,99.137,127.687
-cache,20000,w1-index-stale,on,3,540,405,0.035,96.818,108.350
-cache,20000,w1-index-stale,off,3,540,0,74.326,92.467,105.665
-cache,20000,w1-index-stale,off,4,540,0,75.063,87.530,105.264
-cache,20000,w1-index-stale,on,4,540,405,0.036,84.193,92.786
+# 20000 w1-index-ready: cache on vs off, all rounds pooled (not a threshold): p50 -97.9 %, p99 +6.0 %
+# 20000 w1-index-ready: cache on vs off, best round: p50 -98.0 % (needs <= -20 %: PASS), p99 +3.4 % (needs <= +5 %: PASS)
+# 20000 w1-index-ready: cache on vs off, median round: p50 -97.8 % (needs <= -20 %: PASS), p99 +4.7 % (needs <= +5 %: PASS)
+cache,20000,w1-index-stale,off,0,144,0,83.313,108.589,121.159
+cache,20000,w1-index-stale,on,0,144,108,0.033,95.603,104.441
+cache,20000,w1-index-stale,on,1,144,108,0.030,93.093,106.018
+cache,20000,w1-index-stale,off,1,144,0,83.975,104.528,120.069
+cache,20000,w1-index-stale,off,2,144,0,83.998,102.125,127.504
+cache,20000,w1-index-stale,on,2,144,108,0.033,105.244,122.566
+cache,20000,w1-index-stale,on,3,144,108,0.035,110.014,123.225
+cache,20000,w1-index-stale,off,3,144,0,87.603,122.485,135.433
+cache,20000,w1-index-stale,off,4,144,0,87.048,122.668,134.442
+cache,20000,w1-index-stale,on,4,144,108,0.032,99.833,129.498
+cache,20000,w1-index-stale,on,5,144,108,0.035,103.657,128.281
+cache,20000,w1-index-stale,off,5,144,0,86.794,128.748,134.822
+cache,20000,w1-index-stale,off,6,144,0,87.291,126.875,131.265
+cache,20000,w1-index-stale,on,6,144,108,0.033,98.895,132.496
+cache,20000,w1-index-stale,on,7,144,108,0.032,93.812,116.833
+cache,20000,w1-index-stale,off,7,144,0,85.353,118.724,129.737
+cache,20000,w1-index-stale,off,8,144,0,88.192,128.717,139.914
+cache,20000,w1-index-stale,on,8,144,108,0.033,99.716,117.532
+cache,20000,w1-index-stale,on,9,144,108,0.033,95.360,103.174
+cache,20000,w1-index-stale,off,9,144,0,85.788,110.793,126.738
+cache,20000,w1-index-stale,off,10,144,0,86.375,108.840,133.447
+cache,20000,w1-index-stale,on,10,144,108,0.031,100.144,118.021
+cache,20000,w1-index-stale,on,11,144,108,0.031,107.838,137.648
+cache,20000,w1-index-stale,off,11,144,0,84.103,129.538,143.964
+cache,20000,w1-index-stale,off,12,144,0,86.932,124.879,133.114
+cache,20000,w1-index-stale,on,12,144,108,0.024,72.328,77.093
+cache,20000,w1-index-stale,on,13,144,108,0.029,72.196,78.795
+cache,20000,w1-index-stale,off,13,144,0,70.667,93.939,107.080
+cache,20000,w1-index-stale,off,14,144,0,68.117,86.523,103.765
+cache,20000,w1-index-stale,on,14,144,108,0.036,79.792,96.073
+cache,20000,w1-index-stale,on,15,144,108,0.032,75.817,103.775
+cache,20000,w1-index-stale,off,15,144,0,69.985,90.884,101.414
+cache,20000,w1-index-stale,off,16,144,0,70.579,91.623,107.442
+cache,20000,w1-index-stale,on,16,144,108,0.027,76.740,86.544
+cache,20000,w1-index-stale,on,17,144,108,0.034,79.748,109.288
+cache,20000,w1-index-stale,off,17,144,0,70.996,83.499,98.332
+cache,20000,w1-index-stale,off,18,144,0,69.964,77.471,90.608
+cache,20000,w1-index-stale,on,18,144,108,0.033,92.160,111.878
+cache,20000,w1-index-stale,on,19,144,108,0.033,88.747,104.046
+cache,20000,w1-index-stale,off,19,144,0,73.302,98.086,106.239
 # 20000 w1-index-stale: cache-on reads served by the cache: 75.0 %
-# 20000 w1-index-stale: cache on vs off, best round: p50 -100.0 % (needs <= -20 %: PASS), p99 -11.9 % (needs <= +5 %: PASS)
-# 20000 w1-index-stale: cache on vs off, median round: p50 -100.0 % (needs <= -20 %: PASS), p99 -13.7 % (needs <= +5 %: PASS)
-cache,100000,no-repeat,off,0,1350,0,6.922,8.646,9.673
-cache,100000,no-repeat,on,0,1350,0,7.077,8.389,10.215
-cache,100000,no-repeat,on,1,1350,0,7.037,7.915,9.549
-cache,100000,no-repeat,off,1,1350,0,6.788,7.954,9.256
-cache,100000,no-repeat,off,2,1350,0,6.641,8.627,9.511
-cache,100000,no-repeat,on,2,1350,0,6.814,7.865,9.650
-cache,100000,no-repeat,on,3,1350,0,6.816,8.052,9.529
-cache,100000,no-repeat,off,3,1350,0,6.492,7.368,8.591
-cache,100000,no-repeat,off,4,1350,0,6.490,7.888,9.019
-cache,100000,no-repeat,on,4,1350,0,6.862,7.508,7.864
-# 100000 no-repeat: cache-on reads served by the cache: 0.0 %
-# 100000 no-repeat: cache on vs off, best round: p50 +5.0 % (not a threshold), p99 -8.5 % (needs <= +5 %: PASS)
-# 100000 no-repeat: cache on vs off, median round: p50 +3.3 % (not a threshold), p99 +3.2 % (needs <= +5 %: PASS)
+# 20000 w1-index-stale: cache on vs off, all rounds pooled (not a threshold): p50 -100.0 %, p99 -10.3 %
+# 20000 w1-index-stale: cache on vs off, best round: p50 -100.0 % (needs <= -20 %: PASS), p99 -14.9 % (needs <= +5 %: PASS)
+# 20000 w1-index-stale: cache on vs off, median round: p50 -100.0 % (needs <= -20 %: PASS), p99 -12.3 % (needs <= +5 %: PASS)
+cache,100000,no-repeat,off,0,360,0,7.027,9.103,9.977
+cache,100000,no-repeat,on,0,360,3,6.858,8.623,9.525
+cache,100000,no-repeat,on,1,360,3,6.730,7.412,8.056
+cache,100000,no-repeat,off,1,360,0,7.168,10.598,12.534
+cache,100000,no-repeat,off,2,360,0,6.933,7.894,9.343
+cache,100000,no-repeat,on,2,360,3,7.101,7.959,9.426
+cache,100000,no-repeat,on,3,360,3,7.058,9.517,11.213
+cache,100000,no-repeat,off,3,360,0,7.026,9.017,10.075
+cache,100000,no-repeat,off,4,360,0,6.797,8.925,10.924
+cache,100000,no-repeat,on,4,360,3,7.011,8.423,9.638
+cache,100000,no-repeat,on,5,360,3,6.806,9.257,10.767
+cache,100000,no-repeat,off,5,360,0,6.640,7.259,7.606
+cache,100000,no-repeat,off,6,360,0,7.145,9.136,9.705
+cache,100000,no-repeat,on,6,360,3,7.072,9.662,10.613
+cache,100000,no-repeat,on,7,360,3,7.083,8.018,8.577
+cache,100000,no-repeat,off,7,360,0,6.975,7.901,8.387
+cache,100000,no-repeat,off,8,360,0,7.351,10.058,11.291
+cache,100000,no-repeat,on,8,360,3,7.052,7.944,9.558
+cache,100000,no-repeat,on,9,360,3,7.419,10.085,11.171
+cache,100000,no-repeat,off,9,360,0,7.045,8.454,10.274
+cache,100000,no-repeat,off,10,360,0,7.220,9.883,11.225
+cache,100000,no-repeat,on,10,360,3,7.160,8.937,10.667
+cache,100000,no-repeat,on,11,360,3,6.884,8.126,9.404
+cache,100000,no-repeat,off,11,360,0,7.188,9.692,10.138
+cache,100000,no-repeat,off,12,360,0,7.167,9.397,10.298
+cache,100000,no-repeat,on,12,360,3,7.089,7.675,7.894
+cache,100000,no-repeat,on,13,360,3,7.507,9.523,10.222
+cache,100000,no-repeat,off,13,360,0,7.017,8.968,9.775
+cache,100000,no-repeat,off,14,360,0,6.950,7.676,8.254
+cache,100000,no-repeat,on,14,360,3,7.139,7.819,8.374
+cache,100000,no-repeat,on,15,360,3,7.104,9.303,9.976
+cache,100000,no-repeat,off,15,360,0,7.075,9.745,11.474
+cache,100000,no-repeat,off,16,360,0,7.118,9.548,11.012
+cache,100000,no-repeat,on,16,360,3,6.761,8.401,9.261
+cache,100000,no-repeat,on,17,360,3,6.733,8.807,10.417
+cache,100000,no-repeat,off,17,360,0,7.174,9.420,10.095
+cache,100000,no-repeat,off,18,360,0,6.736,7.557,8.465
+cache,100000,no-repeat,on,18,360,3,6.704,8.659,9.786
+cache,100000,no-repeat,on,19,360,3,6.626,7.364,7.768
+cache,100000,no-repeat,off,19,360,0,6.947,8.511,10.041
+# 100000 no-repeat: cache-on reads served by the cache: 0.8 %
+# 100000 no-repeat: cache on vs off, all rounds pooled (not a threshold): p50 -0.5 %, p99 -4.0 %
+# 100000 no-repeat: cache on vs off, best round: p50 -0.2 % (not a threshold), p99 +2.1 % (needs <= +5 %: PASS)
+# 100000 no-repeat: cache on vs off, median round: p50 +0.2 % (not a threshold), p99 -4.5 % (needs <= +5 %: PASS)
 exit=0
- 23:54:47 up 18 min,  0 user,  load average: 1.14, 1.06, 0.81
+# corrida B (2026-11-11, 20 rondas, load average 1.00 al empezar; mismo binario)
+cache,scale,load,cache,round,timed_reads,served,p50_ms,p95_ms,p99_ms
+cache,20000,no-repeat,off,0,900,0,0.816,1.115,1.323
+cache,20000,no-repeat,on,0,900,9,0.902,1.344,1.460
+cache,20000,no-repeat,on,1,900,9,0.912,1.473,1.601
+cache,20000,no-repeat,off,1,900,0,0.811,0.935,1.030
+cache,20000,no-repeat,off,2,900,0,0.778,0.905,1.017
+cache,20000,no-repeat,on,2,900,9,0.956,1.452,1.631
+cache,20000,no-repeat,on,3,900,9,0.868,1.222,1.485
+cache,20000,no-repeat,off,3,900,0,0.828,0.997,1.352
+cache,20000,no-repeat,off,4,900,0,0.845,1.144,1.373
+cache,20000,no-repeat,on,4,900,9,0.861,1.254,1.397
+cache,20000,no-repeat,on,5,900,9,0.853,1.390,1.781
+cache,20000,no-repeat,off,5,900,0,0.826,1.180,1.604
+cache,20000,no-repeat,off,6,900,0,0.796,0.923,1.043
+cache,20000,no-repeat,on,6,900,9,0.838,0.993,1.109
+cache,20000,no-repeat,on,7,900,9,0.876,1.499,2.142
+cache,20000,no-repeat,off,7,900,0,0.819,1.110,1.811
+cache,20000,no-repeat,off,8,900,0,0.843,1.210,2.334
+cache,20000,no-repeat,on,8,900,9,0.823,1.003,1.142
+cache,20000,no-repeat,on,9,900,9,0.868,1.081,1.297
+cache,20000,no-repeat,off,9,900,0,0.941,1.548,2.300
+cache,20000,no-repeat,off,10,900,0,0.819,0.977,1.131
+cache,20000,no-repeat,on,10,900,9,0.841,0.995,1.151
+cache,20000,no-repeat,on,11,900,9,0.884,1.241,1.429
+cache,20000,no-repeat,off,11,900,0,0.888,1.268,1.388
+cache,20000,no-repeat,off,12,900,0,1.012,1.531,1.774
+cache,20000,no-repeat,on,12,900,9,0.900,1.267,1.431
+cache,20000,no-repeat,on,13,900,9,0.893,1.298,1.658
+cache,20000,no-repeat,off,13,900,0,0.823,1.327,1.459
+cache,20000,no-repeat,off,14,900,0,0.833,1.025,1.516
+cache,20000,no-repeat,on,14,900,9,0.853,1.050,1.852
+cache,20000,no-repeat,on,15,900,9,0.882,1.338,1.570
+cache,20000,no-repeat,off,15,900,0,0.818,1.159,1.367
+cache,20000,no-repeat,off,16,900,0,0.826,1.082,1.222
+cache,20000,no-repeat,on,16,900,9,0.930,1.301,1.441
+cache,20000,no-repeat,on,17,900,9,0.889,1.185,1.450
+cache,20000,no-repeat,off,17,900,0,0.812,1.215,1.358
+cache,20000,no-repeat,off,18,900,0,0.816,1.181,1.377
+cache,20000,no-repeat,on,18,900,9,0.821,0.992,1.220
+cache,20000,no-repeat,on,19,900,9,0.822,1.076,1.199
+cache,20000,no-repeat,off,19,900,0,0.784,1.099,1.447
+# 20000 no-repeat: cache-on reads served by the cache: 1.0 %
+# 20000 no-repeat: cache on vs off, all rounds pooled (not a threshold): p50 +5.2 %, p99 +0.2 %
+# 20000 no-repeat: cache on vs off, best round: p50 +5.5 % (not a threshold), p99 +9.0 % (needs <= +5 %: FAIL)
+# 20000 no-repeat: cache on vs off, median round: p50 +6.4 % (not a threshold), p99 +5.3 % (needs <= +5 %: FAIL)
+cache,20000,w1-index-ready,off,0,360,0,1.160,3.300,4.697
+cache,20000,w1-index-ready,on,0,360,270,0.024,3.830,4.786
+cache,20000,w1-index-ready,on,1,360,270,0.026,4.108,4.992
+cache,20000,w1-index-ready,off,1,360,0,1.183,3.712,4.585
+cache,20000,w1-index-ready,off,2,360,0,1.208,3.858,4.466
+cache,20000,w1-index-ready,on,2,360,270,0.026,4.485,5.871
+cache,20000,w1-index-ready,on,3,360,270,0.024,4.180,4.923
+cache,20000,w1-index-ready,off,3,360,0,1.194,3.830,4.658
+cache,20000,w1-index-ready,off,4,360,0,1.243,3.858,5.197
+cache,20000,w1-index-ready,on,4,360,270,0.023,3.805,4.237
+cache,20000,w1-index-ready,on,5,360,270,0.023,3.920,4.434
+cache,20000,w1-index-ready,off,5,360,0,1.250,3.737,5.001
+cache,20000,w1-index-ready,off,6,360,0,1.301,3.976,4.919
+cache,20000,w1-index-ready,on,6,360,270,0.025,4.026,4.925
+cache,20000,w1-index-ready,on,7,360,270,0.027,4.542,5.310
+cache,20000,w1-index-ready,off,7,360,0,1.251,3.766,4.638
+cache,20000,w1-index-ready,off,8,360,0,1.262,4.045,4.789
+cache,20000,w1-index-ready,on,8,360,270,0.027,4.368,4.749
+cache,20000,w1-index-ready,on,9,360,270,0.027,4.324,5.194
+cache,20000,w1-index-ready,off,9,360,0,1.326,4.114,5.240
+cache,20000,w1-index-ready,off,10,360,0,1.249,4.012,5.512
+cache,20000,w1-index-ready,on,10,360,270,0.025,3.980,5.725
+cache,20000,w1-index-ready,on,11,360,270,0.027,4.413,5.949
+cache,20000,w1-index-ready,off,11,360,0,1.186,3.524,4.600
+cache,20000,w1-index-ready,off,12,360,0,1.221,4.048,4.514
+cache,20000,w1-index-ready,on,12,360,270,0.025,4.502,5.183
+cache,20000,w1-index-ready,on,13,360,270,0.024,4.366,5.624
+cache,20000,w1-index-ready,off,13,360,0,1.230,3.971,6.371
+cache,20000,w1-index-ready,off,14,360,0,1.404,4.771,6.462
+cache,20000,w1-index-ready,on,14,360,270,0.028,4.598,6.081
+cache,20000,w1-index-ready,on,15,360,270,0.028,4.484,5.323
+cache,20000,w1-index-ready,off,15,360,0,1.223,3.827,4.820
+cache,20000,w1-index-ready,off,16,360,0,1.259,3.930,6.222
+cache,20000,w1-index-ready,on,16,360,270,0.027,4.130,4.723
+cache,20000,w1-index-ready,on,17,360,270,0.026,3.944,4.511
+cache,20000,w1-index-ready,off,17,360,0,1.231,3.853,5.704
+cache,20000,w1-index-ready,off,18,360,0,1.210,3.655,4.152
+cache,20000,w1-index-ready,on,18,360,270,0.026,4.163,4.968
+cache,20000,w1-index-ready,on,19,360,270,0.025,3.878,5.322
+cache,20000,w1-index-ready,off,19,360,0,1.215,3.718,4.811
+# 20000 w1-index-ready: cache-on reads served by the cache: 75.0 %
+# 20000 w1-index-ready: cache on vs off, all rounds pooled (not a threshold): p50 -97.9 %, p99 +1.2 %
+# 20000 w1-index-ready: cache on vs off, best round: p50 -98.0 % (needs <= -20 %: PASS), p99 +2.0 % (needs <= +5 %: PASS)
+# 20000 w1-index-ready: cache on vs off, median round: p50 -97.9 % (needs <= -20 %: PASS), p99 +7.5 % (needs <= +5 %: FAIL)
+cache,20000,w1-index-stale,off,0,144,0,81.202,104.603,117.654
+cache,20000,w1-index-stale,on,0,144,108,0.022,88.829,96.344
+cache,20000,w1-index-stale,on,1,144,108,0.026,84.197,101.529
+cache,20000,w1-index-stale,off,1,144,0,81.613,112.458,125.304
+cache,20000,w1-index-stale,off,2,144,0,79.568,90.866,105.880
+cache,20000,w1-index-stale,on,2,144,108,0.023,82.693,95.018
+cache,20000,w1-index-stale,on,3,144,108,0.025,86.020,107.823
+cache,20000,w1-index-stale,off,3,144,0,82.543,99.646,123.670
+cache,20000,w1-index-stale,off,4,144,0,80.310,92.461,99.236
+cache,20000,w1-index-stale,on,4,144,108,0.025,90.812,104.512
+cache,20000,w1-index-stale,on,5,144,108,0.021,84.686,90.319
+cache,20000,w1-index-stale,off,5,144,0,81.284,92.751,109.062
+cache,20000,w1-index-stale,off,6,144,0,82.325,106.562,119.768
+cache,20000,w1-index-stale,on,6,144,108,0.023,91.047,96.196
+cache,20000,w1-index-stale,on,7,144,108,0.022,84.581,89.803
+cache,20000,w1-index-stale,off,7,144,0,81.713,96.124,113.906
+cache,20000,w1-index-stale,off,8,144,0,82.642,98.003,116.228
+cache,20000,w1-index-stale,on,8,144,108,0.022,96.542,104.014
+cache,20000,w1-index-stale,on,9,144,108,0.023,93.193,97.401
+cache,20000,w1-index-stale,off,9,144,0,82.074,95.551,124.079
+cache,20000,w1-index-stale,off,10,144,0,80.642,90.323,98.049
+cache,20000,w1-index-stale,on,10,144,108,0.021,87.634,92.732
+cache,20000,w1-index-stale,on,11,144,108,0.021,86.344,110.282
+cache,20000,w1-index-stale,off,11,144,0,82.331,99.060,111.404
+cache,20000,w1-index-stale,off,12,144,0,80.298,95.779,121.625
+cache,20000,w1-index-stale,on,12,144,108,0.030,73.208,105.226
+cache,20000,w1-index-stale,on,13,144,108,0.028,70.585,74.159
+cache,20000,w1-index-stale,off,13,144,0,69.350,82.134,94.466
+cache,20000,w1-index-stale,off,14,144,0,65.479,77.377,93.422
+cache,20000,w1-index-stale,on,14,144,108,0.026,72.403,74.930
+cache,20000,w1-index-stale,on,15,144,108,0.028,78.759,99.439
+cache,20000,w1-index-stale,off,15,144,0,68.240,84.690,103.296
+cache,20000,w1-index-stale,off,16,144,0,68.125,91.011,101.020
+cache,20000,w1-index-stale,on,16,144,108,0.024,78.402,109.709
+cache,20000,w1-index-stale,on,17,144,108,0.027,75.659,90.680
+cache,20000,w1-index-stale,off,17,144,0,70.190,91.216,107.680
+cache,20000,w1-index-stale,off,18,144,0,67.320,82.104,102.881
+cache,20000,w1-index-stale,on,18,144,108,0.024,72.444,102.874
+cache,20000,w1-index-stale,on,19,144,108,0.024,72.751,79.691
+cache,20000,w1-index-stale,off,19,144,0,69.192,86.718,97.241
+# 20000 w1-index-stale: cache-on reads served by the cache: 75.0 %
+# 20000 w1-index-stale: cache on vs off, all rounds pooled (not a threshold): p50 -100.0 %, p99 -13.2 %
+# 20000 w1-index-stale: cache on vs off, best round: p50 -100.0 % (needs <= -20 %: PASS), p99 -20.6 % (needs <= +5 %: PASS)
+# 20000 w1-index-stale: cache on vs off, median round: p50 -100.0 % (needs <= -20 %: PASS), p99 -10.7 % (needs <= +5 %: PASS)
+cache,100000,no-repeat,off,0,360,0,6.176,7.899,9.047
+cache,100000,no-repeat,on,0,360,3,5.833,6.830,8.130
+cache,100000,no-repeat,on,1,360,3,5.998,7.805,8.772
+cache,100000,no-repeat,off,1,360,0,5.991,7.929,12.266
+cache,100000,no-repeat,off,2,360,0,6.021,7.233,8.541
+cache,100000,no-repeat,on,2,360,3,6.193,8.302,9.264
+cache,100000,no-repeat,on,3,360,3,5.902,6.806,8.694
+cache,100000,no-repeat,off,3,360,0,6.096,7.221,8.128
+cache,100000,no-repeat,off,4,360,0,6.445,8.824,11.439
+cache,100000,no-repeat,on,4,360,3,6.223,8.897,10.163
+cache,100000,no-repeat,on,5,360,3,6.679,9.156,12.648
+cache,100000,no-repeat,off,5,360,0,6.857,8.928,11.373
+cache,100000,no-repeat,off,6,360,0,6.225,6.925,7.593
+cache,100000,no-repeat,on,6,360,3,6.121,7.875,9.005
+cache,100000,no-repeat,on,7,360,3,6.014,6.673,7.122
+cache,100000,no-repeat,off,7,360,0,6.116,7.265,7.965
+cache,100000,no-repeat,off,8,360,0,6.628,7.866,8.615
+cache,100000,no-repeat,on,8,360,3,6.160,7.166,7.889
+cache,100000,no-repeat,on,9,360,3,6.038,7.676,8.349
+cache,100000,no-repeat,off,9,360,0,6.099,7.094,8.117
+cache,100000,no-repeat,off,10,360,0,6.463,7.973,8.741
+cache,100000,no-repeat,on,10,360,3,6.064,6.703,7.393
+cache,100000,no-repeat,on,11,360,3,6.211,7.261,8.011
+cache,100000,no-repeat,off,11,360,0,5.766,7.522,8.128
+cache,100000,no-repeat,off,12,360,0,5.984,8.164,8.901
+cache,100000,no-repeat,on,12,360,3,6.106,7.020,8.073
+cache,100000,no-repeat,on,13,360,3,6.331,8.411,8.932
+cache,100000,no-repeat,off,13,360,0,6.043,7.242,8.647
+cache,100000,no-repeat,off,14,360,0,6.131,8.037,8.424
+cache,100000,no-repeat,on,14,360,3,5.901,6.752,8.929
+cache,100000,no-repeat,on,15,360,3,6.326,7.939,8.966
+cache,100000,no-repeat,off,15,360,0,5.938,6.837,7.802
+cache,100000,no-repeat,off,16,360,0,6.357,8.156,10.165
+cache,100000,no-repeat,on,16,360,3,6.135,7.311,8.629
+cache,100000,no-repeat,on,17,360,3,6.019,7.960,9.056
+cache,100000,no-repeat,off,17,360,0,5.983,6.715,7.088
+cache,100000,no-repeat,off,18,360,0,6.152,7.269,9.535
+cache,100000,no-repeat,on,18,360,3,6.426,7.765,12.708
+cache,100000,no-repeat,on,19,360,3,6.261,7.300,8.226
+cache,100000,no-repeat,off,19,360,0,6.368,8.672,10.834
+# 100000 no-repeat: cache-on reads served by the cache: 0.8 %
+# 100000 no-repeat: cache on vs off, all rounds pooled (not a threshold): p50 -0.7 %, p99 -0.4 %
+# 100000 no-repeat: cache on vs off, best round: p50 +1.2 % (not a threshold), p99 +0.5 % (needs <= +5 %: PASS)
+# 100000 no-repeat: cache on vs off, median round: p50 +0.1 % (not a threshold), p99 +1.4 % (needs <= +5 %: PASS)
+exit=0
