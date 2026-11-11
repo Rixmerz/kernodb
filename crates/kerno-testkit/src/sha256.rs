@@ -19,25 +19,24 @@ const INITIAL: [u32; 8] =
 /// The SHA-256 digest of `data`.
 pub fn digest(data: &[u8]) -> [u8; 32] {
     let mut state = INITIAL;
-    let mut blocks = data.chunks_exact(64);
-    for block in &mut blocks {
+    let (blocks, rest) = data.as_chunks::<64>();
+    for block in blocks {
         compress(&mut state, block);
     }
     // Padding: a 0x80 byte, zeros, then the message length in bits as 64 bits
     // big-endian, filling up to a multiple of 64 bytes.
-    let rest = blocks.remainder();
     let mut tail = [0u8; 128];
     tail[..rest.len()].copy_from_slice(rest);
     tail[rest.len()] = 0x80;
     let padded = if rest.len() < 56 { 64 } else { 128 };
     let bit_len = (data.len() as u64).wrapping_mul(8);
     tail[padded - 8..padded].copy_from_slice(&bit_len.to_be_bytes());
-    for block in tail[..padded].chunks_exact(64) {
+    for block in tail[..padded].as_chunks::<64>().0 {
         compress(&mut state, block);
     }
     let mut out = [0u8; 32];
-    for (word, bytes) in state.iter().zip(out.chunks_exact_mut(4)) {
-        bytes.copy_from_slice(&word.to_be_bytes());
+    for (word, bytes) in state.iter().zip(out.as_chunks_mut::<4>().0) {
+        *bytes = word.to_be_bytes();
     }
     out
 }
@@ -47,10 +46,10 @@ pub fn hex(digest: &[u8; 32]) -> String {
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn compress(state: &mut [u32; 8], block: &[u8]) {
+fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
     let mut w = [0u32; 64];
-    for (word, bytes) in w.iter_mut().zip(block.chunks_exact(4)) {
-        *word = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    for (word, bytes) in w.iter_mut().zip(block.as_chunks::<4>().0) {
+        *word = u32::from_be_bytes(*bytes);
     }
     for i in 16..64 {
         let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
