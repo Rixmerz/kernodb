@@ -6,7 +6,7 @@ E6-04 no cambió código de producción, ni el formato persistente, ni el motor;
 
 ## Resultado en una línea
 
-**E6-04b (optimización del camino de fallo): con la mediana de las rondas, que es el criterio de este paquete, se cumplen los tres umbrales: peor caso sin repeticiones −2,4 % (20 000) y −2,8 % (100 000), p99 de W1 +1,3 %, p50 de W1 −97,9 %.** Con la **mejor ronda** el peor caso a 20 000 unidades sigue fuera (+9,7 %); la medición no separa «dentro» de «fuera» con 5 rondas (§7). La medición original de E6-04 (antes de la optimización) se conserva en §3 como «antes»: el peor caso incumplía (+20,9 % mejor ronda, +11,7 % mediana) y el p99 de W1 cumplía solo en la mejor ronda (+2,0 %; mediana +7,8 %). No se ha tocado ningún umbral. La caché sigue **desactivada por defecto** (acta §8.2). Los centinelas y las pruebas de la caché siguen en verde (§7).
+**E6-04b (veredicto final, §8): el peor caso sin repeticiones cumple (sobrecoste real ≈ 0 %, medido emparejado) y el p50 de W1 cumple (−97,9 %); el p99 de W1 queda en el borde del umbral y no se puede certificar: +0,5 %, +7,8 %, +4,7 % y +7,5 % en cuatro corridas del mismo código, con un sobrecoste real medido de +3,4 % a +4,9 % en la lectura que no se sirve. El criterio conjunto de §6 no se cumple de forma estable: la caché sigue desactivada por defecto (acta §8.2).** El texto que sigue en §3 y §7 es el del primer intento de E6-04b (una corrida de 5 rondas) y se conserva como historia; donde contradiga a §8, vale §8. La medición original de E6-04 se conserva en §3 como «antes».
 
 ## 1. Método
 
@@ -125,3 +125,37 @@ La actualización de la tabla del acta (§4) corresponde a E6-05, como con los p
 - No se explica por el trabajo propio de la caché (≈ 3 µs) el resto del sobrecoste observado (≈ 10–25 µs): la sección del planificador que no toca la caché también salió ≈ 15–25 µs más lenta con la caché encendida, incluso sin guardar nada. Se atribuye a efectos de caché de CPU y del asignador, **sin perfil que lo demuestre**.
 - Sigue sin medirse W1 a 100 000 unidades ni concurrencia (ver §6).
 - Verificación: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings` y `cargo test -p kerno-units --all-features --release` (resultado en el informe del paquete). Los umbrales y las pruebas `tests/cache*.rs` existentes no se modificaron.
+
+
+## 8. E6-04b: veredicto final (cuatro corridas, 2026-11-11)
+
+La verificación independiente del primer intento repitió el comando y obtuvo FAIL donde la salida comprometida decía PASS. Se repitió la medición en la máquina sin otra carga, con el mismo código de producción, dos veces con el banco de 5 rondas y dos con el de 20 rondas cortas (ver abajo). p99 de la caché encendida sobre la apagada, mediana de rondas:
+
+| Carga | 5 rondas, corrida 1 | 5 rondas, corrida 2 | 20 rondas, corrida A | 20 rondas, corrida B |
+|---|---|---|---|---|
+| sin repeticiones, 20 000 (≤ +5 %) | +4,0 % | −3,8 % | +2,9 % | +5,3 % |
+| sin repeticiones, 100 000 (≤ +5 %) | +5,3 % | +2,6 % | −4,5 % | +1,4 % |
+| W1 `w1-index-ready`, p99 (≤ +5 %) | +0,5 % | +7,8 % | +4,7 % | +7,5 % |
+| W1 `w1-index-ready`, p50 (≤ −20 %) | −97,9 % | −97,8 % | −97,8 % | −97,9 % |
+
+Cada corrida incumple un umbral distinto con el mismo binario: **el p99 por rondas no resuelve un 5 %** en esta máquina, ni con 5 rondas ni con 20. Las corridas A y B son la salida cruda actual (`etapa6-medicion-salida.txt`); las de 5 rondas no se conservan más que en esta tabla.
+
+**Cambio del banco (no de los umbrales):** `CACHE_ROUNDS` pasa de 5 a 20 y cada ronda es cuatro veces más corta (mismo trabajo total: 1 000 lecturas sin repetición y 100 bloques de W1 a 20 000; 400 lecturas a 100 000), para que apagada y encendida se comparen con segundos de diferencia y no minutos. Se añade una línea informativa con los percentiles de todas las rondas juntas. El veredicto sigue siendo la mediana de rondas contra los umbrales de §6.
+
+**Medición emparejada** (sonda temporal, ya retirada: la caché se enciende y apaga cada 10 lecturas o bloques sobre la misma instantánea, y se comparan medias, que sí son estables):
+
+| Qué | Apagada | Encendida | Diferencia |
+|---|---|---|---|
+| Lectura sin repetición, 20 000 (media, cuatro repeticiones) | 819 – 1 213 µs | 823 – 1 216 µs | −0,6 % a +0,5 % |
+| Primera lectura tras una escritura en W1 (media, cuatro repeticiones) | 3 588 – 3 667 µs | 3 720 – 3 834 µs | **+3,4 % a +4,9 %** (≈ 125 – 180 µs) |
+
+De esos ≈ 125 – 180 µs, copiar las filas son ≈ 33 µs y guardarlas (incluye liberar la entrada anterior) otros ≈ 33 µs; `worth_storing` ≈ 1 µs. El resto no está atribuido.
+
+**Veredicto por criterio:**
+
+- **S1 (peor caso ≤ 5 %): cumple.** El sobrecoste real es indistinguible de cero (−0,6 % a +0,5 % de media); las lecturas de p99 por encima de +5 % (una de cuatro en cada escala) son dispersión, no coste.
+- **S2, p50 de W1 ≥ 20 % mejor: cumple** (−97,8 %), sin fragilidad.
+- **S2, p99 de W1 ≤ +5 %: no certificable.** El coste real de la lectura que no se sirve (la que fija el p99) es de +3,4 % a +4,9 %: bajo el umbral, pero tan cerca que la dispersión lo saca la mitad de las veces. Reducirlo exige no copiar el resultado al guardarlo (compartirlo entre la respuesta y la entrada), que cambia el tipo público `CachedResult`/`QueryOutcome` y las pruebas existentes; queda fuera de este paquete.
+- **S3: cumple.** Las pruebas `tests/cache*.rs` existentes pasan sin cambios, los umbrales no se tocaron y la caché sigue desactivada por defecto.
+
+**Consecuencia (acta §8.2):** la mejora neta de §6 es conjunta y el p99 de W1 no se puede afirmar; la caché de resultados queda **desactivada por defecto** y disponible como opción. La admisión y la huella memorizada se conservan: eliminan el sobrecoste del peor caso (antes +11,7 % de mediana a 20 000) sin tocar ninguna garantía.
