@@ -29,7 +29,9 @@ use kerno_core::{Error, Result};
 
 use crate::compaction::NUM_LEVELS;
 use crate::files::{FileSource, format_error};
-use crate::format::sst::{SstExpect, SstMeta, SstVerifier, open_sst_from, read_data_block};
+use crate::format::sst::{
+    SstExpect, SstMeta, SstVerifier, check_filter_holds_index_keys, open_sst_from, read_data_block,
+};
 use crate::format::wal::{WalHeaderState, WalScan, WalScanParams, scan_wal};
 use crate::format::{End, ErrorClass, FormatError, ReadError};
 use crate::inspect::{FileInfo, FileType, HeaderInfo, lock_and_list, refuse_directory_without_database};
@@ -332,6 +334,12 @@ impl Verifier<'_> {
             header: Some(HeaderInfo::of(&sst.header)),
             problem: None,
         });
+        // The open-time part of SST-V3, as the engine's open does it, so a
+        // report without `deep` shows the same refusal. With `deep` the blocks
+        // are read all the same: they may name the rule that really broke.
+        if let Err(e) = check_filter_holds_index_keys(&sst) {
+            self.format_issue(&name, e)?;
+        }
         if self.opts.deep {
             self.read_blocks(&name, &*file, &sst, meta.number)?;
         }

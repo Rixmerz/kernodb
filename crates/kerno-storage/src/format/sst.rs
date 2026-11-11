@@ -289,6 +289,32 @@ pub fn open_sst_from<S: ByteSource>(
     Ok(SstMeta { header, footer, data_end, index, props, filter, fragments })
 }
 
+/// SST-V3 applied at open to the keys the open already holds: the last key of
+/// every data block is a point key of the table (SST-R2 makes the block agree
+/// with its index entry when it is read), so a filter built over the table's
+/// keys contains it. One hash per data block, no data block read: a `get`
+/// never pays to distrust the filter, and a filter that was zeroed or
+/// overwritten wholesale is refused before it can hide keys. The check is
+/// partial by construction: a filter that lacks only keys in the middle of a
+/// block passes, and only `verify()` (a full read) finds those.
+///
+/// It is not part of [`open_sst`]: that function evaluates the rules of
+/// `docs/file-format/v1.md` §13.1 in their frozen order, and this check would
+/// answer SST-V3 for a table whose index lies (SST-R1, SST-R2) before the
+/// block that proves it is read. The engine (`Table::open`) and `verify()` call
+/// it right after the open instead. The error carries the offset of the filter
+/// block and no key bytes.
+pub fn check_filter_holds_index_keys(sst: &SstMeta) -> Result<()> {
+    if sst.index.iter().all(|e| sst.filter.may_contain(bloom::hash(&e.last_key))) {
+        return Ok(());
+    }
+    Err(FormatError::corruption(
+        "SST-V3",
+        sst.footer.filter.offset,
+        "the last key of a data block is missing from the filter",
+    ))
+}
+
 /// SST-O7 and SST-F1 for the resident fragments: as many as
 /// `range_fragments` (SST-O7), sequences within the table's range (SST-F1),
 /// and `smallest_key ≤ start` and `end ≤ largest_key` for each fragment
