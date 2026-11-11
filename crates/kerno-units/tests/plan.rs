@@ -205,6 +205,57 @@ fn refuses_an_unusable_reference_path() {
     assert_eq!(Plan::new(relations_fp(), None, c), Err(PlanError::FallbackUnusable { path: PlanPath::Adjacency }));
 }
 
+fn assoc_fp() -> Fingerprint {
+    let q = AssocQuery::new(vec![UnitId([1; 16])], 2, 10, 100);
+    NormalizedQuery::of_assoc(&q).fingerprint(&key())
+}
+
+fn assoc(reference: u64, adjacency: u64, usability: Usability) -> Vec<Candidate> {
+    vec![cand(PlanPath::AssocReference, reference, USABLE), cand(PlanPath::AssocAdjacency, adjacency, usability)]
+}
+
+#[test]
+fn associative_plans_have_their_own_candidates_and_choice() {
+    let plan = Plan::new(assoc_fp(), None, assoc(18, 8, USABLE)).unwrap();
+    assert_eq!(plan.fingerprint().kind(), QueryKind::Associative);
+    assert_eq!((plan.chosen().path, plan.reason(), plan.index()), (PlanPath::AssocAdjacency, Reason::LowestCost, None));
+    // A tie goes to the reference path, first in table order.
+    let tie = Plan::new(assoc_fp(), None, assoc(8, 8, USABLE)).unwrap();
+    assert_eq!(tie.chosen().path, PlanPath::AssocReference);
+
+    // The adjacency path may be unusable, and then it is never chosen however cheap; the plan says why.
+    for why in [Unusable::AdjacencyAbsent, Unusable::AdjacencyInconsistent] {
+        let plan = Plan::new(assoc_fp(), None, assoc(1000, 1, Usability::Unusable(why))).unwrap();
+        assert_eq!(plan.chosen().path, PlanPath::AssocReference, "{why:?}");
+        assert_eq!(plan.reason(), Reason::AdjacencyUnusable(why));
+    }
+    // Only for the reasons that are about the adjacency index.
+    for no in [Unusable::NoTypeFilter, Unusable::IndexNotReady(IndexState::Stale)] {
+        assert_eq!(
+            Plan::new(assoc_fp(), None, assoc(1, 2, Usability::Unusable(no))),
+            Err(PlanError::FallbackUnusable { path: PlanPath::AssocAdjacency }),
+            "{no:?}"
+        );
+    }
+    // The reference path is always usable, and a relation query's adjacency never is unusable for these reasons.
+    let mut c = assoc(1, 2, USABLE);
+    c[0].usability = Usability::Unusable(Unusable::AdjacencyAbsent);
+    assert_eq!(Plan::new(assoc_fp(), None, c), Err(PlanError::FallbackUnusable { path: PlanPath::AssocReference }));
+    let mut c = relations(1, 2);
+    c[1].usability = Usability::Unusable(Unusable::AdjacencyAbsent);
+    assert_eq!(Plan::new(relations_fp(), None, c), Err(PlanError::FallbackUnusable { path: PlanPath::Adjacency }));
+    // Exactly its two candidates, in order; no index status.
+    assert!(matches!(Plan::new(assoc_fp(), None, relations(1, 2)), Err(PlanError::Candidates { .. })));
+    assert!(matches!(Plan::new(assoc_fp(), None, units(1, 2, 3)), Err(PlanError::Candidates { .. })));
+    let reversed: Vec<_> = assoc(1, 2, USABLE).into_iter().rev().collect();
+    assert!(matches!(Plan::new(assoc_fp(), None, reversed), Err(PlanError::Candidates { .. })));
+    assert_eq!(
+        Plan::new(assoc_fp(), Some(status(IndexState::Ready)), assoc(1, 2, USABLE)),
+        Err(PlanError::IndexStatus { kind: QueryKind::Associative })
+    );
+    assert_eq!(PlanPath::candidates_of(QueryKind::Associative), [PlanPath::AssocReference, PlanPath::AssocAdjacency]);
+}
+
 #[test]
 fn plan_holds_no_literal() {
     let q = NormalizedQuery::of_filter(&UnitFilter {
@@ -215,6 +266,18 @@ fn plan_holds_no_literal() {
     let shown = format!("{plan:?}");
     assert!(!shown.contains("SENTINEL") && !shown.contains("987654"), "{shown}");
     assert!(shown.contains(&plan.fingerprint().to_string()));
+
+    // Nor does the plan of an associative query: seeds, types, actor, source, window.
+    let mut q = AssocQuery::new(vec![UnitId([0x5E; 16])], 2, 10, 100);
+    q.relation_types = Some(["SENTINEL-type-7f3a".to_owned()].into());
+    q.window = Some(SeqWindow { lo: CommitSeq(987_654), hi: CommitSeq(987_655) });
+    q.provenance.actor = Some(b"SENTINEL-actor".to_vec());
+    q.provenance.source = Some(b"SENTINEL-source".to_vec());
+    let plan = Plan::new(NormalizedQuery::of_assoc(&q).fingerprint(&key()), None, assoc(18, 8, USABLE)).unwrap();
+    let shown = format!("{plan:?}");
+    for needle in ["SENTINEL", "987654", "987655", "5e5e", "94, 94"] {
+        assert!(!shown.contains(needle), "{needle}: {shown}");
+    }
 }
 
 type EmuLog = Emulated<LogEngine>;

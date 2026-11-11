@@ -11,8 +11,14 @@
 //! [`UnitSnapshot::reference_assoc_query`] is the reference path: a
 //! breadth-first traversal built only on
 //! [`UnitSnapshot::reference_relations_of`], so it touches no adjacency
-//! index. The indexed path (E7-02) is checked against it on the same
-//! snapshot (I-32).
+//! index. The indexed path (E7-02) is the very same traversal taking each
+//! hop's neighbours from [`UnitSnapshot::relations_of`] instead, every answer
+//! checked ([`UnitSnapshot::indexed_assoc_query`]); the planner chooses
+//! between them and falls back to the reference path
+//! ([`UnitSnapshot::assoc_query`], `docs/architecture/etapa7-ejecucion-indexada.md`).
+//! Both are held to the same answer on the same snapshot (I-32): sharing the
+//! traversal makes that true of the order, the budget and the endings by
+//! construction, and the differential tests make it true of the data.
 //!
 //! # Order (I-26)
 //!
@@ -57,7 +63,10 @@ use kerno_core::contract::Engine;
 
 use crate::db::{Relation, UnitSnapshot, corruption};
 use crate::error::UnitError;
+use crate::fingerprint::RelationQuery;
 use crate::history::Provenance;
+use crate::observation::ErrorKind;
+use crate::planner::Violation;
 use crate::types::{CommitSeq, Direction, ProvenanceKind, RelationId, RevNo, UnitId};
 
 /// Hard maximum of [`AssocQuery::max_depth`] (acta §8, decision 5).
@@ -79,7 +88,7 @@ pub enum AssocDirection {
 }
 
 impl AssocDirection {
-    fn directions(self) -> &'static [Direction] {
+    pub(crate) fn directions(self) -> &'static [Direction] {
         match self {
             AssocDirection::Out => &[Direction::Out],
             AssocDirection::In => &[Direction::In],
@@ -223,6 +232,21 @@ pub enum AssocError {
     SeedNotActive { unit: UnitId },
     /// A read failed.
     Unit(UnitError),
+    /// The adjacency index answered something that is not an answer to the
+    /// hop it was asked (E7-02). Only the indexed path returns it; the planner
+    /// turns it into a recorded fallback to the reference path.
+    IndexAnswer(Violation),
+}
+
+impl AssocError {
+    /// The class of the error, for an observation: never its message.
+    pub(crate) fn kind(&self) -> ErrorKind {
+        match self {
+            AssocError::Query(_) | AssocError::SeedNotActive { .. } => ErrorKind::Invalid,
+            AssocError::Unit(e) => ErrorKind::of(e),
+            AssocError::IndexAnswer(_) => ErrorKind::Corruption,
+        }
+    }
 }
 
 impl From<AssocQueryError> for AssocError {
@@ -243,6 +267,7 @@ impl std::fmt::Display for AssocError {
             AssocError::Query(e) => write!(f, "invalid associative query: {e}"),
             AssocError::SeedNotActive { unit } => write!(f, "seed {unit} is not an active unit at this snapshot"),
             AssocError::Unit(e) => write!(f, "associative query read failed: {e}"),
+            AssocError::IndexAnswer(v) => write!(f, "the adjacency index gave a wrong answer: {v:?}"),
         }
     }
 }
@@ -305,6 +330,24 @@ impl<E: Engine> UnitSnapshot<E> {
     /// handling of units that are not active). Each unit is returned once,
     /// with the first path that reaches it.
     pub fn reference_assoc_query(&self, q: &AssocQuery) -> Result<AssocResult, AssocError> {
+        let seeds = self.active_seeds(q)?;
+        self.reference_traverse(q, seeds)
+    }
+
+    /// The answer of an associative query taking every hop from the adjacency
+    /// index: [`UnitSnapshot::relations_of`], with each answer checked
+    /// ([`UnitSnapshot::check_adjacent`]). The result equals
+    /// [`UnitSnapshot::reference_assoc_query`]'s on the same snapshot (I-32).
+    /// This is the path alone, chosen by the caller: a wrong answer from the
+    /// index is the error [`AssocError::IndexAnswer`], not a fallback.
+    /// [`UnitSnapshot::assoc_query`] is the planner's call.
+    pub fn indexed_assoc_query(&self, q: &AssocQuery) -> Result<AssocResult, AssocError> {
+        let seeds = self.active_seeds(q)?;
+        self.indexed_traverse(q, seeds, |unit, dir, relation_type| self.relations_of(unit, dir, relation_type))
+    }
+
+    /// The query validated and its seeds found active, before any path runs.
+    pub(crate) fn active_seeds(&self, q: &AssocQuery) -> Result<BTreeSet<UnitId>, AssocError> {
         q.validate()?;
         let seeds: BTreeSet<UnitId> = q.seeds.iter().copied().collect();
         for &seed in &seeds {
@@ -312,7 +355,53 @@ impl<E: Engine> UnitSnapshot<E> {
                 return Err(AssocError::SeedNotActive { unit: seed });
             }
         }
+        Ok(seeds)
+    }
 
+    pub(crate) fn reference_traverse(
+        &self,
+        q: &AssocQuery,
+        seeds: BTreeSet<UnitId>,
+    ) -> Result<AssocResult, AssocError> {
+        self.traverse(q, seeds, |here, dir| Ok(self.reference_relations_of(here, dir, None)?))
+    }
+
+    /// The traversal with each hop read through `hop` (the adjacency range of
+    /// one unit, direction and type) and checked. One read per relation type
+    /// of the query, in byte order of the type: concatenated they are in the
+    /// (type, id) order of `reference_relations_of`, and the entries of a type
+    /// the query does not follow are never read.
+    pub(crate) fn indexed_traverse(
+        &self,
+        q: &AssocQuery,
+        seeds: BTreeSet<UnitId>,
+        mut hop: impl FnMut(UnitId, Direction, Option<&str>) -> Result<Vec<Relation>, UnitError>,
+    ) -> Result<AssocResult, AssocError> {
+        let types: Vec<Option<&str>> = match &q.relation_types {
+            None => vec![None],
+            Some(set) => set.iter().map(|t| Some(t.as_str())).collect(),
+        };
+        self.traverse(q, seeds, |here, dir| {
+            let mut found = Vec::new();
+            for &relation_type in &types {
+                let part = hop(here, dir, relation_type)?;
+                let asked =
+                    RelationQuery { unit: here, direction: dir, relation_type: relation_type.map(str::to_owned) };
+                self.check_adjacent(&asked, &part)?;
+                found.extend(part);
+            }
+            Ok(found)
+        })
+    }
+
+    /// The breadth-first traversal; `neighbours` gives the relations of one
+    /// unit in one direction in (type, id) order, of any type.
+    fn traverse(
+        &self,
+        q: &AssocQuery,
+        seeds: BTreeSet<UnitId>,
+        mut neighbours: impl FnMut(UnitId, Direction) -> Result<Vec<Relation>, AssocError>,
+    ) -> Result<AssocResult, AssocError> {
         let mut run = Run { snap: self, q, visited: 0, actors: BTreeMap::new() };
         // Every unit reached so far, active or not, so that a unit is
         // resolved once.
@@ -324,7 +413,7 @@ impl<E: Engine> UnitSnapshot<E> {
             let mut level: BTreeMap<UnitId, AssocHit> = BTreeMap::new();
             for (here, path) in &frontier {
                 for &dir in q.direction.directions() {
-                    let entries = self.reference_relations_of(*here, dir, None)?;
+                    let entries = neighbours(*here, dir)?;
                     for rel in entries.into_iter().filter(|r| type_allowed(q, r)) {
                         if run.visited == q.visit_budget {
                             return Ok(run.finish_partial(hits, level));

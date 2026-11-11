@@ -32,6 +32,7 @@
 use std::fmt;
 use std::io::Read;
 
+use crate::assoc::{AssocDirection, AssocQuery};
 use crate::index::UnitFilter;
 use crate::types::{Direction, UnitId};
 
@@ -56,6 +57,8 @@ pub enum QueryKind {
     Units,
     /// The relations of one unit (`relations_of`).
     Relations,
+    /// An [`AssocQuery`]: a multi-hop traversal from seed units (E7-02).
+    Associative,
 }
 
 /// The relation query: the relations that start at or end at `unit`,
@@ -102,6 +105,35 @@ impl NormalizedQuery {
         }
         text.push(']');
         NormalizedQuery { kind: QueryKind::Relations, text }
+    }
+
+    /// The shape of an associative query: `assoc[seeds=?unit_ids,dir=both,
+    /// depth=?u32,limit=?u32,budget=?u64` followed by the conditions that are
+    /// set: `,types=?texts`, `,window=?seqs`, `,kinds=?kinds`, `,actor=?bytes`,
+    /// `,source=?bytes`. The direction is structure (three possible values);
+    /// every set, number and identifier is a placeholder, so not even how
+    /// many seeds, types or kinds the query has is in the shape.
+    pub fn of_assoc(query: &AssocQuery) -> Self {
+        let direction = match query.direction {
+            AssocDirection::Out => "out",
+            AssocDirection::In => "in",
+            AssocDirection::Both => "both",
+        };
+        let mut text = format!("assoc[seeds=?unit_ids,dir={direction},depth=?u32,limit=?u32,budget=?u64");
+        let conditions = [
+            (query.relation_types.is_some(), ",types=?texts"),
+            (query.window.is_some(), ",window=?seqs"),
+            (query.provenance.kinds.is_some(), ",kinds=?kinds"),
+            (query.provenance.actor.is_some(), ",actor=?bytes"),
+            (query.provenance.source.is_some(), ",source=?bytes"),
+        ];
+        for (set, condition) in conditions {
+            if set {
+                text.push_str(condition);
+            }
+        }
+        text.push(']');
+        NormalizedQuery { kind: QueryKind::Associative, text }
     }
 
     pub fn kind(&self) -> QueryKind {
@@ -161,6 +193,7 @@ impl fmt::Display for Fingerprint {
         let kind = match self.kind {
             QueryKind::Units => "units",
             QueryKind::Relations => "relations",
+            QueryKind::Associative => "assoc",
         };
         let alg = match self.alg {
             FingerprintAlg::Blake3Keyed => "blake3-keyed",
