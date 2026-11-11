@@ -5,7 +5,7 @@
 | Fecha | 2026-11-11 |
 | Estado | **Aprobada** el 2026-11-11 (decisión delegada por el propietario; revocable) |
 | Acto | Propuesta de alcance y de los paquetes E7-00 a E7-06 |
-| Documentos | [Roadmap, Etapa 7](../roadmap/README.md#etapa-7--memoria-asociativa) · [cierre de la Etapa 6](etapa6-cierre.md) · [ADR-0011](../adr/0011-vectores-y-recuperacion-hibrida.md) (pendiente) · [ADR-0014](../adr/0014-representacion-fisica-de-relaciones.md) · [ADR-0015](../adr/0015-privacidad-de-la-observabilidad.md) · [ADR-0018](../adr/0018-versionado-y-reconstruccion-de-derivados.md) (propuesto) · [invariantes](invariants.md) · spec v0.2.0 §11, §12, §16 |
+| Documentos | [Roadmap, Etapa 7](../roadmap/README.md#etapa-7--memoria-asociativa) · [cierre de la Etapa 6](etapa6-cierre.md) · [ADR-0011](../adr/0011-vectores-y-recuperacion-hibrida.md) (aceptado el 2026-11-11) · [conjunto de evaluación](etapa7-conjunto-evaluacion.md) · [ADR-0014](../adr/0014-representacion-fisica-de-relaciones.md) · [ADR-0015](../adr/0015-privacidad-de-la-observabilidad.md) · [ADR-0018](../adr/0018-versionado-y-reconstruccion-de-derivados.md) (propuesto) · [invariantes](invariants.md) · spec v0.2.0 §11, §12, §16 |
 
 ## 0. Estado
 
@@ -17,7 +17,7 @@ Esta acta está **aprobada** (§8). Los WP son secuenciales, como en las Etapas 
 |---|---|
 | Etapas 4 y 5 cerradas (roadmap: recorridos de relaciones y explicación de planes disponibles) | Cumplida: [cierre de la Etapa 4](etapa4-cierre.md) y [cierre de la Etapa 5](etapa5-cierre.md), aprobados |
 | Etapa 6 cerrada | Cumplida: [cierre](etapa6-cierre.md) aprobado por delegación el 2026-11-11; la caché de resultados queda desactivada por defecto |
-| ADR-0011 (vectores y recuperación híbrida) | *Pendiente*. Se decide en E7-00 (§7, punto 1) |
+| ADR-0011 (vectores y recuperación híbrida) | **Cumplida**: aceptado el 2026-11-11 en E7-00, con la opción 1 (§7, punto 1). Ver [ADR-0011](../adr/0011-vectores-y-recuperacion-hibrida.md) y el [conjunto de evaluación](etapa7-conjunto-evaluacion.md) |
 | ADR-0018 (versionado de derivados) | *Propuesto*. No hace falta: esta etapa no persiste derivados (§2.3) |
 | Experimento de hilos narrativos | Cerrado con NO-GO ([informe](../../experiments/narrative-threads/results/REPORT.md)); no se integra |
 

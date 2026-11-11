@@ -61,7 +61,7 @@ La tarea de cierre de la Fase 1 (revisión adversarial, benchmarks, documentaci�
 
 ## Etapas 3–9 (especificación v0.2.0)
 
-Después de la Fase 1 el trabajo se organiza por las etapas de la [especificación v0.2.0](../spec/especificacion-arquitectonica-v0.2.0.md) §16; la [correspondencia con las fases del SAD](../spec/README.md) está en `docs/spec/`. La **Etapa 3 está cerrada** (aprobada por el propietario el 2026-11-04). La **Etapa 4 está cerrada** (aprobada por el propietario el 2026-11-05, [cierre](../architecture/etapa4-cierre.md)); la **Etapa 5 está cerrada** (aprobada por delegación del propietario el 2026-11-09, [cierre](../architecture/etapa5-cierre.md)); la **Etapa 6 está cerrada** (aprobada por delegación el 2026-11-11, [cierre](../architecture/etapa6-cierre.md)), con la caché desactivada por defecto; la **Etapa 7 tiene su acta aprobada** ([acta](../architecture/etapa7-acta.md), 2026-11-11) y no ha empezado a construirse; el resto no ha empezado. Una etapa ya implementada y probada se salta (spec §16).
+Después de la Fase 1 el trabajo se organiza por las etapas de la [especificación v0.2.0](../spec/especificacion-arquitectonica-v0.2.0.md) §16; la [correspondencia con las fases del SAD](../spec/README.md) está en `docs/spec/`. La **Etapa 3 está cerrada** (aprobada por el propietario el 2026-11-04). La **Etapa 4 está cerrada** (aprobada por el propietario el 2026-11-05, [cierre](../architecture/etapa4-cierre.md)); la **Etapa 5 está cerrada** (aprobada por delegación del propietario el 2026-11-09, [cierre](../architecture/etapa5-cierre.md)); la **Etapa 6 está cerrada** (aprobada por delegación el 2026-11-11, [cierre](../architecture/etapa6-cierre.md)), con la caché desactivada por defecto; la **Etapa 7 tiene su acta aprobada** ([acta](../architecture/etapa7-acta.md), 2026-11-11) y **E7-00 está hecho** (2026-11-11: conjunto de evaluación congelado y ADR-0011 aceptado); el resto no ha empezado. Una etapa ya implementada y probada se salta (spec §16).
 
 | Etapa | Depende de | Condición de inicio | ADR que se deciden |
 |---|---|---|---|
@@ -102,7 +102,8 @@ Después de la Fase 1 el trabajo se organiza por las etapas de la [especificaci�
 
 - **Entregables:** recuperación por relaciones, contexto temporal y procedencia; búsqueda vectorial **exacta** como baseline si hay un caso de uso (ADR-0011); ranking con modo diagnóstico que explica sus señales.
 - **Aceptación:** calidad de recuperación evaluable con un conjunto de consultas y respuestas esperadas fijado antes de medir; toda respuesta rastreable a sus fuentes; sin ANN antes de un benchmark que lo justifique.
-- **Acta:** [etapa7-acta.md](../architecture/etapa7-acta.md) (aprobada por delegación del propietario el 2026-11-11). Paquetes E7-00 a E7-06; siguiente paso: E7-00 (ADR-0011 y conjunto de evaluación congelado).
+- **Acta:** [etapa7-acta.md](../architecture/etapa7-acta.md) (aprobada por delegación del propietario el 2026-11-11). Paquetes E7-00 a E7-06.
+- **Estado:** E7-00 **hecho** el 2026-11-11: conjunto de evaluación congelado con SHA-256 ([conjunto](../architecture/etapa7-conjunto-evaluacion.md)), métricas probadas por mutación y líneas base B0 y B1 medidas; ADR-0011 aceptado. **Siguiente paso: E7-01** (modelo de consulta y ruta de referencia).
 
 ### Etapa 8 — Consolidación y embeddings
 
