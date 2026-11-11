@@ -249,8 +249,11 @@ const W1_P99_MAY_LOSE: f64 = 5.0;
 const WORST_P99_MAY_LOSE: f64 = 5.0;
 
 /// Rounds per comparison; each round runs the stream once with the cache off
-/// and once on, the order flipping every round.
-const CACHE_ROUNDS: usize = 5;
+/// and once on, the order flipping every round. Many short rounds rather
+/// than a few long ones: on a shared machine the p99 of a round drifts by
+/// more than the 5 % the thresholds allow, and two arms compared a few
+/// seconds apart share that drift where two compared minutes apart do not.
+const CACHE_ROUNDS: usize = 20;
 
 /// W1 as the acta (§8, decision 5) sizes it: 80 % reads, 20 % writes. One
 /// write, then [`READS_PER_WRITE`] reads of one query: the first read after a
@@ -278,8 +281,10 @@ struct Load<'a> {
     target: UnitId,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Run {
+    /// Every timed read, in nanoseconds, for the percentiles over all rounds.
+    samples: Vec<u64>,
     p50: f64,
     p95: f64,
     p99: f64,
@@ -366,6 +371,7 @@ fn run_stream(db: &Units, load: &Load, on: bool) -> Res<Run> {
     cache.set_enabled(false);
     let timed = samples.len();
     Ok(Run {
+        samples: samples.clone(),
         p50: percentile(&mut samples, 0.50),
         p95: percentile(&mut samples, 0.95),
         p99: percentile(&mut samples, 0.99),
@@ -426,6 +432,14 @@ fn compare(db: &Units, load: &Load, w1: bool) -> Res<()> {
     if !w1 && on.iter().any(|r| r.hits > r.timed.div_ceil(TYPES as usize) + 1) {
         return Err("the stream without repeats was served from the cache beyond its recurrences".into());
     }
+    let pooled = |rs: &[Run], q: f64| {
+        percentile(&mut rs.iter().flat_map(|r| r.samples.iter().copied()).collect::<Vec<u64>>(), q)
+    };
+    println!(
+        "{head}: cache on vs off, all rounds pooled (not a threshold): p50 {:+.1} %, p99 {:+.1} %",
+        pct(pooled(&on, 0.50), pooled(&off, 0.50)),
+        pct(pooled(&on, 0.99), pooled(&off, 0.99))
+    );
     for (name, best) in [("best round", true), ("median round", false)] {
         let (p50, p99) = deltas(&on, &off, best);
         let (limit, text) = if w1 {
@@ -449,7 +463,7 @@ fn compare(db: &Units, load: &Load, w1: bool) -> Res<()> {
 fn cache_section(base: &std::path::Path, seed: u64, quick: bool) -> Res<()> {
     // (units, reads without repeats, W1 blocks with the index kept Ready, W1 blocks with the index left stale)
     let scales: &[(usize, usize, usize, usize)] =
-        if quick { &[(2_000, 200, 20, 10)] } else { &[(20_000, 4_000, 400, 150), (100_000, 1_500, 0, 0)] };
+        if quick { &[(2_000, 200, 20, 10)] } else { &[(20_000, 1_000, 100, 40), (100_000, 400, 0, 0)] };
     println!("cache,scale,load,cache,round,timed_reads,served,p50_ms,p95_ms,p99_ms");
     for &(n, norepeat, ready, stale) in scales {
         let dir = TempDir(base.join(format!("kerno-cache-bench-{}-{n}", std::process::id())));
