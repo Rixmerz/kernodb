@@ -244,8 +244,6 @@ fn is_corruption(e: &UnitError) -> bool {
     matches!(e, UnitError::Storage(kerno_core::Error::Corruption(_)))
 }
 
-thread_local! { static TPROBE: std::cell::RefCell<[u64; 6]> = const { std::cell::RefCell::new([0; 6]) }; }
-
 impl<E: Engine> UnitSnapshot<E> {
     /// Entries in `[start, end)`, counting at most [`PROBE`].
     fn probe(&self, start: &[u8], end: &[u8]) -> Result<Probe, UnitError> {
@@ -356,12 +354,10 @@ impl<E: Engine> UnitSnapshot<E> {
         if !self.cache.enabled() {
             return self.plan_units(filter);
         }
-        let t0 = std::time::Instant::now();
         let query = CachedQuery::Units(filter.clone());
         let Some(fingerprint) = self.cache.fingerprint_of(&query) else {
             return self.plan_units(filter);
         };
-        let t_fp = t0.elapsed();
         let (status, entries) = match self.index_stats() {
             Ok(read) => read,
             Err(_) => {
@@ -375,11 +371,7 @@ impl<E: Engine> UnitSnapshot<E> {
         };
         let now = Dependencies::current(self.seq(), Some(status));
         let mut discrepancy = None;
-        let t_pre = t0.elapsed();
-        let lk = self.cache.lookup(&fingerprint, &query, &now);
-        let t_lk = t0.elapsed();
-        let is_inv = !matches!(lk, Lookup::Hit(_));
-        match lk {
+        match self.cache.lookup(&fingerprint, &query, &now) {
             Lookup::Hit(result) => {
                 let checked = match &*result {
                     CachedResult::Units(units) => check_units(filter, units).map(|()| units),
@@ -421,26 +413,8 @@ impl<E: Engine> UnitSnapshot<E> {
                 self.execute_units(filter, status, decision.chosen().path, |via, f| self.scan_path(via, f))?
             }
         };
-        let t_plan = t0.elapsed();
         if self.cache.worth_storing(&fingerprint, &query, &now) {
-            let t_w = t0.elapsed();
             self.store(fingerprint, query, now, CachedResult::Units(outcome.units.clone()));
-            TPROBE.with(|p| { let mut p = p.borrow_mut(); p[5] += (t0.elapsed() - t_w).as_nanos() as u64; });
-        }
-        let t_end = t0.elapsed();
-        if is_inv {
-            TPROBE.with(|p| {
-                let mut p = p.borrow_mut();
-                p[0] += 1;
-                p[1] += t_fp.as_nanos() as u64;
-                p[2] += (t_pre - t_fp).as_nanos() as u64 + (t_lk - t_pre).as_nanos() as u64;
-                p[3] += (t_plan - t_lk).as_nanos() as u64;
-                p[4] += (t_end - t_plan).as_nanos() as u64;
-                if p[0] % 400 == 0 {
-                    let n = p[0];
-                    eprintln!("PROBE n={} fp={}us stats+lookup={}us plan={}us admit+store={}us (store={}us)", n, p[1]/n/1000, p[2]/n/1000, p[3]/n/1000, p[4]/n/1000, p[5]/n/1000);
-                }
-            });
         }
         Ok(outcome)
     }
