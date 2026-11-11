@@ -4,8 +4,9 @@
 //! The one optimization of Stage 6 is a cache of query results keyed by the
 //! query's [`Fingerprint`]. This module holds what that optimization **is**
 //! (a [`CacheEntry`] with its [`Dependencies`]) and where it **lives** (the
-//! [`ResultCache`]). It is not wired into `query` or the planner yet (E6-02):
-//! nothing in the crate reads it unless a caller asks.
+//! [`ResultCache`]). The planner consults it first in `query` and
+//! `query_relations` (E6-02, `planner.rs`), and only while it is switched on:
+//! off by default, nothing is read or written.
 //!
 //! # Dependencies (G4)
 //!
@@ -42,8 +43,11 @@
 //! * **Per-query switch**: [`ResultCache::disable_query`] turns the cache off
 //!   for one fingerprint and drops its entry.
 //! * **Bounded** by size and age ([`CacheConfig`]): at most `max_entries`
-//!   entries and `max_bytes` (estimated) of results, none older than
-//!   `max_age`. The oldest go first.
+//!   entries and `max_bytes` (estimated) of results. An entry older than
+//!   `max_age` is never served; it is dropped when the store next creates an
+//!   entry, changes its bounds, or is looked up under its fingerprint. Until
+//!   then it can stay in memory, idle (see the Stage 6 closure, H-5). The
+//!   oldest go first.
 //! * **Admission** (E6-04b): the planner stores an answer only if
 //!   [`ResultCache::worth_storing`] says so. One entry fits per query shape,
 //!   so a query of the same shape and other literals replaces the entry; an
