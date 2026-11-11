@@ -153,4 +153,4 @@ Las pruebas de `kerno-units` estaban en verde antes de E6-05 (320 pasadas), y si
 
 | Fecha | Decisión | Notas |
 |---|---|---|
-| — | **Pendiente** | El propietario aprueba o rechaza el cierre y decide §6 |
+| 2026-11-11 | **Aprobado por delegación** | El propietario delegó las decisiones («lo mejor y más correcto, toma tú las riendas»; «no voy a revisarlo, hazlo tú»). Decisiones de §6: se acepta el cierre con la caché **desactivada por defecto** y la medición documentada (el p99 de W1 no se certifica; evitar la copia queda como trabajo posible de una etapa posterior); H-5, H-6 y H-7 se aceptan como riesgos registrados, sin cambio de código en esta etapa; el resto de puntos abiertos de §6 pasa como riesgo heredado a la etapa siguiente. El propietario puede revocar esta aprobación |
