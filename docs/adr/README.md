@@ -21,7 +21,7 @@ Reglas:
 | [0008](0008-serializacion-documental-y-hashes.md) | Serialización documental y hashes | Aceptado (mínimo: BLAKE3-256 y bytes opacos) |
 | [0009](0009-supresion-retencion-y-backups.md) | Supresión, retención y backups | Pendiente |
 | [0010](0010-api-publica-y-crates.md) | API pública y límites de crates | **Aceptado** (2026-10-31; [acta E3-00](../architecture/etapa3-acta-e3-00.md)) |
-| [0011](0011-vectores-y-recuperacion-hibrida.md) | Perfil de vector y recuperación híbrida | Pendiente |
+| [0011](0011-vectores-y-recuperacion-hibrida.md) | Perfil de vector y recuperación híbrida | **Aceptado** (2026-11-11, E7-00: opción 1; [conjunto de evaluación](../architecture/etapa7-conjunto-evaluacion.md)) |
 | [0012](0012-metodologia-de-benchmarks.md) | Metodología de benchmarks y umbrales de salida | Propuesto (aplicada en M0) |
 | [0013](0013-formato-v1-y-protocolo-del-motor.md) | Formato v1 y protocolo del motor | Propuesto (WP06; se acepta antes de congelar v1 en WP14) |
 | [0014](0014-representacion-fisica-de-relaciones.md) | Representación física de relaciones | Aceptado (2026-11-05, E4-02: opción 2) |

@@ -1,0 +1,600 @@
+# kerno-testkit assoc-eval queries v1
+seed 20261111 scale quality cut 10
+counts queries 64
+Q MH-01 multi_hop 686 decision both revises,supports,mentions 3 - - - -
+E 344 0
+E 345 0
+E 566 0
+E 684 2
+E 685 3
+E 687 1
+E 688 2
+E 689 3
+E 704 0
+E 784 3
+E 785 2
+E 786 0
+E 787 2
+E 788 1
+Q MH-02 multi_hop 1586 decision both revises,supports,mentions 4 - - - -
+E 285 0
+E 484 0
+E 1005 0
+E 1244 0
+E 1305 0
+E 1306 0
+E 1309 0
+E 1466 0
+E 1584 2
+E 1585 3
+E 1587 1
+E 1588 2
+E 1589 3
+E 1764 3
+E 1765 2
+E 1766 0
+E 1767 2
+E 1768 1
+E 1769 0
+E 1824 0
+Q MH-03 multi_hop 545 decision out revises 4 - - - -
+E 304 0
+E 305 0
+E 306 2
+E 544 3
+Q MH-04 multi_hop 406 decision in revises,supports 4 - - - -
+E 409 3
+E 824 3
+E 825 2
+E 826 0
+E 827 2
+E 828 1
+E 829 0
+E 984 0
+Q MH-05 multi_hop 365 decision both revises,supports,mentions 3 - - - -
+E 25 0
+E 85 0
+E 145 0
+E 146 2
+E 149 1
+E 245 0
+E 364 3
+E 366 3
+E 367 2
+E 368 3
+E 369 2
+E 584 2
+E 585 0
+E 587 1
+Q MH-06 multi_hop 986 decision both revises,supports,mentions 4 - - - -
+E 45 0
+E 165 0
+E 766 0
+E 825 0
+E 826 0
+E 829 0
+E 946 0
+E 984 2
+E 985 3
+E 987 1
+E 988 2
+E 989 3
+E 1424 0
+E 1504 3
+E 1505 2
+E 1506 0
+E 1507 2
+E 1508 1
+E 1509 0
+E 1664 0
+Q MH-07 multi_hop 1026 decision out revises 4 - - - -
+E 965 0
+E 966 0
+E 1024 2
+E 1025 3
+Q MH-08 multi_hop 1325 decision in revises,supports 4 - - - -
+E 1326 3
+E 1328 3
+E 1329 2
+E 1364 2
+E 1365 0
+E 1366 0
+E 1367 1
+E 1368 0
+Q MH-09 multi_hop 1544 decision both revises,supports,mentions 3 - - - -
+E 386 0
+E 1346 0
+E 1365 0
+E 1524 0
+E 1525 2
+E 1526 3
+E 1528 1
+E 1529 2
+E 1545 3
+E 1546 2
+E 1547 3
+E 1548 2
+E 1549 1
+E 1704 0
+Q MH-10 multi_hop 1245 decision both revises,supports,mentions 4 - - - -
+E 105 0
+E 326 0
+E 384 0
+E 1124 0
+E 1164 0
+E 1165 0
+E 1166 2
+E 1168 0
+E 1169 1
+E 1244 3
+E 1246 3
+E 1247 2
+E 1248 3
+E 1249 2
+E 1384 2
+E 1385 0
+E 1386 0
+E 1387 1
+E 1388 0
+Q MH-11 multi_hop 1144 decision out revises 4 - - - -
+E 806 0
+E 1064 0
+E 1065 2
+E 1066 3
+Q MH-12 multi_hop 464 decision in revises,supports 4 - - - -
+E 465 3
+E 466 2
+E 467 3
+E 468 2
+E 469 1
+E 524 0
+E 525 0
+E 527 0
+Q MH-13 multi_hop 1044 decision both revises,supports,mentions 3 - - - -
+E 325 0
+E 385 0
+E 884 0
+E 885 2
+E 886 3
+E 888 1
+E 889 2
+E 906 0
+E 1045 3
+E 1046 2
+E 1047 3
+E 1048 2
+E 1049 1
+E 1424 0
+Q MH-14 multi_hop 1205 decision both revises,supports,mentions 4 - - - -
+E 86 0
+E 164 0
+E 625 0
+E 626 0
+E 684 0
+E 1124 0
+E 1125 0
+E 1126 2
+E 1128 0
+E 1129 1
+E 1204 3
+E 1206 3
+E 1207 2
+E 1208 3
+E 1209 2
+E 1224 2
+E 1225 0
+E 1226 0
+E 1227 1
+E 1228 0
+Q MH-15 multi_hop 1524 decision out revises 4 - - - -
+E 606 0
+E 764 0
+E 765 2
+E 766 3
+Q MH-16 multi_hop 544 decision in revises,supports 4 - - - -
+E 545 3
+E 546 2
+E 547 3
+E 548 2
+E 549 1
+E 844 0
+E 845 0
+E 847 0
+Q TM-01 temporal 506 decision both revises,supports,mentions 3 76-84 - - -
+E 6 0
+E 104 0
+E 166 0
+E 504 2
+E 505 3
+E 507 1
+E 508 2
+E 509 3
+Q TM-02 temporal 1464 decision both revises,supports,mentions 4 217-228 - - -
+E 666 0
+E 685 0
+E 1026 3
+E 1084 0
+E 1465 3
+E 1466 2
+E 1467 3
+E 1468 2
+E 1469 1
+Q TM-03 temporal 906 decision both revises,supports,mentions 3 133-144 - - -
+E 686 0
+E 746 0
+E 804 0
+E 904 2
+E 905 3
+E 907 1
+E 908 2
+E 909 3
+Q TM-04 temporal 1024 decision both revises,supports,mentions 4 151-159 - - -
+E 285 0
+E 744 0
+E 966 3
+E 1005 0
+E 1025 3
+E 1026 2
+E 1027 3
+E 1028 2
+E 1029 1
+Q TM-05 temporal 1205 decision both revises,supports,mentions 3 175-186 - - -
+E 86 0
+E 625 0
+E 626 0
+E 1126 2
+E 1204 3
+E 1206 3
+E 1207 2
+E 1208 3
+E 1209 2
+E 1224 2
+E 1225 0
+E 1227 1
+Q TM-06 temporal 1825 decision both revises,supports,mentions 4 274-279 - - -
+E 1204 0
+E 1464 0
+E 1486 0
+E 1766 2
+E 1824 3
+E 1826 3
+E 1827 2
+E 1828 3
+E 1829 2
+Q TM-07 temporal 885 decision both revises,supports,mentions 3 133-141 - - -
+E 265 0
+E 325 0
+E 506 0
+E 726 2
+E 884 3
+E 886 3
+E 887 2
+E 888 3
+E 889 2
+Q TM-08 temporal 1444 decision both revises,supports,mentions 4 211-219 - - -
+E 86 0
+E 406 0
+E 464 0
+E 1386 3
+E 1445 3
+E 1446 2
+E 1447 3
+E 1448 2
+E 1449 1
+Q TM-09 temporal 864 decision both revises,supports,mentions 3 124-138 - - -
+E 64 0
+E 124 0
+E 706 3
+E 865 3
+E 866 2
+E 867 3
+E 868 2
+E 869 1
+Q TM-10 temporal 1284 decision both revises,supports,mentions 4 190-198 - - -
+E 445 0
+E 546 0
+E 786 0
+E 1106 3
+E 1285 3
+E 1286 2
+E 1287 3
+E 1288 2
+E 1289 1
+Q TM-11 temporal 1586 decision both revises,supports,mentions 3 232-240 - - -
+E 285 0
+E 1306 0
+E 1466 0
+E 1584 2
+E 1585 3
+E 1587 1
+E 1588 2
+E 1589 3
+Q TM-12 temporal 1105 decision both revises,supports,mentions 4 163-174 - - -
+E 145 0
+E 504 0
+E 764 0
+E 886 0
+E 1084 0
+E 1085 0
+E 1086 2
+E 1088 0
+E 1089 1
+E 1104 3
+E 1106 3
+E 1107 2
+E 1108 3
+E 1109 2
+Q TM-13 temporal 506 decision both revises,supports,mentions 3 76-78 - - -
+E 6 0
+E 104 0
+E 166 0
+E 504 2
+E 505 3
+E 507 1
+E 508 2
+E 509 3
+Q TM-14 temporal 564 decision both revises,supports,mentions 4 85-90 - - -
+E 6 0
+E 65 0
+E 526 3
+E 546 0
+E 565 3
+E 566 2
+E 567 3
+E 568 2
+E 569 1
+Q TM-15 temporal 1405 decision both revises,supports,mentions 3 205-219 - - -
+E 205 0
+E 725 0
+E 744 0
+E 1006 2
+E 1404 3
+E 1406 3
+E 1407 2
+E 1408 3
+E 1409 2
+Q TM-16 temporal 1484 decision both revises,supports,mentions 4 220-225 - - -
+E 304 0
+E 645 0
+E 1004 0
+E 1426 3
+E 1485 3
+E 1486 2
+E 1487 3
+E 1488 2
+E 1489 1
+Q CB-01 combined 1024 decision both revises,supports,mentions 3 148-156 declared agent-gamma -
+E 744 0
+E 966 3
+E 1025 3
+E 1026 2
+E 1027 3
+E 1029 1
+Q CB-02 combined 1086 decision both revises,supports,mentions 4 160-165 declared - -
+E 145 0
+E 504 0
+E 646 0
+E 1084 2
+E 1085 3
+E 1087 1
+E 1089 3
+Q CB-03 combined 1704 decision both revises,supports,mentions 3 253-264 declared agent-gamma -
+E 304 0
+E 1546 3
+E 1705 3
+E 1706 2
+E 1707 3
+E 1709 1
+E 1724 0
+Q CB-04 combined 1086 decision both revises,supports,mentions 4 163-168 declared - -
+E 145 0
+E 504 0
+E 646 0
+E 764 0
+E 1084 2
+E 1085 3
+E 1087 1
+E 1089 3
+E 1104 3
+E 1105 2
+E 1106 0
+E 1107 2
+E 1109 0
+Q CB-05 combined 1386 decision both revises,supports,mentions 3 205-216 declared agent-gamma -
+E 664 0
+E 1246 0
+E 1384 2
+E 1385 3
+E 1387 1
+E 1389 3
+Q CB-06 combined 1466 decision both revises,supports,mentions 4 220-222 declared - -
+E 685 0
+E 1026 0
+E 1084 0
+E 1464 2
+E 1465 3
+E 1467 1
+E 1469 3
+Q CB-07 combined 826 decision both revises,supports,mentions 3 121-126 declared agent-alpha -
+E 305 0
+E 406 0
+E 824 2
+E 825 3
+E 827 1
+E 829 3
+Q CB-08 combined 1104 decision both revises,supports,mentions 4 163-168 declared - -
+E 504 0
+E 646 0
+E 764 0
+E 886 0
+E 1084 0
+E 1085 2
+E 1086 3
+E 1087 0
+E 1089 2
+E 1105 3
+E 1106 2
+E 1107 3
+E 1109 1
+Q CB-09 combined 824 decision both revises,supports,mentions 3 118-126 declared agent-alpha -
+E 406 3
+E 666 0
+E 825 3
+E 826 2
+E 827 3
+E 829 1
+Q CB-10 combined 746 decision both revises,supports,mentions 4 112-114 declared - -
+E 304 0
+E 486 0
+E 686 0
+E 744 2
+E 745 3
+E 747 1
+E 749 3
+Q CB-11 combined 786 decision both revises,supports,mentions 3 118-120 declared agent-beta -
+E 664 0
+E 686 0
+E 784 2
+E 785 3
+E 787 1
+E 789 3
+Q CB-12 combined 1046 decision both revises,supports,mentions 4 154-165 declared - -
+E 106 0
+E 385 0
+E 886 0
+E 1044 2
+E 1045 3
+E 1047 1
+E 1049 3
+Q CB-13 combined 1184 decision both revises,supports,mentions 3 178-183 declared agent-alpha -
+E 5 0
+E 906 3
+E 1185 3
+E 1186 2
+E 1187 3
+E 1189 1
+Q CB-14 combined 1604 decision both revises,supports,mentions 4 238-249 declared - -
+E 506 0
+E 604 0
+E 1466 3
+E 1605 3
+E 1606 2
+E 1607 3
+E 1609 1
+Q CB-15 combined 766 decision both revises,supports,mentions 3 115-117 declared agent-beta -
+E 86 0
+E 606 0
+E 764 2
+E 765 3
+E 767 1
+E 769 3
+Q CB-16 combined 1466 decision both revises,supports,mentions 4 217-225 declared - -
+E 685 0
+E 1026 0
+E 1084 0
+E 1464 2
+E 1465 3
+E 1467 1
+E 1469 3
+Q PV-RE-1 provenance 1125 decision both related 1 - inferred - -
+E 225 0
+E 946 2
+E 1204 2
+Q PV-RE-2 provenance 1466 decision both related 1 - inferred - -
+E 805 0
+E 1464 2
+E 1605 2
+Q PV-RE-3 provenance 526 decision both related 1 - inferred - -
+E 6 0
+E 524 2
+E 565 2
+E 945 0
+Q PV-RE-4 provenance 1184 decision both related 1 - inferred - -
+E 465 0
+E 905 2
+E 1186 2
+Q PV-SS-1 provenance 1972 fact both same_source 1 - algorithmic - -
+E 1967 0
+E 1969 0
+E 1973 3
+Q PV-SS-2 provenance 594 fact both same_source 1 - algorithmic - -
+E 587 0
+E 588 0
+E 592 3
+Q PV-SS-3 provenance 293 fact both same_source 1 - algorithmic - -
+E 288 3
+E 290 0
+Q PV-SS-4 provenance 1108 fact both same_source 1 - algorithmic - -
+E 1112 3
+E 1114 0
+Q PV-AC-1 provenance 786 decision both revises,supports,mentions 3 - - agent-beta -
+E 664 0
+E 686 0
+E 784 2
+E 785 3
+E 787 1
+E 789 3
+Q PV-AC-2 provenance 704 decision both revises,supports,mentions 4 - - agent-beta -
+E 24 0
+E 145 0
+E 226 0
+E 286 0
+E 444 0
+E 445 2
+E 446 3
+E 447 0
+E 449 2
+E 705 3
+E 706 2
+E 707 3
+E 709 1
+Q PV-AC-3 provenance 826 decision both revises,supports,mentions 3 - - agent-alpha -
+E 45 0
+E 305 0
+E 406 0
+E 824 2
+E 825 3
+E 827 1
+E 829 3
+E 984 3
+E 985 2
+E 986 0
+E 987 2
+Q PV-AC-4 provenance 1404 decision both revises,supports,mentions 4 - - agent-alpha -
+E 205 0
+E 725 0
+E 1006 3
+E 1405 3
+E 1406 2
+E 1407 3
+E 1409 1
+Q PV-SR-1 provenance 244 decision both revises,supports,mentions 3 - - - transcript/0012
+E 165 0
+E 186 3
+E 245 3
+E 246 2
+E 247 3
+E 249 1
+Q PV-SR-2 provenance 846 decision both revises,supports,mentions 4 - - - transcript/0042
+E 266 0
+E 546 0
+E 586 0
+E 844 2
+E 845 3
+E 847 1
+E 849 3
+Q PV-SR-3 provenance 1226 decision both revises,supports,mentions 3 - - - transcript/0061
+E 844 0
+E 1206 0
+E 1224 2
+E 1225 3
+E 1227 1
+E 1229 3
+Q PV-SR-4 provenance 1106 decision both revises,supports,mentions 4 - - - transcript/0055
+E 764 0
+E 886 0
+E 1086 0
+E 1104 2
+E 1105 3
+E 1107 1
+E 1109 3

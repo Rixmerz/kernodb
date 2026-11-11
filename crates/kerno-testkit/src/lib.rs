@@ -18,12 +18,19 @@
 //!   ([`kerno_core::contract::TxnEngine`], suite [`txn_test_suite!`]).
 //! * [`rng`] — the deterministic PRNG every randomized test is seeded with.
 //! * [`process`] — re-executes the test binary as a child process.
+//! * [`assoc_eval`] — the frozen evaluation set of the associative memory
+//!   (Stage 7): a seeded story rendered as a corpus and as queries with graded
+//!   expected answers. [`assoc_metrics`] holds recall, precision and nDCG over
+//!   those grades, and [`sha256`] the digest of the manifest.
 
+pub mod assoc_eval;
+pub mod assoc_metrics;
 pub mod emulated;
 pub mod harness;
 pub mod process;
 pub mod reference;
 pub mod rng;
+pub mod sha256;
 
 pub mod vfs {
     //! The [`kerno_core::vfs`] abstraction plus the simulated and counting
