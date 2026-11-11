@@ -247,6 +247,19 @@ impl CachedQuery {
         }
     }
 
+    /// Which of the [`SHAPES`] this query is: the conditions that are set and,
+    /// for relations, the direction. Exactly what `normalized` writes into the
+    /// shape text, so two queries share a slot if and only if they share a shape.
+    fn shape_slot(&self) -> usize {
+        match self {
+            CachedQuery::Units(f) => usize::from(f.unit_type.is_some()) | usize::from(f.schema_version.is_some()) << 1,
+            CachedQuery::Relations(q) => {
+                4 + (usize::from(matches!(q.direction, crate::types::Direction::In)) << 1)
+                    + usize::from(q.relation_type.is_some())
+            }
+        }
+    }
+
     fn normalized(&self) -> NormalizedQuery {
         match self {
             CachedQuery::Units(filter) => NormalizedQuery::of_filter(filter),
@@ -561,12 +574,19 @@ struct Slot {
     hits: u64,
 }
 
+/// Distinct query shapes: four for units, four for relations.
+const SHAPES: usize = 8;
+
 struct State {
     config: CacheConfig,
     clock: Arc<dyn Clock>,
     /// The local key of the fingerprints this store uses; generated on first
     /// use (`None` until then, or if the system could not give one).
     key: Option<FingerprintKey>,
+    /// The fingerprint of each shape under `key`, once computed: it depends
+    /// on nothing else, and rebuilding the shape text and its hash on every
+    /// query was the largest cost of a miss. Dropped when the key changes.
+    shapes: [Option<Fingerprint>; SHAPES],
     disabled_queries: HashSet<Fingerprint>,
     entries: HashMap<Fingerprint, Slot>,
     /// Per fingerprint, the last query [`ResultCache::worth_storing`] declined
@@ -693,6 +713,7 @@ impl ResultCache {
                 config: CacheConfig::default(),
                 clock: Arc::new(SystemClock),
                 key: None,
+                shapes: [None; SHAPES],
                 disabled_queries: HashSet::new(),
                 entries: HashMap::new(),
                 declined: HashMap::new(),
@@ -933,7 +954,12 @@ impl ResultCache {
         if st.key.is_none() {
             st.key = FingerprintKey::generate().ok();
         }
-        st.key.as_ref().map(|key| query.normalized().fingerprint(key))
+        let st = &mut *st;
+        let slot = query.shape_slot();
+        if st.shapes[slot].is_none() {
+            st.shapes[slot] = st.key.as_ref().map(|key| query.normalized().fingerprint(key));
+        }
+        st.shapes[slot]
     }
 
     /// Replaces the fingerprint key, for reproducible tests. Fingerprints are
@@ -943,6 +969,7 @@ impl ResultCache {
     pub fn set_key(&self, key: FingerprintKey) {
         let mut st = self.lock();
         st.key = Some(key);
+        st.shapes = [None; SHAPES];
         st.disabled_queries.clear();
         st.wipe();
     }
@@ -1535,6 +1562,39 @@ mod tests {
         };
         assert!(Arc::ptr_eq(&a, &b));
         assert_eq!(a.kind(), QueryKind::Units);
+    }
+
+    #[test]
+    fn the_remembered_fingerprint_of_a_shape_is_the_one_computed_from_its_text() {
+        use crate::types::{Direction, UnitId};
+        let (c, _) = on();
+        let key = FingerprintKey::from_bytes([7; 32]);
+        c.set_key(key.clone());
+        let mut queries = Vec::new();
+        for unit_type in [None, Some("a".to_string())] {
+            for schema_version in [None, Some(3)] {
+                queries.push(CachedQuery::Units(UnitFilter { unit_type: unit_type.clone(), schema_version }));
+            }
+        }
+        for direction in [Direction::Out, Direction::In] {
+            for relation_type in [None, Some("r".to_string())] {
+                queries.push(CachedQuery::Relations(RelationQuery { unit: UnitId([1; 16]), direction, relation_type }));
+            }
+        }
+        let mut slots: Vec<usize> = queries.iter().map(CachedQuery::shape_slot).collect();
+        slots.sort_unstable();
+        assert_eq!(slots, (0..SHAPES).collect::<Vec<_>>(), "one slot per shape");
+        for _ in 0..2 {
+            for q in &queries {
+                assert_eq!(c.fingerprint_of(q), Some(q.normalized().fingerprint(&key)));
+            }
+        }
+        // Another literal of the same shape shares the answer; a new key replaces it.
+        let other = CachedQuery::Units(UnitFilter { unit_type: Some("b".into()), schema_version: None });
+        assert_eq!(c.fingerprint_of(&other), c.fingerprint_of(&queries[2]));
+        let key2 = FingerprintKey::from_bytes([8; 32]);
+        c.set_key(key2.clone());
+        assert_eq!(c.fingerprint_of(&other), Some(other.normalized().fingerprint(&key2)));
     }
 
     /// The query of the shape `fp("t")` stands for with the literal `t`.
