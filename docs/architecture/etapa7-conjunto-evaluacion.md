@@ -3,7 +3,7 @@
 | Campo | Valor |
 |---|---|
 | Fecha | 2026-11-11 |
-| Estado | **Congelado** en E7-00. Los ficheros de `data/assoc-eval/` no cambian después de esta fecha (acta §6.1, §7 punto 2) |
+| Estado | **Congelado** en E7-00, con una corrección hecha el mismo día y antes de que existiera código de recuperación (§9). Los ficheros de `data/assoc-eval/` no cambian después de esta fecha (acta §6.1, §7 punto 2) |
 | Acta | [Etapa 7](etapa7-acta.md) §6.1 (conjunto), §6.2 (calidad), §7 punto 2 |
 | Decisión asociada | [ADR-0011](../adr/0011-vectores-y-recuperacion-hibrida.md) (aceptado en E7-00). Este documento es el enlace de su sección de evidencia |
 | Código | `crates/kerno-testkit/src/assoc_eval.rs` (generador y formatos), `assoc_metrics.rs` (métricas), `sha256.rs` (SHA-256 del manifiesto), `examples/freeze_assoc_eval.rs` (escritura de los ficheros) |
@@ -17,7 +17,7 @@ Este documento describe el conjunto tal como está en el código y en los ficher
 El conjunto tiene dos partes que se generan juntas desde una semilla:
 
 - **Corpus**: 2 000 unidades, 3 958 relaciones y 300 conjuntos de cambios (escala de calidad).
-- **Consultas**: 64 consultas, cada una con su semilla, sus restricciones y sus respuestas esperadas con grado de relevancia de 0 a 3. Son 527 respuestas esperadas en total: 140 de grado 3, 119 de grado 2, 57 de grado 1 y 211 de grado 0 (distractores con nombre).
+- **Consultas**: 64 consultas, cada una con su semilla, sus restricciones y sus respuestas esperadas con grado de relevancia de 0 a 3. Son 533 respuestas esperadas en total: 143 de grado 3, 122 de grado 2, 57 de grado 1 y 211 de grado 0 (distractores con nombre).
 
 Los recuentos de la tabla siguiente se han contado sobre los ficheros congelados con un script de lectura (no se han tomado de los comentarios de cabecera de los ficheros).
 
@@ -29,7 +29,7 @@ Los recuentos de la tabla siguiente se han contado sobre los ficheros congelados
 | Conjuntos de cambios | 300: 100 de un agente (fuente `transcript/NNNN`), 100 del importador (`wiki-export/NNNN`), 100 del consolidador (`job/consolidate/NNNN`) |
 | Consultas por clase | 16 `multi_hop`, 16 `temporal`, 16 `provenance`, 16 `combined` |
 | Semillas | 60 decisiones y 4 hechos (las cuatro consultas `PV-SS`) |
-| Respuestas por consulta | entre 2 y 20; entre 2 y 9 relevantes (grado ≥ 1) en `multi_hop`, 5 a 9 en `temporal`, 4 a 7 en `combined` y 1 a 5 en `provenance` |
+| Respuestas por consulta | entre 2 y 20; entre 2 y 9 relevantes (grado ≥ 1) en `multi_hop`, 5 a 8 en `temporal`, 4 a 7 en `combined` y 1 a 7 en `provenance` |
 
 ## 2. Cómo se construye el relato
 
@@ -56,7 +56,7 @@ Cada sesión crea 20 unidades en su primer conjunto de cambios, en este orden de
 
 El tema de la sesión se elige al azar entre 12. Las decisiones de un mismo tema forman una **cadena**: cada decisión `revises` la anterior del tema. Así, una cadena cruza sesiones.
 
-Los hechos `F0`, `F2` (y `F1`, que llega por importación) sustentan `D0`, `D1` y `D2` con una relación `supports`. Los hechos `F3`..`F7` son `about` de tareas. Cada hecho `cites` una de las cinco fuentes, según `j mod 5`.
+Los hechos `F0`, `F2` (y `F1`, que llega por importación) sustentan `D0`, `D1` y `D2` con una relación `supports`. Los hechos `F3`..`F7` son `about` de tareas. Cada hecho `cites` una de las cinco fuentes. La asignación se baraja en cada sesión con el generador de la semilla: tres pares de hechos comparten fuente (dos fuentes quedan citadas una sola vez) y qué hechos forman cada par cambia de una sesión a otra.
 
 ### 2.3 Relaciones y procedencia
 
@@ -66,8 +66,8 @@ Las cuatro clases de procedencia de [ADR-0014](../adr/0014-representacion-fisica
 |---|---|---|
 | `declared` | Primer conjunto de cambios de la sesión | `in_session`, `produced_by`, `supports` (de `F0` y `F2`), `mentions`, `about`, `cites`, `revises` |
 | `imported <fuente>` | Segundo conjunto (importador, `wiki-export`) | El `supports` de `F1` a `D1` y un `about` de `F6` a `T0` |
-| `algorithmic <origen>` | Tercer conjunto (consolidador), origen `dedup-v2` | Seis `same_source` entre hechos: tres verdaderos y tres falsos |
-| `inferred <origen> <confianza>` | Tercer conjunto, origen `consolidator-v1` | Dos `related` por decisión: uno verdadero y uno falso (ver 2.6) |
+| `algorithmic <origen>` | Tercer conjunto (consolidador), origen `dedup-v2` | Seis `same_source` entre hechos: tres verdaderos y tres falsos, en orden y orientación aleatorios (ver 2.6) |
+| `inferred <origen> <confianza>` | Tercer conjunto, origen `consolidator-v1` | Hasta dos `related` por decisión: uno verdadero y uno falso, escritos en orden aleatorio (ver 2.6) |
 
 La relación `mentions` apunta de un hecho a una decisión de otro tema de una sesión anterior. Es el distractor de la cadena (ver 2.6).
 
@@ -78,7 +78,7 @@ Hay dos usos distintos de la palabra «fuente» en el conjunto. No deben confund
 - **Fuente de un conjunto de cambios** (`C ... <fuente>`): el texto de donde viene el cambio. Para el agente, `transcript/NNNN`; para el importador, `wiki-export/NNNN`; para el consolidador, `job/consolidate/NNNN`. Las consultas `PV-SR` filtran por esta fuente.
 - **Unidad de tipo `source`**: una de las cinco fuentes citadas por los hechos (`cites`). No es el origen de un cambio.
 
-Los actores de los conjuntos de cambios son `agent-alpha`, `agent-beta` y `agent-gamma` (uno por sesión, elegido al azar: 32, 27 y 41 sesiones respectivamente), `importer` y `consolidator`. Las consultas `PV-AC` filtran por el actor de la sesión de la semilla, y las pares de la clase `combined` también.
+Los actores de los conjuntos de cambios son `agent-alpha`, `agent-beta` y `agent-gamma` (uno por sesión, elegido al azar: 33, 39 y 28 sesiones respectivamente), `importer` y `consolidator`. Las consultas `PV-AC` filtran por el actor de la sesión de la semilla, y las pares de la clase `combined` también.
 
 ### 2.5 Orden lógico de los cambios
 
@@ -95,8 +95,8 @@ Cada relación se crea en un paso que no es anterior al de sus extremos. El anal
 Un distractor es una unidad que una consulta alcanza dentro de sus cotas y que no es relevante. Se nombran en las respuestas esperadas con grado 0. Hay cuatro fuentes de distractores:
 
 1. **Menciones entre temas**: el `mentions` de un hecho a una decisión de otro tema.
-2. **Vínculos `related` falsos**: el consolidador apunta a una decisión de otro tema con confianza entre 302 y 600 por mil. Los verdaderos apuntan a la decisión dos posiciones atrás de la cadena con confianza entre 701 y 950 (recuento: 276 verdaderos y 297 falsos). Los dos rangos no se solapan: un umbral de confianza entre 600 y 701 separa los dos casos sin error.
-3. **`same_source` falsos**: tres pares de hechos que no comparten fuente (`(0,3)`, `(1,4)`, `(2,3)`). Los verdaderos (`(0,5)`, `(1,6)`, `(2,7)`) sí comparten fuente, porque `j mod 5` coincide.
+2. **Vínculos `related` falsos**: el consolidador apunta a una decisión de otro tema con confianza uniforme entre 300 y 800 por mil. Los verdaderos apuntan a la decisión dos posiciones atrás de la cadena con confianza uniforme entre 450 y 950 (recuento: 276 verdaderos y 297 falsos). Los rangos se solapan entre 450 y 800: la confianza es informativa, pero no suficiente. Sobre los 573 vínculos, el mejor umbral de confianza acierta 0.675 (la prueba exige menos de 0.85). Los dos vínculos de una decisión se escriben en orden aleatorio.
+3. **`same_source` falsos**: tres pares de hechos que no comparten fuente, elegidos al azar entre todos los pares con fuentes distintas de la sesión. Los verdaderos son los tres pares que sí citan la misma fuente. Los seis se escriben en orden aleatorio y con orientación aleatoria (qué hecho es el origen y cuál el destino). Ningún índice, desplazamiento dentro de la sesión, distancia entre índices ni posición de creación decide la verdad (§9).
 4. **Decisiones y evidencias a distancia 3 o más** en la cadena: aparecen con grado 0 cuando el recorrido las alcanza (ver 5.1).
 
 ## 3. Formatos de los ficheros
@@ -135,8 +135,8 @@ Ejemplos reales del fichero:
 C 2 importer wiki-export/0000
 R 22 2 8 5 supports imported wiki-export
 C 3 consolidator job/consolidate/0000
-R 24 3 6 4 related inferred consolidator-v1 805
-R 25 3 7 12 same_source algorithmic dedup-v2
+R 24 3 6 4 related inferred consolidator-v1 473
+R 25 3 9 10 same_source algorithmic dedup-v2
 ```
 
 ### 3.2 `queries.txt`
@@ -145,15 +145,15 @@ R 25 3 7 12 same_source algorithmic dedup-v2
 # kerno-testkit assoc-eval queries v1
 seed 20261111 scale quality cut 10
 counts queries 64
-Q TM-01 temporal 466 decision both revises,supports,mentions 3 70-78 - - -
-E 85 0
-E 306 0
-E 325 0
-E 464 2
-E 465 3
-E 467 1
-E 468 2
-E 469 3
+Q TM-01 temporal 506 decision both revises,supports,mentions 3 76-84 - - -
+E 6 0
+E 104 0
+E 166 0
+E 504 2
+E 505 3
+E 507 1
+E 508 2
+E 509 3
 ```
 
 Es la consulta `TM-01` tal como está en el fichero: ocho respuestas esperadas, tres de grado 0, una de grado 1, dos de grado 2 y dos de grado 3.
@@ -186,7 +186,7 @@ Los campos de `Q` se leen con este orden y sin campos opcionales: un `-` ocupa s
 Una consulta del conjunto, tal cual:
 
 ```text
-Q PV-SR-1 provenance 146 decision both revises,supports,mentions 3 - - - transcript/0007
+Q PV-SR-1 provenance 244 decision both revises,supports,mentions 3 - - - transcript/0012
 ```
 
 Es una consulta sin ventana y sin procedencia, que sigue la cadena de su tema y se limita a la fuente de transcripción de la sesión de la semilla.
@@ -194,8 +194,8 @@ Es una consulta sin ventana y sin procedencia, que sigue la cadena de su tema y 
 ### 3.3 `MANIFEST`
 
 ```text
-8cd500f8ddb459fa80307bd9065335649cfe37d097c53dfbb16b10d430cc3354  corpus.txt
-d141b05b4813f34ea3030bbfbedf8922e0fc8a2a9bc82dcefbf99083a546b4f3  queries.txt
+72aebc3de4479fbd92aec7fb223b8d06b168138603661650a5ece76091797757  corpus.txt
+18bab21888e511898ae93cc4a3df5e2ede7b64668955869cd2a4e3268bf6c018  queries.txt
 ```
 
 Formato de `sha256sum`: 64 dígitos hexadecimales en minúscula, dos espacios y el nombre del fichero, una línea por fichero, en este orden. Lista exactamente los dos ficheros congelados. Se comprueba con:
@@ -214,7 +214,7 @@ Los dos checks salieron en ese orden en la ejecución de este documento.
 cargo run --release -p kerno-testkit --example freeze_assoc_eval
 ```
 
-Este comando escribe los tres ficheros desde la semilla. Sobre el árbol de E7-00 reescribió los ficheros con el mismo contenido: después `git status` no mostró ningún cambio en `data/assoc-eval/`. La prueba `regenerated_set_is_byte_identical` comprueba lo mismo sin escribir nada.
+Este comando escribe los tres ficheros desde la semilla. Sobre el árbol de E7-00 reescribió los ficheros con el mismo contenido: después `git status` no mostró ningún cambio en `data/assoc-eval/`. La prueba `regenerated_set_is_byte_identical` comprueba lo mismo sin escribir nada. La corrección de §9 sí cambió el contenido: se regeneró una vez con ese comando, se comprobó el `MANIFEST` con `sha256sum -c` y desde entonces el comando vuelve a dejar el árbol sin cambios.
 
 ## 4. Líneas base B0 y B1
 
@@ -233,11 +233,11 @@ Copiados de la salida cruda, [etapa7-e700-salida.txt](etapa7-e700-salida.txt), c
 
 | Ámbito | Consultas | B0 R@10 | B0 nDCG@10 | B1 R@10 | B1 nDCG@10 |
 |---|---|---|---|---|---|
-| overall | 64 | 0.000 | 0.000 | 0.715 | 0.499 |
-| multi_hop | 16 | 0.000 | 0.000 | 0.651 | 0.467 |
-| temporal | 16 | 0.000 | 0.000 | 0.623 | 0.491 |
-| provenance | 16 | 0.000 | 0.000 | 0.856 | 0.523 |
-| combined | 16 | 0.000 | 0.000 | 0.730 | 0.515 |
+| overall | 64 | 0.000 | 0.000 | 0.731 | 0.500 |
+| multi_hop | 16 | 0.000 | 0.000 | 0.658 | 0.473 |
+| temporal | 16 | 0.000 | 0.000 | 0.641 | 0.493 |
+| provenance | 16 | 0.000 | 0.000 | 0.864 | 0.510 |
+| combined | 16 | 0.000 | 0.000 | 0.761 | 0.523 |
 
 Por consulta, B1 llega a recall@10 de 1.000 en doce de las 64 consultas: `MH-03`, `MH-07`, `MH-11`, `MH-15`, `PV-RE-1`..`PV-RE-4` y `PV-SS-1`..`PV-SS-4`. B0 tiene recall@10 de 0.000 en las 64.
 
@@ -253,12 +253,12 @@ La salida de esta ejecución es idéntica, línea por línea, a [etapa7-e700-sal
 
 **B0 es cero en todas las consultas, y eso es estructural.** B0 no usa la semilla más que para leer su tipo. Devuelve siempre las mismas diez unidades del tipo: para las decisiones, los índices 4, 5, 6, 24, 25, 26, 44, 45, 46 y 64 (las decisiones de las sesiones 0 a 3); para los hechos de las cuatro consultas `PV-SS`, los índices 7 a 14, 27 y 28. Ninguna de esas unidades tiene grado mayor que 0 en ninguna respuesta esperada de su tipo. Eso no es un fallo de la medición: un filtro por tipo que no mira la semilla no puede acertar en un conjunto donde la relevancia depende del tema. Por eso B0 no es un suelo útil para comparar rankings. El criterio de §6.2 del acta compara con B1 y con el orden simple, no con B0.
 
-**B1 sí alcanza la relevancia en algunas clases, pero la ordena mal.** Su recall@10 medio es 0.715, mientras que su nDCG@10 medio es 0.499. Encuentra muchas de las respuestas relevantes, pero las pone detrás de vecinos de otros tipos y de distractores. El nDCG es lo que separa B1 de un ranking con sentido. Para referencia, un 10 % mejor que B1 sobre la media sería 0.549, y el umbral absoluto de §6.2 es 0.80. Estos números no deciden nada en E7-00; son la base que E7-05 debe superar.
+**B1 sí alcanza la relevancia en algunas clases, pero la ordena mal.** Su recall@10 medio es 0.731, mientras que su nDCG@10 medio es 0.500. Encuentra muchas de las respuestas relevantes, pero las pone detrás de vecinos de otros tipos y de distractores. El nDCG es lo que separa B1 de un ranking con sentido. Para referencia, un 10 % mejor que B1 sobre la media sería 0.550, y el umbral absoluto de §6.2 es 0.80. Estos números no deciden nada en E7-00; son la base que E7-05 debe superar.
 
 **Clases en las que un salto ya llega a todo lo relevante.** Son las doce consultas con recall@10 de 1.000:
 
-- **`PV-RE-1`..`PV-RE-4` y `PV-SS-1`..`PV-SS-4`**: estas consultas son de un salto por construcción (profundidad 1, sobre `related` o `same_source`). B1 alcanza exactamente las mismas unidades relevantes. Lo que B1 pierde es el orden: los distractores (dos `related` falsos en `PV-RE`, un `same_source` falso en `PV-SS`) aparecen junto a las relevantes, y el nDCG queda entre 0.500 y 0.624. Estas consultas miden el filtro por procedencia, no el recorrido.
-- **`MH-03`, `MH-07`, `MH-11` y `MH-15`**: son las consultas de dirección `out` solo por `revises`, profundidad 4. Sus respuestas relevantes son la decisión anterior (grado 3) y la de dos posiciones atrás (grado 2). La primera es un `revises` saliente. La segunda es el destino del `related` verdadero del consolidador, que sale de la decisión. Por eso un salto las alcanza sin recorrer la cadena. Ejemplo: en `MH-03`, la semilla `505` tiene el `revises` a `504` (grado 3) y el `related` verdadero a `186` (confianza 910, grado 2); B1 los recupera a los dos. El nDCG es 0.552 porque la tarea de la semilla y los `related` falsos ocupan posiciones delante.
+- **`PV-RE-1`..`PV-RE-4` y `PV-SS-1`..`PV-SS-4`**: estas consultas son de un salto por construcción (profundidad 1, sobre `related` o `same_source`). B1 alcanza exactamente las mismas unidades relevantes. Lo que B1 pierde es el orden: los distractores (uno o dos `related` falsos en `PV-RE`, uno o dos `same_source` falsos en `PV-SS`) aparecen junto a las relevantes, y el nDCG queda entre 0.387 y 0.624. Estas consultas miden el filtro por procedencia, no el recorrido.
+- **`MH-03`, `MH-07`, `MH-11` y `MH-15`**: son las consultas de dirección `out` solo por `revises`, profundidad 4. Sus respuestas relevantes son la decisión anterior (grado 3) y la de dos posiciones atrás (grado 2). La primera es un `revises` saliente. La segunda es el destino del `related` verdadero del consolidador, que sale de la decisión. Por eso un salto las alcanza sin recorrer la cadena. Ejemplo: en `MH-03`, la semilla `545` tiene el `revises` a `544` (grado 3) y el `related` verdadero a `306` (confianza 808, grado 2); B1 los recupera a los dos. El nDCG es 0.552 porque la tarea de la semilla y los `related` falsos ocupan posiciones delante.
 
 En las clases `temporal` y `combined` ningún salto llega al 100 %: el máximo de recall@10 de B1 es 0.667 en `temporal` y 0.800 en `combined`. Ahí la ventana temporal, el filtro de procedencia o la profundidad hacen falta para separar lo relevante de lo alcanzable.
 
@@ -293,7 +293,7 @@ La prueba `expected_answers_are_reachable_within_the_bounds` comprueba que cada 
 | 1 | Evidencia a dos revisiones | 1 |
 | 0 | Distractor con nombre (decisión a tres o más revisiones, evidencia a tres o más, mención, `related` falso, `same_source` falso) | 0 |
 
-Relevante es grado ≥ 1. Distribución en el conjunto: 140 de grado 3, 119 de grado 2, 57 de grado 1 y 211 de grado 0.
+Relevante es grado ≥ 1. Distribución en el conjunto: 143 de grado 3, 122 de grado 2, 57 de grado 1 y 211 de grado 0.
 
 ### 5.3 Las clases de consulta
 
@@ -302,7 +302,7 @@ Relevante es grado ≥ 1. Distribución en el conjunto: 140 de grado 3, 119 de g
 | `multi_hop` (`MH-01`..`MH-16`) | 16 | decisiones de la sesión 5 o posterior, con al menos 4 decisiones antes y 4 después en su tema, y una mención en la evidencia | Cuatro formas por `n mod 4`: `both` con tres tipos y profundidad 3 (0); `both` con profundidad 4 (1); `out` solo `revises`, profundidad 4 (2); `in` con `revises` y `supports`, profundidad 4 (3). Sin ventana ni procedencia | Recorrido de la cadena y de su evidencia |
 | `temporal` (`TM-01`..`TM-16`) | 16 | las mismas | `both`, tres tipos, profundidad 3 o 4 según `n` impar, y una ventana de pasos alrededor de la sesión de la semilla | Contexto temporal |
 | `combined` (`CB-01`..`CB-16`) | 16 | decisiones con evidencia `declared` | Ventana, procedencia `declared` solo, profundidad 3 o 4, y el actor de la sesión en las consultas pares | Procedencia y tiempo juntos |
-| `provenance` (`PV-RE`, `PV-SS`, `PV-AC`, `PV-SR`) | 16 | decisiones (`PV-RE`, `PV-AC`, `PV-SR`) o hechos de las tres primeras posiciones de cada sesión (`PV-SS`) | `PV-RE`: `related` de un salto con procedencia `inferred`; `PV-SS`: `same_source` de un salto con procedencia `algorithmic`; `PV-AC`: cadena con el actor de la sesión; `PV-SR`: cadena con la fuente de transcripción de la sesión | Procedencia, actor y fuente |
+| `provenance` (`PV-RE`, `PV-SS`, `PV-AC`, `PV-SR`) | 16 | decisiones (`PV-RE`, `PV-AC`, `PV-SR`) o hechos que tienen un `same_source` verdadero y otro falso (`PV-SS`) | `PV-RE`: `related` de un salto con procedencia `inferred`; `PV-SS`: `same_source` de un salto con procedencia `algorithmic`; `PV-AC`: cadena con el actor de la sesión; `PV-SR`: cadena con la fuente de transcripción de la sesión | Procedencia, actor y fuente |
 
 Dos detalles de estas definiciones que afectan a la lectura:
 
@@ -339,30 +339,30 @@ Ejemplo de la prueba `hand_computed_example`: resultados `[1, 9, 2]`, con 1 de g
 
 ## 7. Pruebas nuevas y mutaciones
 
-Este WP añade 20 pruebas. Los conteos después de E7-00, con las nuevas marcadas, son estos:
+E7-00 añadió 20 pruebas, y la corrección de §9 añadió 2 más en `tests/assoc_eval.rs`. Los conteos actuales, con las nuevas marcadas, son estos:
 
 | Conjunto | Después | Nuevas | Antes (derivado) |
 |---|---|---|---|
 | `kerno-testkit` lib (`assoc_metrics` 9, `sha256` 2) | 90 aprobadas | 11 | 79 |
-| `kerno-testkit` `tests/assoc_eval.rs` | 8 aprobadas | 8 | 0 |
+| `kerno-testkit` `tests/assoc_eval.rs` | 10 aprobadas | 10 | 0 |
 | `kerno-units` `tests/assoc_baseline.rs` | 1 aprobada | 1 | 0 |
 
-El conteo «antes» es el de después menos las pruebas nuevas, porque el commit de E7-00 solo añade pruebas nuevas. No se ha ejecutado en el árbol anterior.
+El conteo «antes» es el de después menos las pruebas nuevas, porque el commit de E7-00 solo añade pruebas nuevas (las 8 de E7-00 más las 2 de §9 en `tests/assoc_eval.rs`). No se ha ejecutado en el árbol anterior.
 
 ### 7.1 Mutaciones
 
-Cada prueba nueva se ha ejecutado sobre una versión del código con una mutación. Después se ha restaurado el fichero con `git checkout -- <fichero>`. Tras la última restauración, ningún fichero de código aparecía modificado: `git status` solo listaba los documentos de este WP y `experiments/narrative-threads/.venv`, que no es de este trabajo. Las líneas son las del código sin mutar.
+Cada prueba nueva se ha ejecutado sobre una versión del código con una mutación. Después se ha restaurado el fichero con `git checkout -- <fichero>`. Tras la última restauración de E7-00, ningún fichero de código aparecía modificado: `git status` solo listaba los documentos de este WP y `experiments/narrative-threads/.venv`, que no es de este trabajo. Las líneas son las del código sin mutar. Las de `src/assoc_eval.rs` se han recolocado tras la corrección de §9, que insertó código antes de ellas (las de `assoc_metrics.rs`, `sha256.rs` y `db.rs` no se movieron). Las mutaciones de la tabla se ejecutaron en E7-00, cuando `tests/assoc_eval.rs` tenía 8 pruebas: los recuentos «aprobadas» son de esa fecha y no se han repetido tras la corrección.
 
 | Prueba | Mutación (fichero:línea) | Pruebas que fallaron |
 |---|---|---|
-| `regenerated_set_is_byte_identical` | `src/assoc_eval.rs:844`: cabecera del corpus `v1` → `v2` | `regenerated_set_is_byte_identical` (7 aprobadas) |
+| `regenerated_set_is_byte_identical` | `src/assoc_eval.rs:895`: cabecera del corpus `v1` → `v2` | `regenerated_set_is_byte_identical` (7 aprobadas) |
 | `manifest_matches_committed_files` | `src/sha256.rs:6`: constante `K[0]` `0x428a2f98` → `0x428a2f99` | `manifest_matches_committed_files` (7 aprobadas) |
-| `committed_files_parse_back` | `src/assoc_eval.rs:1063`: origen de `algorithmic` con sufijo `x` | `committed_files_parse_back` (7 aprobadas) |
-| `parser_refuses_a_unit_out_of_order` | `src/assoc_eval.rs:1011`: el lector deja de comprobar el índice de unidad | `parser_refuses_a_unit_out_of_order` (7 aprobadas) |
-| `quality_set_has_the_agreed_shape` | `src/assoc_eval.rs:239`: `temporal` se lee como `multi_hop` | `committed_files_parse_back`, `quality_set_has_the_agreed_shape` (6 aprobadas) |
-| `expected_answers_are_reachable_within_the_bounds` | `src/assoc_eval.rs:216`: `out` y `in` intercambiados al leer la dirección | `expected_answers_are_reachable_within_the_bounds`, `every_query_has_a_reachable_distractor`, `committed_files_parse_back` (5 aprobadas) |
-| `every_query_has_a_reachable_distractor` | `src/assoc_eval.rs:1147`: actor `-` leído como el filtro literal `-` | `every_query_has_a_reachable_distractor`, `expected_answers_are_reachable_within_the_bounds`, `committed_files_parse_back` (5 aprobadas) |
-| `performance_scale_is_deterministic` | `src/assoc_eval.rs:101`: escala de rendimiento de 1000 a 999 sesiones | `performance_scale_is_deterministic` (7 aprobadas) |
+| `committed_files_parse_back` | `src/assoc_eval.rs:1114`: origen de `algorithmic` con sufijo `x` | `committed_files_parse_back` (7 aprobadas) |
+| `parser_refuses_a_unit_out_of_order` | `src/assoc_eval.rs:1062`: el lector deja de comprobar el índice de unidad | `parser_refuses_a_unit_out_of_order` (7 aprobadas) |
+| `quality_set_has_the_agreed_shape` | `src/assoc_eval.rs:248`: `temporal` se lee como `multi_hop` | `committed_files_parse_back`, `quality_set_has_the_agreed_shape` (6 aprobadas) |
+| `expected_answers_are_reachable_within_the_bounds` | `src/assoc_eval.rs:225`: `out` y `in` intercambiados al leer la dirección | `expected_answers_are_reachable_within_the_bounds`, `every_query_has_a_reachable_distractor`, `committed_files_parse_back` (5 aprobadas) |
+| `every_query_has_a_reachable_distractor` | `src/assoc_eval.rs:1198`: actor `-` leído como el filtro literal `-` | `every_query_has_a_reachable_distractor`, `expected_answers_are_reachable_within_the_bounds`, `committed_files_parse_back` (5 aprobadas) |
+| `performance_scale_is_deterministic` | `src/assoc_eval.rs:110`: escala de rendimiento de 1000 a 999 sesiones | `performance_scale_is_deterministic` (7 aprobadas) |
 | `gains_follow_two_to_the_grade_minus_one` | `src/assoc_metrics.rs:29`: ganancia `2^g − 1` → `g` | `gains_follow_two_to_the_grade_minus_one`, `k_larger_than_the_result_list`, `hand_computed_example`, `repeats_count_once` (5 aprobadas) |
 | `a_grade_outside_the_scale_is_refused` | `src/assoc_metrics.rs:28`: el límite del pánico sube a 100 | `a_grade_outside_the_scale_is_refused` (8 aprobadas) |
 | `hand_computed_example` | `src/assoc_metrics.rs:75`: descuento `log2(p + 1)` → `log2(p + 2)` | `hand_computed_example`, `ties_do_not_depend_on_their_order`, `repeats_count_once`, `k_larger_than_the_result_list` (5 aprobadas) |
@@ -374,6 +374,8 @@ Cada prueba nueva se ha ejecutado sobre una versión del código con una mutaci�
 | `repeats_count_once` | `src/assoc_metrics.rs:42`: se desactiva la eliminación de repetidos | `repeats_count_once` (8 aprobadas) |
 | `standard_vectors` | `src/sha256.rs:6`: la misma constante `K[0]` que arriba | `standard_vectors`, `padding_boundaries` (lib: 88 aprobadas, 2 fallan). La de integración, `manifest_matches_committed_files`, también falla |
 | `padding_boundaries` | `src/sha256.rs:32`: umbral de relleno `< 56` → `< 55` | `padding_boundaries` (solo esta; `standard_vectors` sigue aprobada) |
+| `confidence_alone_does_not_separate_related_links` | §9: se restauran temporalmente los rangos antiguos (verdaderos 700–950, falsos 300–600) y se regeneran los ficheros | `confidence_alone_does_not_separate_related_links` (9 aprobadas): «a confidence threshold separates every true related link from every false one» |
+| `same_source_truth_is_not_readable_from_one_field` | `tests/assoc_eval.rs`: la cota de acierto de 0.9 baja a 0.5 (se restaura después) | `same_source_truth_is_not_readable_from_one_field` (9 aprobadas): «offset of the end: a threshold gets 0.517 of the same_source links right». No se ejecutó contra el generador anterior a §9, cuyos `same_source` sí se separaban por distancia (ver §9) |
 | `baselines_over_the_frozen_set` | `kerno-units/src/db.rs:749`: `relations_of` deja solo la primera arista de cada rango (cambio en la ruta de referencia que usa B1) | `baselines_over_the_frozen_set`, en `tests/assoc_baseline.rs:130` (la aserción de «relación ausente o alterada») |
 
 Comandos usados para cada grupo:
@@ -400,7 +402,7 @@ Este conjunto mide la implementación sobre un relato generado. No mide la calid
 
 1. **Mismo autor para el relato y para las consultas.** El generador, las familias de consultas y las reglas de grado las escribió la misma persona, antes de escribir el código de recuperación. El congelado protege contra ajustar las respuestas al código, pero no contra un supuesto del generador que el código comparta con él.
 2. **Los grados son una elección.** Los grados 3, 2 y 1 por distancia y los distractores de grado 0 son convenciones de este documento, no juicios de relevancia de personas.
-3. **La confianza de `related` separa los casos sin error.** Los verdaderos tienen confianza 701–950 y los falsos 302–600. Un ranking que use la confianza como señal acierta todos los `related` del conjunto. Esto favorece a `PV-RE` y debe tenerse en cuenta al leer cualquier medida de esa clase.
+3. **La confianza de `related` es informativa, pero no suficiente.** Los verdaderos tienen confianza 450–950 y los falsos 300–800 (§9). Un ranking que use solo la confianza acierta 0.675 de los 573 vínculos con el mejor umbral. Aun así la confianza sigue ayudando, y debe tenerse en cuenta al leer la clase `PV-RE`. Queda una señal estructural que no se ha quitado: el objetivo verdadero está dos pasos atrás en la cadena de su tema, y por eso suele estar más cerca en índice que el falso. El mejor umbral sobre la distancia de índices acierta 0.729 en el corpus, y en las cuatro consultas `PV-RE` (13 respuestas, 5 de grado 0) un umbral sobre esa distancia sí las separa sin error. Con tan pocas respuestas es una coincidencia de las semillas elegidas, no una propiedad del generador, pero conviene recordarla al leer `PV-RE`.
 4. **La fuente de `same_source` coincide con `cites`.** Los pares verdaderos y falsos de `same_source` son consistentes con las fuentes citadas, así que el conjunto no tiene un caso en el que la relación algorítmica y la historia discrepen de forma sutil.
 5. **Estructura regular.** Cada sesión tiene exactamente tres decisiones de un tema, ocho hechos y cinco fuentes; cada tema usa una cadena lineal. La memoria real tiene estructuras irregulares, ramas y decisiones que se contradicen.
 6. **Vocabulario pequeño.** Doce temas, tres agentes, tres fuentes de transcripción, un importador y un consolidador. Las etiquetas son cadenas como `s0000.d0`, sin texto natural.
@@ -410,9 +412,56 @@ Este conjunto mide la implementación sobre un relato generado. No mide la calid
 
 Lo que sí garantiza el conjunto, y para lo que está pensado: que cualquier cambio en el generador, en el formato o en la lectura de los ficheros se detecta, que las respuestas esperadas son alcanzables con sus cotas y que la base de referencia B1 se puede medir sobre ellas.
 
-## 9. Documentos relacionados
+## 9. Corrección previa al uso: fugas de un solo campo
+
+Esta sección registra una corrección del generador hecha el mismo día del congelado (2026-11-11), **antes de que existiera ningún código de recuperación, de recorrido o de ranking**: en el momento de la corrección el único código que leía el conjunto era el de las dos líneas base B0 y B1. Por eso los ficheros de `data/assoc-eval/` se regeneraron y el umbral del acta no se tocó. Ningún umbral de [etapa7-acta.md](etapa7-acta.md) cambió.
+
+### 9.1 Qué se filtraba
+
+La confianza de los vínculos `related` inferidos se sorteaba en dos rangos que no se solapaban: 700–950 para los verdaderos y 300–600 para los falsos. Una señal que solo leyera la confianza (un umbral entre 600 y 700) clasificaba bien los 573 vínculos inferidos. El conjunto habría premiado una regla trivial en lugar de la calidad de la recuperación. La versión original de este documento lo describía en §2.6 y §8, pero lo trataba como una propiedad del conjunto y no como un defecto.
+
+| | Antes | Ahora |
+|---|---|---|
+| Confianza de los `related` verdaderos (por mil) | 700–950 | 450–950 |
+| Confianza de los `related` falsos (por mil) | 300–600 | 300–800 |
+| Solape | ninguno | 450–800 |
+| Mejor umbral de confianza | 1.000 de acierto | 0.675 de acierto |
+
+Los rangos son inclusivos y salen del mismo generador con semilla. Vive en las constantes `TRUE_CONFIDENCE` y `FALSE_CONFIDENCE` de `src/assoc_eval.rs`.
+
+### 9.2 Qué otros campos se comprobaron
+
+Se revisó el generador buscando otro campo que, solo, separara lo relevante de lo irrelevante. Se leyeron los ficheros congelados con un programa temporal (no se conserva) que, para cada familia de consultas, comparaba las respuestas de grado 0 con las graduadas por cada campo, y que además medía en todo el corpus los `related` y los `same_source` verdaderos frente a los falsos. «Separa» significa que un umbral en cualquiera de los dos sentidos, o un conjunto de valores disjunto, no comete ningún error.
+
+| Campo | Dónde | Resultado antes | Resultado ahora |
+|---|---|---|---|
+| Confianza | `related` | **Fuga**: separa sin error | Solapa; mejor umbral 0.675 |
+| Tipo de relación | todas las familias | `mentions` solo da grado 0, pero `revises` y `supports` dan grados 0 y mayores: no separa | Igual |
+| Clase de procedencia | todas | Sin fuga (`related` es siempre `inferred`, `same_source` siempre `algorithmic`; en las cadenas hay `declared` e `imported` con ambos grados) | Igual |
+| Origen de la procedencia | todas | Sin fuga (`consolidator-v1` y `dedup-v2` constantes en cada familia; en las cadenas `wiki-export` aparece con ambos grados) | Igual |
+| Actor | todas | Sin fuga (`consolidator` constante en `PV-RE` y `PV-SS`; en las cadenas todos los actores aparecen con ambos grados) | Igual |
+| Fuente del conjunto de cambios | todas | Sin fuga (`job/consolidate` constante; `transcript` y `wiki-export` con ambos grados en las cadenas) | Igual |
+| Tipo de unidad y etiqueta (`d0`..`d2`, `f0`..`f7`) | cadenas, `PV-RE` | Sin fuga | Igual |
+| Posición de creación en el conjunto de cambios | `related` | Fuga parcial: el verdadero se escribía antes que el falso; la paridad del índice de relación acertaba 0.806 | Orden aleatorio; mejor umbral 0.532 (paridad: 0.529) |
+| Posición de creación | `same_source` | Fuga parcial: los verdaderos se escribían primero; la posición dentro del conjunto acertaba 0.958 | Orden aleatorio; 0.537 |
+| Desplazamiento del extremo dentro de la sesión, distancia entre índices y paridad | `same_source` | **Fuga**: los verdaderos eran siempre `(0,5)`, `(1,6)`, `(2,7)`, a distancia 5 y con el extremo en `f5`..`f7`; los falsos a distancia 1 a 3 y con el extremo en `f3` o `f4`. Separaban sin error | Pares y orientación aleatorios; ningún umbral pasa de 0.520 |
+| Pertenencia a la sesión, paso de creación, rangos de índice | `related`, `same_source` | Sin fuga: todos los vínculos se escriben en el paso del consolidador, y los rangos se solapan | Igual |
+| Distancia de índices entre origen y destino | `related` | Sin fuga en el corpus (mejor umbral 0.733); el verdadero suele estar más cerca por la estructura de la cadena | Mejor umbral 0.729; ver §8 punto 3 |
+| Profundidad, dirección y paso de la relación que lleva a la respuesta | cadenas | Sin fuga | Igual |
+
+La fuga de `same_source` tenía una causa estructural: la fuente que cita un hecho era `j mod 5`, así que los únicos pares que compartían fuente eran `(j, j+5)`, y la verdad dependía de la diferencia de índices. Se corrige barajando por sesión qué hecho cita qué fuente (tres pares comparten fuente, y cuáles cambia), eligiendo los falsos entre todos los pares con fuentes distintas, y escribiendo los seis vínculos en orden y con orientación aleatorios. Las semillas de `PV-SS` pasan a ser cualquier hecho con un vínculo verdadero y uno falso, y no solo `f0`..`f2`. Los vínculos `related` de cada decisión (verdadero y falso) se escriben ahora en orden aleatorio.
+
+### 9.3 Qué cambió en los ficheros y en las cifras
+
+Los recuentos de unidades, relaciones por tipo y por procedencia, conjuntos de cambios y consultas por clase no cambian. Cambian el contenido de las relaciones `cites`, `related` y `same_source`, las semillas de `PV-SS` y de las demás consultas (el generador consume números aleatorios en otro orden), las respuestas esperadas (527 → 533) y las cifras de B1. Los dos hashes del `MANIFEST` y la salida cruda de B1 están actualizados en este documento. Las consultas siguen siendo 64, con 16 por clase (al menos 60 y al menos 12 por clase).
+
+### 9.4 Prueba que lo vigila
+
+`tests/assoc_eval.rs` añade `confidence_alone_does_not_separate_related_links`, que falla si un umbral sobre la confianza separa los `related` verdaderos de los falsos sin error o acierta 0.85 o más, y `same_source_truth_is_not_readable_from_one_field`, que hace lo mismo con el desplazamiento, la distancia, la paridad y la posición de creación de los `same_source` (cota 0.9). La verdad se lee del corpus (dos `revises` atrás; misma fuente citada), no del generador, y la primera prueba comprueba además que esa lectura coincide con los grados de las consultas `PV-RE`. La primera prueba se vio fallar con los rangos antiguos: se restauraron temporalmente, se regeneraron los ficheros y la prueba falló con «a confidence threshold separates every true related link from every false one»; después se restauraron los rangos nuevos y se regeneró de nuevo.
+
+## 10. Documentos relacionados
 
 - [Acta de la Etapa 7](etapa7-acta.md) §6 (conjunto, umbrales) y §7 (decisiones)
 - [ADR-0011](../adr/0011-vectores-y-recuperacion-hibrida.md): vectores exactos primero, decidido en E7-00
 - [ADR-0014](../adr/0014-representacion-fisica-de-relaciones.md): las cuatro clases de procedencia
-- [Salida cruda de E7-00](etapa7-e700-salida.txt)
+- [Salida cruda de E7-00](etapa7-e700-salida.txt), regenerada tras la corrección de §9

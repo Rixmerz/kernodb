@@ -16,14 +16,19 @@
 //!   answers were not produced by it.
 //! * `every_query_has_a_reachable_distractor` — the bounds alone do not decide
 //!   any query: each one names a distractor that the bounds reach.
+//! * `confidence_alone_does_not_separate_related_links` — thresholding the
+//!   confidence of the inferred `related` links does not tell the true from the
+//!   false ones (grade 0 against graded).
+//! * `same_source_truth_is_not_readable_from_one_field` — the same for the
+//!   `same_source` links and the index offset, index distance and creation order.
 //! * `performance_scale_is_deterministic` — the 20 000-unit scale is generated
 //!   from the same seed and has its size.
 
 use std::collections::BTreeMap;
 
 use kerno_testkit::assoc_eval::{
-    Class, Constraints, Corpus, Direction, Judgment, Kind, QuerySet, Relation, SEED, Scale, Story, parse_corpus,
-    parse_manifest, parse_queries, render_corpus, render_queries,
+    Class, Constraints, Corpus, Direction, Judgment, Kind, Provenance, QuerySet, Relation, SEED, Scale, Story,
+    parse_corpus, parse_manifest, parse_queries, render_corpus, render_queries,
 };
 use kerno_testkit::sha256;
 
@@ -179,6 +184,105 @@ fn every_query_has_a_reachable_distractor() {
         let reach = reachable(&corpus, &q.constraints, q.seed);
         let reached_distractor = q.expected.iter().any(|j: &Judgment| j.grade == 0 && reach.contains_key(&j.index));
         assert!(reached_distractor, "{}: no distractor is reachable within the bounds", q.id);
+    }
+}
+
+/// Whether some threshold on `value` splits `(value, is_true)` samples with
+/// no error, in either direction; and the best accuracy any threshold reaches.
+fn threshold_split(samples: &[(i64, bool)]) -> (bool, f64) {
+    let mut sorted = samples.to_vec();
+    sorted.sort();
+    let total_true = sorted.iter().filter(|s| s.1).count();
+    let n = sorted.len();
+    let (mut true_below, mut false_below) = (0, 0);
+    let (mut perfect, mut best) = (false, 0usize);
+    for i in 0..n {
+        if sorted[i].1 {
+            true_below += 1;
+        } else {
+            false_below += 1;
+        }
+        if i + 1 < n && sorted[i].0 == sorted[i + 1].0 {
+            continue;
+        }
+        // Everything at or below the threshold is called false, the rest true.
+        let right = false_below + (total_true - true_below);
+        let correct = right.max(n - right);
+        perfect |= correct == n;
+        best = best.max(correct);
+    }
+    (perfect, best as f64 / n as f64)
+}
+
+/// Whether the story says a `related` link holds: its target is two
+/// revisions back from its source. Read off the corpus, not off the generator.
+fn related_is_true(corpus: &Corpus) -> impl Fn(&Relation) -> bool {
+    let revises: BTreeMap<u32, u32> =
+        corpus.relations.iter().filter(|r| r.relation_type == "revises").map(|r| (r.from, r.to)).collect();
+    move |r| revises.get(&r.from).and_then(|d| revises.get(d)) == Some(&r.to)
+}
+
+#[test]
+fn confidence_alone_does_not_separate_related_links() {
+    let (corpus, set) = frozen();
+    let is_true = related_is_true(&corpus);
+    let samples: Vec<(i64, bool)> = corpus
+        .relations
+        .iter()
+        .filter(|r| r.relation_type == "related")
+        .map(|r| match r.provenance {
+            Provenance::Inferred { confidence_permille, .. } => (i64::from(confidence_permille), is_true(r)),
+            _ => panic!("relation {} is related but not inferred", r.index),
+        })
+        .collect();
+    assert!(samples.iter().any(|s| s.1) && samples.iter().any(|s| !s.1), "both true and false links exist");
+
+    // The reading of truth above agrees with the grades of the PV-RE queries.
+    for q in set.queries.iter().filter(|q| q.id.starts_with("PV-RE")) {
+        for j in &q.expected {
+            let link = corpus
+                .relations
+                .iter()
+                .find(|r| {
+                    r.relation_type == "related"
+                        && ((r.from == q.seed && r.to == j.index) || (r.to == q.seed && r.from == j.index))
+                })
+                .expect("every PV-RE answer is a related neighbour of the seed");
+            assert_eq!(is_true(link), j.grade >= 1, "{}: unit {}: grade and truth agree", q.id, j.index);
+        }
+    }
+
+    let (perfect, best) = threshold_split(&samples);
+    assert!(!perfect, "a confidence threshold separates every true related link from every false one");
+    assert!(best < 0.85, "the best confidence threshold gets {best:.3} of the related links right; need < 0.85");
+}
+
+/// A numeric field of a relation, read off the corpus.
+type Field = Box<dyn Fn(&Relation) -> i64>;
+
+#[test]
+fn same_source_truth_is_not_readable_from_one_field() {
+    let (corpus, _) = frozen();
+    let cited: BTreeMap<u32, u32> =
+        corpus.relations.iter().filter(|r| r.relation_type == "cites").map(|r| (r.from, r.to)).collect();
+    let links: Vec<&Relation> = corpus.relations.iter().filter(|r| r.relation_type == "same_source").collect();
+    let mut first_of_step: BTreeMap<u64, i64> = BTreeMap::new();
+    for r in &corpus.relations {
+        first_of_step.entry(r.step).or_insert(i64::from(r.index));
+    }
+    let fields: [(&str, Field); 6] = [
+        ("offset of the end", Box::new(|r| i64::from(r.to % 20))),
+        ("offset of the start", Box::new(|r| i64::from(r.from % 20))),
+        ("index distance", Box::new(|r| (i64::from(r.to) - i64::from(r.from)).abs())),
+        ("signed index distance", Box::new(|r| i64::from(r.to) - i64::from(r.from))),
+        ("parity of the index", Box::new(|r| i64::from(r.to % 2))),
+        ("creation order in the change set", Box::new(move |r| i64::from(r.index) - first_of_step[&r.step])),
+    ];
+    for (name, field) in &fields {
+        let samples: Vec<(i64, bool)> = links.iter().map(|r| (field(r), cited[&r.from] == cited[&r.to])).collect();
+        let (perfect, best) = threshold_split(&samples);
+        assert!(!perfect, "{name} separates the true same_source links from the false ones");
+        assert!(best < 0.9, "{name}: a threshold gets {best:.3} of the same_source links right; need < 0.9");
     }
 }
 

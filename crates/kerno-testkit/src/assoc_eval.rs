@@ -19,12 +19,15 @@
 //!   topic, so that each topic is a chain across sessions;
 //! * eight facts. `F0` and `F2` support `D0` and `D2`; `F1` supports `D1`, but
 //!   it arrives by import in the second change set (`imported`). `F3`..`F7`
-//!   are `about` tasks. Every fact cites one of five sources;
+//!   are `about` tasks. Every fact cites one of five sources, in a random
+//!   arrangement per session (three pairs of facts share a source);
 //! * `F0`..`F2` each `mention` a decision of another topic: a distractor;
 //! * the third change set (the consolidator) adds `related` links, inferred
 //!   with a confidence: one true link to the decision two places back in the
-//!   topic, one false link to a decision of another topic. A dedup job adds
-//!   `same_source` links between facts (`algorithmic`): three true, three false.
+//!   topic, one false link to a decision of another topic; the two confidence
+//!   ranges overlap. A dedup job adds `same_source` links between facts
+//!   (`algorithmic`): three true (a pair that cites one source), three false
+//!   (a random pair that does not). Order and orientation are random.
 //!
 //! Relevance follows the topic chain. The decisions one and two revisions away
 //! from the seed are relevant (grades 3 and 2), and so is the evidence of the
@@ -74,10 +77,16 @@ const CHAIN_TYPES: [&str; 3] = [REVISES, SUPPORTS, MENTIONS];
 const ABOUT_MAIN: [(usize, usize); 4] = [(3, 0), (4, 1), (5, 2), (7, 1)];
 /// `(evidence, task)` offsets of the `about` link written by the import.
 const ABOUT_IMPORTED: (usize, usize) = (6, 0);
-/// `(fact, fact)` pairs of `same_source` links that are true (they share a source).
-const SAME_TRUE: [(usize, usize); 3] = [(0, 5), (1, 6), (2, 7)];
-/// `(fact, fact)` pairs of `same_source` links that the dedup job got wrong.
-const SAME_FALSE: [(usize, usize); 3] = [(0, 3), (1, 4), (2, 3)];
+/// The source class (0..5) each fact cites before the per-session shuffle: classes
+/// 0, 1 and 2 are cited twice and 3 and 4 once, so a session has three pairs of
+/// facts that share a source.
+const SOURCE_CLASSES: [usize; 8] = [0, 1, 2, 3, 4, 0, 1, 2];
+/// `same_source` links the dedup job gets wrong, per session.
+const SAME_FALSE_PER_SESSION: usize = 3;
+/// Confidence (per mille) of the true and of the false `related` links. The
+/// ranges overlap on 450..=800, so confidence is informative but not sufficient.
+const TRUE_CONFIDENCE: (u64, u64) = (450, 950);
+const FALSE_CONFIDENCE: (u64, u64) = (300, 800);
 
 const WRITE: &str = "a String accepts every write";
 
@@ -348,7 +357,6 @@ struct SessionInfo {
 #[derive(Clone, Copy)]
 struct Parts {
     decisions: [u32; 3],
-    facts: [u32; 8],
 }
 
 impl Ledger {
@@ -426,7 +434,7 @@ impl Builder {
         let decisions: [u32; 3] = std::array::from_fn(|i| self.unit(main, s, "decision", format!("s{s:04}.d{i}")));
         let facts: [u32; 8] = std::array::from_fn(|i| self.unit(main, s, "fact", format!("s{s:04}.f{i}")));
         let sources: [u32; 5] = std::array::from_fn(|i| self.unit(main, s, "source", format!("s{s:04}.src{i}")));
-        self.led.sessions.push(SessionInfo { topic, actor, parts: Parts { decisions, facts } });
+        self.led.sessions.push(SessionInfo { topic, actor, parts: Parts { decisions } });
 
         for &t in &tasks {
             self.rel(main, t, session, IN_SESSION, Provenance::Declared, true);
@@ -450,8 +458,10 @@ impl Builder {
         for (f, t) in ABOUT_MAIN {
             self.rel(main, facts[f], tasks[t], ABOUT, Provenance::Declared, true);
         }
-        for (j, &f) in facts.iter().enumerate() {
-            self.rel(main, f, sources[j % sources.len()], CITES, Provenance::Declared, true);
+        let mut classes = SOURCE_CLASSES;
+        self.shuffle(&mut classes);
+        for (&f, &class) in facts.iter().zip(&classes) {
+            self.rel(main, f, sources[class], CITES, Provenance::Declared, true);
         }
         for &d in &decisions {
             let previous = self.led.chains[topic].last().copied();
@@ -474,23 +484,46 @@ impl Builder {
         self.change(consolidate, "consolidator", format!("job/consolidate/{s:04}"));
         for &d in &decisions {
             let pos = self.led.nodes[d as usize].chain_pos as usize;
+            // Both links of a decision are drawn first and written in a random
+            // order, so that the creation order does not tell them apart.
+            let mut links = Vec::new();
             if pos >= 2 {
                 let target = self.led.chains[topic][pos - 2];
-                let confidence = self.rng.range(700, 950) as u16;
-                self.rel(consolidate, d, target, RELATED, inferred(confidence), true);
+                links.push((target, self.rng.range(TRUE_CONFIDENCE.0, TRUE_CONFIDENCE.1) as u16, true));
             }
             if let Some(target) = self.other_topic_decision(s, topic) {
-                let confidence = self.rng.range(300, 600) as u16;
-                self.rel(consolidate, d, target, RELATED, inferred(confidence), false);
+                links.push((target, self.rng.range(FALSE_CONFIDENCE.0, FALSE_CONFIDENCE.1) as u16, false));
+            }
+            self.shuffle(&mut links);
+            for (target, confidence, truth) in links {
+                self.rel(consolidate, d, target, RELATED, inferred(confidence), truth);
             }
         }
-        for (a, b) in SAME_TRUE {
-            let dedup = Provenance::Algorithmic(DEDUP_ORIGIN.to_owned());
-            self.rel(consolidate, facts[a], facts[b], SAME_SOURCE, dedup, true);
+        // `same_source`: the pairs of facts that cite one source are true; the
+        // dedup job also links other pairs, which is false. Pairs, their order and
+        // the end each fact sits at are random, so no index, offset or creation
+        // order decides the truth.
+        let mut pairs = Vec::new();
+        for a in 0..facts.len() {
+            for b in a + 1..facts.len() {
+                pairs.push((a, b, classes[a] == classes[b]));
+            }
         }
-        for (a, b) in SAME_FALSE {
+        self.shuffle(&mut pairs);
+        let mut links: Vec<_> = pairs.iter().filter(|p| p.2).copied().collect();
+        links.extend(pairs.iter().filter(|p| !p.2).take(SAME_FALSE_PER_SESSION));
+        self.shuffle(&mut links);
+        for (a, b, truth) in links {
+            let (from, to) = if self.rng.chance(1, 2) { (a, b) } else { (b, a) };
             let dedup = Provenance::Algorithmic(DEDUP_ORIGIN.to_owned());
-            self.rel(consolidate, facts[a], facts[b], SAME_SOURCE, dedup, false);
+            self.rel(consolidate, facts[from], facts[to], SAME_SOURCE, dedup, truth);
+        }
+    }
+
+    /// Fisher-Yates, from the seeded generator.
+    fn shuffle<T>(&mut self, items: &mut [T]) {
+        for i in (1..items.len()).rev() {
+            items.swap(i, self.rng.below(i as u64 + 1) as usize);
         }
     }
 }
@@ -565,12 +598,30 @@ fn eligible_related_seeds(c: &Corpus, led: &Ledger) -> Vec<u32> {
         .collect()
 }
 
+/// Facts with a true and a false `same_source` link.
+fn eligible_same_source_seeds(c: &Corpus, led: &Ledger) -> Vec<u32> {
+    c.units
+        .iter()
+        .filter(|u| u.unit_type == "fact")
+        .map(|u| u.index)
+        .filter(|&f| {
+            let truths: Vec<bool> = led.nodes[f as usize]
+                .links
+                .iter()
+                .filter(|&&r| c.relations[r as usize].relation_type == SAME_SOURCE)
+                .map(|&r| led.truth[r as usize])
+                .collect();
+            truths.contains(&true) && truths.contains(&false)
+        })
+        .collect()
+}
+
 fn build_queries(c: &Corpus, led: &Ledger, seed: u64) -> Vec<Query> {
     let mut rng = Rng::new(seed ^ QUERY_STREAM);
     let chain_seeds = eligible_chain_seeds(c, led, false);
     let declared_seeds = eligible_chain_seeds(c, led, true);
     let related_seeds = eligible_related_seeds(c, led);
-    let same_seeds: Vec<u32> = led.sessions.iter().flat_map(|s| s.parts.facts.iter().take(3).copied()).collect();
+    let same_seeds = eligible_same_source_seeds(c, led);
     let mut out = Vec::new();
 
     // Multi-hop: the topic chain and its evidence, in four shapes.
