@@ -244,7 +244,6 @@ fn is_corruption(e: &UnitError) -> bool {
     matches!(e, UnitError::Storage(kerno_core::Error::Corruption(_)))
 }
 
-pub static TP: [std::sync::atomic::AtomicU64; 3] = [const { std::sync::atomic::AtomicU64::new(0) }; 3];
 impl<E: Engine> UnitSnapshot<E> {
     /// Entries in `[start, end)`, counting at most [`PROBE`].
     fn probe(&self, start: &[u8], end: &[u8]) -> Result<Probe, UnitError> {
@@ -372,7 +371,6 @@ impl<E: Engine> UnitSnapshot<E> {
         };
         let now = Dependencies::current(self.seq(), Some(status));
         let mut discrepancy = None;
-        let mut was_hit = false;
         match self.cache.lookup(&fingerprint, &query, &now) {
             Lookup::Hit(result) => {
                 let checked = match &*result {
@@ -381,7 +379,7 @@ impl<E: Engine> UnitSnapshot<E> {
                     CachedResult::Relations(_) => Err(Violation::NotMatching),
                 };
                 match checked {
-                    Ok(units) if std::env::var("HITOFF").is_err() => {
+                    Ok(units) => {
                         return Ok(QueryOutcome {
                             units: units.clone(),
                             source: QuerySource::Cache { index: status },
@@ -389,7 +387,6 @@ impl<E: Engine> UnitSnapshot<E> {
                             fallback: None,
                         });
                     }
-                    Ok(_) => { was_hit = true; }
                     Err(violation) => {
                         self.cache.fallback(&fingerprint, CacheFallbackCause::Discrepancy);
                         discrepancy = Some(Fallback {
@@ -416,14 +413,8 @@ impl<E: Engine> UnitSnapshot<E> {
                 self.execute_units(filter, status, decision.chosen().path, |via, f| self.scan_path(via, f))?
             }
         };
-        if self.cache.worth_storing(&fingerprint, &query, &now) && std::env::var("NOSTORE").is_err() && !was_hit {
-            let t = std::time::Instant::now();
-            let cl = outcome.units.clone();
-            let t_clone = t.elapsed().as_nanos() as u64;
-            self.store(fingerprint, query, now, CachedResult::Units(cl));
-            TP[0].fetch_add(t.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
-            TP[1].fetch_add(t_clone, std::sync::atomic::Ordering::Relaxed);
-            TP[2].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if self.cache.worth_storing(&fingerprint, &query, &now) {
+            self.store(fingerprint, query, now, CachedResult::Units(outcome.units.clone()));
         }
         Ok(outcome)
     }

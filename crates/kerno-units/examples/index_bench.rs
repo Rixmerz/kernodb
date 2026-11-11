@@ -449,7 +449,7 @@ fn compare(db: &Units, load: &Load, w1: bool) -> Res<()> {
 fn cache_section(base: &std::path::Path, seed: u64, quick: bool) -> Res<()> {
     // (units, reads without repeats, W1 blocks with the index kept Ready, W1 blocks with the index left stale)
     let scales: &[(usize, usize, usize, usize)] =
-        if quick { &[(2_000, 200, 20, 10)] } else { &[(20_000, 0, 400, 0)] };
+        if quick { &[(2_000, 200, 20, 10)] } else { &[(20_000, 4_000, 400, 150), (100_000, 1_500, 0, 0)] };
     println!("cache,scale,load,cache,round,timed_reads,served,p50_ms,p95_ms,p99_ms");
     for &(n, norepeat, ready, stale) in scales {
         let dir = TempDir(base.join(format!("kerno-cache-bench-{}-{n}", std::process::id())));
@@ -465,35 +465,6 @@ fn cache_section(base: &std::path::Path, seed: u64, quick: bool) -> Res<()> {
                 .map(|b| Block { write: writes, reads: vec![nth_query(b); if writes { READS_PER_WRITE } else { 1 }] })
                 .collect()
         };
-        // TMPAB
-        if std::env::var("AB").is_ok() {
-            let cache = db.result_cache();
-            cache.set_enabled(false);
-            let (mut f_on, mut f_off) = (Vec::new(), Vec::new());
-            let (mut r_on, mut r_off) = (Vec::new(), Vec::new());
-            for b in 0..800usize {
-                let on = (b / 20) % 2 == 1;
-                if b % 20 == 0 { cache.set_enabled(on); }
-                write_one(&db, target, b)?;
-                db.rebuild_index()?;
-                let snap = db.snapshot()?;
-                let q = &qs[nth_query(b)];
-                for k in 0..(if !on && std::env::var("OFF1").is_ok() { 1 } else { READS_PER_WRITE }) {
-                    let t = Instant::now();
-                    let out = snap.query(&q.filter)?;
-                    let ns = t.elapsed().as_nanos() as u64;
-                    std::hint::black_box(out);
-                    if b % 20 >= 2 && b >= 40 {
-                        match (k == 0, on) { (true, true) => f_on.push(ns), (true, false) => f_off.push(ns), (false, true) => r_on.push(ns), _ => r_off.push(ns) }
-                    }
-                }
-            }
-            cache.set_enabled(false);
-            let mean = |v: &[u64]| v.iter().sum::<u64>() as f64 / v.len() as f64 / 1000.0;
-            let pc = |v: &[u64], q: f64| percentile(&mut v.to_vec(), q);
-            println!("AB first-read mean off {:.0}us on {:.0}us | p50 off {:.3} on {:.3} | p95 off {:.3} on {:.3} | p99 off {:.3} on {:.3}", mean(&f_off), mean(&f_on), pc(&f_off,0.5), pc(&f_on,0.5), pc(&f_off,0.95), pc(&f_on,0.95), pc(&f_off,0.99), pc(&f_on,0.99));
-            println!("AB later-reads mean off {:.0}us on {:.0}us", mean(&r_off), mean(&r_on));
-        }
         let plan = [
             ("no-repeat", false, norepeat, false, false),
             ("w1-index-ready", true, ready, true, true),
@@ -506,7 +477,6 @@ fn cache_section(base: &std::path::Path, seed: u64, quick: bool) -> Res<()> {
             let case = Load { label, scale: n, qs: &qs, blocks: stream(blocks, writes), rebuild, target };
             compare(&db, &case, w1)?;
         }
-        { let n = kerno_units::planner::TP[2].load(std::sync::atomic::Ordering::Relaxed).max(1); println!("STORE n={} avg {} ns, clone {} ns", n, kerno_units::planner::TP[0].load(std::sync::atomic::Ordering::Relaxed)/n, kerno_units::planner::TP[1].load(std::sync::atomic::Ordering::Relaxed)/n); }
         db.close()?;
     }
     Ok(())
