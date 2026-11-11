@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | **Pendiente de aprobación del propietario.** No es efectivo hasta que el propietario lo apruebe (§7). |
+| Estado | **Aprobado por delegación del propietario el 2026-11-11** (§7); el propietario puede revocarlo. |
 | Fecha | 2026-11-11 (E6-05) |
 | Acto | Revisión adversarial, promoción de I-33…I-36 y cierre de la Etapa 6 (acta §3, fila E6-05) |
 | Alcance | Paquetes E6-00 a E6-05: caché de resultados como única optimización, en `kerno-units` (`cache.rs`, `planner.rs`, `tests/cache*.rs`) |
