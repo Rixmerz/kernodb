@@ -17,9 +17,11 @@
 //! ADR-0015) and the explainable plan ([`plan`]); E5-02 the deterministic
 //! planner that `query` follows ([`planner`]); E5-03 the optional
 //! `ExecutionObservation` ([`observation`]). E6-01 adds the dependency model and
-//! learned-state store of the result cache ([`cache`]). This crate stays separate
+//! learned-state store of the result cache ([`cache`]). E7-01 adds the associative
+//! query model and its reference path ([`assoc`]). This crate stays separate
 //! from `kerno-storage`.
 
+pub mod assoc;
 pub mod cache;
 pub mod clock;
 pub mod codec;
@@ -38,6 +40,10 @@ pub mod retention;
 pub mod types;
 pub mod verify;
 
+pub use assoc::{
+    AssocDirection, AssocEnding, AssocError, AssocHit, AssocQuery, AssocQueryError, AssocResult, MAX_ASSOC_DEPTH,
+    MAX_ASSOC_LIMIT, MAX_ASSOC_VISITS, ProvenanceFilter, SeqWindow, TraceStep,
+};
 pub use cache::{
     CacheConfig, CacheEntry, CacheError, CacheFallbackCause, CacheStats, CachedQuery, CachedResult, DeleteReason,
     Dependencies, Dependency, Evidence, Lookup, MissCause, OPTIMIZATION_VERSION, ResultCache, Switch, Transition,
