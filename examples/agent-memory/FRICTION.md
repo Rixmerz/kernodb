@@ -3,8 +3,53 @@
 Everything below was met while writing this example with only what an outside
 user can reach: the re-exports of `kerno-units`, its public modules, and the
 `kerno-core` / `kerno-storage` types needed to open a database. Nothing was
-fixed in the library. Line numbers refer to `src/lib.rs` of this example unless
-another file is named. Items are ordered by how much they cost.
+fixed in the library by the first version. Line numbers in sections A and B
+refer to the first version of `src/lib.rs` and are kept as found.
+
+## Second pass (package E9-21)
+
+The example was rewritten with the API that packages E9-07 to E9-11 added, and
+each of the fifteen points got a disposition in section 2.4 of
+`docs/architecture/etapa9-acta.md`: **in scope** (a package resolved it and
+this example uses it), **declared limit** (documented, the API does not change
+in this stage) or **held** (waits for an owner decision).
+
+| # | Disposition | What the example does now |
+|---|---|---|
+| 1 | In scope (E9-09) | `DerivedDb::query` lists the memories and `snapshot().history` reads the revisions (`AgentMemory::all`, `history`). The catalog no longer lists memories. |
+| 2 | In scope (E9-09) | `DerivedDb::derived_of(unit)` finds the vector of a memory. The catalog no longer stores derived ids. |
+| 3 | Partly (E9-10) | `DerivedChangeSet::replace_vector` replaces a stale vector in the same commit as anything else (`attach_vector`). `rebuild_vector` still returns a new id, but nothing records it. The id still changes with the source revision (held with D12). |
+| 4 | In scope (E9-07) | `AgentMemory::reclaim` calls `DerivedDb::reclaim`. It compacts the live files; the removal stays logical and no physical erasure is promised (ADR-0009, option 3). Test: `reclaim_rewrites_the_live_files_and_leaves_the_logical_state`. |
+| 5 | Declared limit (D8) | Summaries are memory-only; their definitions stay in the catalog (`sum` lines). |
+| 6 | Held (D1) | The example keeps its own `UnitIdSource` for short numbers. |
+| 7 | In scope (E9-10) | `RevisionId::first(unit)` replaces the literal revision number. |
+| 8 | In scope (E9-10) | A caller-computed vector goes through `replace_vector`, not through the "recompute" closure. |
+| 9 | In scope (E9-09) | `DerivedDb::search_vectors` builds the `VectorSet` once per batch of queries; `recall_similar` no longer copies the vectors. |
+| 10 | In scope (E9-10) | `put_vector` refuses a `dim` that is not the vector's length (`a_vector_of_another_dimension_is_refused_and_nothing_is_written`). |
+| 11 | Declared limit (D9) | `DerivedDb::close` still returns no report; `AgentMemory::close` returns `()`. |
+| 12 | Partly (E9-11) | The `DerivedStaleError` message names the unit. The three error types remain (declared limit, D9). |
+| 13 | Declared limit (D9) | Opening still needs three crates and a trait object. |
+| 14 | In scope (E9-11); the item was false | `Error::Locked` was never lost: `UnitError::is_locked()` now says it, and `agent_memory::Error::is_locked()` passes it on (`a_second_open_of_the_same_directory_is_reported_as_locked`). |
+| 15 | Solved by the existing API | `prune_history` runs retention with `KeepLast(1)` for every type, the catalog's included, so the catalog does not grow (`history_shows_the_previous_revision_and_the_catalog_is_pruned`). |
+
+### Limit of the example: one engine
+
+The two-engine rule of section 4.3 of the acta (tests on `emulated_log` and on
+`kerno_db`) applies to tests inside the workspace crates. This example does not
+depend on `kerno-testkit`, and its `Cargo.toml` and `Cargo.lock` stay untouched
+(section 4.8), so its tests run on `kerno_db` only. This is a decision taken by
+the owner's delegate on 2026-11-12 and it can be revoked.
+
+### What stays in the catalog
+
+The catalog unit now holds the next free memory number and the summary
+definitions (`next` and `sum` lines). The `mem <n> <vec>` lines of the first
+version are read and dropped (`Catalog::parse`), so a directory written by that
+version opens; the next write of the catalog leaves them out.
+
+---
+
+Sections A and B are the first version's text, as found.
 
 ## A. Things an agent memory needs that the public API does not give
 
@@ -47,7 +92,7 @@ another file is named. Items are ordered by how much they cost.
    old descriptor and its `0x62` entry behind as `Superseded` clutter.
    `replace_vector` (the in-change-set form of rebuild) is `pub(crate)`.
 
-4. **Physical erasure is unreachable, so "forget" is only logical.** `forget`
+4. **Reclaiming live files is unreachable, so "forget" is only logical.** `forget`
    deletes the unit, its vector and its summaries in one commit, and
    `prune_history` (`DerivedDb::run_retention` with `KeepLast(1)`) prunes the
    old revisions. The text is still in the files after both and after `close`:
