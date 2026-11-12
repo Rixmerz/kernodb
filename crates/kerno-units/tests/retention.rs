@@ -450,7 +450,7 @@ fn retention_every_point<E: Target>(kind: CrashKind, durability: Durability, per
     let before = raw(&db);
     let heads: Vec<Unit> = ids.iter().map(|id| db.get_unit(*id).unwrap().unwrap()).collect();
     let start = disk.mutating_ops();
-    let stat = |db: &UnitDb<E>, name: &str| db.engine_stats().into_iter().find(|(n, _)| n == name).map(|(_, v)| v);
+    let stat = |db: &UnitDb<E>, name: &str| db.storage_stats().into_iter().find(|(n, _)| n == name).map(|(_, v)| v);
     let (syncs, rotations) = (stat(&db, "wal_syncs"), stat(&db, "memtable_rotations"));
     let r = db.run_retention(&every_point_policy(), RetentionBudget::default()).unwrap();
     assert!(r.change_set.is_some() && r.revisions_pruned > 0 && r.payloads_dropped > 0, "{r:?}");

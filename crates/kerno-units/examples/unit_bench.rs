@@ -157,11 +157,11 @@ impl Measured for KernoDb {
 
 impl Measured for UnitDb<KernoDb> {
     fn counters(&self) -> Vec<(String, u64)> {
-        self.engine_stats()
+        self.storage_stats()
     }
     fn settle(&self) -> Res<()> {
-        self.engine_flush()?;
-        self.engine_wait_idle()?;
+        self.hook_flush()?;
+        self.hook_wait_idle()?;
         Ok(())
     }
 }
@@ -714,8 +714,8 @@ fn u5(a: &Args, z: &Sizes, out: &mut Vec<Verdict>) -> Res<()> {
         }
         Engine::commit(&plain, &b)?;
     }
-    units.engine_compact_range(Bound::Unbounded, Bound::Unbounded)?;
-    units.engine_wait_idle()?;
+    units.hook_compact_range(Bound::Unbounded, Bound::Unbounded)?;
+    units.hook_wait_idle()?;
     plain.compact_range(Bound::Unbounded, Bound::Unbounded)?;
     TestHooks::wait_idle(&plain)?;
     let (su, sp) = (stored(&units), stored(&plain));

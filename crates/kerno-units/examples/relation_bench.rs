@@ -112,7 +112,7 @@ impl Drop for TempDir {
 }
 
 fn stat(db: &Units, name: &str) -> u64 {
-    db.engine_stats().into_iter().find(|(n, _)| n == name).map_or(0, |(_, v)| v)
+    db.storage_stats().into_iter().find(|(n, _)| n == name).map_or(0, |(_, v)| v)
 }
 
 fn stored(db: &Units) -> u64 {
@@ -121,12 +121,12 @@ fn stored(db: &Units) -> u64 {
             .and_then(|r| r.strip_suffix("_bytes"))
             .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
     };
-    db.engine_stats().into_iter().filter(|(n, _)| level(n)).map(|(_, v)| v).sum()
+    db.storage_stats().into_iter().filter(|(n, _)| level(n)).map(|(_, v)| v).sum()
 }
 
 fn settle(db: &Units) -> Res<()> {
-    db.engine_flush()?;
-    db.engine_wait_idle()?;
+    db.hook_flush()?;
+    db.hook_wait_idle()?;
     Ok(())
 }
 

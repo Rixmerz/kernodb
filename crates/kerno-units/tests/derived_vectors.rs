@@ -1881,16 +1881,16 @@ fn derived_sentinel_survival() {
         let in_log = holders(&disk);
         println!("[survival] hold_snapshot={hold_snapshot} after the delete: {in_log:?}");
         assert!(in_log.iter().any(|f| f.ends_with(".wal") || f.ends_with(".sst")), "P1: {in_log:?}");
-        db.engine_flush().unwrap();
-        db.engine_compact_range(Bound::Included(&[TAG_DERIVED_DESC]), Bound::Excluded(&[TAG_DERIVED_SRC + 1])).unwrap();
-        db.engine_wait_idle().unwrap();
+        db.hook_flush().unwrap();
+        db.hook_compact_range(Bound::Included(&[TAG_DERIVED_DESC]), Bound::Excluded(&[TAG_DERIVED_SRC + 1])).unwrap();
+        db.hook_wait_idle().unwrap();
         let after_compaction = holders(&disk);
         println!("[survival] hold_snapshot={hold_snapshot} after compact_range: {after_compaction:?}");
         if let Some(snap) = held {
             assert!(snap.get(&vec_key(id)).unwrap().is_some(), "I-2: the snapshot still reads the vector");
             assert!(!after_compaction.is_empty(), "P3: a held snapshot keeps the sentinel in a live file");
             drop(snap);
-            db.engine_wait_idle().unwrap();
+            db.hook_wait_idle().unwrap();
         }
         db.close().unwrap();
         let closed = holders(&disk);

@@ -118,8 +118,8 @@ fn load(db: &Units, n: usize, seed: u64) -> Res<Vec<Entry>> {
         }
         cs.commit()?;
     }
-    db.engine_flush()?;
-    db.engine_wait_idle()?;
+    db.hook_flush()?;
+    db.hook_wait_idle()?;
     Ok(active)
 }
 

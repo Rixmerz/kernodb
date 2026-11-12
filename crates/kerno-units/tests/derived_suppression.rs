@@ -447,9 +447,9 @@ fn survival_of_a_deleted_vector() {
         cs.commit().unwrap();
         assert_eq!(derived_keys(&db), 0, "I-1: no new read returns a record of the deleted source");
         let before_flush = stage(hold, "before the flush", &disk);
-        db.engine_flush().unwrap();
-        db.engine_compact_range(Bound::Included(&[TAG_DERIVED_DESC]), Bound::Excluded(&[TAG_DERIVED_SRC + 1])).unwrap();
-        db.engine_wait_idle().unwrap();
+        db.hook_flush().unwrap();
+        db.hook_compact_range(Bound::Included(&[TAG_DERIVED_DESC]), Bound::Excluded(&[TAG_DERIVED_SRC + 1])).unwrap();
+        db.hook_wait_idle().unwrap();
         let after_compaction = stage(hold, "after compact_range", &disk);
         println!("[suppression survival] before-flush holders: {} file(s)", before_flush.len());
         if let Some(snap) = held {
@@ -459,7 +459,7 @@ fn survival_of_a_deleted_vector() {
             );
             println!("[suppression survival] snapshot held across compaction, holders: {after_compaction:?}");
             drop(snap);
-            db.engine_wait_idle().unwrap();
+            db.hook_wait_idle().unwrap();
         }
         db.close().unwrap();
         let closed = stage(hold, "after a clean close", &disk);
