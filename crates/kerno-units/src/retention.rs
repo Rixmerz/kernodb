@@ -55,7 +55,7 @@ use std::collections::BTreeMap;
 use std::ops::Bound;
 use std::time::Duration;
 
-use kerno_core::contract::{TestHooks, Txn, TxnEngine};
+use kerno_core::contract::{Reclaim, Txn, TxnEngine};
 
 use crate::codec::{Key, LAYER_MARK_NAME, RevisionMeta, TAG_LAYER_META, TAG_REV_META, TAG_REV_PAYLOAD, UnitHead};
 use crate::db::{ChangeSet, CommitInfo, UnitDb, Write, context, corruption, key};
@@ -659,18 +659,19 @@ fn unit_writes(p: &Planned, take: usize) -> Result<Vec<Write>, UnitError> {
     Ok(writes)
 }
 
-impl<E: TxnEngine + TestHooks> UnitDb<E> {
+impl<E: TxnEngine + Reclaim> UnitDb<E> {
     /// Asks the engine to compact the revision ranges (`REV_META` and
     /// `REV_PAYLOAD`, design §5.1) so that what retention deleted leaves the
-    /// live files. It delegates to the engine's directed compaction
-    /// (`compact_range`); an engine without it answers its own error
+    /// live files. It delegates to the engine's public directed compaction
+    /// ([`Reclaim::compact_range`], the same call [`UnitDb::reclaim`] makes
+    /// over the whole key space); an engine without it answers its own error
     /// (`InvalidArgument("unsupported")`). What a snapshot still sees stays
     /// (I-05).
     pub fn compact(&self) -> Result<CompactReport, UnitError> {
         self.check_poisoned()?;
         let before = stored_bytes(&self.storage_stats());
-        TestHooks::compact_range(
-            &self.engine,
+        Reclaim::compact_range(
+            self.inner_engine(),
             Bound::Included(&[TAG_REV_META]),
             Bound::Excluded(&[TAG_REV_PAYLOAD + 1]),
         )?;
