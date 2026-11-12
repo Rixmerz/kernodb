@@ -9,7 +9,10 @@
 //! agent-memory <dir> show <id>                          one memory and the state of its vector
 //! agent-memory <dir> correct <id> <text>                a new revision; the vector goes stale
 //! agent-memory <dir> rebuild <id>                       recompute a stale vector
+//! agent-memory <dir> history <id>                       the retained revisions of a memory
 //! agent-memory <dir> forget <id>                        delete a memory, its vector and summaries
+//! agent-memory <dir> prune                              drop all but the newest revision of every unit
+//! agent-memory <dir> reclaim                            compact the live files (no promise of erasure)
 //! agent-memory <dir> summarize <id>...                  summarise memories
 //! agent-memory <dir> summaries                          list summaries
 //! agent-memory <dir> refresh                            rebuild stale summaries
@@ -115,6 +118,16 @@ fn run(dir: PathBuf, cmd: &str, rest: &[String]) -> Result<()> {
             println!("#{id} vector: {:?}", mem.vector_status(id)?);
             Ok(())
         }
+        ("history", [id]) => mem.history(parse_id(id)?).map(|all| all.iter().for_each(show)),
+        ("prune", []) => {
+            println!("{} revision(s) pruned", mem.prune_history()?);
+            Ok(())
+        }
+        ("reclaim", []) => {
+            mem.reclaim()?;
+            println!("live files compacted; nothing is promised about the storage medium");
+            Ok(())
+        }
         ("forget", [id]) => {
             mem.forget(parse_id(id)?)?;
             println!("forgotten");
@@ -204,6 +217,9 @@ fn run_demo(dir: PathBuf) -> Result<()> {
     println!("registry state of its vector: {:?}", mem.derived_state(&vector));
     println!("summaries left: {}", mem.summaries().len());
     println!("memory #{} still readable: {}", ids[0], mem.get(ids[0]).is_ok());
+    println!("revisions of #{}: {}", ids[0], mem.history(ids[0])?.len());
+    println!("\n== reclaim: the live files are compacted (logical removal only, no erasure promise)");
+    mem.reclaim()?;
 
     println!("\n== close and reopen");
     mem.close()?;

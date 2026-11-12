@@ -4,25 +4,26 @@
 //!
 //! ```text
 //! next <n>            the next free memory number
-//! mem <n> <vec|->     a memory and the hex derived id of its vector, or `-`
 //! sum <n>,<n>,…       the sources of a summary
 //! ```
 //!
-//! ponytail: the whole catalog is rewritten on every write and a unit payload
-//! holds at most 1 MiB, so it fits about 13 000 memories; split it by range or
-//! keep the ids in a unit per memory if an agent needs more.
+//! The previous version of this example also wrote `mem <n> <vec|->` for every
+//! memory. Memories are now listed with `DerivedDb::query` and their vectors
+//! found with `DerivedDb::derived_of`, so those lines carry nothing. [`Catalog::parse`]
+//! still accepts them and drops them, so a directory written by the previous
+//! version opens; the next write of the catalog leaves them out.
+//!
+//! ponytail: the whole catalog is rewritten on every write; it now holds only
+//! the counter and the summary definitions, so it stays small. Prune its old
+//! revisions with `AgentMemory::prune_history`.
 
-use std::collections::BTreeMap;
 use std::fmt::Write as _;
-
-use kerno_units::DerivedId;
 
 use crate::{Error, Result};
 
 #[derive(Debug, Default)]
 pub(crate) struct Catalog {
     pub next: u64,
-    pub vectors: BTreeMap<u64, Option<DerivedId>>,
     pub summaries: Vec<Vec<u64>>,
 }
 
@@ -34,30 +35,9 @@ fn num(s: &str, line: &str) -> Result<u64> {
     s.parse().map_err(|_| corrupt(line))
 }
 
-fn parse_hex(s: &str, line: &str) -> Result<DerivedId> {
-    if s.len() != 64 || !s.is_ascii() {
-        return Err(corrupt(line));
-    }
-    let mut out = [0u8; 32];
-    for (i, b) in out.iter_mut().enumerate() {
-        *b = u8::from_str_radix(&s[2 * i..2 * i + 2], 16).map_err(|_| corrupt(line))?;
-    }
-    Ok(DerivedId(out))
-}
-
 impl Catalog {
     pub fn encode(&self) -> Vec<u8> {
         let mut out = format!("next {}\n", self.next);
-        for (n, v) in &self.vectors {
-            match v {
-                None => writeln!(out, "mem {n} -"),
-                Some(id) => {
-                    let hex: String = id.0.iter().map(|b| format!("{b:02x}")).collect();
-                    writeln!(out, "mem {n} {hex}")
-                }
-            }
-            .expect("writing to a String cannot fail");
-        }
         for s in &self.summaries {
             let list: Vec<String> = s.iter().map(u64::to_string).collect();
             writeln!(out, "sum {}", list.join(",")).expect("writing to a String cannot fail");
@@ -72,11 +52,12 @@ impl Catalog {
             let parts: Vec<&str> = line.split(' ').collect();
             match parts.as_slice() {
                 ["next", n] => cat.next = num(n, line)?,
-                ["mem", n, "-"] => {
-                    cat.vectors.insert(num(n, line)?, None);
-                }
-                ["mem", n, hex] => {
-                    cat.vectors.insert(num(n, line)?, Some(parse_hex(hex, line)?));
+                // Legacy line of the previous version: validated, then dropped.
+                ["mem", n, vector] => {
+                    num(n, line)?;
+                    if *vector != "-" && (vector.len() != 64 || !vector.bytes().all(|b| b.is_ascii_hexdigit())) {
+                        return Err(corrupt(line));
+                    }
                 }
                 ["sum", list] => cat.summaries.push(list.split(',').map(|n| num(n, line)).collect::<Result<_>>()?),
                 _ => return Err(corrupt(line)),
@@ -96,11 +77,21 @@ mod tests {
     #[test]
     fn round_trip() {
         let mut c = Catalog { next: 9, ..Catalog::default() };
-        c.vectors.insert(2, None);
-        c.vectors.insert(3, Some(DerivedId([0xAB; 32])));
         c.summaries.push(vec![2, 3]);
         let back = Catalog::parse(&c.encode()).unwrap();
-        assert_eq!((back.next, back.vectors, back.summaries), (9, c.vectors, c.summaries));
+        assert_eq!((back.next, back.summaries), (9, c.summaries));
         assert!(Catalog::parse(b"mem x -\nnext 1\n").is_err());
+        assert!(Catalog::parse(b"next 1\nmem 2 abcd\n").is_err());
+    }
+
+    #[test]
+    fn legacy_mem_lines_are_accepted_and_dropped() {
+        let hex = "ab".repeat(32);
+        let legacy = format!("next 7\nmem 2 -\nmem 3 {hex}\nsum 2,3\n");
+        let cat = Catalog::parse(legacy.as_bytes()).unwrap();
+        assert_eq!((cat.next, cat.summaries.clone()), (7, vec![vec![2, 3]]));
+        // Writing it again leaves the legacy lines out.
+        let text = String::from_utf8(cat.encode()).unwrap();
+        assert_eq!(text, "next 7\nsum 2,3\n");
     }
 }

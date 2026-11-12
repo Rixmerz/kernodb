@@ -5,9 +5,11 @@
 //! derived datum. The caller supplies every vector: [`standin::Embedder`] is a
 //! deterministic stand-in for a model.
 //!
-//! Everything the library does not offer is kept in one extra unit, the
-//! *catalog* (see [`catalog`]): the ids of the memories, the derived id of each
-//! one's vector and the unit sets of the summaries. See `FRICTION.md` for why.
+//! Memories are listed with `DerivedDb::query` and their vectors found with
+//! `DerivedDb::derived_of`; both are read from the database, so there is no
+//! second record to keep in step. What the library still does not offer is kept
+//! in one extra unit, the *catalog* (see [`catalog`]): the next free memory
+//! number and the unit sets of the summaries. See `FRICTION.md` for why.
 
 mod catalog;
 pub mod standin;
@@ -19,11 +21,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use kerno_core::vfs::StdVfs;
 use kerno_storage::KernoDb;
-use kerno_units::assoc_rank::{SIMILARITY_SCALE, VectorMetric, VectorQuery, VectorSet};
+use kerno_units::assoc_rank::{SIMILARITY_SCALE, VectorMetric, VectorQuery};
 use kerno_units::{
-    ChangeMeta, Clock, ConsolidationError, DerivedDb, DerivedId, DerivedStaleError, DerivedState, NewUnit,
-    RetentionBudget, RetentionPolicy, RetentionRule, RevNo, RevisionId, Timestamp, TruncatingSummarizer, Unit,
-    UnitConfig, UnitDb, UnitError, UnitId, UnitIdSource, UnitUpdate, VectorSpec,
+    ChangeMeta, Clock, ConsolidationError, DerivedDb, DerivedId, DerivedStaleError, DerivedState, HistoryQuery,
+    NewUnit, RetentionBudget, RetentionPolicy, RetentionRule, RevisionId, Timestamp, TruncatingSummarizer, Unit,
+    UnitConfig, UnitDb, UnitError, UnitFilter, UnitId, UnitIdSource, UnitUpdate, VectorSpec,
 };
 
 use catalog::Catalog;
@@ -31,6 +33,8 @@ pub use standin::Embedder;
 
 /// The type of the unit that holds a memory.
 const MEMORY_TYPE: &str = "memory";
+/// The type of the unit that holds the catalog.
+const CATALOG_TYPE: &str = "catalog";
 /// The unit that holds the catalog: the first id the id source mints.
 const CATALOG_ID: u64 = 1;
 const METHOD: &str = "standin-embed";
@@ -68,6 +72,14 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+impl Error {
+    /// Whether another handle holds the directory (a second open): the one
+    /// failure of an open that can be waited out, as opposed to damage.
+    pub fn is_locked(&self) -> bool {
+        matches!(self, Error::Unit(e) if e.is_locked())
+    }
+}
 
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self {
@@ -120,8 +132,6 @@ pub enum VectorStatus {
     Ready,
     /// The memory was corrected after the vector was made: it is not served.
     Stale,
-    /// The catalog names a vector the registry does not know.
-    Missing,
     Other(DerivedState),
 }
 
@@ -238,7 +248,7 @@ impl AgentMemory {
             None => {
                 let mut cs = this.db.begin_changeset(meta("create the catalog"))?;
                 let id = cs.create(NewUnit {
-                    unit_type: "catalog".into(),
+                    unit_type: CATALOG_TYPE.into(),
                     schema_version: 1,
                     metadata: vec![],
                     payload: Catalog { next: CATALOG_ID + 1, ..Catalog::default() }.encode(),
@@ -281,8 +291,20 @@ impl AgentMemory {
         Catalog::parse(u.payload.as_deref().unwrap_or_default())
     }
 
-    fn entry(&self, id: u64) -> Result<Option<DerivedId>> {
-        self.catalog()?.vectors.get(&id).copied().ok_or(Error::NotFound(id))
+    /// The unit of memory `id`; `NotFound` when it was never stored, was
+    /// forgotten, or is not a memory (the catalog has a number too).
+    fn memory_unit(&self, id: u64) -> Result<Unit> {
+        match self.db.get_unit(unit_id(id))? {
+            Some(u) if u.unit_type == MEMORY_TYPE && u.payload.is_some() => Ok(u),
+            _ => Err(Error::NotFound(id)),
+        }
+    }
+
+    /// The vector datum of memory `id`, found by its source (the greatest
+    /// id if several), or `None` when none was attached.
+    fn vector_entry(&self, id: u64) -> Option<DerivedId> {
+        let own = |d: &DerivedId| self.db.descriptor(d).is_some_and(|x| x.method() == METHOD);
+        self.db.derived_of(unit_id(id)).into_iter().filter(own).max()
     }
 
     fn vector_spec(&self, source: RevisionId, vector: Vec<f32>) -> VectorSpec {
@@ -309,11 +331,9 @@ impl AgentMemory {
             payload: text.as_bytes().to_vec(),
         })?;
         let n = memory_number(unit);
-        let vid = match vector {
-            Some(v) => Some(cs.put_vector(&self.vector_spec(RevisionId { unit, rev: RevNo(1) }, v))?),
-            None => None,
-        };
-        cat.vectors.insert(n, vid);
+        if let Some(v) = vector {
+            cs.put_vector(&self.vector_spec(RevisionId::first(unit), v))?;
+        }
         cat.next = self.ids.0.load(Ordering::SeqCst);
         cs.update(
             unit_id(CATALOG_ID),
@@ -336,56 +356,51 @@ impl AgentMemory {
     }
 
     /// Attaches a caller-supplied vector to a memory that has none, or whose
-    /// vector is stale (the old one is replaced).
+    /// vector is stale (the old one is replaced in the same commit). A vector
+    /// whose length is not the recipe's `dim` is refused by the store.
     pub fn attach_vector(&self, id: u64, vector: Vec<f32>) -> Result<()> {
-        let _w = self.lock_write();
-        let mut cat = self.catalog()?;
-        let old = *cat.vectors.get(&id).ok_or(Error::NotFound(id))?;
-        let unit = unit_id(id);
-        let new = match old {
-            None => {
-                let head = self.db.get_unit(unit)?.ok_or(Error::NotFound(id))?.head;
-                let mut cs = self.db.begin_changeset(meta("attach a vector"))?;
-                let new = cs.put_vector(&self.vector_spec(RevisionId { unit, rev: head }, vector))?;
-                cat.vectors.insert(id, Some(new));
-                cs.update(
-                    unit_id(CATALOG_ID),
-                    UnitUpdate { payload: cat.encode(), schema_version: None, metadata: None },
-                    None,
-                )?;
-                cs.commit()?;
-                return Ok(());
-            }
-            Some(old) if self.db.state(&old) == Some(DerivedState::Stale) => {
-                self.db.rebuild_vector(&old, meta("replace a stale vector"), &|_, _| Some(vector.clone()))?
-            }
-            Some(_) => return Err(Error::Invalid(format!("memory #{id} already has a vector"))),
+        let unit = self.memory_unit(id)?;
+        let spec = self.vector_spec(RevisionId { unit: unit.id, rev: unit.head }, vector);
+        let old = self.vector_entry(id);
+        if let Some(old) = old
+            && self.db.state(&old) != Some(DerivedState::Stale)
+        {
+            return Err(Error::Invalid(format!("memory #{id} already has a vector")));
+        }
+        let mut cs = self.db.begin_changeset(meta("attach a vector"))?;
+        match old {
+            None => cs.put_vector(&spec)?,
+            Some(old) => cs.replace_vector(old, &spec)?,
         };
-        cat.vectors.insert(id, Some(new));
-        self.save_catalog(&cat, "record the new vector")
+        cs.commit()?;
+        Ok(())
     }
 
     /// The state of the vector of memory `id`.
     pub fn vector_status(&self, id: u64) -> Result<VectorStatus> {
-        Ok(match self.entry(id)? {
+        self.memory_unit(id)?;
+        Ok(match self.vector_entry(id) {
             None => VectorStatus::None,
             Some(vid) => match self.db.state(&vid) {
                 Some(DerivedState::Ready) => VectorStatus::Ready,
                 Some(DerivedState::Stale) => VectorStatus::Stale,
                 Some(other) => VectorStatus::Other(other),
-                None => VectorStatus::Missing,
+                // derived_of just named it: only a concurrent forget gets here.
+                None => VectorStatus::None,
             },
         })
     }
 
     /// The vector of memory `id`, only while it is `Ready`.
     pub fn vector(&self, id: u64) -> Result<Option<Vec<f32>>> {
-        Ok(self.entry(id)?.and_then(|vid| self.db.vector(&vid)))
+        self.memory_unit(id)?;
+        Ok(self.vector_entry(id).and_then(|vid| self.db.vector(&vid)))
     }
 
     /// The derived id of the vector of memory `id`, if one was attached.
     pub fn vector_id(&self, id: u64) -> Result<Option<DerivedId>> {
-        self.entry(id)
+        self.memory_unit(id)?;
+        Ok(self.vector_entry(id))
     }
 
     /// The state the registry holds for a derived datum; `None` when it knows
@@ -395,37 +410,57 @@ impl AgentMemory {
     }
 
     /// Recomputes a stale vector with the stand-in model from the memory as it
-    /// is now.
+    /// is now. The datum is rebuilt by the library; nothing here records its
+    /// new id.
     pub fn rebuild_vector(&self, id: u64) -> Result<()> {
-        let _w = self.lock_write();
-        let mut cat = self.catalog()?;
-        let old = cat.vectors.get(&id).copied().ok_or(Error::NotFound(id))?;
-        let old = old.ok_or_else(|| Error::Invalid(format!("memory #{id} has no vector to rebuild")))?;
+        self.memory_unit(id)?;
+        let old =
+            self.vector_entry(id).ok_or_else(|| Error::Invalid(format!("memory #{id} has no vector to rebuild")))?;
         let embedder = self.embedder;
-        let new = self.db.rebuild_vector(&old, meta("rebuild a stale vector"), &|_, inputs| {
+        self.db.rebuild_vector(&old, meta("rebuild a stale vector"), &|_, inputs| {
             inputs.first().map(|i| embedder.embed(&i.payload))
         })?;
-        cat.vectors.insert(id, Some(new));
-        self.save_catalog(&cat, "record the rebuilt vector")
+        Ok(())
     }
 
     /// Reads a memory.
     pub fn get(&self, id: u64) -> Result<Memory> {
-        self.catalog()?.vectors.get(&id).ok_or(Error::NotFound(id))?;
-        match self.db.get_unit(unit_id(id))? {
-            Some(u) if u.payload.is_some() => memory_of(&u),
-            _ => Err(Error::NotFound(id)),
-        }
+        memory_of(&self.memory_unit(id)?)
     }
 
     /// Every memory, oldest first.
     pub fn all(&self) -> Result<Vec<Memory>> {
-        let mut out = Vec::new();
-        for id in self.catalog()?.vectors.keys() {
-            out.push(self.get(*id)?);
-        }
+        let filter = UnitFilter { unit_type: Some(MEMORY_TYPE.into()), schema_version: None };
+        let mut out = self.db.query(&filter)?.units.iter().map(memory_of).collect::<Result<Vec<_>>>()?;
         out.sort_by_key(|m| (m.created_at, m.id));
         Ok(out)
+    }
+
+    /// The retained revisions of memory `id`, newest first (the corrections
+    /// that retention has not pruned).
+    pub fn history(&self, id: u64) -> Result<Vec<Memory>> {
+        self.memory_unit(id)?;
+        let query = HistoryQuery { with_payload: true, ..HistoryQuery::latest(usize::MAX) };
+        let revisions = self.db.snapshot()?.history(unit_id(id), query)?;
+        Ok(revisions
+            .into_iter()
+            .filter_map(|r| {
+                let text = String::from_utf8(r.payload?).ok()?;
+                let tags = String::from_utf8_lossy(&r.metadata)
+                    .split('\n')
+                    .filter(|t| !t.is_empty())
+                    .map(str::to_owned)
+                    .collect();
+                Some(Memory {
+                    id,
+                    text,
+                    tags,
+                    revision: r.id.rev.0,
+                    created_at: r.created_at,
+                    updated_at: r.created_at,
+                })
+            })
+            .collect())
     }
 
     /// Memories created in `[from, to]`, oldest first.
@@ -446,15 +481,13 @@ impl AgentMemory {
     pub fn recall_similar(&self, query: &[f32], k: usize) -> Result<Vec<Hit>> {
         let q = VectorQuery::new(VectorMetric::Cosine, query.to_vec())
             .map_err(|e| Error::Invalid(format!("query vector: {e}")))?;
-        let mut set = VectorSet::new(query.len(), VectorMetric::Cosine)
-            .map_err(|e| Error::Invalid(format!("query vector: {e}")))?;
-        for (id, vid) in self.catalog()?.vectors {
-            if let Some(v) = vid.and_then(|vid| self.db.vector(&vid)) {
-                // A vector of another dimension (another model) is skipped.
-                let _ = set.insert(unit_id(id), v);
-            }
-        }
-        let scored = set.search(&q, k).map_err(|e| Error::Invalid(format!("search: {e}")))?;
+        // The set of persisted `Ready` vectors of this dimension is built once
+        // by the library; a stale vector, or one of another model, is not in it.
+        let found = self
+            .db
+            .search_vectors(VectorMetric::Cosine, &[q], k)
+            .map_err(|e| Error::Invalid(format!("search: {e}")))?;
+        let scored = found.into_iter().next().unwrap_or_default();
         scored
             .into_iter()
             .map(|s| {
@@ -469,7 +502,7 @@ impl AgentMemory {
     /// Writes a new revision of a memory. Its vector, if any, becomes stale in
     /// the same commit. Returns the new revision number.
     pub fn correct(&self, id: u64, text: &str) -> Result<u64> {
-        self.entry(id)?;
+        self.memory_unit(id)?;
         let mut cs = self.db.begin_changeset(meta("correct"))?;
         let rev = cs.update(
             unit_id(id),
@@ -481,19 +514,23 @@ impl AgentMemory {
     }
 
     /// Forgets a memory: the unit is deleted and, in the same commit, its
-    /// vector and every summary it is a source of; the catalog entry goes too.
+    /// vector and every summary it is a source of. This is logical removal;
+    /// see [`AgentMemory::reclaim`] for what it does and does not promise.
     pub fn forget(&self, id: u64) -> Result<()> {
         let _w = self.lock_write();
+        self.memory_unit(id)?;
         let mut cat = self.catalog()?;
-        cat.vectors.remove(&id).ok_or(Error::NotFound(id))?;
+        let before = cat.summaries.len();
         cat.summaries.retain(|s| !s.contains(&id));
         let mut cs = self.db.begin_changeset(meta("forget"))?;
         cs.delete(unit_id(id), None)?;
-        cs.update(
-            unit_id(CATALOG_ID),
-            UnitUpdate { payload: cat.encode(), schema_version: None, metadata: None },
-            None,
-        )?;
+        if cat.summaries.len() != before {
+            cs.update(
+                unit_id(CATALOG_ID),
+                UnitUpdate { payload: cat.encode(), schema_version: None, metadata: None },
+                None,
+            )?;
+        }
         cs.commit()?;
         self.lock_summaries().retain(|(_, sid)| self.db.state(sid).is_some());
         Ok(())
@@ -507,9 +544,7 @@ impl AgentMemory {
         sources.sort_unstable();
         sources.dedup();
         for id in &sources {
-            if !cat.vectors.contains_key(id) {
-                return Err(Error::NotFound(*id));
-            }
+            self.memory_unit(*id)?;
         }
         let sid = self.db.build_summary(sources.iter().map(|n| unit_id(*n)), &self.summarizer)?;
         cat.summaries.push(sources.clone());
@@ -533,13 +568,30 @@ impl AgentMemory {
         Ok(n)
     }
 
-    /// Drops every revision but the newest of every unit (retention). The bytes
-    /// of the dropped revisions stay in the files until the engine compacts.
-    /// Returns how many revisions were pruned.
+    /// Drops every revision but the newest of every unit (retention), the
+    /// catalog's included. The catalog gains a revision on every write until
+    /// this runs; `set_policy` only takes a `HistoryPolicy`, which cannot
+    /// express `KeepLast(1)`, so the example does not call it. The bytes of the dropped revisions stay in the
+    /// files until the engine compacts. Returns how many revisions were pruned.
     pub fn prune_history(&self) -> Result<u64> {
         let policy = RetentionPolicy::all(RetentionRule::KeepLast(1));
         let report = self.db.run_retention(&policy, RetentionBudget::default())?;
         Ok(report.retention.revisions_pruned)
+    }
+
+    /// How many revisions of the catalog unit are retained.
+    pub fn catalog_revisions(&self) -> Result<usize> {
+        Ok(self.db.history(unit_id(CATALOG_ID))?.len())
+    }
+
+    /// Asks the engine to compact the whole key space, so that the live files
+    /// stop holding what was forgotten or pruned. The removal is logical and
+    /// takes effect at once; this only moves the moment at which the live
+    /// files stop holding it. It promises no physical erasure: a snapshot taken
+    /// before the deletion keeps its files, and the engine does not overwrite
+    /// the blocks it frees (ADR-0009, option 3). It changes no visible state.
+    pub fn reclaim(&self) -> Result<()> {
+        Ok(self.db.reclaim()?)
     }
 
     /// The summaries, in creation order.
