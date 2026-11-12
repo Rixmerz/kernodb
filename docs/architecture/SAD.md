@@ -2,9 +2,9 @@
 
 | Campo | Valor |
 |---|---|
-| Versión | 0.2.0 |
-| Fecha | 29 de octubre de 2026 (0.1.0: 27 de octubre de 2026) |
-| Estado | Baseline 0.1.0 con las actualizaciones de la Fase 1 que lista «Cambios de la versión 0.2.0»; el resto del texto no se ha reescrito |
+| Versión | 0.3.0 |
+| Fecha | 12 de noviembre de 2026 (0.2.0: 29 de octubre de 2026; 0.1.0: 27 de octubre de 2026) |
+| Estado | Baseline 0.1.0 con las actualizaciones de la Fase 1 (0.2.0) y de la Etapa 8 (0.3.0), que listan «Cambios de la versión 0.2.0» y «Cambios de la versión 0.3.0»; el resto del texto no se ha reescrito |
 | Tipo | Documento de arquitectura de software (SAD) |
 | Lenguaje de implementación | Rust |
 | Modelo de entrega inicial | Biblioteca embebida y CLI local |
@@ -12,6 +12,20 @@
 > **Resumen ejecutivo.** Kerno será un motor de datos embebido, persistente y extensible. Su núcleo será un almacén key-value transaccional; sobre él se construirán documentos estructurados, historial de revisiones, índices y, más adelante, recuperación híbrida para IA. La arquitectura prioriza correctitud, recuperación, portabilidad y evolución explícita de los datos. El algoritmo de almacenamiento físico —copy-on-write B+ tree o LSM— permanece pendiente de un ADR basado en una prueba técnica reproducible.
 
 > **Nota de mantenimiento.** La versión 0.1.0 fue la baseline aprobada para revisión. Las decisiones posteriores se registran en [`docs/adr/`](../adr/README.md); cuando un ADR cambia algo de este documento, se publica una nueva versión del SAD en lugar de editar esta silenciosamente. La 0.2.0 (cierre de la Fase 1) enumera abajo cada cambio; todo lo que no figura ahí conserva el texto de la 0.1.0, aunque la Fase 1 lo haya superado en detalle (por ejemplo, el reparto de crates de §14 es el propuesto, no el construido).
+
+## Cambios de la versión 0.3.0
+
+Cierre de la Etapa 8 ([cierre](etapa8-cierre.md)). Esta versión describe los derivados tal como están construidos, no como los planteaba la 0.1.0 ni como los proponía el [acta de la Etapa 8](etapa8-acta.md) antes de medir.
+
+| Apartado | Cambio |
+|---|---|
+| §9.2 | Los derivados de índice (primario y `IDX_TYPE`) siguen con estado e I-23. Se añade el registro común de derivados de [ADR-0018](../adr/0018-versionado-y-reconstruccion-de-derivados.md) (opción 2), en memoria o persistido según el dato |
+| §10.2 | Un vector persistido guarda su revisión fuente, su método, su versión y su perfil de modelo (texto opaco). La identidad los incluye |
+| §10.3 | Ciclo de vida: `ready`, `building`, `stale`, `failed`, `superseded`. Un cambio de fuente marca `stale` en el mismo commit. Reconstruir da lo mismo que construir de nuevo. Un método o versión nuevos crean un derivado nuevo y marcan el antiguo `superseded` |
+| §10.5 (nuevo) | Derivados tal como están construidos: vectores persistidos como capa 2 (ADR-0020), supresión de fuentes y de derivados, resúmenes en memoria con procedencia |
+| §13 | La capa de unidades pasa a versión 2 solo en las bases que tienen vectores persistidos (marca `LAYER_META`). Una build de versión 1 de la capa rechaza esas bases. El motor y el formato v1 congelado (ADR-0013) no cambian |
+| §15 | ADR-0018 aceptado (opción 2); ADR-0020 aceptado por delegación del propietario el 2026-11-12, que reemplaza en su parte de persistencia la cláusula de ADR-0011. ADR-0009 aceptado con la opción 3 |
+| §16 | Estado de la Etapa 8: cerrada como trabajo de ingeniería; Q4 no demostrada; paquete de seguimiento E8-10 antes de 1.0 |
 
 ## Cambios de la versión 0.2.0
 
@@ -358,6 +372,24 @@ Como mínimo: ID del documento, revisión fuente exacta, perfil de embedding, pr
 ### 10.4 Búsqueda híbrida
 
 La evolución prevista es búsqueda textual (p. ej. BM25) + búsqueda vectorial + filtros estructurados. La fusión de resultados (p. ej. Reciprocal Rank Fusion) será una opción de capa de consulta, no una obligación del almacenamiento físico. Primero se implementará búsqueda vectorial exacta como baseline; los índices aproximados deberán medirse contra ella en recall, latencia, memoria y disco.
+
+### 10.5 Derivados tal como están construidos (Etapa 8, versión 0.3.0)
+
+Esta subsección describe el código de la Etapa 8. Lo que no está construido se dice al final.
+
+**Registro común (ADR-0018, opción 2).** Cada derivado tiene un descriptor con sus fuentes exactas (unidad y revisión), su método, su versión, sus parámetros, su perfil de modelo (texto opaco, 1 a 64 bytes) y el hash de su entrada. La identidad del derivado es un hash de todo eso (`DerivedDescriptor::id`); el hash de la salida y la fecha no entran en la identidad. Un cambio de método, versión, parámetros o perfil da una identidad nueva. El registro vive en memoria en `DerivedRegistry` y lleva un índice inverso fuente → derivados.
+
+**Obsolescencia.** Un `ChangeSet` que escribe una unidad marca `stale` en el mismo commit a todo derivado que tenga esa unidad como fuente con revisión distinta de la cabeza. El marcado se hace dentro del commit para los datos persistidos, y después del commit, bajo el mismo bloqueo del registro, para los datos en memoria. Un derivado `stale` no se sirve. Reconstruir (`rebuild`) produce lo mismo que construir de nuevo sobre las mismas fuentes; si las fuentes cambiaron, la identidad es otra.
+
+**Vectores persistidos (ADR-0020).** Los vectores de búsqueda se guardan como derivados en la capa de unidades, con tres claves: descriptor (`0x60`), vector (`0x61`) e índice inverso fuente → derivado (`0x62`). Un vector, su descriptor y su entrada de índice se confirman en la misma transacción, y solo si la revisión fuente es la cabeza en esa transacción. La base declara la capa 2 en la marca `LAYER_META "layer"` en el primer `ChangeSet` que persiste un derivado, y nunca la baja. Una build de capa 1 rechaza esa base al abrir (probado con el lector de capa 1 en `layer1_reader_refuses_derived_fixture`; la comprobación con un binario anterior no está verificada, F-11 del cierre). Las bases sin vectores siguen en capa 1 y las abre cualquier build de capa 1 o 2. El motor y el formato v1 congelado no cambian.
+
+**Apertura.** `DerivedDb::open_persisted` reconstruye el registro desde los descriptores guardados, sin escribir nada. Recalcula la identidad de cada descriptor, cruza el índice inverso con los descriptores y comprueba que la cabeza de cada fuente tiene la revisión y el hash de entrada que el descriptor declara; si no, el derivado queda `stale`. Un vector cuyo hash de salida no cuadra no se sirve. La reparación es una llamada explícita (`repair_derived`) que escribe un `ChangeSet` de propósito `Derived`; abrir nunca repara.
+
+**Supresión (ADR-0009, opción 3).** Borrar una unidad, o purgar una revisión por retención, retira en el mismo `ChangeSet` los descriptores, vectores y entradas de índice de los derivados que la tienen como fuente, aunque tengan otras fuentes. Tras el commit, ninguna lectura nueva devuelve esos datos. Una instantánea abierta antes sigue viéndolos hasta soltarse. Los bytes pueden seguir en archivos vivos hasta una compactación que cubra su rango; no hay promesa de borrado físico. Borrar una relación no borra ningún derivado, porque ningún derivado tiene una relación como fuente. Al abrir o tras una retención, un derivado cuya fuente ya no existe se descarta y se informa.
+
+**Resúmenes (E8-06).** Un resumen es un derivado con un parámetro reservado (`kerno.kind = summary`) y al menos una fuente. Lo produce un `Summarizer`, un trait sin red ni modelo; el crate incluye solo uno determinista para pruebas. Los resúmenes viven **solo en memoria** y no escriben ningún byte. Ninguna lectura de unidades devuelve un resumen en lugar de una fuente: `get_unit` no tiene camino hacia el texto de un resumen, y `summary()` sirve solo uno en estado `ready`. Un resumen se reabre con `open_summaries`, que recalcula solo si sus fuentes siguen iguales.
+
+**Lo que no está construido.** Índice aproximado (ANN); búsqueda textual y fusión híbrida; resumidor real; relaciones inferidas como fuente; borrado físico; borrado criptográfico (ADR-0006, pendiente); función de copia de seguridad; persistencia de resúmenes; búsqueda sobre vectores persistidos sin copiarlos en memoria en cada llamada (friction del caso de uso, punto 9). Los límites de medición y de prueba están en [cierre de la Etapa 8](etapa8-cierre.md) §3 y §5.
 
 ## 11. Seguridad, privacidad y ciclo de vida
 
