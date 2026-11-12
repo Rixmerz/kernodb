@@ -4,12 +4,13 @@
 |---|---|
 | Fecha | 2026-11-11 |
 | Estado | **Aprobada** el 2026-11-11 (decisión delegada por el propietario; revocable) |
+| Cierre | [Cierre de la Etapa 7](etapa7-cierre.md), 2026-11-12: **cerrada, pendiente de aprobación del propietario**. Sin bloqueantes abiertos |
 | Acto | Propuesta de alcance y de los paquetes E7-00 a E7-06 |
 | Documentos | [Roadmap, Etapa 7](../roadmap/README.md#etapa-7--memoria-asociativa) · [cierre de la Etapa 6](etapa6-cierre.md) · [ADR-0011](../adr/0011-vectores-y-recuperacion-hibrida.md) (aceptado el 2026-11-11) · [conjunto de evaluación](etapa7-conjunto-evaluacion.md) · [consulta asociativa (E7-01)](etapa7-consulta-asociativa.md) · [ejecución indexada (E7-02)](etapa7-ejecucion-indexada.md) · [contexto y procedencia (E7-03)](etapa7-contexto-y-procedencia.md) · [ADR-0014](../adr/0014-representacion-fisica-de-relaciones.md) · [ADR-0015](../adr/0015-privacidad-de-la-observabilidad.md) · [ADR-0018](../adr/0018-versionado-y-reconstruccion-de-derivados.md) (propuesto) · [invariantes](invariants.md) · spec v0.2.0 §11, §12, §16 |
 
 ## 0. Estado
 
-Esta acta está **aprobada** (§8). Los WP son secuenciales, como en las Etapas 3 a 6.
+Esta acta está **aprobada** (§8). Los WP son secuenciales, como en las Etapas 3 a 6. La etapa está cerrada, pendiente de aprobación del propietario ([cierre](etapa7-cierre.md)): las decisiones sobre el arranque de la Etapa 8 y sobre T4 quedan en §8 del cierre.
 
 ## 1. Condición de inicio
 
@@ -59,7 +60,7 @@ Todos son secuenciales. «Hecho» incluye `cargo fmt --check`, `cargo clippy --w
 | **E7-03** Contexto temporal y procedencia ([hecho](etapa7-contexto-y-procedencia.md)) | Ventana de `commit_seq` y filtros de procedencia, actor y fuente aplicados en ambas rutas. Rastro verificable: cada relación y revisión citada existe en la instantánea | E7-02 | I-40 (§4): prueba que recorre cada resultado y encuentra sus fuentes; una relación inferida nunca aparece como declarada en el rastro (I-39); el reloj no ordena nada (I-26) |
 | **E7-04** Ranking y modo diagnóstico ([hecho](etapa7-ranking.md)) | Señales: distancia en saltos, tipo de relación, recencia por `commit_seq`, clase de procedencia y, si se suministran vectores, similitud exacta. Puntuación determinista; empates resueltos por identificador. El modo diagnóstico devuelve la aportación de cada señal. Vectores: los entrega quien llama, en memoria; se comprueban dimensión y métrica; fuerza bruta exacta | E7-03 | I-41 (§4): la suma de las aportaciones es la puntuación; el mismo estado y la misma consulta dan el mismo orden; dimensiones o métricas incompatibles se rechazan; con el ranking apagado el orden es el de la ruta de referencia |
 | **E7-05** Medición ([hecho](etapa7-medicion.md)) | Calidad sobre el conjunto congelado frente a los umbrales de §6.2. Rendimiento según §6.3. Salida cruda comprometida | E7-04 | Mediciones comprometidas; ningún umbral ni respuesta esperada cambia después de E7-00 |
-| **E7-06** Cierre | Revisión adversarial. Promoción de I-40 e I-41. Actualización del roadmap y del SAD | todos | Criterios de §4 cumplidos o registrados como no afirmados; informe sin bloqueantes abiertos |
+| **E7-06** Cierre ([hecho, pendiente de aprobación](etapa7-cierre.md)) | Revisión adversarial. Promoción de I-40 e I-41. Actualización del roadmap y del SAD | todos | Criterios de §4 cumplidos o registrados como no afirmados; informe sin bloqueantes abiertos |
 
 Camino crítico: E7-00 → E7-01 → E7-02 → E7-03 → E7-04 → E7-05 → E7-06.
 
@@ -69,13 +70,13 @@ Del [roadmap, Etapa 7](../roadmap/README.md#etapa-7--memoria-asociativa) y de sp
 
 | Criterio | Invariante | Evidencia prevista | Estado |
 |---|---|---|---|
-| Calidad evaluable con un conjunto fijado antes de medir | — | E7-00 (conjunto congelado), E7-05 | pendiente |
-| Toda respuesta rastreable a sus fuentes | **I-40** (nuevo): cada resultado de una consulta asociativa cita las relaciones y revisiones que lo justifican, y todas existen en la instantánea consultada | E7-03 | pendiente |
-| El ranking explica sus señales | **I-41** (nuevo): la puntuación es determinista y el modo diagnóstico da la aportación de cada señal, cuya suma es la puntuación | E7-04 | pendiente |
-| Equivalencia con la ruta de referencia | I-32 | Prueba diferencial (E7-02) | pendiente |
-| Una relación inferida no se presenta como declarada | I-39 | E7-03 | pendiente |
-| Sin literales fuera de `diagnostic` | I-37 | Centinelas (E7-02, E7-04) | pendiente |
-| El núcleo no necesita red ni modelo | I-31 | Revisión de dependencias (E7-06): los vectores los entrega quien llama | pendiente |
+| Calidad evaluable con un conjunto fijado antes de medir | — | E7-00 (conjunto congelado), E7-05 | **cumplido**. El conjunto se corrigió una vez antes de todo código de recuperación (`6b2a3cb`); ver [cierre](etapa7-cierre.md) §2 y R-1 |
+| Toda respuesta rastreable a sus fuentes | **I-40** (nuevo): cada resultado de una consulta asociativa cita las relaciones y revisiones que lo justifican, y todas existen en la instantánea consultada | E7-03 | **cumplido** (cierre §2 y §6.1; propuesta de promoción, pendiente de aprobación) |
+| El ranking explica sus señales | **I-41** (nuevo): la puntuación es determinista y el modo diagnóstico da la aportación de cada señal, cuya suma es la puntuación | E7-04 | **cumplido** (cierre §2 y §6.2; propuesta de promoción, pendiente de aprobación) |
+| Equivalencia con la ruta de referencia | I-32 | Prueba diferencial (E7-02) | **cumplido con H-1**: no afirmado para tiendas de 64 relaciones o más con una entrada ausente en ambos extremos (cierre R-2) |
+| Una relación inferida no se presenta como declarada | I-39 | E7-03 | **cumplido** (`inferred_is_never_declared_in_a_trace`) |
+| Sin literales fuera de `diagnostic` | I-37 | Centinelas (E7-02, E7-04) | **cumplido** (`tests/sentinels.rs` y `assoc_rank.rs`) |
+| El núcleo no necesita red ni modelo | I-31 | Revisión de dependencias (E7-06): los vectores los entrega quien llama | **cumplido** (ningún cambio en `Cargo.toml` ni `Cargo.lock` en la etapa) |
 | Sin ANN antes de un benchmark que lo justifique | — | Fuera de alcance (§2.3) | cumplido por alcance |
 
 ## 5. Riesgos
@@ -130,3 +131,4 @@ El orden de seguridad frente a IA (roadmap, decisión pendiente 1) no bloquea es
 | Fecha | Decisión | Notas |
 |---|---|---|
 | 2026-11-11 | **Aprobada** | El propietario delegó las decisiones («lo mejor y más correcto, toma tú las riendas») y pidió arrancar con esta acta. Decisiones de §7: (1) ADR-0011, opción 1 con vectores en memoria entregados por quien llama; persistencia en la Etapa 8; (2) conjunto sintético de §6.1, congelado en E7-00; (3) ranking por defecto solo si cumple §6.2; (4) umbrales de §6 tal como están; (5) cotas duras de profundidad 4, 1 000 resultados y 100 000 visitas. El propietario puede revocar cualquiera |
+| 2026-11-12 | **Cierre pendiente de aprobación** | [Cierre de la Etapa 7](etapa7-cierre.md): revisión adversarial sin bloqueantes; criterios de §4 cumplidos (I-32 con H-1); T4 no cumplido por defecto de su redacción; I-40 e I-41 propuestas; decisiones del propietario sobre la Etapa 8 y sobre T4 pendientes (cierre §8) |
