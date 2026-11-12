@@ -90,11 +90,11 @@ fn a_change_to_a_source_marks_its_dependents_stale_in_the_same_changeset<E: Targ
     assert_eq!(db.value(&on_ab), None, "a stale datum is not served");
     assert!(db.value(&on_c).is_some());
 
-    // Deleting a source also changes it.
+    // Deleting a source removes its data instead of marking them (E8-05).
     let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
     cs.delete(c, None).unwrap();
     cs.commit().unwrap();
-    assert_eq!(db.state(&on_c), Some(DerivedState::Stale));
+    assert_eq!(db.state(&on_c), None);
 }
 
 fn a_changeset_that_fails_or_is_dropped_marks_nothing<E: Target>() {
@@ -148,7 +148,9 @@ fn rebuilding_gives_what_building_anew_gives<E: Target>() {
     }
 }
 
-fn rebuild_uses_only_the_sources_that_are_still_valid<E: Target>() {
+/// Since E8-05 a deletion removes every datum with the unit among its
+/// sources, so there is nothing left to rebuild from the remaining ones.
+fn a_datum_with_a_deleted_source_is_removed_not_rebuilt<E: Target>() {
     let db = fresh::<E>();
     let (a, b) = (make(&db, b"a"), make(&db, b"b"));
     let old = db.build([a, b], "embed", 1, params(), &compute).unwrap();
@@ -156,19 +158,10 @@ fn rebuild_uses_only_the_sources_that_are_still_valid<E: Target>() {
     cs.delete(b, None).unwrap();
     cs.commit().unwrap();
 
-    let rebuilt = db.rebuild(&old, &compute).unwrap();
-    let d = db.descriptor(&rebuilt).unwrap();
-    assert_eq!(d.sources().map(|s| s.unit).collect::<Vec<_>>(), vec![a]);
-    assert_eq!(db.value(&rebuilt).as_deref(), Some(&b"embed@1:a|"[..]));
-
-    // With nothing valid left the datum is failed, never ready.
-    let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
-    cs.delete(a, None).unwrap();
-    cs.commit().unwrap();
-    assert_eq!(db.state(&rebuilt), Some(DerivedState::Stale));
-    assert!(matches!(db.rebuild(&rebuilt, &compute), Err(DerivedStaleError::NoValidSources(_))));
-    assert_eq!(db.state(&rebuilt), Some(DerivedState::Failed));
-    assert_eq!(db.value(&rebuilt), None);
+    assert_eq!(db.state(&old), None);
+    assert!(
+        matches!(db.rebuild(&old, &compute), Err(DerivedStaleError::Derived(DerivedError::Unknown(i))) if i == old)
+    );
 }
 
 fn a_failed_compute_leaves_the_datum_failed_and_a_later_rebuild_fixes_it<E: Target>() {
@@ -320,7 +313,7 @@ fn rebuild_refuses_an_identity_that_already_exists_and_keeps_the_old_entry<E: Ta
     assert_eq!(db.value(&anew).as_deref(), Some(&b"embed@1:a2|"[..]));
 }
 
-fn superseding_with_no_valid_source_is_refused_and_changes_nothing<E: Target>() {
+fn superseding_a_datum_whose_source_was_deleted_is_refused<E: Target>() {
     let db = fresh::<E>();
     let a = make(&db, b"a");
     let v1 = db.build([a], "embed", 1, params(), &compute).unwrap();
@@ -328,10 +321,10 @@ fn superseding_with_no_valid_source_is_refused_and_changes_nothing<E: Target>() 
     cs.delete(a, None).unwrap();
     cs.commit().unwrap();
 
+    assert_eq!(db.state(&v1), None, "the deletion removed the datum (E8-05)");
     assert!(
-        matches!(db.supersede(&v1, "embed", 2, params(), &compute), Err(DerivedStaleError::NoValidSources(i)) if i == v1)
+        matches!(db.supersede(&v1, "embed", 2, params(), &compute), Err(DerivedStaleError::Derived(DerivedError::Unknown(i))) if i == v1)
     );
-    assert_eq!(db.state(&v1), Some(DerivedState::Stale), "the earlier datum is not superseded");
 }
 
 fn a_datum_left_building_by_a_panic_goes_stale_with_its_source<E: Target>() {
@@ -624,8 +617,8 @@ macro_rules! engines {
                 super::rebuilding_gives_what_building_anew_gives::<E>();
             }
             #[test]
-            fn rebuild_uses_only_the_sources_that_are_still_valid() {
-                super::rebuild_uses_only_the_sources_that_are_still_valid::<E>();
+            fn a_datum_with_a_deleted_source_is_removed_not_rebuilt() {
+                super::a_datum_with_a_deleted_source_is_removed_not_rebuilt::<E>();
             }
             #[test]
             fn a_failed_compute_leaves_the_datum_failed_and_a_later_rebuild_fixes_it() {
@@ -648,8 +641,8 @@ macro_rules! engines {
                 super::rebuild_refuses_an_identity_that_already_exists_and_keeps_the_old_entry::<E>();
             }
             #[test]
-            fn superseding_with_no_valid_source_is_refused_and_changes_nothing() {
-                super::superseding_with_no_valid_source_is_refused_and_changes_nothing::<E>();
+            fn superseding_a_datum_whose_source_was_deleted_is_refused() {
+                super::superseding_a_datum_whose_source_was_deleted_is_refused::<E>();
             }
             #[test]
             fn a_datum_left_building_by_a_panic_goes_stale_with_its_source() {

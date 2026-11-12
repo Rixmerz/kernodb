@@ -297,6 +297,11 @@ impl DerivedRegistry {
         set.into_iter().collect()
     }
 
+    /// The units that are a source of some entry.
+    pub(crate) fn source_units(&self) -> BTreeSet<UnitId> {
+        self.by_source.keys().map(|s| s.unit).collect()
+    }
+
     /// Whether the inverse index is exactly what the entries imply: every
     /// source of every entry points at it and nothing else is indexed.
     pub fn index_is_exact(&self) -> bool {

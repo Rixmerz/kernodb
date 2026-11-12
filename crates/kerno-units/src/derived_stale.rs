@@ -514,15 +514,19 @@ impl<E: TxnEngine> DerivedChangeSet<'_, E> {
         }
         let heads: BTreeMap<UnitId, RevNo> = info.revisions.iter().map(|r| (r.unit, r.rev)).collect();
         for (unit, head) in heads {
+            if self.deleted.contains(&unit) {
+                // A deletion removes every datum that has the unit among its
+                // sources, whatever its other sources (E8-05, acta §5.3).
+                crate::suppression::remove_dependents_of_unit(&mut inner, unit);
+                continue;
+            }
             for id in inner.registry.dependents_of_unit(unit) {
                 if inner.persisted.contains(&id) {
-                    // Persisted data: a deletion removed them in the commit; a
-                    // change left `Ready` only what is computed from the new
-                    // head, which is what the transaction wrote.
+                    // Persisted data: a change left `Ready` only what is
+                    // computed from the new head, which is what the
+                    // transaction wrote.
                     let from = inner.registry.descriptor(&id).and_then(|d| d.sources().find(|s| s.unit == unit));
-                    if self.deleted.contains(&unit) {
-                        inner.forget(&id);
-                    } else if from.is_some_and(|s| s.rev != head)
+                    if from.is_some_and(|s| s.rev != head)
                         && inner.registry.transition(&id, DerivedState::Stale).is_ok()
                     {
                         inner.vectors.remove(&id);
