@@ -1,5 +1,6 @@
 //! E9-11: `UnitError::is_locked` tells a held database from a damaged one,
-//! and a `DerivedStaleError` about a source names the unit, not its content.
+//! and a `DerivedStaleError` names the unit or datum it is about, not its
+//! content.
 //! Every test runs on both engines.
 
 mod harness;
@@ -78,6 +79,39 @@ fn a_missing_source_is_named_by_its_unit_id<E: Target>() {
     db.close().unwrap();
 }
 
+/// E8 F-02: after a rebuild, building again over the same sources finds the
+/// rebuilt datum; the message says so and names it by its id.
+fn building_again_after_a_rebuild_names_the_rebuilt_datum<E: Target>() {
+    let disk = SimVfs::new(1);
+    let db = DerivedDb::open(open_units::<E>(disk.as_vfs(), &cfg()).expect("open"), Vec::new(), &compute).unwrap().0;
+    let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
+    let a = cs
+        .create(NewUnit { unit_type: "doc".into(), schema_version: 1, metadata: vec![], payload: SECRET.to_vec() })
+        .unwrap();
+    cs.commit().unwrap();
+    let first = db.build([a], "x", 1, BTreeMap::new(), &compute).unwrap();
+
+    let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
+    cs.update(a, UnitUpdate { payload: b"SECRET-2".to_vec(), schema_version: None, metadata: None }, None).unwrap();
+    cs.commit().unwrap();
+    let rebuilt = db.rebuild(&first, &compute).unwrap();
+    assert_ne!(rebuilt, first);
+
+    let err = db.build([a], "x", 1, BTreeMap::new(), &compute).unwrap_err();
+    assert!(matches!(err, DerivedStaleError::Derived(DerivedError::Duplicate(id)) if id == rebuilt), "{err:?}");
+    let hex: String = rebuilt.0.iter().map(|b| format!("{b:02x}")).collect();
+    let text = err.to_string();
+    assert_eq!(
+        text,
+        format!(
+            "derived datum {hex} already exists over these source revisions (built or rebuilt earlier); \
+             read it by this id instead of building it again"
+        )
+    );
+    assert!(!text.contains("SECRET"), "{text}");
+    db.close().unwrap();
+}
+
 macro_rules! engines {
     ($($name:ident: $engine:ty),*) => {$(
         mod $name {
@@ -89,6 +123,10 @@ macro_rules! engines {
             #[test]
             fn a_missing_source_is_named_by_its_unit_id() {
                 super::a_missing_source_is_named_by_its_unit_id::<E>();
+            }
+            #[test]
+            fn building_again_after_a_rebuild_names_the_rebuilt_datum() {
+                super::building_again_after_a_rebuild_names_the_rebuilt_datum::<E>();
             }
         }
     )*};

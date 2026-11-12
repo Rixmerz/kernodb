@@ -586,21 +586,32 @@ fn every_error_says_what_it_is_without_naming_content() {
     let id = DerivedId([7; 32]);
     let inner = DerivedError::Unknown(id);
     let unit = UnitError::ChangeSetClosed;
+    let hex = "07".repeat(32);
     let cases = [
-        (DerivedStaleError::Derived(inner.clone()), inner.to_string()),
+        (DerivedStaleError::Derived(inner.clone()), format!("no derived datum has the id {hex}")),
+        (DerivedStaleError::Derived(DerivedError::EmptySources), DerivedError::EmptySources.to_string()),
+        (
+            DerivedStaleError::Derived(DerivedError::IllegalTransition {
+                id,
+                from: DerivedState::Ready,
+                to: DerivedState::Ready,
+            }),
+            format!("derived datum {hex} cannot go from Ready to Ready"),
+        ),
         (DerivedStaleError::Unit(UnitError::ChangeSetClosed), unit.to_string()),
         (
             DerivedStaleError::MissingSource(UnitId([1; 16])),
             "source unit 01010101010101010101010101010101 does not exist or is deleted".into(),
         ),
         (DerivedStaleError::NoValidSources(id), "no source of the derived datum is valid any more".into()),
-        (DerivedStaleError::ComputeFailed(id), "the derived value could not be computed".into()),
+        (DerivedStaleError::ComputeFailed(id), format!("the value of derived datum {hex} could not be computed")),
+        (DerivedStaleError::Persisted(id), format!("derived datum {hex} is persisted; use the vector methods")),
     ];
     for (e, text) in &cases {
         assert_eq!(&e.to_string(), text);
     }
-    assert_eq!(cases[0].1, "no derived datum has this identity");
-    assert_eq!(cases[1].1, "the change set is closed");
+    assert_eq!(cases[1].1, "a derived datum needs at least one source");
+    assert_eq!(cases[3].1, "the change set is closed");
 }
 
 macro_rules! engines {

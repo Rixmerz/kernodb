@@ -85,15 +85,45 @@ pub enum DerivedStaleError {
     ComputeFailed(DerivedId),
 }
 
+/// A derived id as lower-case hex, 64 digits: ids may appear in messages,
+/// content never does (I-37).
+struct IdHex<'a>(&'a DerivedId);
+
+impl fmt::Display for IdHex<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.0.iter().try_for_each(|b| write!(f, "{b:02x}"))
+    }
+}
+
 impl fmt::Display for DerivedStaleError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            // The identity covers the source revisions, so building again over
+            // sources a rebuild already used finds the rebuilt datum (E8 F-02).
+            DerivedStaleError::Derived(DerivedError::Duplicate(id)) => write!(
+                f,
+                "derived datum {} already exists over these source revisions (built or rebuilt earlier); \
+                 read it by this id instead of building it again",
+                IdHex(id)
+            ),
+            DerivedStaleError::Derived(DerivedError::Unknown(id)) => {
+                write!(f, "no derived datum has the id {}", IdHex(id))
+            }
+            DerivedStaleError::Derived(DerivedError::IllegalTransition { id, from, to }) => {
+                write!(f, "derived datum {} cannot go from {from:?} to {to:?}", IdHex(id))
+            }
             DerivedStaleError::Derived(e) => e.fmt(f),
             DerivedStaleError::Unit(e) => e.fmt(f),
             DerivedStaleError::MissingSource(unit) => write!(f, "source unit {unit} does not exist or is deleted"),
-            DerivedStaleError::Persisted(_) => f.write_str("the derived datum is persisted; use the vector methods"),
+            DerivedStaleError::Persisted(id) => {
+                write!(f, "derived datum {} is persisted; use the vector methods", IdHex(id))
+            }
+            // ponytail: no id here; tests/consolidation.rs pins this exact text
+            // through ConsolidationError. Add the id together with that test.
             DerivedStaleError::NoValidSources(_) => f.write_str("no source of the derived datum is valid any more"),
-            DerivedStaleError::ComputeFailed(_) => f.write_str("the derived value could not be computed"),
+            DerivedStaleError::ComputeFailed(id) => {
+                write!(f, "the value of derived datum {} could not be computed", IdHex(id))
+            }
         }
     }
 }
