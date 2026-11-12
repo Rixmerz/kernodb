@@ -114,7 +114,7 @@ Comunes a todos los paquetes con código: `cargo fmt --all --check`; `cargo clip
 | Fallos críticos resueltos o marcados como bloqueantes | Cada hallazgo se registra en el informe de E9A-06 | pendiente |
 | I-29 verificada | E9A-02 (solo `kerno-storage`). Las observaciones de la Etapa 5 ya las cubre I-37 y ADR-0015 | pendiente |
 | I-27, I-28, I-30 verificadas | Fuera de esta acta (§2.3) | pendiente, Etapa 9 |
-| Fuzzing de entradas externas | E9A-03 en el árbol; E9A-04 con cobertura, aprobado el 2026-11-11 | pendiente |
+| Fuzzing de entradas externas | E9A-03 en el árbol; E9A-04 con cobertura, aprobado el 2026-11-11. Umbral de 30 minutos por objetivo cumplido el 2026-11-12: 15 objetivos, cero fallos, ninguna entrada de más de 1 s ([resultados](../../crates/kerno-storage/fuzz/README.md)) | hecho, a falta del cierre E9A-06 |
 | Pruebas de estrés | E9A-05, además de las pruebas que ya existen (§2.2) | pendiente |
 | ADR-0009 antes de la Etapa 8 | E9A-00b | **hecho el 2026-11-12**: ADR-0009 aceptado con la opción 3 |
 
