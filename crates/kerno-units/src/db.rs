@@ -637,6 +637,70 @@ impl<E: TxnEngine> UnitDb<E> {
     }
 }
 
+/// Accessors that return data from the engine underneath, so a caller that
+/// needs the stored bytes does not need [`UnitDb::engine`] (E9-08a). None of
+/// them hands out the engine; `raw_commit` writes below the layer on purpose,
+/// for tests that damage stored bytes.
+impl<E: TxnEngine> UnitDb<E> {
+    /// A read-only view of the raw keys and values at the current commit.
+    #[doc(hidden)]
+    pub fn raw_snapshot(&self) -> Result<E::Snapshot, UnitError> {
+        self.engine.snapshot().map_err(UnitError::from)
+    }
+
+    /// The value stored under a raw key now, `None` when absent.
+    #[doc(hidden)]
+    pub fn raw_get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, UnitError> {
+        self.raw_snapshot()?.get(key).map_err(UnitError::from)
+    }
+
+    /// The engine's last commit sequence.
+    #[doc(hidden)]
+    pub fn raw_seq(&self) -> Result<u64, UnitError> {
+        Ok(self.raw_snapshot()?.seq())
+    }
+
+    /// Writes raw entries in one engine commit (`None` deletes the key),
+    /// bypassing the layer's checks and indexes. Returns the commit sequence.
+    #[doc(hidden)]
+    pub fn raw_commit(&self, entries: Vec<(Vec<u8>, Option<Vec<u8>>)>) -> Result<u64, UnitError> {
+        let mut batch = kerno_core::WriteBatch::new();
+        for (k, v) in entries {
+            match v {
+                Some(v) => batch.put(k, v),
+                None => batch.delete(k),
+            };
+        }
+        self.engine.commit(&batch).map_err(UnitError::from)
+    }
+
+    /// The engine's counters by name.
+    pub fn engine_stats(&self) -> Vec<(String, u64)> {
+        self.engine.stats()
+    }
+}
+
+/// Engine test hooks as methods of the layer, for the engines that have them.
+impl<E: TxnEngine + kerno_core::contract::TestHooks> UnitDb<E> {
+    /// Flushes the memtable to a table.
+    #[doc(hidden)]
+    pub fn engine_flush(&self) -> Result<(), UnitError> {
+        self.engine.flush().map_err(UnitError::from)
+    }
+
+    /// Blocks until no background work is running or queued.
+    #[doc(hidden)]
+    pub fn engine_wait_idle(&self) -> Result<(), UnitError> {
+        self.engine.wait_idle().map_err(UnitError::from)
+    }
+
+    /// Compacts the raw key range `[start, end)` of the engine.
+    #[doc(hidden)]
+    pub fn engine_compact_range(&self, start: Bound<&[u8]>, end: Bound<&[u8]>) -> Result<(), UnitError> {
+        self.engine.compact_range(start, end).map_err(UnitError::from)
+    }
+}
+
 impl<E: TxnEngine + SyncEngine> UnitDb<E> {
     /// The engine's durability barrier (I-17): returns the durable sequence.
     pub fn sync(&self) -> Result<u64, UnitError> {
@@ -1552,4 +1616,60 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
 
     /// Discards the change set (same as dropping it).
     pub fn abort(self) {}
+}
+
+#[cfg(test)]
+mod accessor_tests {
+    use super::*;
+    use kerno_testkit::emulated::Emulated;
+    use kerno_testkit::reference::LogEngine;
+    use kerno_testkit::vfs::SimVfs;
+
+    fn open<E: TxnEngine>(disk: &SimVfs) -> UnitDb<E> {
+        let cfg = UnitConfig::default();
+        let engine = E::open(disk.as_vfs(), Path::new("db"), &cfg.engine).expect("open engine");
+        UnitDb::from_engine(engine, &cfg).expect("open layer")
+    }
+
+    fn raw_accessors<E: TxnEngine>() {
+        let disk = SimVfs::new(0);
+        let db = open::<E>(&disk);
+        let k = b"\xf0raw-key".to_vec();
+        assert_eq!(db.raw_get(&k).unwrap(), None);
+        let before = db.raw_seq().unwrap();
+        let seq = db.raw_commit(vec![(k.clone(), Some(b"v1".to_vec()))]).unwrap();
+        assert!(seq > before, "a raw commit moves the sequence");
+        assert_eq!(db.raw_seq().unwrap(), seq);
+        assert_eq!(db.raw_get(&k).unwrap(), Some(b"v1".to_vec()));
+        // A snapshot taken before a later raw commit keeps its view.
+        let held = db.raw_snapshot().unwrap();
+        db.raw_commit(vec![(k.clone(), None)]).unwrap();
+        assert_eq!(held.get(&k).unwrap(), Some(b"v1".to_vec()));
+        assert_eq!(db.raw_get(&k).unwrap(), None);
+        drop(held);
+        db.close().unwrap();
+    }
+
+    #[test]
+    fn raw_accessors_emulated_log() {
+        raw_accessors::<Emulated<LogEngine>>();
+    }
+
+    #[test]
+    fn raw_accessors_kerno_db() {
+        raw_accessors::<kerno_storage::KernoDb>();
+    }
+
+    #[test]
+    fn hooks_reach_the_engine_kerno_db() {
+        let disk = SimVfs::new(0);
+        let db = open::<kerno_storage::KernoDb>(&disk);
+        db.raw_commit(vec![(b"\xf0a".to_vec(), Some(b"1".to_vec()))]).unwrap();
+        db.engine_flush().unwrap();
+        db.engine_wait_idle().unwrap();
+        db.engine_compact_range(Bound::Unbounded, Bound::Unbounded).unwrap();
+        assert_eq!(db.raw_get(b"\xf0a").unwrap(), Some(b"1".to_vec()));
+        assert!(db.engine_stats().iter().any(|(_, v)| *v > 0), "a flushed engine reports counters");
+        db.close().unwrap();
+    }
 }
