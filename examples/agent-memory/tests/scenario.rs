@@ -211,16 +211,108 @@ fn files_containing(dir: &Path, needle: &[u8]) -> Vec<String> {
     hits
 }
 
-/// Characterisation of FRICTION.md item 4: forgetting is logical. If the
-/// library ever offers physical erasure through `DerivedDb`, this test is the
-/// one to turn around.
+/// Characterisation of FRICTION.md item 4: forgetting is logical, and
+/// retention alone does not rewrite the live files. `reclaim` (next test) is
+/// what moves that moment, and it promises no more than ADR-0009 option 3.
 #[test]
 fn forgotten_text_stays_in_the_files_after_retention() {
-    let dir = scratch("erase");
+    let dir = scratch("forgotten");
     let (mem, _) = open(&dir);
     let a = mem.remember("zzmarkerzz must not survive", &[], None).unwrap();
     mem.forget(a).unwrap();
     assert!(mem.prune_history().unwrap() > 0);
     mem.close().unwrap();
     assert!(!files_containing(&dir, b"zzmarkerzz").is_empty());
+}
+
+/// Names and sizes of the files of `dir`, sorted: what the engine holds live.
+fn listing(dir: &Path) -> Vec<(String, u64)> {
+    let mut out: Vec<(String, u64)> = fs::read_dir(dir)
+        .unwrap()
+        .map(|e| {
+            let e = e.unwrap();
+            (e.file_name().to_string_lossy().into_owned(), e.metadata().unwrap().len())
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// `reclaim` compacts the live files: the listing of the directory changes and
+/// the logical state does not. Replacing `AgentMemory::reclaim` by `Ok(())`
+/// leaves the listing as it was, so this test fails.
+#[test]
+fn reclaim_rewrites_the_live_files_and_leaves_the_logical_state() {
+    let dir = scratch("reclaim");
+    let (mem, _) = open(&dir);
+    let ids: Vec<u64> = (0..6).map(|i| store(&mem, &format!("note number {i} about the staging token"))).collect();
+    mem.close().unwrap();
+    // A second session writes a second set of files, so there is something to merge.
+    let (mem, _) = open(&dir);
+    mem.forget(ids[1]).unwrap();
+    mem.forget(ids[4]).unwrap();
+    mem.correct(ids[0], "note zero was corrected").unwrap();
+    mem.prune_history().unwrap();
+    mem.close().unwrap();
+
+    let (mem, _) = open(&dir);
+    let before_files = listing(&dir);
+    let before_state = mem.all().unwrap();
+    let before_hits = recall(&mem, "staging token", 9);
+    mem.reclaim().unwrap();
+    let after_files = listing(&dir);
+    assert_ne!(before_files, after_files, "reclaim left the live files as they were");
+    assert_eq!(mem.all().unwrap(), before_state);
+    assert_eq!(recall(&mem, "staging token", 9), before_hits);
+    assert!(matches!(mem.get(ids[1]), Err(Error::NotFound(_))));
+    mem.close().unwrap();
+}
+
+#[test]
+fn a_second_open_of_the_same_directory_is_reported_as_locked() {
+    let dir = scratch("locked");
+    let (mem, _) = open(&dir);
+    let clock = Arc::new(FixedClock::stepping(Timestamp(T0), 1_000_000));
+    let err = AgentMemory::open(&dir, clock, Embedder::default()).err().expect("second open must fail");
+    assert!(err.is_locked(), "{err}");
+    assert!(!Error::Invalid("x".into()).is_locked());
+    mem.close().unwrap();
+}
+
+#[test]
+fn a_vector_of_another_dimension_is_refused_and_nothing_is_written() {
+    let dir = scratch("dim");
+    let (mem, _) = open(&dir);
+    assert!(mem.remember("x", &[], Some(vec![1.0; 63])).is_err());
+    assert!(mem.all().unwrap().is_empty());
+    let a = mem.remember("y", &[], None).unwrap();
+    assert!(mem.attach_vector(a, vec![1.0; 3]).is_err());
+    assert_eq!(mem.vector_status(a).unwrap(), VectorStatus::None);
+    mem.close().unwrap();
+}
+
+#[test]
+fn history_shows_the_previous_revision_and_the_catalog_is_pruned() {
+    let dir = scratch("history");
+    let (mem, _) = open(&dir);
+    let a = store(&mem, "first wording");
+    mem.correct(a, "second wording").unwrap();
+    let texts: Vec<String> = mem.history(a).unwrap().into_iter().map(|m| m.text).collect();
+    assert_eq!(texts, ["second wording", "first wording"]);
+    assert!(mem.catalog_revisions().unwrap() > 1);
+    mem.prune_history().unwrap();
+    assert_eq!(mem.catalog_revisions().unwrap(), 1);
+    assert_eq!(mem.history(a).unwrap().len(), 1);
+    assert!(matches!(mem.history(999), Err(Error::NotFound(999))));
+    mem.close().unwrap();
+}
+
+#[test]
+fn the_catalog_number_is_not_a_memory() {
+    let dir = scratch("catalog-number");
+    let (mem, _) = open(&dir);
+    assert!(matches!(mem.get(1), Err(Error::NotFound(1))));
+    assert!(matches!(mem.forget(1), Err(Error::NotFound(1))));
+    assert!(matches!(mem.summarize(&[1]), Err(Error::NotFound(1))));
+    mem.close().unwrap();
 }
