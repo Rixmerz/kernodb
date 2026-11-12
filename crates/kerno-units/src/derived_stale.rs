@@ -77,6 +77,9 @@ pub enum DerivedStaleError {
     MissingSource(UnitId),
     /// None of the sources of this datum is valid any more.
     NoValidSources(DerivedId),
+    /// The datum is persisted: it changes through the vector methods, which
+    /// write the database (ADR-0020).
+    Persisted(DerivedId),
     /// The compute function returned nothing; the datum is `failed`.
     ComputeFailed(DerivedId),
 }
@@ -87,6 +90,7 @@ impl fmt::Display for DerivedStaleError {
             DerivedStaleError::Derived(e) => e.fmt(f),
             DerivedStaleError::Unit(e) => e.fmt(f),
             DerivedStaleError::MissingSource(_) => f.write_str("a source unit does not exist or is deleted"),
+            DerivedStaleError::Persisted(_) => f.write_str("the derived datum is persisted; use the vector methods"),
             DerivedStaleError::NoValidSources(_) => f.write_str("no source of the derived datum is valid any more"),
             DerivedStaleError::ComputeFailed(_) => f.write_str("the derived value could not be computed"),
         }
@@ -111,21 +115,50 @@ impl From<UnitError> for DerivedStaleError {
 /// in order. A revision is immutable and identifies its content, so the
 /// content hash adds nothing to the identity and is not hashed.
 pub fn input_hash(inputs: &[SourceInput]) -> [u8; 32] {
+    let ids: Vec<RevisionId> = inputs.iter().map(|i| i.id).collect();
+    input_hash_of_ids(&ids)
+}
+
+/// [`input_hash`] over the revisions alone (ADR-0020 §C.2).
+pub(crate) fn input_hash_of_ids(ids: &[RevisionId]) -> [u8; 32] {
     let mut h = blake3::Hasher::new();
     h.update(INPUT_DOMAIN);
-    h.update(&(inputs.len() as u64).to_le_bytes());
-    for i in inputs {
-        h.update(&i.id.unit.0);
-        h.update(&i.id.rev.0.to_le_bytes());
+    h.update(&(ids.len() as u64).to_le_bytes());
+    for i in ids {
+        h.update(&i.unit.0);
+        h.update(&i.rev.0.to_le_bytes());
     }
     *h.finalize().as_bytes()
 }
 
 #[derive(Default)]
-struct Inner {
-    registry: DerivedRegistry,
+pub(crate) struct Inner {
+    pub(crate) registry: DerivedRegistry,
     /// The value of each `ready` datum; nothing else is kept.
-    values: BTreeMap<DerivedId, Vec<u8>>,
+    pub(crate) values: BTreeMap<DerivedId, Vec<u8>>,
+    /// The vector of each `ready` persisted datum (E8-04).
+    pub(crate) vectors: BTreeMap<DerivedId, Vec<f32>>,
+    /// The data whose descriptor is in the database (E8-04): the registry
+    /// mirrors it, and a change set keeps the two in step.
+    pub(crate) persisted: BTreeSet<DerivedId>,
+}
+
+impl Inner {
+    /// Drops `id` from the registry and from every map.
+    pub(crate) fn forget(&mut self, id: &DerivedId) {
+        let _ = self.registry.remove(id);
+        self.values.remove(id);
+        self.vectors.remove(id);
+        self.persisted.remove(id);
+    }
+}
+
+/// What a committed change set did to the persisted derived data it wrote;
+/// applied to the registry after the commit.
+pub(crate) enum Pending {
+    Put { desc: DerivedDescriptor, vector: Vec<f32> },
+    Supersede { old: DerivedId },
+    Remove { old: DerivedId },
 }
 
 /// A unit database and the registry of the data derived from it.
@@ -140,11 +173,16 @@ struct Inner {
 /// }
 /// ```
 pub struct DerivedDb<E: TxnEngine> {
-    db: UnitDb<E>,
+    pub(crate) db: UnitDb<E>,
     inner: Mutex<Inner>,
 }
 
 impl<E: TxnEngine> DerivedDb<E> {
+    /// An empty registry over `db`.
+    pub(crate) fn wrap(db: UnitDb<E>) -> Self {
+        DerivedDb { db, inner: Mutex::new(Inner::default()) }
+    }
+
     /// Wraps `db` and rebuilds the registry for `known` (see the module
     /// documentation, "Reopening"). `compute` recomputes the data that are
     /// still current.
@@ -189,7 +227,12 @@ impl<E: TxnEngine> DerivedDb<E> {
     /// Starts a change set whose commit marks the dependent derived data
     /// stale.
     pub fn begin_changeset(&self, meta: ChangeMeta) -> Result<DerivedChangeSet<'_, E>, UnitError> {
-        Ok(DerivedChangeSet { cs: self.db.begin_changeset(meta)?, owner: self })
+        Ok(DerivedChangeSet {
+            cs: self.db.begin_changeset(meta)?,
+            owner: self,
+            pending: Vec::new(),
+            deleted: BTreeSet::new(),
+        })
     }
 
     pub fn state(&self, id: &DerivedId) -> Option<DerivedState> {
@@ -235,6 +278,9 @@ impl<E: TxnEngine> DerivedDb<E> {
     pub fn rebuild(&self, id: &DerivedId, compute: Compute<'_>) -> Result<DerivedId, DerivedStaleError> {
         let mut inner = self.lock();
         let state = inner.registry.state(id).ok_or(DerivedError::Unknown(*id))?;
+        if inner.persisted.contains(id) {
+            return Err(DerivedStaleError::Persisted(*id));
+        }
         if !state.can_become(DerivedState::Building) {
             return Err(DerivedError::IllegalTransition { id: *id, from: state, to: DerivedState::Building }.into());
         }
@@ -268,6 +314,9 @@ impl<E: TxnEngine> DerivedDb<E> {
     ) -> Result<DerivedId, DerivedStaleError> {
         let mut inner = self.lock();
         let state = inner.registry.state(old).ok_or(DerivedError::Unknown(*old))?;
+        if inner.persisted.contains(old) {
+            return Err(DerivedStaleError::Persisted(*old));
+        }
         if !state.can_become(DerivedState::Superseded) {
             return Err(DerivedError::IllegalTransition { id: *old, from: state, to: DerivedState::Superseded }.into());
         }
@@ -283,13 +332,13 @@ impl<E: TxnEngine> DerivedDb<E> {
         Self::finish(&mut inner, id, &desc, &inputs, compute)
     }
 
-    fn lock(&self) -> MutexGuard<'_, Inner> {
+    pub(crate) fn lock(&self) -> MutexGuard<'_, Inner> {
         // A panic in a compute function leaves the datum `building`, which is
         // a state the registry can leave: the data are still consistent.
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn read_input(&self, unit: UnitId) -> Result<Option<SourceInput>, UnitError> {
+    pub(crate) fn read_input(&self, unit: UnitId) -> Result<Option<SourceInput>, UnitError> {
         Ok(self.db.get_unit(unit)?.and_then(|u| {
             let payload = u.payload?;
             Some(SourceInput { id: RevisionId { unit, rev: u.head }, content_hash: u.content_hash, payload })
@@ -305,11 +354,11 @@ impl<E: TxnEngine> DerivedDb<E> {
         Ok(out)
     }
 
-    fn valid_inputs(&self, d: &DerivedDescriptor) -> Result<Vec<SourceInput>, UnitError> {
+    pub(crate) fn valid_inputs(&self, d: &DerivedDescriptor) -> Result<Vec<SourceInput>, UnitError> {
         self.read_inputs(d.sources().map(|s| s.unit).collect())
     }
 
-    fn describe(
+    pub(crate) fn describe(
         inputs: &[SourceInput],
         method: &str,
         version: u32,
@@ -366,8 +415,13 @@ impl<E: TxnEngine> DerivedDb<E> {
 /// }
 /// ```
 pub struct DerivedChangeSet<'a, E: TxnEngine> {
-    cs: ChangeSet<'a, E>,
+    pub(crate) cs: ChangeSet<'a, E>,
     owner: &'a DerivedDb<E>,
+    /// Persisted derived data written by this change set (E8-04), applied to
+    /// the registry once it commits.
+    pub(crate) pending: Vec<Pending>,
+    /// Units this change set deletes: their persisted derived data go with them.
+    deleted: BTreeSet<UnitId>,
 }
 
 impl<E: TxnEngine> DerivedChangeSet<'_, E> {
@@ -393,7 +447,9 @@ impl<E: TxnEngine> DerivedChangeSet<'_, E> {
     }
 
     pub fn delete(&mut self, id: UnitId, expected: Option<RevNo>) -> Result<RevNo, UnitError> {
-        self.cs.delete(id, expected)
+        let rev = self.cs.delete(id, expected)?;
+        self.deleted.insert(id);
+        Ok(rev)
     }
 
     pub fn restore(&mut self, id: UnitId, from: RevNo, expected: Option<RevNo>) -> Result<RevNo, UnitError> {
@@ -433,9 +489,46 @@ impl<E: TxnEngine> DerivedChangeSet<'_, E> {
         // made deterministic.
         let mut inner = self.owner.lock();
         let info = self.cs.commit()?;
-        let units: BTreeSet<UnitId> = info.revisions.iter().map(|r| r.unit).collect();
-        for unit in units {
+        // The persisted data changed in the commit itself (ADR-0020 §S3); the
+        // registry follows what that transaction wrote.
+        for p in self.pending {
+            match p {
+                Pending::Remove { old } => inner.forget(&old),
+                Pending::Supersede { old } => {
+                    // The commit is the truth; a registry that was behind it is
+                    // rebuilt from the database on the next open.
+                    let _ = inner.registry.transition(&old, DerivedState::Superseded);
+                    inner.vectors.remove(&old);
+                }
+                Pending::Put { desc, vector } => {
+                    let id = desc.id();
+                    inner.forget(&id);
+                    if inner.registry.register(desc).is_ok()
+                        && inner.registry.transition(&id, DerivedState::Ready).is_ok()
+                    {
+                        inner.persisted.insert(id);
+                        inner.vectors.insert(id, vector);
+                    }
+                }
+            }
+        }
+        let heads: BTreeMap<UnitId, RevNo> = info.revisions.iter().map(|r| (r.unit, r.rev)).collect();
+        for (unit, head) in heads {
             for id in inner.registry.dependents_of_unit(unit) {
+                if inner.persisted.contains(&id) {
+                    // Persisted data: a deletion removed them in the commit; a
+                    // change left `Ready` only what is computed from the new
+                    // head, which is what the transaction wrote.
+                    let from = inner.registry.descriptor(&id).and_then(|d| d.sources().find(|s| s.unit == unit));
+                    if self.deleted.contains(&unit) {
+                        inner.forget(&id);
+                    } else if from.is_some_and(|s| s.rev != head)
+                        && inner.registry.transition(&id, DerivedState::Stale).is_ok()
+                    {
+                        inner.vectors.remove(&id);
+                    }
+                    continue;
+                }
                 // `ready` and `building` may become stale (DerivedState::can_become);
                 // `stale`, `failed` and `superseded` data have nothing to mark,
                 // so the refusal of those transitions is the answer, not an error.

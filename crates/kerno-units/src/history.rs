@@ -877,7 +877,8 @@ impl<E: Engine> UnitSnapshot<E> {
     }
 
     fn change_set_info(&self, seq: CommitSeq, raw: &[u8]) -> Result<ChangeSetInfo, UnitError> {
-        let rec = ChangeSetRecord::decode(raw).map_err(|e| context(e, &format!("CHANGESET {seq}")))?;
+        let rec = ChangeSetRecord::decode_upto(raw, crate::codec::MAX_LAYER_VERSION)
+            .map_err(|e| context(e, &format!("CHANGESET {seq}")))?;
         let mut start = vec![TAG_CS_MEMBER];
         start.extend_from_slice(&seq.0.to_be_bytes());
         let mut end = start.clone();

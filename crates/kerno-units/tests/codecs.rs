@@ -241,7 +241,8 @@ proptest! {
     fn changeset_round_trip(c in valid_changeset(), s in 1..=u64::MAX) {
         let rec = Record::ChangeSet { seq: CommitSeq(s), record: c };
         let (k, v) = rec.encode().unwrap();
-        prop_assert_eq!(Record::decode(&k, &v).unwrap(), rec);
+        // Purpose `Derived` exists from layer version 2 (ADR-0020).
+        prop_assert_eq!(Record::decode_upto(&k, &v, kerno_units::codec::MAX_LAYER_VERSION).unwrap(), rec);
     }
 
     #[test]

@@ -123,8 +123,10 @@ byte_enum!(
     /// `CHANGESET.purpose`. `Relation` marks an application change set that
     /// only creates or deletes relations (no members, E4-02); `Index` one that
     /// only writes derived-index records (no members, E4-03). The layer
-    /// records both, a caller never passes them.
-    Purpose { Application = 0, Retention = 1, Maintenance = 2, Relation = 3, Index = 4 }
+    /// records both, a caller never passes them. `Derived` (layer 2, ADR-0020)
+    /// is a change set that only writes persisted-derived records, with no
+    /// members.
+    Purpose { Application = 0, Retention = 1, Maintenance = 2, Relation = 3, Index = 4, Derived = 5 }
 );
 
 /// The name the design uses (§6.3).
