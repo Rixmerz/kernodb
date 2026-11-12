@@ -110,4 +110,4 @@ Workloads con recorridos de más de dos saltos dominantes, o nodos con más de 1
 
 ## Nota de E4-00 (2026-11-04)
 
-Sigue *Propuesto*. La decisión final sale del prototipo de E4-02. Semántica aprobada por el propietario para unidades archivadas o borradas con relaciones vivas: **rechazo** de la operación (relajable más adelante a cascada o relación colgante marcada).
+Estaba *Propuesto* en esa fecha. La decisión final sale del prototipo de E4-02, que la aceptó el 2026-11-05 (opción 2). Semántica aprobada por el propietario para unidades archivadas o borradas con relaciones vivas: **rechazo** de la operación (relajable más adelante a cascada o relación colgante marcada).

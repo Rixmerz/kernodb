@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | Propuesto (aplicado en M0) |
+| Estado | Aceptado (2026-11-12, por delegación del propietario, revocable; [acta de la Etapa 9](../architecture/etapa9-acta.md) §8.1, D5). Estaba *Propuesto* y aplicado en M0 |
 | Fecha | 2026-10-27 |
 | Relacionado con | SAD §17.3–17.6, §18, ADR-0001, riesgos R-S1, R-S3, R-S4 |
 
@@ -11,6 +11,8 @@
 ADR-0001 debe decidirse con evidencia comparable. Un benchmark mal planteado (durabilidad distinta, datos distintos, una sola ejecución, solo medianas) puede producir la decisión equivocada con apariencia de rigor.
 
 ## Decisión
+
+Aceptado el 2026-11-12 tal como está, opción (a) de D5 en el [acta de la Etapa 9](../architecture/etapa9-acta.md) §8.1. El texto de esta decisión no cambia con la aceptación.
 
 Toda medición que respalde una decisión de arquitectura sigue estas reglas, implementadas en [`spikes/storage/spike-bench`](../../spikes/storage/spike-bench):
 
