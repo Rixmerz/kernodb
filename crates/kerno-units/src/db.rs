@@ -501,6 +501,12 @@ impl<E: TxnEngine> UnitDb<E> {
         &self.cache
     }
 
+    /// The engine underneath, for this crate's own modules only. Nothing
+    /// outside the crate can reach it (rule 9 of the Stage 9 acta).
+    pub(crate) fn inner_engine(&self) -> &E {
+        &self.engine
+    }
+
     pub(crate) fn check_poisoned(&self) -> Result<(), UnitError> {
         if self.poisoned.load(Ordering::SeqCst) {
             return Err(UnitError::Storage(kerno_core::Error::Poisoned(

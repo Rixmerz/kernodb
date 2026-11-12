@@ -36,7 +36,7 @@ impl<E: TxnEngine + Reclaim> UnitDb<E> {
     /// change set. An engine error comes back as [`UnitError::Storage`].
     pub fn reclaim(&self) -> Result<(), UnitError> {
         self.check_poisoned()?;
-        Reclaim::compact_range(self.engine(), Bound::Unbounded, Bound::Unbounded)?;
+        Reclaim::compact_range(self.inner_engine(), Bound::Unbounded, Bound::Unbounded)?;
         Ok(())
     }
 }
