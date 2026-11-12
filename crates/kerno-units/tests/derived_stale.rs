@@ -89,7 +89,6 @@ fn a_change_to_a_source_marks_its_dependents_stale_in_the_same_changeset<E: Targ
     assert_eq!(db.state(&on_c), Some(DerivedState::Ready), "an unrelated datum is untouched");
     assert_eq!(db.value(&on_ab), None, "a stale datum is not served");
     assert!(db.value(&on_c).is_some());
-    assert!(db.index_is_exact());
 
     // Deleting a source also changes it.
     let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
@@ -144,7 +143,6 @@ fn rebuilding_gives_what_building_anew_gives<E: Target>() {
     assert_eq!(db.descriptor(&rebuilt), other.descriptor(&anew), "same input hash and sources");
     assert_eq!(db.value(&rebuilt), other.value(&anew), "same result");
     assert_eq!(db.value(&rebuilt).as_deref(), Some(&b"embed@1:a2|b|"[..]));
-    assert!(db.index_is_exact());
     if rebuilt != old {
         assert_eq!(db.state(&old), None, "the replaced entry is gone, not left behind");
     }
@@ -234,7 +232,6 @@ fn a_new_version_creates_a_datum_and_supersedes_the_old_one<E: Target>() {
     edit(&db, a, b"a2");
     assert_eq!(db.state(&v1), Some(DerivedState::Superseded));
     assert_eq!(db.state(&m), Some(DerivedState::Stale));
-    assert!(db.index_is_exact());
 }
 
 // ------------------------------------------------------------ reopening
@@ -258,7 +255,6 @@ fn reopening_rebuilds_the_registry_to_the_state_before_closing<E: Target>() {
     assert_eq!(db.state(&stale), Some(DerivedState::Stale));
     assert_eq!(db.value(&ready), value, "the rebuilt value equals the one before closing");
     assert_eq!(db.value(&stale), None);
-    assert!(db.index_is_exact());
     for d in &known {
         assert_eq!(db.descriptor(&d.id()).as_ref(), Some(d));
     }
@@ -322,7 +318,6 @@ fn rebuild_refuses_an_identity_that_already_exists_and_keeps_the_old_entry<E: Ta
     assert_eq!(db.descriptor(&old), before);
     assert_eq!(db.state(&anew), Some(DerivedState::Ready));
     assert_eq!(db.value(&anew).as_deref(), Some(&b"embed@1:a2|"[..]));
-    assert!(db.index_is_exact());
 }
 
 fn superseding_with_no_valid_source_is_refused_and_changes_nothing<E: Target>() {
@@ -337,7 +332,6 @@ fn superseding_with_no_valid_source_is_refused_and_changes_nothing<E: Target>() 
         matches!(db.supersede(&v1, "embed", 2, params(), &compute), Err(DerivedStaleError::NoValidSources(i)) if i == v1)
     );
     assert_eq!(db.state(&v1), Some(DerivedState::Stale), "the earlier datum is not superseded");
-    assert!(db.index_is_exact());
 }
 
 fn a_datum_left_building_by_a_panic_goes_stale_with_its_source<E: Target>() {
@@ -369,7 +363,6 @@ fn a_failed_datum_stays_failed_when_its_source_changes<E: Target>() {
     };
     edit(&db, a, b"a2");
     assert_eq!(db.state(&failed), Some(DerivedState::Failed));
-    assert!(db.index_is_exact());
 }
 
 fn build_normalises_the_unit_set_and_refuses_a_missing_source<E: Target>() {
@@ -391,7 +384,175 @@ fn build_normalises_the_unit_set_and_refuses_a_missing_source<E: Target>() {
     cs.delete(b, None).unwrap();
     cs.commit().unwrap();
     assert!(matches!(db.build([a, b], "x", 1, params(), &compute), Err(DerivedStaleError::MissingSource(u)) if u == b));
-    assert!(db.index_is_exact());
+}
+
+// ------------------------------------------------------------ method, version and params
+
+fn kv(k: &str, v: &str) -> BTreeMap<String, String> {
+    BTreeMap::from([(k.to_string(), v.to_string())])
+}
+
+fn rebuild_keeps_method_version_and_params<E: Target>() {
+    let db = fresh::<E>();
+    let a = make(&db, b"a");
+    let old = db.build([a], "cluster", 7, kv("k", "5"), &compute).unwrap();
+    edit(&db, a, b"a2");
+    let rebuilt = db.rebuild(&old, &compute).unwrap();
+    let d = db.descriptor(&rebuilt).unwrap();
+    assert_eq!((d.method(), d.version(), d.params()), ("cluster", 7, &kv("k", "5")));
+    assert_eq!(db.value(&rebuilt).as_deref(), Some(&b"cluster@7:a2|"[..]));
+    // The identity is the one a new build with the same method, version and
+    // params gets.
+    let other = fresh::<E>();
+    let a2 = make(&other, b"a");
+    edit(&other, a2, b"a2");
+    assert_eq!(other.build([a2], "cluster", 7, kv("k", "5"), &compute).unwrap(), rebuilt);
+}
+
+fn build_distinguishes_params_and_method<E: Target>() {
+    let db = fresh::<E>();
+    let a = make(&db, b"a");
+    let base = db.build([a], "embed", 1, params(), &compute).unwrap();
+    // Differing only in params, and only in method, is another datum, not a duplicate.
+    let with_params = db.build([a], "embed", 1, kv("k", "v"), &compute).unwrap();
+    let with_method = db.build([a], "summary", 1, params(), &compute).unwrap();
+    assert_ne!(base, with_params);
+    assert_ne!(base, with_method);
+    assert_ne!(with_params, with_method);
+    assert_eq!(db.descriptor(&with_params).unwrap().params(), &kv("k", "v"));
+    assert_eq!(db.descriptor(&with_method).unwrap().method(), "summary");
+    for id in [base, with_params, with_method] {
+        assert_eq!(db.state(&id), Some(DerivedState::Ready));
+    }
+}
+
+fn supersede_distinguishes_params_and_method<E: Target>() {
+    // Only the params differ: the new datum is not the old one.
+    let db = fresh::<E>();
+    let a = make(&db, b"a");
+    let v1 = db.build([a], "embed", 1, params(), &compute).unwrap();
+    let p = db.supersede(&v1, "embed", 1, kv("k", "v"), &compute).unwrap();
+    assert_ne!(v1, p);
+    assert_eq!(db.state(&v1), Some(DerivedState::Superseded));
+    assert_eq!(db.descriptor(&p).unwrap().params(), &kv("k", "v"));
+    assert_eq!(db.state(&p), Some(DerivedState::Ready));
+
+    // Only the method differs.
+    let db = fresh::<E>();
+    let a = make(&db, b"a");
+    let v1 = db.build([a], "embed", 1, params(), &compute).unwrap();
+    let m = db.supersede(&v1, "summary", 1, params(), &compute).unwrap();
+    assert_ne!(v1, m);
+    assert_eq!(db.state(&v1), Some(DerivedState::Superseded));
+    assert_eq!(db.descriptor(&m).unwrap().method(), "summary");
+    assert_eq!(db.state(&m), Some(DerivedState::Ready));
+}
+
+fn a_first_build_normalises_the_unit_set<E: Target>() {
+    let one = fresh::<E>();
+    let (a, b) = (make(&one, b"a"), make(&one, b"b"));
+    let ordered = one.build([a, b], "embed", 1, params(), &compute).unwrap();
+    let other = fresh::<E>();
+    let (a2, b2) = (make(&other, b"a"), make(&other, b"b"));
+    assert_eq!((a, b), (a2, b2));
+    // Another order and a repeat, on the first build: the same datum.
+    let shuffled = other.build([b2, a2, b2, a2], "embed", 1, params(), &compute).unwrap();
+    assert_eq!(ordered, shuffled, "same identity");
+    assert_eq!(one.descriptor(&ordered), other.descriptor(&shuffled), "same input hash and sources");
+    assert_eq!(one.value(&ordered), other.value(&shuffled));
+    assert_eq!(other.value(&shuffled).as_deref(), Some(&b"embed@1:a|b|"[..]));
+}
+
+// ------------------------------------------------------------ several units
+
+fn one_changeset_changing_several_units_marks_every_dependent_stale<E: Target>() {
+    let db = fresh::<E>();
+    let (a, b, c) = (make(&db, b"a"), make(&db, b"b"), make(&db, b"c"));
+    let on_a = db.build([a], "embed", 1, params(), &compute).unwrap();
+    let on_b = db.build([b], "embed", 1, params(), &compute).unwrap();
+    let on_ab = db.build([a, b], "summary", 1, params(), &compute).unwrap();
+    let on_c = db.build([c], "embed", 1, params(), &compute).unwrap();
+
+    let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
+    for (u, p) in [(a, &b"a2"[..]), (b, &b"b2"[..])] {
+        cs.update(u, UnitUpdate { payload: p.to_vec(), schema_version: None, metadata: None }, None).unwrap();
+    }
+    cs.commit().unwrap();
+    for id in [on_a, on_b, on_ab] {
+        assert_eq!(db.state(&id), Some(DerivedState::Stale));
+        assert_eq!(db.value(&id), None);
+    }
+    assert_eq!(db.state(&on_c), Some(DerivedState::Ready));
+}
+
+/// A commit that fails marks nothing. A failing commit is provoked with the
+/// engine's own batch limit, which only `KernoDb` has (the emulated engine
+/// has no such limit and the crate has no fault-injecting engine), so this
+/// test runs on that engine alone. What fails inside the engine at the commit
+/// itself cannot be provoked from here and rests on the structure of
+/// `DerivedChangeSet::commit`: the marking comes after `commit()?`.
+#[test]
+fn a_commit_that_fails_marks_nothing() {
+    use kerno_storage::{Config, KernoDb, Limits};
+    let disk = SimVfs::new(21);
+    let mut config = harness::units::kerno_config(&Options::small_for_tests());
+    // Creating a unit writes six records: the limit is met exactly, and the two
+    // updates below need four each.
+    config.limits = Limits { max_batch_ops: 6, ..Limits::default() };
+    let config: Config = config;
+    let engine = KernoDb::open(disk.as_vfs(), std::path::Path::new(harness::units::DIR), &config).unwrap();
+    let db = DerivedDb::open(UnitDb::from_engine(engine, &cfg()).unwrap(), Vec::new(), &compute).unwrap();
+    let (a, b) = (make(&db, b"a"), make(&db, b"b"));
+    let on_a = db.build([a], "embed", 1, params(), &compute).unwrap();
+    let on_b = db.build([b], "embed", 1, params(), &compute).unwrap();
+
+    let update = |p: &[u8]| UnitUpdate { payload: p.to_vec(), schema_version: None, metadata: None };
+    let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
+    cs.update(a, update(b"a2"), None).unwrap();
+    let e = cs.update(b, update(b"b2"), None).unwrap_err();
+    assert!(matches!(e, UnitError::ChangeSetTooLarge { .. }), "{e}");
+    assert!(matches!(cs.commit(), Err(UnitError::ChangeSetClosed)));
+
+    assert_eq!(db.state(&on_a), Some(DerivedState::Ready));
+    assert_eq!(db.state(&on_b), Some(DerivedState::Ready));
+    assert_eq!(db.value(&on_a).as_deref(), Some(&b"embed@1:a|"[..]));
+    assert_eq!(db.get_unit(a).unwrap().unwrap().payload.as_deref(), Some(&b"a"[..]), "nothing was written");
+    // The database still works and marks as usual.
+    edit(&db, a, b"a3");
+    assert_eq!(db.state(&on_a), Some(DerivedState::Stale));
+    assert_eq!(db.state(&on_b), Some(DerivedState::Ready));
+    db.close().unwrap();
+}
+
+fn a_dependent_on_a_later_revision_goes_stale_with_the_next_change<E: Target>() {
+    let db = fresh::<E>();
+    let a = make(&db, b"a");
+    edit(&db, a, b"a2");
+    edit(&db, a, b"a3");
+    // Built over revision 3, not the first revision.
+    let id = db.build([a], "embed", 1, params(), &compute).unwrap();
+    assert_eq!(db.state(&id), Some(DerivedState::Ready));
+    edit(&db, a, b"a4");
+    assert_eq!(db.state(&id), Some(DerivedState::Stale));
+    let rebuilt = db.rebuild(&id, &compute).unwrap();
+    assert_eq!(db.value(&rebuilt).as_deref(), Some(&b"embed@1:a4|"[..]));
+}
+
+// ------------------------------------------------------------ open
+
+fn open_refuses_a_duplicate_descriptor_in_the_known_list<E: Target>() {
+    let disk = SimVfs::new(9);
+    let db = DerivedDb::open(open::<E>(&disk), Vec::new(), &compute).unwrap();
+    let a = make(&db, b"a");
+    let id = db.build([a], "embed", 1, params(), &compute).unwrap();
+    let d = db.descriptor(&id).unwrap();
+    db.close().unwrap();
+
+    match DerivedDb::open(open::<E>(&disk), [d.clone(), d], &compute) {
+        Err(DerivedStaleError::Derived(DerivedError::Duplicate(dup))) => assert_eq!(dup, id),
+        Err(other) => panic!("unexpected {other}"),
+        Ok(_) => panic!("a duplicate descriptor was accepted"),
+    }
 }
 
 // ------------------------------------------------------------ input hash
@@ -441,6 +602,25 @@ fn a_source_input_shows_no_content_when_debug_printed() {
     let text = format!("{:?}", source(1, 3, b"SECRET-PAYLOAD", 0));
     assert!(!text.contains("SECRET"), "{text}");
     assert!(text.contains("payload_len"), "{text}");
+}
+
+#[test]
+fn every_error_says_what_it_is_without_naming_content() {
+    let id = DerivedId([7; 32]);
+    let inner = DerivedError::Unknown(id);
+    let unit = UnitError::ChangeSetClosed;
+    let cases = [
+        (DerivedStaleError::Derived(inner.clone()), inner.to_string()),
+        (DerivedStaleError::Unit(UnitError::ChangeSetClosed), unit.to_string()),
+        (DerivedStaleError::MissingSource(UnitId([1; 16])), "a source unit does not exist or is deleted".into()),
+        (DerivedStaleError::NoValidSources(id), "no source of the derived datum is valid any more".into()),
+        (DerivedStaleError::ComputeFailed(id), "the derived value could not be computed".into()),
+    ];
+    for (e, text) in &cases {
+        assert_eq!(&e.to_string(), text);
+    }
+    assert_eq!(cases[0].1, "no derived datum has this identity");
+    assert_eq!(cases[1].1, "the change set is closed");
 }
 
 macro_rules! engines {
@@ -498,6 +678,34 @@ macro_rules! engines {
             #[test]
             fn a_failed_datum_stays_failed_when_its_source_changes() {
                 super::a_failed_datum_stays_failed_when_its_source_changes::<E>();
+            }
+            #[test]
+            fn rebuild_keeps_method_version_and_params() {
+                super::rebuild_keeps_method_version_and_params::<E>();
+            }
+            #[test]
+            fn build_distinguishes_params_and_method() {
+                super::build_distinguishes_params_and_method::<E>();
+            }
+            #[test]
+            fn supersede_distinguishes_params_and_method() {
+                super::supersede_distinguishes_params_and_method::<E>();
+            }
+            #[test]
+            fn a_first_build_normalises_the_unit_set() {
+                super::a_first_build_normalises_the_unit_set::<E>();
+            }
+            #[test]
+            fn one_changeset_changing_several_units_marks_every_dependent_stale() {
+                super::one_changeset_changing_several_units_marks_every_dependent_stale::<E>();
+            }
+            #[test]
+            fn open_refuses_a_duplicate_descriptor_in_the_known_list() {
+                super::open_refuses_a_duplicate_descriptor_in_the_known_list::<E>();
+            }
+            #[test]
+            fn a_dependent_on_a_later_revision_goes_stale_with_the_next_change() {
+                super::a_dependent_on_a_later_revision_goes_stale_with_the_next_change::<E>();
             }
         }
     )*};

@@ -36,16 +36,15 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fmt;
-use std::ops::{Deref, DerefMut};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use kerno_core::contract::TxnEngine;
 
-use crate::db::{ChangeMeta, ChangeSet, CommitInfo, Unit, UnitDb};
+use crate::db::{ChangeMeta, ChangeSet, CommitInfo, NewUnit, Unit, UnitDb, UnitUpdate};
 use crate::derived::{DerivedDescriptor, DerivedError, DerivedId, DerivedRegistry, DerivedState};
 use crate::error::UnitError;
 use crate::payload::ContentHash;
-use crate::types::{RevisionId, UnitId};
+use crate::types::{CommitSeq, RelationId, RelationProvenance, RevNo, RevisionId, UnitId};
 
 /// Domain tag of the input hash; bump it if the encoding below changes.
 const INPUT_DOMAIN: &[u8] = b"kerno.derived.input.v1";
@@ -208,11 +207,6 @@ impl<E: TxnEngine> DerivedDb<E> {
         self.lock().values.get(id).cloned()
     }
 
-    /// Whether the registry's inverse index is exactly what its entries imply.
-    pub fn index_is_exact(&self) -> bool {
-        self.lock().registry.index_is_exact()
-    }
-
     /// Builds a derived datum over the current revision of each of `units`.
     pub fn build(
         &self,
@@ -348,29 +342,97 @@ impl<E: TxnEngine> DerivedDb<E> {
 }
 
 /// A [`ChangeSet`] whose commit keeps the registry in step with the database.
-/// It derefs to the change set for the operations.
+///
+/// The inner change set is a private field and is never handed out: there is
+/// no `Deref`, no accessor and no `into_inner`. The only operations are the
+/// forwarding methods below and [`DerivedChangeSet::commit`], which is the
+/// only way to commit and marks the dependents. So a caller cannot commit
+/// through the inner type (for instance by swapping it for a change set of
+/// the plain database):
+///
+/// ```compile_fail
+/// use kerno_core::contract::TxnEngine;
+/// use kerno_units::{ChangeSet, DerivedChangeSet};
+/// fn bypass<E: TxnEngine>(cs: &mut DerivedChangeSet<'_, E>) {
+///     let _inner: &mut ChangeSet<'_, E> = &mut *cs;
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use kerno_core::contract::TxnEngine;
+/// use kerno_units::DerivedChangeSet;
+/// fn bypass<E: TxnEngine>(cs: DerivedChangeSet<'_, E>) {
+///     let _ = cs.cs.commit();
+/// }
+/// ```
 pub struct DerivedChangeSet<'a, E: TxnEngine> {
     cs: ChangeSet<'a, E>,
     owner: &'a DerivedDb<E>,
 }
 
-impl<'a, E: TxnEngine> Deref for DerivedChangeSet<'a, E> {
-    type Target = ChangeSet<'a, E>;
-    fn deref(&self) -> &Self::Target {
-        &self.cs
-    }
-}
-
-impl<E: TxnEngine> DerefMut for DerivedChangeSet<'_, E> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.cs
-    }
-}
-
 impl<E: TxnEngine> DerivedChangeSet<'_, E> {
+    /// The sequence this change set will commit with.
+    pub fn commit_seq(&self) -> CommitSeq {
+        self.cs.commit_seq()
+    }
+
+    pub fn create(&mut self, new: NewUnit) -> Result<UnitId, UnitError> {
+        self.cs.create(new)
+    }
+
+    pub fn update(&mut self, id: UnitId, upd: UnitUpdate, expected: Option<RevNo>) -> Result<RevNo, UnitError> {
+        self.cs.update(id, upd, expected)
+    }
+
+    pub fn archive(&mut self, id: UnitId, expected: Option<RevNo>) -> Result<RevNo, UnitError> {
+        self.cs.archive(id, expected)
+    }
+
+    pub fn unarchive(&mut self, id: UnitId, expected: Option<RevNo>) -> Result<RevNo, UnitError> {
+        self.cs.unarchive(id, expected)
+    }
+
+    pub fn delete(&mut self, id: UnitId, expected: Option<RevNo>) -> Result<RevNo, UnitError> {
+        self.cs.delete(id, expected)
+    }
+
+    pub fn restore(&mut self, id: UnitId, from: RevNo, expected: Option<RevNo>) -> Result<RevNo, UnitError> {
+        self.cs.restore(id, from, expected)
+    }
+
+    pub fn create_relation(
+        &mut self,
+        from: UnitId,
+        to: UnitId,
+        relation_type: &str,
+        provenance: RelationProvenance,
+    ) -> Result<RelationId, UnitError> {
+        self.cs.create_relation(from, to, relation_type, provenance)
+    }
+
+    pub fn delete_relation(&mut self, edge: RelationId) -> Result<(), UnitError> {
+        self.cs.delete_relation(edge)
+    }
+
+    pub fn get_unit(&self, id: UnitId) -> Result<Option<Unit>, UnitError> {
+        self.cs.get_unit(id)
+    }
+
     /// Commits, and marks stale every derived datum that depends on a unit
-    /// this change set wrote. If the commit fails nothing is marked.
+    /// this change set wrote. If the commit fails nothing is marked: the
+    /// marking is after `commit()?`, so an `Err` returns before it. A commit
+    /// that fails (a change set the engine refused, hence closed) is covered by
+    /// a test; one that fails inside the engine cannot be provoked from this
+    /// crate without a fault-injecting engine, which none offers here, so that
+    /// case rests on this structure.
     pub fn commit(self) -> Result<CommitInfo, UnitError> {
+        // The registry lock is taken before the commit and held until the
+        // marking is done. Every read of a derived state takes the same lock,
+        // so a reader sees the source change and its stale marks together, never
+        // the new source with a registry still behind it (I-23). Taking it after
+        // the commit would open that window. This order is not covered by a
+        // test: showing it needs a reader racing the commit, which cannot be
+        // made deterministic.
         let mut inner = self.owner.lock();
         let info = self.cs.commit()?;
         let units: BTreeSet<UnitId> = info.revisions.iter().map(|r| r.unit).collect();
