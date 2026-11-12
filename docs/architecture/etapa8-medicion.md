@@ -65,6 +65,8 @@ Valores idénticos en `emulated_log` y `kerno_db` (la salida compara las 63 lín
 | **Q5** sin juzgar ≤ 10 % del top 10, en cada brazo | ≤ 10 % | simple 0,0 % (0 de 708); ranked 1,1 % (8 de 708); vector 0,0 % (0 de 250); hybrid 0,0 % (0 de 95); brute 0,0 % (0 de 250) | según brazo | **cumple** |
 | **Q6** | — | — | — | **no medido**: no es criterio de cierre de la Etapa 8 |
 
+**Q2, Q3 y Q4 dan 1,000 en el brazo con señal y también en el brazo sin ella.** Un valor perfecto en ambos brazos es un efecto techo: estas 25 consultas no distinguen un brazo de otro, así que los umbrales se cumplen pero la medición aporta poca evidencia de calidad. No se cambia el conjunto ni el umbral después de medir; queda como límite para el cierre.
+
 **Q4 no se cierra.** La salida lo dice: «met on the scopes that can be computed; NOT closed: 3 of 4 classes are not measurable». Una lectura secundaria (sin señal = orden simple) también da 1,000 frente a 0,990, y no sustituye a la primaria.
 
 **Q5 por clase** (informativo, ranked): `temporal` 5 sin juzgar de 243 posiciones, `provenance` 2 de 124, `combined` 1 de 246, `vector_neighbourhood` 0 de 95. Ninguna pasa del 10 % (la mayor es 2,1 %).
@@ -96,7 +98,7 @@ Las cifras de las tres clases sin vector son de los brazos sin señal; no son de
 
 Las tres invocaciones dan el veredicto «met» en su cierre; ninguna corrida se promedió ni se descartó. La carga media de 1 minuto antes de cada corrida estuvo entre 1,30 y 1,91 (máquina de 4 CPU), registrada en la salida.
 
-Qué muestra: el descriptor y su vector cuestan entre un 17 % y un 24 % más de tiempo de mediana por escritura (p50 entre 0,15 y 0,23 ms), bien por debajo del techo; y leer los vectores persistidos de la base reabierta no cuesta más que tenerlos en memoria. Qué no muestra: P2 compara dos búsquedas sobre el mismo `VectorSet` ya cargado (la lectura única de 20 000 vectores servidos tarda unos 10 a 11 ms y se informa aparte, no entra en el cociente); no dice nada del coste en frío de abrir la base (reabrir: 156 a 162 ms). En la invocación 3 los cocientes de P2 quedan en 0,92 porque el lado en memoria resultó más lento (≈ 1,95 ms frente a ≈ 1,80 ms), no porque el persistido sea más rápido: el cociente es de dos medianas ruidosas y su diferencia de ±8 % es de ruido de la máquina. Los p99 se imprimen y no tienen umbral.
+Qué muestra: el descriptor y su vector cuestan entre un 17 % y un 24 % más de tiempo de mediana por escritura (p50 entre 0,15 y 0,23 ms), bien por debajo del techo; y, una vez cargados, buscar sobre los vectores que vinieron de la base reabierta tarda lo mismo que buscar sobre los entregados en memoria. Qué no muestra: P2 no mide el coste de leer vectores persistidos, porque compara dos búsquedas sobre el mismo `VectorSet` ya cargado (la lectura única de 20 000 vectores servidos tarda unos 10 a 11 ms y se informa aparte, no entra en el cociente); no dice nada del coste en frío de abrir la base (reabrir: 156 a 162 ms). En la invocación 3 los cocientes de P2 quedan en 0,92 porque el lado en memoria resultó más lento (≈ 1,95 ms frente a ≈ 1,80 ms), no porque el persistido sea más rápido: el cociente es de dos medianas ruidosas y su diferencia de ±8 % es de ruido de la máquina. Los p99 se imprimen y no tienen umbral.
 
 ### 3.2 P3: invalidación, igualdad
 
