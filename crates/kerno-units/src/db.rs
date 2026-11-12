@@ -485,11 +485,6 @@ impl<E: TxnEngine> UnitDb<E> {
         }
     }
 
-    /// The engine underneath. Writing to it directly bypasses the layer.
-    pub fn engine(&self) -> &E {
-        &self.engine
-    }
-
     pub fn config(&self) -> &UnitConfig {
         &self.cfg
     }
