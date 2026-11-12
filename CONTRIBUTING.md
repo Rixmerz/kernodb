@@ -4,6 +4,7 @@
 
 - Documentación de arquitectura, ADR y planes: **español**.
 - Código, comentarios, mensajes de commit, nombres y documentación de API (`///`): **inglés**, como es habitual en el ecosistema Rust.
+- `README.md`: **inglés**.
 
 ## Antes de escribir código
 
