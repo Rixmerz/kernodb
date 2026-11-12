@@ -37,6 +37,7 @@ pub mod error;
 pub mod export;
 pub mod fingerprint;
 pub mod history;
+pub mod import;
 pub mod index;
 pub mod model;
 pub mod observation;
