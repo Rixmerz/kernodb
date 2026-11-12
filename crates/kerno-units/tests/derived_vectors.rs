@@ -2004,6 +2004,115 @@ fn every_byte_flip_of_the_records_is_handled<E: Target>() {
     }
 }
 
+// ------------- one change set that persists a vector and changes the source
+
+/// Persisted states of every descriptor, by source unit.
+fn persisted_states<E: Target>(db: &UnitDb<E>) -> Vec<(UnitId, VectorState)> {
+    scan_tag(db, TAG_DERIVED_DESC)
+        .into_iter()
+        .map(|(_, v)| {
+            let d = VectorDescriptor::decode(&v).unwrap();
+            (d.source.unit, d.state)
+        })
+        .collect()
+}
+
+/// A database still at layer version 1 holding the units `payloads`.
+fn v1_units<E: Target>(disk: &SimVfs, payloads: &[&[u8]]) -> Vec<UnitId> {
+    let (dd, _) = open_dd::<E>(disk);
+    let ids = payloads.iter().map(|p| make(&dd, p)).collect();
+    dd.close().unwrap();
+    let db = open_db::<E>(disk);
+    assert_eq!(mark_version(&db), Some(1));
+    ids
+}
+
+fn close_and_check<E: Target>(dd: DerivedDb<E>, disk: &SimVfs, ctx: &str) {
+    dd.close().unwrap();
+    check_no_ready_on_an_old_source::<E>(disk, ctx);
+}
+
+fn cs_persist_then_update<E: Target>() {
+    let disk = SimVfs::new(60);
+    let u = v1_units::<E>(&disk, &[b"a"])[0];
+    let (dd, _) = open_dd::<E>(&disk);
+    let mut cs = dd.begin_changeset(ChangeMeta::default()).unwrap();
+    let id = cs.put_vector(&spec(u, 1, b"a")).unwrap();
+    cs.update(u, UnitUpdate { payload: b"b".to_vec(), schema_version: None, metadata: None }, None).unwrap();
+    cs.commit().unwrap();
+    assert_eq!(dd.state(&id), Some(DerivedState::Stale));
+    dd.close().unwrap();
+    let db = open_db::<E>(&disk);
+    assert_eq!(persisted_states(&db), vec![(u, VectorState::Stale)]);
+    assert_eq!(mark_version(&db), Some(2));
+    drop(db);
+    check_no_ready_on_an_old_source::<E>(&disk, "persist then update");
+}
+
+fn cs_persist_then_delete<E: Target>() {
+    let disk = SimVfs::new(61);
+    let u = v1_units::<E>(&disk, &[b"a"])[0];
+    let (dd, _) = open_dd::<E>(&disk);
+    let mut cs = dd.begin_changeset(ChangeMeta::default()).unwrap();
+    let id = cs.put_vector(&spec(u, 1, b"a")).unwrap();
+    cs.delete(u, None).unwrap();
+    cs.commit().unwrap();
+    assert_eq!(dd.state(&id), None);
+    dd.close().unwrap();
+    let db = open_db::<E>(&disk);
+    assert_eq!(derived_keys(&db), 0, "no descriptor, vector or inverse-index entry");
+    clean(&db, "persist then delete");
+}
+
+fn cs_update_then_persist<E: Target>() {
+    let disk = SimVfs::new(62);
+    let u = v1_units::<E>(&disk, &[b"a"])[0];
+    let (dd, _) = open_dd::<E>(&disk);
+    let mut cs = dd.begin_changeset(ChangeMeta::default()).unwrap();
+    cs.update(u, UnitUpdate { payload: b"b".to_vec(), schema_version: None, metadata: None }, None).unwrap();
+    let id = cs.put_vector(&spec(u, 2, b"b")).unwrap();
+    cs.commit().unwrap();
+    assert_eq!(dd.state(&id), Some(DerivedState::Ready));
+    close_and_check::<E>(dd, &disk, "update then persist");
+    let db = open_db::<E>(&disk);
+    assert_eq!(persisted_states(&db), vec![(u, VectorState::Ready)]);
+}
+
+fn cs_delete_then_persist<E: Target>() {
+    let disk = SimVfs::new(63);
+    let u = v1_units::<E>(&disk, &[b"a"])[0];
+    let (dd, _) = open_dd::<E>(&disk);
+    let mut cs = dd.begin_changeset(ChangeMeta::default()).unwrap();
+    cs.delete(u, None).unwrap();
+    assert!(cs.put_vector(&spec(u, 1, b"a")).is_err(), "no vector over a deleted unit");
+    cs.commit().unwrap();
+    dd.close().unwrap();
+    let db = open_db::<E>(&disk);
+    assert_eq!(derived_keys(&db), 0);
+    assert_eq!(mark_version(&db), Some(1), "nothing derived was written: the mark stays");
+    clean(&db, "delete then persist");
+}
+
+fn cs_persist_two_change_one<E: Target>() {
+    let disk = SimVfs::new(64);
+    let us = v1_units::<E>(&disk, &[b"a", b"b"]);
+    let (dd, _) = open_dd::<E>(&disk);
+    let mut cs = dd.begin_changeset(ChangeMeta::default()).unwrap();
+    let ia = cs.put_vector(&spec(us[0], 1, b"a")).unwrap();
+    let ib = cs.put_vector(&spec(us[1], 1, b"b")).unwrap();
+    cs.update(us[0], UnitUpdate { payload: b"c".to_vec(), schema_version: None, metadata: None }, None).unwrap();
+    cs.commit().unwrap();
+    assert_eq!(dd.state(&ia), Some(DerivedState::Stale));
+    assert_eq!(dd.state(&ib), Some(DerivedState::Ready));
+    close_and_check::<E>(dd, &disk, "persist two, change one");
+    let db = open_db::<E>(&disk);
+    let mut got = persisted_states(&db);
+    got.sort_by_key(|(u, _)| u.0);
+    let mut want = vec![(us[0], VectorState::Stale), (us[1], VectorState::Ready)];
+    want.sort_by_key(|(u, _)| u.0);
+    assert_eq!(got, want);
+}
+
 macro_rules! tests {
     ($e:ty; $($name:ident),* $(,)?) => {
         $(
@@ -2062,6 +2171,11 @@ macro_rules! engines {
                 every_byte_flip_of_the_records_is_handled,
                 more_than_a_page_of_derived_data_is_all_seen,
                 a_source_change_goes_through_a_damaged_descriptor,
+                cs_persist_then_update,
+                cs_persist_then_delete,
+                cs_update_then_persist,
+                cs_delete_then_persist,
+                cs_persist_two_change_one,
             );
         }
     )*};

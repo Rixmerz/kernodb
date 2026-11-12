@@ -1002,7 +1002,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
     /// `kind` is written: stale marks for a change, removal for a deletion.
     /// Nothing for a database below layer version 2.
     fn derived_follow(&self, unit: UnitId, kind: RevisionKind) -> Result<Vec<Write>, UnitError> {
-        if self.layer_version < LAYER_VERSION_DERIVED {
+        if self.layer_version < LAYER_VERSION_DERIVED && self.derived_ops == 0 {
             return Ok(Vec::new());
         }
         let txn = self.txn()?;
