@@ -569,8 +569,9 @@ impl AgentMemory {
     }
 
     /// Drops every revision but the newest of every unit (retention), the
-    /// catalog's included (its type gets `KeepLast(1)` too, so it does not
-    /// grow with every write). The bytes of the dropped revisions stay in the
+    /// catalog's included. The catalog gains a revision on every write until
+    /// this runs; `set_policy` only takes a `HistoryPolicy`, which cannot
+    /// express `KeepLast(1)`, so the example does not call it. The bytes of the dropped revisions stay in the
     /// files until the engine compacts. Returns how many revisions were pruned.
     pub fn prune_history(&self) -> Result<u64> {
         let policy = RetentionPolicy::all(RetentionRule::KeepLast(1));

@@ -30,7 +30,7 @@ in this stage) or **held** (waits for an owner decision).
 | 12 | Partly (E9-11) | The `DerivedStaleError` message names the unit. The three error types remain (declared limit, D9). |
 | 13 | Declared limit (D9) | Opening still needs three crates and a trait object. |
 | 14 | In scope (E9-11); the item was false | `Error::Locked` was never lost: `UnitError::is_locked()` now says it, and `agent_memory::Error::is_locked()` passes it on (`a_second_open_of_the_same_directory_is_reported_as_locked`). |
-| 15 | Solved by the existing API | `prune_history` runs retention with `KeepLast(1)` for every type, the catalog's included, so the catalog does not grow (`history_shows_the_previous_revision_and_the_catalog_is_pruned`). |
+| 15 | Solved by the existing API | `prune_history` runs retention with `KeepLast(1)` for every type, the catalog's included. The catalog gains a revision per write until `prune_history` runs; `set_policy` takes a `HistoryPolicy`, which cannot express `KeepLast(1)`, so the example does not call it (`history_shows_the_previous_revision_and_the_catalog_is_pruned`). |
 
 ### Limit of the example: one engine
 
