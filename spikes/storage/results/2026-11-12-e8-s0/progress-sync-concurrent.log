@@ -1,0 +1,10 @@
+[1/10] tiny concurrent_commits kerno rep 0 ... 5.4s
+[2/10] tiny concurrent_commits sqlite rep 0 ... 75.7s
+[3/10] tiny concurrent_commits kerno rep 1 ... 6.7s
+[4/10] tiny concurrent_commits sqlite rep 1 ... 74.5s
+[5/10] tiny concurrent_commits kerno rep 2 ... 13.7s
+[6/10] tiny concurrent_commits sqlite rep 2 ... 69.1s
+[7/10] tiny concurrent_commits kerno rep 3 ... 9.6s
+[8/10] tiny concurrent_commits sqlite rep 3 ... 67.5s
+[9/10] tiny concurrent_commits kerno rep 4 ... 8.8s
+[10/10] tiny concurrent_commits sqlite rep 4 ... 63.0s
