@@ -6,8 +6,8 @@
 //! round by round so both see the same machine load.
 //!
 //! ```text
-//! cargo run --release -p kerno-units --example unit_bench            # full run
-//! cargo run --release -p kerno-units --example unit_bench -- --quick # CI smoke
+//! cargo run --release -p kerno-units --features test-support --example unit_bench            # full run
+//! cargo run --release -p kerno-units --features test-support --example unit_bench -- --quick # CI smoke
 //! ```
 //!
 //! Options: `--quick`, `--dir <path>` (default: the system temp dir),

@@ -669,7 +669,11 @@ impl<E: TxnEngine + TestHooks> UnitDb<E> {
     pub fn compact(&self) -> Result<CompactReport, UnitError> {
         self.check_poisoned()?;
         let before = stored_bytes(&self.storage_stats());
-        self.hook_compact_range(Bound::Included(&[TAG_REV_META]), Bound::Excluded(&[TAG_REV_PAYLOAD + 1]))?;
+        TestHooks::compact_range(
+            &self.engine,
+            Bound::Included(&[TAG_REV_META]),
+            Bound::Excluded(&[TAG_REV_PAYLOAD + 1]),
+        )?;
         let after = stored_bytes(&self.storage_stats());
         Ok(CompactReport { stored_bytes_before: before, stored_bytes_after: after })
     }

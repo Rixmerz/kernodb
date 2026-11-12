@@ -33,9 +33,9 @@
 //! thresholds are those of the Stage 6 acta (§6) and are not parameters.
 //!
 //! ```text
-//! cargo run --release -p kerno-units --example index_bench            # full
-//! cargo run --release -p kerno-units --example index_bench -- --quick # smoke
-//! cargo run --release -p kerno-units --example index_bench -- --cache # E6-04
+//! cargo run --release -p kerno-units --features test-support --example index_bench            # full
+//! cargo run --release -p kerno-units --features test-support --example index_bench -- --quick # smoke
+//! cargo run --release -p kerno-units --features test-support --example index_bench -- --cache # E6-04
 //! ```
 //!
 //! Options: `--quick`, `--cache`, `--dir <path>`, `--seed <u64>`.

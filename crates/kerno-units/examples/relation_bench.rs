@@ -17,8 +17,8 @@
 //! same neighbours (criterion 2); the run stops if they do not.
 //!
 //! ```text
-//! cargo run --release -p kerno-units --example relation_bench            # full
-//! cargo run --release -p kerno-units --example relation_bench -- --quick # smoke
+//! cargo run --release -p kerno-units --features test-support --example relation_bench            # full
+//! cargo run --release -p kerno-units --features test-support --example relation_bench -- --quick # smoke
 //! ```
 //!
 //! Options: `--quick`, `--dir <path>`, `--seed <u64>`.

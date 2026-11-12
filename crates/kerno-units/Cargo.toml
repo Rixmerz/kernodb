@@ -13,6 +13,15 @@ kerno-core.workspace = true
 crc32c.workspace = true
 blake3.workspace = true
 
+[features]
+# The raw write accessor (`UnitDb::raw_commit`) and the engine test hooks
+# (`hook_flush`, `hook_wait_idle`, `hook_compact_range`) of `UnitDb` (D23 of
+# etapa9-acta.md). Off by default: a production build has no write path below
+# the layer and no public physical-reclamation method besides `reclaim`. The
+# targets below that call them build only with it; plain `cargo test` skips
+# them, `cargo test --features test-support` (or `--all-features`) runs them.
+test-support = []
+
 [dev-dependencies]
 proptest.workspace = true
 kerno-testkit.workspace = true
@@ -20,3 +29,63 @@ kerno-testkit.workspace = true
 # `Emulated<LogEngine>` (etapa3-design.md §8, E3-03). The layer itself never
 # depends on it.
 kerno-storage.workspace = true
+
+[[test]]
+name = "assoc_indexed"
+required-features = ["test-support"]
+
+[[test]]
+name = "assoc_reference"
+required-features = ["test-support"]
+
+[[test]]
+name = "cache_sentinels"
+required-features = ["test-support"]
+
+[[test]]
+name = "derived_suppression"
+required-features = ["test-support"]
+
+[[test]]
+name = "derived_vectors"
+required-features = ["test-support"]
+
+[[test]]
+name = "history"
+required-features = ["test-support"]
+
+[[test]]
+name = "index"
+required-features = ["test-support"]
+
+[[test]]
+name = "relations"
+required-features = ["test-support"]
+
+[[test]]
+name = "retention"
+required-features = ["test-support"]
+
+[[test]]
+name = "sentinels"
+required-features = ["test-support"]
+
+[[test]]
+name = "unit_db"
+required-features = ["test-support"]
+
+[[test]]
+name = "verify"
+required-features = ["test-support"]
+
+[[example]]
+name = "index_bench"
+required-features = ["test-support"]
+
+[[example]]
+name = "relation_bench"
+required-features = ["test-support"]
+
+[[example]]
+name = "unit_bench"
+required-features = ["test-support"]
