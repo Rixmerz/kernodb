@@ -208,10 +208,14 @@ fn reclaim_changes_no_visible_state<E: Target + Reclaim>() {
 }
 
 /// I-1 and I-2 with `reclaim`: a snapshot taken before the delete keeps
-/// reading the unit after `reclaim`; later reads do not. On `KernoDb` the
-/// files are measured as well (T-RE1, T-RE2): with the snapshot open, the
-/// live files that hold the sentinel are among the files that existed when
-/// it was taken; after it is released and the database is closed, none.
+/// reading the unit after `reclaim`; later reads do not. Everything read
+/// right before `reclaim` (the unit, its vector and state, and the unit at
+/// the snapshot) reads the same right after it. On `KernoDb` the files are
+/// measured as well (T-RE1, T-RE2): with the snapshot open, the live files
+/// that hold the sentinel are among the files that existed when it was
+/// taken; after it is released and the database is closed, none. Without
+/// the file measurement (`emulated_log`), the test shows only that `reclaim`
+/// returns `Ok` and leaves the logical content unchanged.
 fn reclaim_keeps_what_a_snapshot_retains<E: Target + Reclaim>(hold: bool, measure_files: bool) {
     let disk = SimVfs::new(93 + u64::from(hold));
     let dd = open_dd::<E>(&disk);
@@ -226,7 +230,13 @@ fn reclaim_keeps_what_a_snapshot_retains<E: Target + Reclaim>(hold: bool, measur
     let held = hold.then(|| (db.snapshot().unwrap(), live_files(&disk)));
     let dd = DerivedDb::open_persisted(db).expect("open_persisted").0;
     delete(&dd, u);
+    let read = || {
+        let at_snapshot = held.as_ref().map(|(s, _)| s.get_unit(u).unwrap());
+        (dd.get_unit(u).unwrap(), dd.vector(&id), dd.state(&id), at_snapshot)
+    };
+    let before = read();
     dd.reclaim().unwrap();
+    assert_eq!(read(), before, "reclaim changed the logical content");
     assert!(dd.vector(&id).is_none(), "I-1: the vector is visible after the delete");
     assert!(dd.get_unit(u).unwrap().is_none_or(|x| x.lifecycle != Lifecycle::Active), "I-1: the unit is visible");
     if let Some((snap, at_snapshot)) = held {
@@ -311,8 +321,8 @@ fn kerno_db_reclaim_reports_an_engine_failure() {
     assert!(matches!(result, Err(UnitError::Storage(_))), "{result:?}");
 }
 
-/// An engine that names `Reclaim` without implementing it answers
-/// "unsupported" (R-E9-17), and the layer passes that on.
+/// The trait's default `compact_range`, on a type that names `Reclaim`
+/// without implementing it, answers "unsupported" (R-E9-17).
 #[test]
 fn the_default_compact_range_is_unsupported() {
     struct Bare;
