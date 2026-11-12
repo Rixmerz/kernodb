@@ -420,11 +420,9 @@ impl<E: TxnEngine> DerivedChangeSet<'_, E> {
 
     /// Commits, and marks stale every derived datum that depends on a unit
     /// this change set wrote. If the commit fails nothing is marked: the
-    /// marking is after `commit()?`, so an `Err` returns before it. A commit
-    /// that fails (a change set the engine refused, hence closed) is covered by
-    /// a test; one that fails inside the engine cannot be provoked from this
-    /// crate without a fault-injecting engine, which none offers here, so that
-    /// case rests on this structure.
+    /// marking is after `commit()?`, so an `Err` returns before it. A test
+    /// makes the data sync of the commit fail on the simulated disk and checks
+    /// that the datum stays ready.
     pub fn commit(self) -> Result<CommitInfo, UnitError> {
         // The registry lock is taken before the commit and held until the
         // marking is done. Every read of a derived state takes the same lock,

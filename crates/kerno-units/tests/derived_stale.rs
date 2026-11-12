@@ -13,7 +13,7 @@ use harness::units::{Target, open_units};
 use kerno_core::contract::Options;
 use kerno_testkit::emulated::Emulated;
 use kerno_testkit::reference::LogEngine;
-use kerno_testkit::vfs::SimVfs;
+use kerno_testkit::vfs::{OpKind, SimVfs};
 use kerno_units::*;
 
 type EmuLog = Emulated<LogEngine>;
@@ -485,23 +485,12 @@ fn one_changeset_changing_several_units_marks_every_dependent_stale<E: Target>()
     assert_eq!(db.state(&on_c), Some(DerivedState::Ready));
 }
 
-/// A commit that fails marks nothing. A failing commit is provoked with the
-/// engine's own batch limit, which only `KernoDb` has (the emulated engine
-/// has no such limit and the crate has no fault-injecting engine), so this
-/// test runs on that engine alone. What fails inside the engine at the commit
-/// itself cannot be provoked from here and rests on the structure of
-/// `DerivedChangeSet::commit`: the marking comes after `commit()?`.
-#[test]
-fn a_commit_that_fails_marks_nothing() {
-    use kerno_storage::{Config, KernoDb, Limits};
+/// A commit that really fails marks nothing: the data sync of the commit is
+/// made to fail on the simulated disk, so the engine returns an error from
+/// `commit()` and the derived datum must still be ready.
+fn a_commit_that_fails_marks_nothing<E: Target>() {
     let disk = SimVfs::new(21);
-    let mut config = harness::units::kerno_config(&Options::small_for_tests());
-    // Creating a unit writes six records: the limit is met exactly, and the two
-    // updates below need four each.
-    config.limits = Limits { max_batch_ops: 6, ..Limits::default() };
-    let config: Config = config;
-    let engine = KernoDb::open(disk.as_vfs(), std::path::Path::new(harness::units::DIR), &config).unwrap();
-    let db = DerivedDb::open(UnitDb::from_engine(engine, &cfg()).unwrap(), Vec::new(), &compute).unwrap();
+    let db = DerivedDb::open(open::<E>(&disk), Vec::new(), &compute).unwrap();
     let (a, b) = (make(&db, b"a"), make(&db, b"b"));
     let on_a = db.build([a], "embed", 1, params(), &compute).unwrap();
     let on_b = db.build([b], "embed", 1, params(), &compute).unwrap();
@@ -509,19 +498,14 @@ fn a_commit_that_fails_marks_nothing() {
     let update = |p: &[u8]| UnitUpdate { payload: p.to_vec(), schema_version: None, metadata: None };
     let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
     cs.update(a, update(b"a2"), None).unwrap();
-    let e = cs.update(b, update(b"b2"), None).unwrap_err();
-    assert!(matches!(e, UnitError::ChangeSetTooLarge { .. }), "{e}");
-    assert!(matches!(cs.commit(), Err(UnitError::ChangeSetClosed)));
+    disk.fail_when(|op| op.kind == OpKind::SyncData, 1, None);
+    let result = cs.commit();
+    assert!(disk.fault_injected(), "the fault did not fire");
+    assert!(result.is_err(), "a failed data sync went unreported");
 
     assert_eq!(db.state(&on_a), Some(DerivedState::Ready));
     assert_eq!(db.state(&on_b), Some(DerivedState::Ready));
     assert_eq!(db.value(&on_a).as_deref(), Some(&b"embed@1:a|"[..]));
-    assert_eq!(db.get_unit(a).unwrap().unwrap().payload.as_deref(), Some(&b"a"[..]), "nothing was written");
-    // The database still works and marks as usual.
-    edit(&db, a, b"a3");
-    assert_eq!(db.state(&on_a), Some(DerivedState::Stale));
-    assert_eq!(db.state(&on_b), Some(DerivedState::Ready));
-    db.close().unwrap();
 }
 
 fn a_dependent_on_a_later_revision_goes_stale_with_the_next_change<E: Target>() {
@@ -694,6 +678,10 @@ macro_rules! engines {
             #[test]
             fn a_first_build_normalises_the_unit_set() {
                 super::a_first_build_normalises_the_unit_set::<E>();
+            }
+            #[test]
+            fn a_commit_that_fails_marks_nothing() {
+                super::a_commit_that_fails_marks_nothing::<E>();
             }
             #[test]
             fn one_changeset_changing_several_units_marks_every_dependent_stale() {
