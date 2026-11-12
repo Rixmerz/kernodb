@@ -3,15 +3,17 @@
 | Campo | Valor |
 |---|---|
 | Fecha | 2026-11-12 |
-| Estado | **Propuesta, pendiente de aprobación del propietario.** No está aprobada, ni por delegación. Hasta que el propietario la apruebe no se escribe código de la Etapa 8 |
-| Acto | Propuesta de alcance, condiciones de inicio, decisiones y paquetes E8-S0 y E8-00 a E8-09 |
+| Estado | **Aprobada por el propietario el 2026-11-12**, con las decisiones D1 a D12 de §8.1 (D10 en opción b). Ver §0 |
+| Acto | Alcance, condiciones de inicio, decisiones y paquetes E8-S0 y E8-00 a E8-09 |
 | Documentos | [Roadmap, Etapa 8](../roadmap/README.md) · [acta de la Etapa 7](etapa7-acta.md) · [cierre de la Etapa 7](etapa7-cierre.md) · [medición de la Etapa 7](etapa7-medicion.md) · [ranking (E7-04)](etapa7-ranking.md) · [conjunto de evaluación de la Etapa 7](etapa7-conjunto-evaluacion.md) · [acta de adelanto de la Etapa 9](etapa9-adelanto-acta.md) · [ADR-0009](../adr/0009-supresion-retencion-y-backups.md) · [ADR-0011](../adr/0011-vectores-y-recuperacion-hibrida.md) · [ADR-0018](../adr/0018-versionado-y-reconstruccion-de-derivados.md) · [ADR-0003](../adr/0003-formato-fisico-y-versionado.md) · [ADR-0013](../adr/0013-formato-v1-y-protocolo-del-motor.md) · [ADR-0006](../adr/0006-cifrado-y-gestion-de-claves.md) · [invariantes](invariants.md) · [SAD §9, §10, §16](SAD.md) · [especificación v0.2.0 §10, §11, §14, §16](../spec/especificacion-arquitectonica-v0.2.0.md) |
 
 ## 0. Estado
 
-Esta acta es una **propuesta**. Describe el estado del repositorio tal como se leyó el 2026-11-12 y propone qué debe hacerse en la Etapa 8. No está aprobada por delegación: el propietario debe aprobarla o modificarla. Ningún paquete E8 arranca antes de esa aprobación, y ningún código de la Etapa 8 se escribe antes.
+Esta acta está **aprobada por el propietario el 2026-11-12**. Describe el estado del repositorio tal como se leyó el 2026-11-12 y qué debe hacerse en la Etapa 8. El propietario aprobó las decisiones D1 a D12 con la recomendación de cada una, salvo D10, donde eligió la opción (b); la elección de cada decisión está en §8.1.
 
-Lo que el propietario ya ha decidido y esta acta recoge (§1.1) no se vuelve a proponer. Lo que queda abierto está en §8.
+E8-00 queda hecho con esta aprobación. E8-S0 (informe SQLite, sin umbrales) sigue pendiente. Ningún código de la Etapa 8 se escribe sin pasar por E8-00.
+
+Lo que el propietario ya ha decidido y esta acta recoge (§1.1 y §8.1) no se vuelve a proponer.
 
 ## 1. Condiciones de inicio
 
@@ -19,16 +21,16 @@ La Etapa 8 depende de la 7 y de la 6 en el roadmap. Su condición de inicio es �
 
 | Condición | Estado leído el 2026-11-12 | Qué hace falta |
 |---|---|---|
-| Etapa 7 cerrada | Decisión del propietario de 2026-11-12, según el encargo: se aprueba el cierre. El documento [cierre de la Etapa 7](etapa7-cierre.md) §9 todavía dice «pendiente de aprobación» | Que el cierre diga «aprobado» con su fecha |
+| Etapa 7 cerrada | **Cumplida.** El propietario aprobó el cierre el 2026-11-12, y [cierre de la Etapa 7](etapa7-cierre.md) lo dice en su encabezado y en su §9 | Ninguna |
 | Etapa 6 cerrada | [Cierre](etapa6-cierre.md) aprobado por delegación el 2026-11-11; caché desactivada por defecto | Ninguna |
 | Ranking apagado por defecto y marcado como experimental | Cumplido en el código: `RankMode` tiene `Off` como variante por defecto (`crates/kerno-units/src/assoc_rank.rs`, `#[default]`). La decisión del propietario de 2026-11-12 la confirma | Que la documentación de la Etapa 8 lo diga con esas palabras (E8-08) |
-| ADR-0018 (versionado y reconstrucción de derivados) | **Propuesto** en el archivo (fecha de apertura 2026-10-28, decisión «pendiente»). La opción 2 es la propuesta | **Gate E8-00**: el propietario acepta la opción 2 con fecha, o la modifica |
-| ADR-0009 (supresión, retención y backups) | **Pendiente** en el archivo `docs/adr/0009-*.md` y en `docs/adr/README.md`. El propietario comunicó el 2026-11-12 que acepta la **opción 3** (ver §1.1). Otro trabajo está registrando esa decisión en los documentos; esta acta no la escribe | **Gate E8-00**: el archivo de ADR-0009 debe decir «Aceptado», con fecha y con la opción 3, antes de cerrar E8-00 |
+| ADR-0018 (versionado y reconstrucción de derivados) | **Aceptado** el 2026-11-12 con la opción 2 (registro común de derivados), en su archivo y en `docs/adr/README.md` | **Cumplida** (gate E8-00) |
+| ADR-0009 (supresión, retención y backups) | **Aceptado** el 2026-11-12 con la opción 3 (ver §1.1). Su archivo `docs/adr/0009-supresion-retencion-y-backups.md` y `docs/adr/README.md` dicen «Aceptado», con fecha y con la opción 3. Ese archivo registra la cláusula de conteo de C-4 como contradicha y B-1 sin plazo declarado | **Cumplida** (gate E8-00). El seguimiento de C-4 y B-1 está en el propio ADR |
 | Criterios de ADR-0009 fijados antes de medir | Cumplido: el texto de criterios está en ADR-0009, con fecha 2026-11-11, antes de cualquier ejecución de E9A-01 | Ninguna |
 | Supresión medida (E9A-01) | Existe `crates/kerno-storage/tests/suppression_survival.rs` y el commit `2bab299`. Su cabecera dice que las predicciones P1 a P4 se cumplen. Es una observación del comportamiento actual, no un contrato | Ninguna para E8; E8-05 la extiende a derivados |
 | Informe comparativo con SQLite, sin umbrales (decisión del propietario de 2026-11-11, punto 2) | **No existe.** `docs/testing/f1-report.md` menciona SQLite solo en su método y no contiene resultados. `docs/testing/` no tiene ningún informe con ese nombre | **Gate**: paquete E8-S0 (§3) antes de cerrar E8-00 |
 | Caso de uso real antes de 1.0 (decisión del propietario de 2026-11-11, punto 3) | No aplica a la entrada de la Etapa 8: es un requisito para 1.0 | Paquete E8-09 (§3), fuera del camino crítico de la Etapa 8 |
-| Decisión del propietario sobre reescribir T4 (cierre de la Etapa 7, §8.2) | **No consta** en lo que se recibió. Esta acta la trata como pendiente | Decisión del propietario (§8, D10). No bloquea esta etapa |
+| Decisión del propietario sobre reescribir T4 (cierre de la Etapa 7, §8.2) | **Decidida el 2026-11-12: opción (b).** T4 se deja como está en el acta de la Etapa 7 y no se reescribe | Ninguna (§8.1, D10) |
 
 ### 1.1 Decisiones del propietario que esta acta recoge
 
@@ -46,7 +48,7 @@ Del 2026-11-11 siguen vigentes: el informe SQLite se adelanta antes de la Etapa 
 
 1. **Registro común de derivados** (ADR-0018, opción 2): cada derivado tiene un descriptor con sus fuentes exactas (unidad y revisión), su método o modelo, su versión, sus parámetros, su estado (`ready`, `building`, `stale`, `failed`, `superseded`) y si es reconstruible.
 2. **Obsolescencia y reconstrucción por dependencia**: cambiar una fuente marca sus derivados como `stale` en el mismo `ChangeSet`. Reconstruir produce lo mismo que construir de nuevo (I-24).
-3. **Vectores como derivados**: persistir embeddings ligados a su revisión fuente y a su perfil de modelo (I-25). Solo si el propietario lo decide (§8, D2).
+3. **Vectores como derivados**: persistir embeddings ligados a su revisión fuente y a su perfil de modelo (I-25). Decidido por el propietario (§8.1, D2): sí, condicionado a que E8-03 pase.
 4. **Supresión de fuentes y derivados** según ADR-0009 opción 3 (§5.3).
 5. **Consolidación con procedencia**: un resumen es un derivado con sus fuentes. Nunca reemplaza el original auditable (spec §10).
 6. **Adaptadores fuera del núcleo** (I-31): el núcleo guarda el resultado y su descriptor; quien genera el embedding o el resumen es un adaptador o un job externo, con un contrato sin red en el núcleo.
@@ -66,7 +68,7 @@ Del 2026-11-11 siguen vigentes: el informe SQLite se adelanta antes de la Etapa 
 - **Búsqueda textual (BM25) y fusión híbrida.** Son de la capa de consulta y de otra fase (SAD §10.4).
 - **Modelos de embeddings o de resúmenes reales.** Están detrás de adaptadores (I-31). Esta etapa no llama a ningún modelo ni a ningún proveedor.
 - **Ranking por defecto.** Queda apagado (§1.1). Activarlo exige decisión posterior con un conjunto nuevo (§6.2, Q6).
-- **Relaciones inferidas.** La [acta de la Etapa 7](etapa7-acta.md) §2.3 las asignaba a la Etapa 8, pero el roadmap no las incluye entre los entregables de la Etapa 8. Esta acta las deja fuera. Si el propietario quiere incluirlas, es la decisión D8.
+- **Relaciones inferidas.** La [acta de la Etapa 7](etapa7-acta.md) §2.3 las asignaba a la Etapa 8, pero el roadmap no las incluye entre los entregables de la Etapa 8. Esta acta las deja fuera. El propietario decidió dejarlas fuera (D8, §8.1).
 - **Cifrado y borrado criptográfico.** ADR-0006 sigue pendiente. K-1 a K-4 de ADR-0009 no se aplican aquí.
 - **Exportación e importación** (I-30) y migraciones con fixtures: Etapa 9.
 - **Usar la caché de resultados en consultas asociativas**: fuera, como en la Etapa 7.
@@ -225,7 +227,7 @@ I-42 e I-43 son propuestas. Ninguna se promueve hasta que E8-08 la verifique y e
 
 ## 8. Decisiones que el propietario debe tomar
 
-Cada una tiene su recomendación. Ninguna la toma esta acta.
+Cada una tiene su recomendación. La elección del propietario de cada una está en §8.1, después de esta tabla.
 
 | # | Decisión | Opciones y consecuencias | Recomendación |
 |---|---|---|---|
@@ -242,7 +244,26 @@ Cada una tiene su recomendación. Ninguna la toma esta acta.
 | **D11** | Backups: ventana declarada (ADR-0009, B-1) | (a) Declarar que el motor no tiene función de backup y que el plazo de las copias no se promete. (b) Esperar a una función de backup antes de escribir la declaración | **(a)**. Es la única declaración verdadera hoy |
 | **D12** | Consolidación: alcance de E8 | (a) Solo el contrato de resumen como derivado, con un adaptador de prueba (E8-06). (b) Además, un resumidor real | **(a)**. Un resumidor real necesita un modelo, que la Etapa 8 no fija (D5) |
 
-Además, el propietario debe aprobar esta acta (§10) y confirmar que ADR-0018 y ADR-0009 quedan con su estado escrito antes de que E8-00 cierre.
+### 8.1 Elecciones del propietario (2026-11-12)
+
+El propietario aprobó esta acta el 2026-11-12 con la recomendación de cada decisión, salvo D10. D3 y D7 ya estaban decididas antes de esta aprobación, y se registran así.
+
+| # | Elección del propietario | Origen |
+|---|---|---|
+| **D1** | **(a)**: ADR-0018 aceptado con la opción 2 (registro común de derivados) | Aprobación de la acta, 2026-11-12, con la recomendación |
+| **D2** | **(a)**: los vectores se persisten en la Etapa 8 como derivados, con bit `incompat` y ADR nuevo (previsto como ADR-0020, §5.4). Condicionado a que E8-03 pase. El formato v1 congelado no se toca | Aprobación de la acta, 2026-11-12, con la recomendación |
+| **D3** | Ya decidida: ranking desactivado por defecto y marcado como experimental. Sin acción adicional | Decisión del propietario de 2026-11-12 (§1.1, punto 2) |
+| **D4** | **(a)**: umbrales Q1 a Q5 y P1 a P4 de §6 aprobados tal como están | Aprobación de la acta, 2026-11-12, con la recomendación |
+| **D5** | **(a)**: vectores deterministas con semilla, generados por una función de prueba. No se usa ningún modelo externo | Aprobación de la acta, 2026-11-12, con la recomendación |
+| **D6** | **(a)**: caso de uso real (E8-09) después de E8-05 y antes de 1.0 | Aprobación de la acta, 2026-11-12, con la recomendación |
+| **D7** | Ya decidida: informe SQLite sin umbrales (opción (a)) | Decisión del propietario de 2026-11-11 (roadmap, decisiones de 2026-11-11, punto 2). No es una decisión nueva |
+| **D8** | **(a)**: relaciones inferidas fuera de la Etapa 8 | Aprobación de la acta, 2026-11-12, con la recomendación |
+| **D9** | **(a)**: sin límite absoluto de latencia de búsqueda; solo comparaciones entre rutas (§6.3) | Aprobación de la acta, 2026-11-12, con la recomendación |
+| **D10** | **(b)**: T4 del acta de la Etapa 7 se deja como está y no se reescribe. **No es la recomendación, que era (a)** | Elección del propietario, 2026-11-12 |
+| **D11** | **(a)**: se declara que el motor no tiene función de backup y que el plazo de las copias no se promete | Aprobación de la acta, 2026-11-12, con la recomendación |
+| **D12** | **(a)**: solo el contrato de resumen como derivado, con un adaptador de prueba (E8-06). Sin resumidor real | Aprobación de la acta, 2026-11-12, con la recomendación |
+
+Las dos condiciones que este párrafo pedía están cumplidas el 2026-11-12: la aprobación de esta acta (§10) y el estado de ADR-0018 y ADR-0009 escrito en sus archivos.
 
 ## 9. Riesgos
 
@@ -269,4 +290,5 @@ Además, el propietario debe aprobar esta acta (§10) y confirmar que ADR-0018 y
 | Fecha | Decisión | Notas |
 |---|---|---|
 | 2026-11-12 | **Propuesta. Pendiente de aprobación del propietario** | Ninguna parte de la Etapa 8 se aprueba por delegación. Gates de E8-00: esta acta, ADR-0018, ADR-0009 escrito en su archivo, cierre de la Etapa 7 marcado como aprobado, y decisiones D1 a D12. Ningún código de la Etapa 8 antes de esa aprobación |
+| 2026-11-12 | **Aprobada por el propietario** | D1 a D12 con la recomendación de §8, salvo D10: opción (b), T4 no se reescribe (§8.1). ADR-0018 aceptado con la opción 2 y ADR-0009 aceptado con la opción 3, ambos en su archivo. Cierre de la Etapa 7 aprobado. E8-00 queda hecho; E8-S0 sigue pendiente. No se modifica ningún umbral de §6 |
 </content>

@@ -22,7 +22,7 @@ Los paquetes **no son secuenciales**: §3.1 indica cuáles corren a la vez. Ning
 | ADR-0009 (supresión, retención y backups) | **Aceptado el 2026-11-12, opción 3, en los términos de la ADR** (E9A-00b, hecho). Ya no bloquea la entrada en la Etapa 8. No autoriza ninguna API de supresión, que no está en esta acta |
 | ADR-0015 (privacidad de la observabilidad) | Aceptado el 2026-11-06. Es la base de E9A-02 |
 | ADR-0013 (formato v1) | **Resuelto el 2026-11-11** (§7, punto 3): aceptado y formato v1 congelado el 2026-10-31. No bloquea ningún E9A; las migraciones de la Etapa 9 siguen pendientes como trabajo propio |
-| Etapa 8 | Arranca por decisión del propietario el 2026-11-12 ([cierre de la Etapa 7 §8.1](etapa7-cierre.md)). Su condición sobre ADR-0009 se cumple desde el 2026-11-12. ADR-0018 sigue Propuesto y se acepta en el acta de la Etapa 8. Propuesta de esta acta, revocable: que E9A-02 esté cerrado antes de que la Etapa 8 escriba ningún derivado |
+| Etapa 8 | Arranca por decisión del propietario el 2026-11-12 ([cierre de la Etapa 7 §8.1](etapa7-cierre.md)). Su condición sobre ADR-0009 se cumple desde el 2026-11-12. ADR-0018 quedó aceptado el 2026-11-12 con la opción 2, en el acta de la Etapa 8. Propuesta de esta acta, revocable: que E9A-02 esté cerrado antes de que la Etapa 8 escriba ningún derivado |
 
 ## 2. Alcance
 

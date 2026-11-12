@@ -2,9 +2,9 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | Propuesto |
+| Estado | Aceptado (2026-11-12, por el propietario: opción 2, registro común de derivados) |
 | Fecha | 2026-10-28 |
-| Decisores | Propietario del proyecto (pendiente) |
+| Decisores | Propietario del proyecto |
 | Relacionado con | [especificación v0.2.0](../spec/especificacion-arquitectonica-v0.2.0.md) §10, §11, §12, §14; SAD §9.2, §10.2–10.3; ADR-0007, ADR-0009, ADR-0011, ADR-0016; invariantes I-23, I-24, I-25, I-38 |
 
 ## Contexto
@@ -31,7 +31,7 @@ Ninguna todavía. M0 y la Fase 1 no generan derivados de este tipo.
 
 ## Decisión
 
-Pendiente. Propuesta: opción 2. Los derivados generados por modelos externos se producen detrás de adaptadores o jobs fuera del núcleo transaccional (I-31); el núcleo solo guarda el resultado y su descriptor. Un cambio de modelo o versión crea derivados nuevos (`superseded` para los anteriores) en lugar de reescribirlos. La exportación lógica distingue datos fuente de derivados reconstruibles (spec §14).
+**Aceptada el 2026-11-12 por el propietario: opción 2 (registro común de derivados), en los términos de esta sección.** Los derivados generados por modelos externos se producen detrás de adaptadores o jobs fuera del núcleo transaccional (I-31); el núcleo solo guarda el resultado y su descriptor. Un cambio de modelo o versión crea derivados nuevos (`superseded` para los anteriores) en lugar de reescribirlos. La exportación lógica distingue datos fuente de derivados reconstruibles (spec §14).
 
 ## Consecuencias
 
