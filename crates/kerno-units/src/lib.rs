@@ -28,6 +28,7 @@ pub mod cache;
 pub mod clock;
 pub mod codec;
 pub mod db;
+pub mod derived;
 pub mod error;
 pub mod fingerprint;
 pub mod history;
@@ -57,6 +58,7 @@ pub use db::{
     ChangeMeta, ChangeSet, CommitInfo, CreatedUnit, DEFAULT_MAX_CHANGESET_OPS, MAX_POLICY_UNIT_TYPE_LEN, NewUnit,
     Relation, Unit, UnitConfig, UnitDb, UnitSnapshot, UnitUpdate,
 };
+pub use derived::{DerivedDescriptor, DerivedError, DerivedId, DerivedRegistry, DerivedState};
 pub use error::{DecodeError, ErrorClass, UnitError, UnitRule};
 pub use fingerprint::{
     FINGERPRINT_VERSION, Fingerprint, FingerprintAlg, FingerprintKey, NormalizedQuery, QueryKind, RelationQuery,
