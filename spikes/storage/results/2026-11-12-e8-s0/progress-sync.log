@@ -1,0 +1,154 @@
+[1/130] tiny bulk_load kerno rep 0 ... 4.3s
+[2/130] tiny bulk_load sqlite rep 0 ... 4.6s
+[3/130] tiny bulk_load kerno rep 1 ... 4.2s
+[4/130] tiny bulk_load sqlite rep 1 ... 4.6s
+[5/130] tiny bulk_load kerno rep 2 ... 4.2s
+[6/130] tiny bulk_load sqlite rep 2 ... 3.6s
+[7/130] tiny bulk_load kerno rep 3 ... 4.2s
+[8/130] tiny bulk_load sqlite rep 3 ... 3.9s
+[9/130] tiny bulk_load kerno rep 4 ... 3.7s
+[10/130] tiny bulk_load sqlite rep 4 ... 3.4s
+[11/130] tiny point_reads kerno rep 0 ... 0.5s
+[12/130] tiny point_reads sqlite rep 0 ... 0.7s
+[13/130] tiny point_reads kerno rep 1 ... 0.5s
+[14/130] tiny point_reads sqlite rep 1 ... 0.7s
+[15/130] tiny point_reads kerno rep 2 ... 0.5s
+[16/130] tiny point_reads sqlite rep 2 ... 0.8s
+[17/130] tiny point_reads kerno rep 3 ... 0.5s
+[18/130] tiny point_reads sqlite rep 3 ... 0.8s
+[19/130] tiny point_reads kerno rep 4 ... 0.5s
+[20/130] tiny point_reads sqlite rep 4 ... 0.8s
+[21/130] tiny range_scans kerno rep 0 ... 0.6s
+[22/130] tiny range_scans sqlite rep 0 ... 0.7s
+[23/130] tiny range_scans kerno rep 1 ... 0.6s
+[24/130] tiny range_scans sqlite rep 1 ... 0.7s
+[25/130] tiny range_scans kerno rep 2 ... 0.6s
+[26/130] tiny range_scans sqlite rep 2 ... 0.7s
+[27/130] tiny range_scans kerno rep 3 ... 0.5s
+[28/130] tiny range_scans sqlite rep 3 ... 0.7s
+[29/130] tiny range_scans kerno rep 4 ... 0.6s
+[30/130] tiny range_scans sqlite rep 4 ... 0.7s
+[31/130] tiny small_commits kerno rep 0 ... 39.1s
+[32/130] tiny small_commits sqlite rep 0 ... 18.9s
+[33/130] tiny small_commits kerno rep 1 ... 18.7s
+[34/130] tiny small_commits sqlite rep 1 ... 15.7s
+[35/130] tiny small_commits kerno rep 2 ... 11.2s
+[36/130] tiny small_commits sqlite rep 2 ... 15.4s
+[37/130] tiny small_commits kerno rep 3 ... 29.2s
+[38/130] tiny small_commits sqlite rep 3 ... 21.6s
+[39/130] tiny small_commits kerno rep 4 ... 24.1s
+[40/130] tiny small_commits sqlite rep 4 ... 27.7s
+[41/130] tiny point_deletes kerno rep 0 ... 7.3s
+[42/130] tiny point_deletes sqlite rep 0 ... 5.5s
+[43/130] tiny point_deletes kerno rep 1 ... 7.0s
+[44/130] tiny point_deletes sqlite rep 1 ... 8.6s
+[45/130] tiny point_deletes kerno rep 2 ... 6.6s
+[46/130] tiny point_deletes sqlite rep 2 ... 8.6s
+[47/130] tiny point_deletes kerno rep 3 ... 5.5s
+[48/130] tiny point_deletes sqlite rep 3 ... 6.9s
+[49/130] tiny point_deletes kerno rep 4 ... 8.6s
+[50/130] tiny point_deletes sqlite rep 4 ... 9.6s
+[51/130] tiny append_seq kerno rep 0 ... 0.7s
+[52/130] tiny append_seq sqlite rep 0 ... 0.6s
+[53/130] tiny append_seq kerno rep 1 ... 0.6s
+[54/130] tiny append_seq sqlite rep 1 ... 0.7s
+[55/130] tiny append_seq kerno rep 2 ... 0.8s
+[56/130] tiny append_seq sqlite rep 2 ... 0.5s
+[57/130] tiny append_seq kerno rep 3 ... 0.5s
+[58/130] tiny append_seq sqlite rep 3 ... 0.7s
+[59/130] tiny append_seq kerno rep 4 ... 0.7s
+[60/130] tiny append_seq sqlite rep 4 ... 0.6s
+[61/130] tiny mixed kerno rep 0 ... 10.0s
+[62/130] tiny mixed sqlite rep 0 ... 29.9s
+[63/130] tiny mixed kerno rep 1 ... 9.0s
+[64/130] tiny mixed sqlite rep 1 ... 30.1s
+[65/130] tiny mixed kerno rep 2 ... 10.4s
+[66/130] tiny mixed sqlite rep 2 ... 26.9s
+[67/130] tiny mixed kerno rep 3 ... 9.8s
+[68/130] tiny mixed sqlite rep 3 ... 28.9s
+[69/130] tiny mixed kerno rep 4 ... 6.7s
+[70/130] tiny mixed sqlite rep 4 ... 30.0s
+[71/130] tiny history_sim kerno rep 0 ... 0.5s
+[72/130] tiny history_sim sqlite rep 0 ... 0.6s
+[73/130] tiny history_sim kerno rep 1 ... 0.4s
+[74/130] tiny history_sim sqlite rep 1 ... 0.5s
+[75/130] tiny history_sim kerno rep 2 ... 0.5s
+[76/130] tiny history_sim sqlite rep 2 ... 0.5s
+[77/130] tiny history_sim kerno rep 3 ... 0.4s
+[78/130] tiny history_sim sqlite rep 3 ... 0.4s
+[79/130] tiny history_sim kerno rep 4 ... 0.5s
+[80/130] tiny history_sim sqlite rep 4 ... 0.5s
+[81/130] tiny livespec kerno rep 0 ... 9.9s
+[82/130] tiny livespec sqlite rep 0 ... 9.2s
+[83/130] tiny livespec kerno rep 1 ... 10.2s
+[84/130] tiny livespec sqlite rep 1 ... 9.5s
+[85/130] tiny livespec kerno rep 2 ... 10.0s
+[86/130] tiny livespec sqlite rep 2 ... 9.2s
+[87/130] tiny livespec kerno rep 3 ... 9.9s
+[88/130] tiny livespec sqlite rep 3 ... 9.0s
+[89/130] tiny livespec kerno rep 4 ... 9.7s
+[90/130] tiny livespec sqlite rep 4 ... 9.2s
+[91/130] tiny cauce kerno rep 0 ... 39.3s
+[92/130] tiny cauce sqlite rep 0 ... 38.1s
+[93/130] tiny cauce kerno rep 1 ... 38.1s
+[94/130] tiny cauce sqlite rep 1 ... 39.2s
+[95/130] tiny cauce kerno rep 2 ... 32.8s
+[96/130] tiny cauce sqlite rep 2 ... 35.2s
+[97/130] tiny cauce kerno rep 3 ... 36.4s
+[98/130] tiny cauce sqlite rep 3 ... 24.9s
+[99/130] tiny cauce kerno rep 4 ... 2.0s
+[100/130] tiny cauce sqlite rep 4 ... 2.4s
+[101/130] tiny agent_memory kerno rep 0 ... 2.2s
+[102/130] tiny agent_memory sqlite rep 0 ... 3.9s
+[103/130] tiny agent_memory kerno rep 1 ... 10.5s
+[104/130] tiny agent_memory sqlite rep 1 ... 20.6s
+[105/130] tiny agent_memory kerno rep 2 ... 28.7s
+[106/130] tiny agent_memory sqlite rep 2 ... 20.3s
+[107/130] tiny agent_memory kerno rep 3 ... 20.9s
+[108/130] tiny agent_memory sqlite rep 3 ... 21.3s
+[109/130] tiny agent_memory kerno rep 4 ... 23.2s
+[110/130] tiny agent_memory sqlite rep 4 ... 21.2s
+[111/130] tiny concurrent_commits kerno rep 0 ... 8.4s
+[112/130] tiny concurrent_commits sqlite rep 0 ... 75.3s
+[113/130] tiny concurrent_commits kerno rep 1 ... 8.5s
+[114/130] tiny concurrent_commits sqlite rep 1 ... 77.1s
+[115/130] tiny concurrent_commits kerno rep 2 ... FAILED
+
+thread 'main' (14590) panicked at spikes/storage/spike-bench/src/main.rs:151:9:
+kerno / concurrent_commits: I/O error: No space left on device (os error 28)
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/panicking.rs:80:14
+   2: spike_bench::run_txn_engine::<kerno_storage::db::KernoDb>
+             at ./spikes/storage/spike-bench/src/main.rs:151:9
+   3: spike_bench::dispatch
+             at ./spikes/storage/spike-bench/src/main.rs:162:20
+   4: spike_bench::cmd_run
+             at ./spikes/storage/spike-bench/src/main.rs:215:5
+   5: spike_bench::main
+             at ./spikes/storage/spike-bench/src/main.rs:94:18
+   6: <fn() as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+
+thread 'main' (25355) panicked at spikes/storage/spike-bench/src/main.rs:266:64:
+called `Result::unwrap()` on an `Err` value: Os { code: 28, kind: StorageFull, message: "No space left on device" }
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/panicking.rs:80:14
+   2: core::result::unwrap_failed
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/result.rs:1867:5
+   3: <core::result::Result<(), std::io::error::Error>>::unwrap
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/result.rs:1233:23
+   4: spike_bench::cmd_suite
+             at ./spikes/storage/spike-bench/src/main.rs:266:64
+   5: spike_bench::main
+             at ./spikes/storage/spike-bench/src/main.rs:95:20
+   6: <fn() as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
