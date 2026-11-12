@@ -295,7 +295,9 @@ pub type CreatedUnit = (UnitId, CommitInfo);
 
 /// The units layer over a transactional engine `E` (design §6.1).
 pub struct UnitDb<E: TxnEngine> {
-    engine: E,
+    /// Reached only by the layer's own modules (`compact`, `reclaim`); no
+    /// public method hands it out.
+    pub(crate) engine: E,
     cfg: UnitConfig,
     poisoned: AtomicBool,
     /// Where an incomplete retention pass resumes (see
@@ -485,11 +487,6 @@ impl<E: TxnEngine> UnitDb<E> {
         }
     }
 
-    /// The engine underneath. Writing to it directly bypasses the layer.
-    pub fn engine(&self) -> &E {
-        &self.engine
-    }
-
     pub fn config(&self) -> &UnitConfig {
         &self.cfg
     }
@@ -504,6 +501,12 @@ impl<E: TxnEngine> UnitDb<E> {
     /// is off, `query` and `query_relations` behave exactly as without it.
     pub fn result_cache(&self) -> &crate::cache::ResultCache {
         &self.cache
+    }
+
+    /// The engine underneath, for this crate's own modules only. Nothing
+    /// outside the crate can reach it (rule 9 of the Stage 9 acta).
+    pub(crate) fn inner_engine(&self) -> &E {
+        &self.engine
     }
 
     pub(crate) fn check_poisoned(&self) -> Result<(), UnitError> {
@@ -634,6 +637,91 @@ impl<E: TxnEngine> UnitDb<E> {
         cs.put(&k, &v)?;
         cs.maintenance = true;
         cs.commit()
+    }
+}
+
+/// Accessors that return data from the engine underneath, so a caller that
+/// needs the stored bytes does not need the engine (E9-08a). None of them
+/// hands out the engine. The reads check poisoning as [`UnitDb::snapshot`]
+/// does; `raw_commit` writes below the layer on purpose and exists only with
+/// the `test-support` feature (D23).
+impl<E: TxnEngine> UnitDb<E> {
+    /// A read-only view of the raw keys and values at the current commit.
+    #[doc(hidden)]
+    pub fn raw_snapshot(&self) -> Result<E::Snapshot, UnitError> {
+        self.check_poisoned()?;
+        self.engine.snapshot().map_err(UnitError::from)
+    }
+
+    /// The value stored under a raw key now, `None` when absent.
+    #[doc(hidden)]
+    pub fn raw_get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, UnitError> {
+        self.raw_snapshot()?.get(key).map_err(UnitError::from)
+    }
+
+    /// The engine's last commit sequence.
+    #[doc(hidden)]
+    pub fn raw_seq(&self) -> Result<u64, UnitError> {
+        Ok(self.raw_snapshot()?.seq())
+    }
+
+    /// Writes raw entries in one engine commit, in order (`None` deletes the
+    /// key; a key repeated in `entries` keeps its last entry), and returns the
+    /// commit sequence. It exists only for tests that damage stored bytes, and
+    /// only with the `test-support` feature (or in this crate's unit tests).
+    ///
+    /// It bypasses everything the layer does around a commit:
+    /// - the policy epoch, and so the policy cache and the retention cursor:
+    ///   a raw write of a `policy/<type>` record is not seen by
+    ///   [`UnitDb::policy`] while the cache holds the old value, and an
+    ///   incomplete retention pass resumes as if nothing had changed;
+    /// - the poisoned check: it writes even when the database is poisoned;
+    /// - the removal of derived records and suppression that a layer delete
+    ///   performs: deleting a unit's keys here leaves its derived records
+    ///   and suppression entries behind.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn raw_commit(&self, entries: Vec<(Vec<u8>, Option<Vec<u8>>)>) -> Result<u64, UnitError> {
+        let mut batch = kerno_core::WriteBatch::new();
+        for (k, v) in entries {
+            match v {
+                Some(v) => batch.put(k, v),
+                None => batch.delete(k),
+            };
+        }
+        self.engine.commit(&batch).map_err(UnitError::from)
+    }
+
+    /// The engine's counters by name.
+    pub fn storage_stats(&self) -> Vec<(String, u64)> {
+        self.engine.stats()
+    }
+}
+
+/// Engine test hooks as methods of the layer, for the engines that have them.
+/// Only with the `test-support` feature (or in this crate's unit tests), so a
+/// production build has no physical-reclamation method on an arbitrary range:
+/// its public reclamation calls are [`UnitDb::reclaim`], over the whole key
+/// space, and [`UnitDb::compact`], over the revision ranges (`REV_META` and
+/// `REV_PAYLOAD`), both through the public `Reclaim` trait (D23).
+#[cfg(any(test, feature = "test-support"))]
+impl<E: TxnEngine + kerno_core::contract::TestHooks> UnitDb<E> {
+    /// Flushes the memtable to a table.
+    #[doc(hidden)]
+    pub fn hook_flush(&self) -> Result<(), UnitError> {
+        self.engine.flush().map_err(UnitError::from)
+    }
+
+    /// Blocks until no background work is running or queued.
+    #[doc(hidden)]
+    pub fn hook_wait_idle(&self) -> Result<(), UnitError> {
+        self.engine.wait_idle().map_err(UnitError::from)
+    }
+
+    /// Compacts the raw key range `[start, end)` of the engine.
+    #[doc(hidden)]
+    pub fn hook_compact_range(&self, start: Bound<&[u8]>, end: Bound<&[u8]>) -> Result<(), UnitError> {
+        self.engine.compact_range(start, end).map_err(UnitError::from)
     }
 }
 
@@ -1552,4 +1640,186 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
 
     /// Discards the change set (same as dropping it).
     pub fn abort(self) {}
+}
+
+#[cfg(test)]
+mod accessor_tests {
+    use super::*;
+    use kerno_testkit::emulated::Emulated;
+    use kerno_testkit::reference::LogEngine;
+    use kerno_testkit::vfs::SimVfs;
+
+    fn open<E: TxnEngine>(disk: &SimVfs) -> UnitDb<E> {
+        let cfg = UnitConfig::default();
+        let engine = E::open(disk.as_vfs(), Path::new("db"), &cfg.engine).expect("open engine");
+        UnitDb::from_engine(engine, &cfg).expect("open layer")
+    }
+
+    fn raw_accessors<E: TxnEngine>() {
+        let disk = SimVfs::new(0);
+        let db = open::<E>(&disk);
+        let k = b"\xf0raw-key".to_vec();
+        let other = b"\xf0other".to_vec();
+        assert_eq!(db.raw_get(&k).unwrap(), None);
+        let before = db.raw_seq().unwrap();
+        let seq = db.raw_commit(vec![(k.clone(), Some(b"v1".to_vec()))]).unwrap();
+        assert!(seq > before, "a raw commit moves the sequence");
+        assert_eq!(db.raw_seq().unwrap(), seq);
+        // What one engine commit moves the sequence by.
+        let one_commit = seq - before;
+        assert_eq!(db.raw_get(&k).unwrap(), Some(b"v1".to_vec()));
+        // Two different keys stored: each reads its own value.
+        db.raw_commit(vec![(other.clone(), Some(b"v2".to_vec()))]).unwrap();
+        assert_eq!(db.raw_get(&k).unwrap(), Some(b"v1".to_vec()));
+        assert_eq!(db.raw_get(&other).unwrap(), Some(b"v2".to_vec()));
+        assert_eq!(db.raw_get(b"\xf0absent").unwrap(), None);
+        // Several entries in one commit, two keys repeated: the last entry
+        // of each wins, whether it puts or deletes. The sequence moves by one
+        // commit, not by one commit per entry.
+        let before = db.raw_seq().unwrap();
+        let seq = db
+            .raw_commit(vec![
+                (b"\xf0m1".to_vec(), Some(b"a".to_vec())),
+                (b"\xf0m2".to_vec(), Some(b"b".to_vec())),
+                (b"\xf0m1".to_vec(), Some(b"c".to_vec())),
+                (b"\xf0m3".to_vec(), Some(b"d".to_vec())),
+                (b"\xf0m3".to_vec(), None),
+            ])
+            .unwrap();
+        assert_eq!(seq - before, one_commit, "several entries make one commit");
+        assert_eq!(db.raw_seq().unwrap(), seq);
+        assert_eq!(db.raw_get(b"\xf0m1").unwrap(), Some(b"c".to_vec()));
+        assert_eq!(db.raw_get(b"\xf0m2").unwrap(), Some(b"b".to_vec()));
+        assert_eq!(db.raw_get(b"\xf0m3").unwrap(), None);
+        // A snapshot taken before a later raw commit keeps its view.
+        let held = db.raw_snapshot().unwrap();
+        db.raw_commit(vec![(k.clone(), None)]).unwrap();
+        assert_eq!(held.get(&k).unwrap(), Some(b"v1".to_vec()));
+        assert_eq!(db.raw_get(&k).unwrap(), None);
+        drop(held);
+        // The reads refuse a poisoned database, as `snapshot` does.
+        db.poisoned.store(true, Ordering::SeqCst);
+        let poisoned = |r: Result<(), UnitError>| matches!(r, Err(UnitError::Storage(kerno_core::Error::Poisoned(_))));
+        assert!(poisoned(db.snapshot().map(drop)));
+        assert!(poisoned(db.raw_snapshot().map(drop)), "raw_snapshot checks poisoning");
+        assert!(poisoned(db.raw_get(&other).map(drop)), "raw_get checks poisoning");
+        assert!(poisoned(db.raw_seq().map(drop)), "raw_seq checks poisoning");
+        db.poisoned.store(false, Ordering::SeqCst);
+        db.close().unwrap();
+    }
+
+    /// A counter the engine must report: a missing one fails the test.
+    fn stat<E: TxnEngine>(db: &UnitDb<E>, name: &str) -> u64 {
+        let found = db.storage_stats().into_iter().find(|(n, _)| n == name);
+        found.unwrap_or_else(|| panic!("the engine reports no counter {name:?}")).1
+    }
+
+    #[test]
+    fn raw_accessors_emulated_log() {
+        raw_accessors::<Emulated<LogEngine>>();
+    }
+
+    #[test]
+    fn raw_accessors_kerno_db() {
+        raw_accessors::<kerno_storage::KernoDb>();
+    }
+
+    #[test]
+    fn storage_stats_empty_on_emulated_log() {
+        let disk = SimVfs::new(0);
+        let db = open::<Emulated<LogEngine>>(&disk);
+        db.raw_commit(vec![(b"\xf0a".to_vec(), Some(b"1".to_vec()))]).unwrap();
+        assert_eq!(db.storage_stats(), Vec::new(), "the reference engine reports no counters");
+        db.close().unwrap();
+    }
+
+    #[test]
+    fn storage_stats_non_empty_on_kerno_db() {
+        let disk = SimVfs::new(0);
+        let db = open::<kerno_storage::KernoDb>(&disk);
+        let commits = stat(&db, "commits");
+        db.raw_commit(vec![(b"\xf0a".to_vec(), Some(b"1".to_vec()))]).unwrap();
+        db.raw_commit(vec![(b"\xf0b".to_vec(), Some(b"2".to_vec()))]).unwrap();
+        assert!(!db.storage_stats().is_empty());
+        assert_eq!(stat(&db, "commits"), commits + 2, "the counters count calls");
+        db.close().unwrap();
+    }
+
+    /// Each hook leaves an effect on the engine's counters that only the
+    /// real call produces; a hook that answered `Ok(())` fails here.
+    #[test]
+    fn hooks_reach_the_engine_kerno_db() {
+        let disk = SimVfs::new(0);
+        let mut cfg = UnitConfig::default();
+        cfg.engine.write_buffer_bytes = 1 << 20;
+        // Commits do not sync, so the sync latency set below slows the
+        // background flush only.
+        cfg.engine.durability = Durability::Buffered;
+        let engine =
+            <kerno_storage::KernoDb as Engine>::open(disk.as_vfs(), Path::new("db"), &cfg.engine).expect("open engine");
+        let db = UnitDb::from_engine(engine, &cfg).expect("open layer");
+        let key = |j: u8| vec![0xf0, j];
+        let value = |j: u8| vec![j; 4096];
+        // hook_flush: a memtable well below the write buffer becomes a table.
+        db.raw_commit((0..32u8).map(|j| (key(j), Some(value(j)))).collect()).unwrap();
+        let flushes = stat(&db, "flushes");
+        assert!(stat(&db, "memtable_bytes") > 0);
+        db.hook_flush().unwrap();
+        assert_eq!(stat(&db, "flushes"), flushes + 1, "hook_flush ran a flush");
+        assert_eq!(stat(&db, "memtable_bytes"), 0, "hook_flush emptied the memtable");
+        // hook_wait_idle: commit until one fills the write buffer and the
+        // memtable rotates; the flush of that full memtable then runs on a
+        // background thread, and only wait_idle waits for it. The latency on
+        // every sync keeps that flush running far longer than the reads of
+        // the counters below take.
+        disk.set_sync_latency(std::time::Duration::from_millis(20));
+        // Each batch is 256 KiB against a 1 MiB write buffer, so a rotation is
+        // due within a few batches; the bound stops a loop that would never
+        // see one.
+        let (flushes, rotations) = (stat(&db, "flushes"), stat(&db, "memtable_rotations"));
+        for batch in 0..64u32 {
+            if stat(&db, "memtable_rotations") != rotations {
+                break;
+            }
+            let bulk = |i: u32| [&[0xf1][..], &batch.to_be_bytes(), &i.to_be_bytes()].concat();
+            db.raw_commit((0..64).map(|i| (bulk(i), Some(vec![0x5a; 4096]))).collect()).unwrap();
+        }
+        assert_ne!(stat(&db, "memtable_rotations"), rotations, "64 batches of 256 KiB rotated no memtable");
+        db.hook_wait_idle().unwrap();
+        disk.set_sync_latency(std::time::Duration::ZERO);
+        let rotated = stat(&db, "memtable_rotations") - rotations;
+        assert_eq!(stat(&db, "immutable_memtables"), 0, "hook_wait_idle waited for the flush");
+        assert_eq!(stat(&db, "flushes"), flushes + rotated, "every rotated memtable was flushed");
+        // hook_compact_range over a bounded range whose ends differ in kind
+        // (included start, excluded end). Everything is first pushed to the
+        // last level, so that L0 holds only the two tables written next: the
+        // tombstones of keys 10..=19, inside [key 10, key 20), and those of
+        // keys 20..=31, outside it. Their key ranges do not overlap, and two
+        // tables stay below the L0 compaction trigger, so only the call
+        // under test compacts them. Only the 10 tombstones inside the range
+        // are dropped: unbounded ends would drop 22, swapped ends none, and
+        // an included end (or excluded start) would take key 20's table too.
+        db.hook_compact_range(Bound::Unbounded, Bound::Unbounded).unwrap();
+        db.hook_wait_idle().unwrap();
+        db.raw_commit((10..20u8).map(|j| (key(j), None)).collect()).unwrap();
+        db.hook_flush().unwrap();
+        db.raw_commit((20..32u8).map(|j| (key(j), None)).collect()).unwrap();
+        db.hook_flush().unwrap();
+        db.hook_wait_idle().unwrap();
+        let dropped = stat(&db, "tombstones_dropped");
+        db.hook_compact_range(Bound::Included(&key(10)), Bound::Excluded(&key(20))).unwrap();
+        db.hook_wait_idle().unwrap();
+        assert_eq!(stat(&db, "tombstones_dropped") - dropped, 10, "only the range's tombstones were dropped");
+        for j in 0..32u8 {
+            let want = (j < 10).then(|| value(j));
+            assert_eq!(db.raw_get(&key(j)).unwrap(), want, "key {j}");
+        }
+        // The tombstones outside the range were kept: compacting everything
+        // drops them now.
+        let dropped = stat(&db, "tombstones_dropped");
+        db.hook_compact_range(Bound::Unbounded, Bound::Unbounded).unwrap();
+        db.hook_wait_idle().unwrap();
+        assert_eq!(stat(&db, "tombstones_dropped") - dropped, 12, "the tombstones outside the range were kept");
+        db.close().unwrap();
+    }
 }

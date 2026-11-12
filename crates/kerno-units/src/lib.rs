@@ -31,6 +31,7 @@ pub mod codec;
 pub mod consolidation;
 pub mod db;
 pub mod derived;
+pub mod derived_query;
 pub mod derived_stale;
 pub mod error;
 pub mod export;

@@ -55,7 +55,7 @@ use std::collections::BTreeMap;
 use std::ops::Bound;
 use std::time::Duration;
 
-use kerno_core::contract::{TestHooks, Txn, TxnEngine};
+use kerno_core::contract::{Reclaim, Txn, TxnEngine};
 
 use crate::codec::{Key, LAYER_MARK_NAME, RevisionMeta, TAG_LAYER_META, TAG_REV_META, TAG_REV_PAYLOAD, UnitHead};
 use crate::db::{ChangeSet, CommitInfo, UnitDb, Write, context, corruption, key};
@@ -412,7 +412,7 @@ impl<E: TxnEngine> UnitDb<E> {
         // The policy epoch before the snapshot: a policy committed after it
         // is caught by the check under the write slot.
         let epoch = self.policy_epoch.load(std::sync::atomic::Ordering::SeqCst);
-        let snap = self.engine().snapshot()?;
+        let snap = self.raw_snapshot()?;
         let mut mark = vec![TAG_LAYER_META];
         mark.extend_from_slice(LAYER_MARK_NAME.as_bytes());
         if kerno_core::contract::Snapshot::get(&snap, &mark)?.is_none() {
@@ -659,18 +659,23 @@ fn unit_writes(p: &Planned, take: usize) -> Result<Vec<Write>, UnitError> {
     Ok(writes)
 }
 
-impl<E: TxnEngine + TestHooks> UnitDb<E> {
+impl<E: TxnEngine + Reclaim> UnitDb<E> {
     /// Asks the engine to compact the revision ranges (`REV_META` and
     /// `REV_PAYLOAD`, design §5.1) so that what retention deleted leaves the
-    /// live files. It delegates to the engine's directed compaction
-    /// (`compact_range`); an engine without it answers its own error
+    /// live files. It delegates to the engine's public directed compaction
+    /// ([`Reclaim::compact_range`], the same call [`UnitDb::reclaim`] makes
+    /// over the whole key space); an engine without it answers its own error
     /// (`InvalidArgument("unsupported")`). What a snapshot still sees stays
     /// (I-05).
     pub fn compact(&self) -> Result<CompactReport, UnitError> {
         self.check_poisoned()?;
-        let before = stored_bytes(&self.engine().stats());
-        self.engine().compact_range(Bound::Included(&[TAG_REV_META]), Bound::Excluded(&[TAG_REV_PAYLOAD + 1]))?;
-        let after = stored_bytes(&self.engine().stats());
+        let before = stored_bytes(&self.storage_stats());
+        Reclaim::compact_range(
+            self.inner_engine(),
+            Bound::Included(&[TAG_REV_META]),
+            Bound::Excluded(&[TAG_REV_PAYLOAD + 1]),
+        )?;
+        let after = stored_bytes(&self.storage_stats());
         Ok(CompactReport { stored_bytes_before: before, stored_bytes_after: after })
     }
 }

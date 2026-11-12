@@ -340,16 +340,18 @@ impl<E: Engine> UnitSnapshot<E> {
 
     /// [`indexed_scan`](Self::indexed_scan) through the index `path`.
     pub fn indexed_scan_via(&self, path: IndexPath, filter: &UnitFilter) -> Result<Vec<Unit>, UnitError> {
-        let status = self.index_status()?;
+        let (status, entries) = self.index_stats()?;
         match (status.state, status.watermark) {
-            (IndexState::Ready, Some(_)) => self.scan_path(path, filter),
+            (IndexState::Ready, Some(_)) => self.scan_path(path, filter, entries),
             (state, watermark) => Err(UnitError::IndexNotReady { state, watermark }),
         }
     }
 
-    pub(crate) fn scan_path(&self, path: IndexPath, filter: &UnitFilter) -> Result<Vec<Unit>, UnitError> {
+    /// `entries` is the count of the `IDX_META` the caller read to find the
+    /// index `Ready`.
+    pub(crate) fn scan_path(&self, path: IndexPath, filter: &UnitFilter, entries: u64) -> Result<Vec<Unit>, UnitError> {
         match (path, filter.unit_type.as_deref()) {
-            (IndexPath::Primary, _) | (IndexPath::Auto, None) => self.scan_entries(filter),
+            (IndexPath::Primary, _) | (IndexPath::Auto, None) => self.scan_entries(filter, entries),
             (_, Some(t)) => self.scan_type(t, filter.schema_version),
             (IndexPath::ByType, None) => {
                 Err(UnitError::InvalidArgument("the IDX_TYPE path needs a filter with unit_type".into()))
@@ -385,14 +387,17 @@ impl<E: Engine> UnitSnapshot<E> {
         Ok(out)
     }
 
-    /// The entries that match `filter`, opened as units.
-    fn scan_entries(&self, filter: &UnitFilter) -> Result<Vec<Unit>, UnitError> {
+    /// The entries that match `filter`, opened as units. `entries` is the
+    /// count `IDX_META` holds.
+    fn scan_entries(&self, filter: &UnitFilter, entries: u64) -> Result<Vec<Unit>, UnitError> {
         let (start, end) = Key::tag_range(TAG_IDX_PRIMARY);
         let mut out = Vec::new();
+        let mut seen = 0u64;
         scan_all(&self.snap, start, end, |k, v| {
             let Key::IndexPrimary { unit } = Key::decode(k)? else {
                 return Err(corruption("a key in the IDX_PRIMARY range is not an IDX_PRIMARY".into()));
             };
+            seen += 1;
             let entry = PrimaryEntry::decode(v).map_err(|e| context(e, &format!("IDX_PRIMARY of unit {unit}")))?;
             if !filter.matches(&entry.unit_type, entry.schema_version) {
                 return Ok(());
@@ -409,6 +414,13 @@ impl<E: Engine> UnitSnapshot<E> {
             out.push(u);
             Ok(())
         })?;
+        // The scan visits every entry whatever the filter, so a lost entry
+        // shows as a shortfall against the count `IDX_META` holds (K2). A
+        // count lowered to match is not seen here; `verify_units` finds it.
+        // The count comes from the caller's read: no extra lookup.
+        if seen != entries {
+            return Err(corruption(format!("IDX_META counts {entries} entries but IDX_PRIMARY holds {seen}")));
+        }
         Ok(out)
     }
 }

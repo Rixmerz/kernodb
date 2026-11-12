@@ -19,8 +19,7 @@ use std::ops::Bound;
 use std::sync::Arc;
 
 use harness::units::{Dump, Target, open_units, raw};
-use kerno_core::WriteBatch;
-use kerno_core::contract::{Engine, Options, Snapshot, TestHooks};
+use kerno_core::contract::{Options, Snapshot};
 use kerno_storage::KernoDb;
 use kerno_testkit::emulated::Emulated;
 use kerno_testkit::reference::LogEngine;
@@ -145,11 +144,7 @@ fn dump_of<E: Target>(db: &UnitDb<E>) -> Dump {
 }
 
 fn scan_tag<E: Target>(db: &UnitDb<E>, tag: u8) -> Vec<(Vec<u8>, Vec<u8>)> {
-    db.engine()
-        .snapshot()
-        .unwrap()
-        .scan(Bound::Included(&[tag][..]), Bound::Excluded(&[tag + 1][..]), usize::MAX)
-        .unwrap()
+    db.raw_snapshot().unwrap().scan(Bound::Included(&[tag][..]), Bound::Excluded(&[tag + 1][..]), usize::MAX).unwrap()
 }
 
 fn derived_keys<E: Target>(db: &UnitDb<E>) -> usize {
@@ -157,19 +152,15 @@ fn derived_keys<E: Target>(db: &UnitDb<E>) -> usize {
 }
 
 fn get_raw<E: Target>(db: &UnitDb<E>, k: &[u8]) -> Option<Vec<u8>> {
-    db.engine().snapshot().unwrap().get(k).unwrap()
+    db.raw_get(k).unwrap()
 }
 
 fn put_raw<E: Target>(db: &UnitDb<E>, k: &[u8], v: &[u8]) {
-    let mut b = WriteBatch::new();
-    b.put(k.to_vec(), v.to_vec());
-    db.engine().commit(&b).unwrap();
+    db.raw_commit(vec![(k.to_vec(), Some(v.to_vec()))]).unwrap();
 }
 
 fn delete_raw<E: Target>(db: &UnitDb<E>, k: &[u8]) {
-    let mut b = WriteBatch::new();
-    b.delete(k.to_vec());
-    db.engine().commit(&b).unwrap();
+    db.raw_commit(vec![(k.to_vec(), None)]).unwrap();
 }
 
 fn desc_key(id: DerivedId) -> Vec<u8> {
@@ -1531,7 +1522,7 @@ fn delete_hides_derived_at_once<E: Target>() {
     assert_eq!(dd.state(&on_b), Some(DerivedState::Ready), "the other unit's is untouched");
     dd.close().unwrap();
     let db = open_db::<E>(&disk);
-    let snap = db.engine().snapshot().unwrap();
+    let snap = db.raw_snapshot().unwrap();
     for k in [desc_key(on_a), vec_key(on_a), src_key(a, 1, on_a)] {
         assert_eq!(snap.get(&k).unwrap(), None, "get returns a deleted derived key");
     }
@@ -1547,7 +1538,7 @@ fn snapshot_keeps_derived_until_released<E: Target>() {
     let disk = SimVfs::new(41);
     let (a, id) = fixture::<E>(&disk, b"hello");
     let db = open_db::<E>(&disk);
-    let held = db.engine().snapshot().unwrap();
+    let held = db.raw_snapshot().unwrap();
     let want: Vec<_> = [desc_key(id), vec_key(id), src_key(a, 1, id)]
         .into_iter()
         .map(|k| (held.get(&k).unwrap().unwrap(), k))
@@ -1886,7 +1877,7 @@ fn derived_sentinel_survival() {
         dd.close().unwrap();
         let db = open_units::<KernoDb>(disk.as_vfs(), &cfg()).unwrap();
         assert!(!holders(&disk).is_empty(), "the sentinel is on disk before the delete");
-        let held = hold_snapshot.then(|| db.engine().snapshot().unwrap());
+        let held = hold_snapshot.then(|| db.raw_snapshot().unwrap());
         let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
         cs.delete(u, None).unwrap();
         cs.commit().unwrap();
@@ -1894,18 +1885,16 @@ fn derived_sentinel_survival() {
         let in_log = holders(&disk);
         println!("[survival] hold_snapshot={hold_snapshot} after the delete: {in_log:?}");
         assert!(in_log.iter().any(|f| f.ends_with(".wal") || f.ends_with(".sst")), "P1: {in_log:?}");
-        db.engine().flush().unwrap();
-        db.engine()
-            .compact_range(Bound::Included(&[TAG_DERIVED_DESC]), Bound::Excluded(&[TAG_DERIVED_SRC + 1]))
-            .unwrap();
-        db.engine().wait_idle().unwrap();
+        db.hook_flush().unwrap();
+        db.hook_compact_range(Bound::Included(&[TAG_DERIVED_DESC]), Bound::Excluded(&[TAG_DERIVED_SRC + 1])).unwrap();
+        db.hook_wait_idle().unwrap();
         let after_compaction = holders(&disk);
         println!("[survival] hold_snapshot={hold_snapshot} after compact_range: {after_compaction:?}");
         if let Some(snap) = held {
             assert!(snap.get(&vec_key(id)).unwrap().is_some(), "I-2: the snapshot still reads the vector");
             assert!(!after_compaction.is_empty(), "P3: a held snapshot keeps the sentinel in a live file");
             drop(snap);
-            db.engine().wait_idle().unwrap();
+            db.hook_wait_idle().unwrap();
         }
         db.close().unwrap();
         let closed = holders(&disk);

@@ -35,8 +35,7 @@ mod harness;
 use std::sync::Arc;
 
 use harness::units::{Target, open_units};
-use kerno_core::WriteBatch;
-use kerno_core::contract::{Engine, Options, Snapshot};
+use kerno_core::contract::{Options, Snapshot};
 use kerno_testkit::emulated::Emulated;
 use kerno_testkit::reference::LogEngine;
 use kerno_testkit::vfs::SimVfs;
@@ -171,12 +170,10 @@ fn assert_shape_only(reported: impl IntoIterator<Item = Fingerprint>, shapes: &[
 }
 
 /// Truncates the head of `unit` in the engine, so reading it is corruption.
-fn damage_head<E: Engine>(engine: &E, unit: UnitId) {
+fn damage_head<E: Target>(db: &UnitDb<E>, unit: UnitId) {
     let head = Key::UnitHead { unit }.encode().unwrap();
-    let good = engine.snapshot().unwrap().get(&head).unwrap().unwrap();
-    let mut batch = WriteBatch::new();
-    batch.put(head, good[..good.len() - 1].to_vec());
-    engine.commit(&batch).expect("raw commit");
+    let good = db.raw_get(&head).unwrap().unwrap();
+    db.raw_commit(vec![(head, Some(good[..good.len() - 1].to_vec()))]).expect("raw commit");
 }
 
 /// Everything the layer says about the queries of one level, as text.
@@ -267,7 +264,7 @@ fn no_sentinel_in_any_observability_explanation_or_error_output<E: Target>() {
     }
     // Damage the head of the second unit: queries and the explanation of the
     // damaged state now fail or fall back.
-    damage_head(db.engine(), ids[1]);
+    damage_head(&db, ids[1]);
     for level in LEVELS {
         outputs.push((level, observed_output_after_damage(&db, level, ids)));
     }
@@ -600,7 +597,7 @@ fn no_sentinel_in_vector_types_errors_or_reports<E: Target>() {
     let healthy = disk.dump();
     let key = |t: u8| {
         let db = open_units::<E>(SimVfs::restore(&healthy).as_vfs(), &config()).unwrap();
-        let snap = db.engine().snapshot().unwrap();
+        let snap = db.raw_snapshot().unwrap();
         let all = snap.scan(std::ops::Bound::Included(&[t][..]), std::ops::Bound::Excluded(&[t + 1][..]), 10).unwrap();
         db.close().ok();
         all.into_iter().next().unwrap()
@@ -625,12 +622,7 @@ fn no_sentinel_in_vector_types_errors_or_reports<E: Target>() {
     for (n, (k, v)) in damages.into_iter().enumerate() {
         let disk = SimVfs::restore(&healthy);
         let db = open_units::<E>(disk.as_vfs(), &config()).unwrap();
-        let mut b = WriteBatch::new();
-        match v {
-            Some(v) => b.put(k, v),
-            None => b.delete(k),
-        };
-        db.engine().commit(&b).unwrap();
+        db.raw_commit(vec![(k, v)]).unwrap();
         let report = db.verify_units().unwrap();
         say(
             "verify",
