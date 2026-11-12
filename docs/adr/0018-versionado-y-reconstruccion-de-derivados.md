@@ -4,7 +4,7 @@
 |---|---|
 | Estado | Aceptado (2026-11-12, por el propietario: opción 2, registro común de derivados) |
 | Fecha | 2026-10-28 |
-| Decisores | Propietario del proyecto (pendiente) |
+| Decisores | Propietario del proyecto |
 | Relacionado con | [especificación v0.2.0](../spec/especificacion-arquitectonica-v0.2.0.md) §10, §11, §12, §14; SAD §9.2, §10.2–10.3; ADR-0007, ADR-0009, ADR-0011, ADR-0016; invariantes I-23, I-24, I-25, I-38 |
 
 ## Contexto
