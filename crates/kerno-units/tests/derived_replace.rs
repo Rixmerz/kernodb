@@ -82,6 +82,41 @@ fn replaces_a_stale_vector_with_one_computed_outside<E: Target>() {
     assert_eq!(dd.state(&new), Some(DerivedState::Ready));
     assert_eq!(dd.vector(&new), Some(vec![3.0, 4.0]));
     dd.close().unwrap();
+    let stored = raw_of::<E>(&disk);
+    let holds = |k: Vec<u8>| stored.iter().any(|(key, _)| *key == k);
+    assert!(!holds(DerivedKey::Desc(old).encode()), "the old descriptor is gone from the store");
+    assert!(holds(DerivedKey::Vec(new).encode()), "the new vector is in the store");
+}
+
+/// A `Ready` datum still has its vector record: replacing it must delete that
+/// record too, along with the descriptor and the source entry.
+fn replaces_a_ready_vector_and_deletes_every_record_of_the_old_one<E: Target>() {
+    let disk = SimVfs::new(5);
+    let dd = open_dd::<E>(&disk);
+    let u = make(&dd, b"v1");
+    let first = RevisionId::first(u);
+    let old = put(&dd, &spec(first, "m", Some("2"), vec![1.0, 2.0])).unwrap();
+    assert_eq!(dd.state(&old), Some(DerivedState::Ready));
+    dd.close().unwrap();
+    let before = raw_of::<E>(&disk);
+    let holds = |d: &Dump, k: Vec<u8>| d.iter().any(|(key, _)| *key == k);
+    let src = DerivedKey::Src { unit: u, rev: first.rev, id: old }.encode();
+    assert!(holds(&before, DerivedKey::Desc(old).encode()), "the old descriptor is stored before");
+    assert!(holds(&before, DerivedKey::Vec(old).encode()), "the old vector is stored before");
+    assert!(holds(&before, src.clone()), "the old source entry is stored before");
+
+    let dd = open_dd::<E>(&disk);
+    let mut cs = dd.begin_changeset(ChangeMeta::default()).unwrap();
+    let new = cs.replace_vector(old, &spec(first, "m2", Some("2"), vec![3.0, 4.0])).unwrap();
+    cs.commit().unwrap();
+    assert_ne!(new, old);
+    dd.close().unwrap();
+
+    let after = raw_of::<E>(&disk);
+    assert!(!holds(&after, DerivedKey::Desc(old).encode()), "the old descriptor is deleted");
+    assert!(!holds(&after, DerivedKey::Vec(old).encode()), "the old vector is deleted");
+    assert!(!holds(&after, src), "the old source entry is deleted");
+    assert!(holds(&after, DerivedKey::Vec(new).encode()), "the new vector is stored");
 }
 
 fn replace_refuses_an_unknown_datum_and_writes_nothing<E: Target>() {
@@ -116,7 +151,14 @@ fn put_vector_refuses_a_dim_that_is_not_the_length<E: Target>() {
     dd.close().unwrap();
     assert_eq!(raw_of::<E>(&disk), before, "nothing was persisted");
     let dd = open_dd::<E>(&disk);
-    assert!(put(&dd, &spec(RevisionId::first(u), "m", Some("2"), vec![1.0, 2.0])).is_ok());
+    let old = put(&dd, &spec(RevisionId::first(u), "m", Some("2"), vec![1.0, 2.0])).unwrap();
+    let rev = edit(&dd, u, b"v2");
+    let mut cs = dd.begin_changeset(ChangeMeta::default()).unwrap();
+    let bad = spec(RevisionId { unit: u, rev }, "m", Some("3"), vec![1.0, 2.0]);
+    let err = cs.replace_vector(old, &bad).unwrap_err();
+    assert!(err.to_string().contains("dim"), "replace: {err}");
+    cs.abort();
+    assert_eq!(dd.state(&old), Some(DerivedState::Stale), "the old datum is untouched");
     dd.close().unwrap();
 }
 
@@ -150,6 +192,7 @@ macro_rules! engines {
     ($($m:ident: $e:ty),*) => {$(
         mod $m {
             #[test] fn replaces() { super::replaces_a_stale_vector_with_one_computed_outside::<$e>(); }
+            #[test] fn replaces_ready() { super::replaces_a_ready_vector_and_deletes_every_record_of_the_old_one::<$e>(); }
             #[test] fn replace_unknown() { super::replace_refuses_an_unknown_datum_and_writes_nothing::<$e>(); }
             #[test] fn dim() { super::put_vector_refuses_a_dim_that_is_not_the_length::<$e>(); }
             #[test] fn first() { super::first_revision_is_the_one_create_writes::<$e>(); }

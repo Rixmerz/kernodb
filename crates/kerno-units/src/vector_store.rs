@@ -1099,6 +1099,7 @@ impl<E: TxnEngine> DerivedChangeSet<'_, E> {
     /// demotes a datum in memory without writing); a `Superseded` one is final.
     /// Nothing of `old` survives and the id of the new datum is returned.
     pub fn replace_vector(&mut self, old: DerivedId, spec: &VectorSpec) -> Result<DerivedId, DerivedStaleError> {
+        spec.check_dim()?;
         let prev = self.cs.read_desc(old)?;
         if prev.state == VectorState::Superseded {
             return Err(DerivedError::IllegalTransition {
