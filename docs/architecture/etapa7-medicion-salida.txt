@@ -1,0 +1,248 @@
+# Salida cruda de E7-05 (etapa7-medicion.md). Sin editar: cada bloque es la salida literal del comando que lo encabeza.
+# Máquina: 4 CPU. La carga media (1 min) se registra en cada corrida de rendimiento.
+#
+# 1. Calidad (cada `cargo test` la ejecuta; aquí, la corrida comprometida):
+#    cargo test -p kerno-units --release --test assoc_measure -- --nocapture --exact quality_over_the_frozen_set
+#
+# 2. Rendimiento (no se ejecuta con `cargo test`). Tres invocaciones, cada una con cuatro corridas y doce rondas por corrida, una tras otra:
+#    cargo run -q --release -p kerno-units --example assoc_bench -- --runs 4 --reps 12 --dir <directorio temporal>
+#
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.04s
+     Running tests/assoc_measure.rs (target/release/deps/assoc_measure-bc05465225218014)
+
+running 1 test
+MANIFEST: 2 frozen files match (corpus.txt, queries.txt)
+queries: 64 translated and run on the reference, indexed and planner paths
+I-32: indexed == reference == planner for all 64 queries; planner fallbacks: 0
+I-41: contributions add up to the score for 757 hits
+I-40: 757 of 757 hits verify (trace, revision, walk, filters)
+B1: reproduced for all 64 queries from the committed run (etapa7-e700-salida.txt)
+endings of the simple order: {"Exhausted": 64}
+per query (cut 10; B1 = one-hop neighbours; simple = reference order; ranked = RankMode::On)
+query      class        hits  B1 R@10  B1 nDCG  simple R  simple nDCG  ranked R  ranked nDCG  ending
+MH-01      multi_hop      39    0.444    0.373     0.556        0.812     0.444        0.477  Exhausted
+MH-02      multi_hop      42    0.556    0.543     0.778        0.947     0.778        0.958  Exhausted
+MH-03      multi_hop       4    1.000    0.552     1.000        1.000     1.000        1.000  Exhausted
+MH-04      multi_hop       8    0.400    0.203     1.000        0.998     1.000        0.998  Exhausted
+MH-05      multi_hop      24    0.556    0.529     0.778        0.955     0.778        0.937  Exhausted
+MH-06      multi_hop      55    0.556    0.490     0.667        0.884     0.556        0.552  Exhausted
+MH-07      multi_hop       4    1.000    0.552     1.000        1.000     1.000        1.000  Exhausted
+MH-08      multi_hop       8    0.600    0.410     1.000        0.998     1.000        0.998  Exhausted
+MH-09      multi_hop      19    0.556    0.524     0.778        0.952     0.778        0.939  Exhausted
+MH-10      multi_hop      60    0.556    0.501     0.778        0.929     0.556        0.548  Exhausted
+MH-11      multi_hop       4    1.000    0.552     1.000        1.000     1.000        1.000  Exhausted
+MH-12      multi_hop       8    0.600    0.384     1.000        1.000     1.000        0.998  Exhausted
+MH-13      multi_hop      30    0.556    0.513     0.778        0.939     0.444        0.588  Exhausted
+MH-14      multi_hop      51    0.556    0.524     0.778        0.952     0.778        0.939  Exhausted
+MH-15      multi_hop       4    1.000    0.552     1.000        1.000     1.000        1.000  Exhausted
+MH-16      multi_hop       8    0.600    0.369     1.000        1.000     1.000        0.998  Exhausted
+TM-01      temporal        8    0.600    0.448     1.000        0.972     1.000        0.973  Exhausted
+TM-02      temporal        9    0.667    0.487     1.000        0.985     1.000        0.986  Exhausted
+TM-03      temporal        8    0.600    0.461     1.000        0.972     1.000        0.973  Exhausted
+TM-04      temporal       12    0.667    0.508     1.000        0.985     1.000        0.986  Exhausted
+TM-05      temporal       12    0.625    0.532     0.875        0.967     1.000        0.999  Exhausted
+TM-06      temporal       10    0.667    0.507     1.000        0.984     1.000        1.000  Exhausted
+TM-07      temporal        9    0.667    0.528     1.000        0.984     1.000        1.000  Exhausted
+TM-08      temporal        9    0.667    0.492     1.000        0.985     1.000        0.986  Exhausted
+TM-09      temporal        8    0.667    0.508     1.000        0.985     1.000        0.986  Exhausted
+TM-10      temporal       14    0.667    0.474     0.833        0.958     0.833        0.727  Exhausted
+TM-11      temporal        8    0.600    0.496     1.000        0.972     1.000        0.973  Exhausted
+TM-12      temporal       15    0.571    0.503     0.857        0.967     0.857        0.982  Exhausted
+TM-13      temporal        8    0.600    0.448     1.000        0.972     1.000        0.973  Exhausted
+TM-14      temporal        9    0.667    0.479     1.000        0.985     1.000        0.986  Exhausted
+TM-15      temporal       10    0.667    0.512     1.000        0.984     1.000        1.000  Exhausted
+TM-16      temporal        9    0.667    0.508     1.000        0.985     1.000        0.986  Exhausted
+CB-01      combined        6    0.800    0.542     1.000        0.990     1.000        0.990  Exhausted
+CB-02      combined        7    0.750    0.526     1.000        0.979     1.000        0.979  Exhausted
+CB-03      combined        7    0.800    0.520     1.000        0.990     1.000        0.989  Exhausted
+CB-04      combined       13    0.714    0.548     1.000        0.982     0.857        0.979  Exhausted
+CB-05      combined        6    0.750    0.543     1.000        0.979     1.000        0.979  Exhausted
+CB-06      combined        7    0.750    0.504     1.000        0.979     1.000        0.979  Exhausted
+CB-07      combined        6    0.750    0.504     1.000        0.979     1.000        0.979  Exhausted
+CB-08      combined       13    0.714    0.535     1.000        0.982     1.000        0.983  Exhausted
+CB-09      combined        6    0.800    0.525     1.000        0.990     1.000        0.990  Exhausted
+CB-10      combined        7    0.750    0.543     1.000        0.979     1.000        0.979  Exhausted
+CB-11      combined        6    0.750    0.526     1.000        0.979     1.000        0.979  Exhausted
+CB-12      combined       11    0.750    0.504     1.000        0.966     1.000        0.696  Exhausted
+CB-13      combined        6    0.800    0.520     1.000        0.990     1.000        0.990  Exhausted
+CB-14      combined       10    0.800    0.525     1.000        0.982     1.000        0.989  Exhausted
+CB-15      combined        6    0.750    0.504     1.000        0.979     1.000        0.979  Exhausted
+CB-16      combined        7    0.750    0.504     1.000        0.979     1.000        0.979  Exhausted
+PV-RE-1    provenance      3    1.000    0.605     1.000        0.693     1.000        0.920  Exhausted
+PV-RE-2    provenance      3    1.000    0.525     1.000        0.693     1.000        0.920  Exhausted
+PV-RE-3    provenance      4    1.000    0.624     1.000        0.693     1.000        0.651  Exhausted
+PV-RE-4    provenance      3    1.000    0.525     1.000        0.693     1.000        0.693  Exhausted
+PV-SS-1    provenance      3    1.000    0.431     1.000        0.500     1.000        0.500  Exhausted
+PV-SS-2    provenance      3    1.000    0.387     1.000        0.500     1.000        0.500  Exhausted
+PV-SS-3    provenance      2    1.000    0.431     1.000        1.000     1.000        1.000  Exhausted
+PV-SS-4    provenance      2    1.000    0.500     1.000        1.000     1.000        1.000  Exhausted
+PV-AC-1    provenance     11    0.750    0.526     1.000        0.965     0.750        0.668  Exhausted
+PV-AC-2    provenance     27    0.714    0.518     0.857        0.955     0.857        0.734  Exhausted
+PV-AC-3    provenance     13    0.714    0.544     0.857        0.967     0.857        0.964  Exhausted
+PV-AC-4    provenance      7    0.800    0.542     1.000        0.990     1.000        0.990  Exhausted
+PV-SR-1    provenance      6    0.600    0.368     1.000        0.990     1.000        0.990  Exhausted
+PV-SR-2    provenance      7    0.750    0.543     1.000        0.979     1.000        0.979  Exhausted
+PV-SR-3    provenance      6    0.750    0.543     1.000        0.979     1.000        0.979  Exhausted
+PV-SR-4    provenance      7    0.750    0.543     1.000        0.979     1.000        0.979  Exhausted
+summary (mean over the queries; the vector signal is not measured: the set has no vectors)
+scope        queries  B1 R@10  B1 nDCG  simple R  simple nDCG  ranked R  ranked nDCG
+overall           64    0.731    0.500     0.956        0.942     0.939        0.912
+multi_hop         16    0.658    0.473     0.868        0.960     0.819        0.871
+temporal          16    0.641    0.493     0.973        0.978     0.981        0.970
+provenance        16    0.864    0.510     0.982        0.849     0.967        0.842
+combined          16    0.761    0.523     1.000        0.981     0.991        0.965
+thresholds of acta §6.2 (each with its number; a threshold not met is recorded, not tuned)
+T1  recall@10 with ranking, overall >= 0.90: 0.939 -> met
+T2  nDCG@10 with ranking, overall >= 0.80: 0.912 -> met
+T3  nDCG@10 with ranking >= 1.10 x B1 (0.500 x 1.10 = 0.550): 0.912 -> met
+T4  nDCG@10 with ranking >= 1.10 x simple order (0.942 x 1.10 = 1.036): 0.912 -> not met
+T5  nDCG@10 with ranking, multi_hop >= B1 (0.871 vs 0.473): met
+T5  nDCG@10 with ranking, temporal >= B1 (0.970 vs 0.493): met
+T5  nDCG@10 with ranking, provenance >= B1 (0.842 vs 0.510): met
+T5  nDCG@10 with ranking, combined >= B1 (0.965 vs 0.523): met
+C1  100 % of results with a verifiable trace (I-40; a correctness criterion, not a quality threshold): 757/757 -> met
+test quality_over_the_frozen_set ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.12s
+
+# rendimiento, invocación 1 de 3
+# load: 20000 units, 39958 relations, 3000 change sets, 64 queries; load time 12.7 s
+run,depth,path,answers,p50_ms,p99_ms,mean_visited,mean_hits,loadavg_before,loadavg_after
+1,1,reference,512,27.1991,41.4612,3.3,2.7,8.74 7.75 8.21,6.82 7.38 8.08
+1,1,indexed,512,0.0633,0.1338,3.3,2.7,8.74 7.75 8.21,6.82 7.38 8.08
+# run 1 depth 1: indexed/reference p50 = 0.002, p99 = 0.003
+1,2,reference,512,104.9543,186.7349,11.1,6.3,6.82 7.38 8.08,4.87 6.63 7.76
+1,2,indexed,512,0.1481,0.4213,11.1,6.3,6.82 7.38 8.08,4.87 6.63 7.76
+# run 1 depth 2: indexed/reference p50 = 0.001, p99 = 0.002
+1,3,reference,512,167.6199,616.4580,25.1,12.9,4.87 6.63 7.76,3.08 5.24 7.07
+1,3,indexed,512,0.2482,1.2775,25.1,12.9,4.87 6.63 7.76,3.08 5.24 7.07
+# run 1 depth 3: indexed/reference p50 = 0.001, p99 = 0.002
+2,1,reference,512,27.0969,40.1869,3.3,2.7,3.08 5.24 7.07,2.77 5.03 6.97
+2,1,indexed,512,0.0593,0.1306,3.3,2.7,3.08 5.24 7.07,2.77 5.03 6.97
+# run 2 depth 1: indexed/reference p50 = 0.002, p99 = 0.003
+2,2,reference,512,109.2580,202.2549,11.1,6.3,2.77 5.03 6.97,4.62 5.11 6.83
+2,2,indexed,512,0.1562,0.4412,11.1,6.3,2.77 5.03 6.97,4.62 5.11 6.83
+# run 2 depth 2: indexed/reference p50 = 0.001, p99 = 0.002
+2,3,reference,512,168.4081,640.1463,25.1,12.9,4.62 5.11 6.83,4.67 4.75 6.41
+2,3,indexed,512,0.2434,1.3487,25.1,12.9,4.62 5.11 6.83,4.67 4.75 6.41
+# run 2 depth 3: indexed/reference p50 = 0.001, p99 = 0.002
+3,1,reference,512,27.1668,31.9819,3.3,2.7,4.67 4.75 6.41,3.83 4.56 6.31
+3,1,indexed,512,0.0599,0.1339,3.3,2.7,4.67 4.75 6.41,3.83 4.56 6.31
+# run 3 depth 1: indexed/reference p50 = 0.002, p99 = 0.004
+3,2,reference,512,106.9097,200.4527,11.1,6.3,3.83 4.56 6.31,3.69 4.35 6.10
+3,2,indexed,512,0.1491,0.4123,11.1,6.3,3.83 4.56 6.31,3.69 4.35 6.10
+# run 3 depth 2: indexed/reference p50 = 0.001, p99 = 0.002
+3,3,reference,512,170.7474,625.9684,25.1,12.9,3.69 4.35 6.10,3.26 4.21 5.80
+3,3,indexed,512,0.2521,1.3666,25.1,12.9,3.69 4.35 6.10,3.26 4.21 5.80
+# run 3 depth 3: indexed/reference p50 = 0.001, p99 = 0.002
+4,1,reference,512,27.2758,39.3468,3.3,2.7,3.26 4.21 5.80,2.70 4.02 5.70
+4,1,indexed,512,0.0625,0.1373,3.3,2.7,3.26 4.21 5.80,2.70 4.02 5.70
+# run 4 depth 1: indexed/reference p50 = 0.002, p99 = 0.003
+4,2,reference,512,104.6953,187.5749,11.1,6.3,2.70 4.02 5.70,1.48 3.35 5.33
+4,2,indexed,512,0.1500,0.3930,11.1,6.3,2.70 4.02 5.70,1.48 3.35 5.33
+# run 4 depth 2: indexed/reference p50 = 0.001, p99 = 0.002
+4,3,reference,512,170.9307,643.5913,25.1,12.9,1.48 3.35 5.33,1.04 2.41 4.68
+4,3,indexed,512,0.2471,1.2477,25.1,12.9,1.48 3.35 5.33,1.04 2.41 4.68
+# run 4 depth 3: indexed/reference p50 = 0.001, p99 = 0.002
+# threshold (acta §6.3): depth 2, indexed p50 not worse than reference p50 in every run
+#   run 1: indexed p50 0.1481 ms, reference p50 104.9543 ms -> not worse
+#   run 2: indexed p50 0.1562 ms, reference p50 109.2580 ms -> not worse
+#   run 3: indexed p50 0.1491 ms, reference p50 106.9097 ms -> not worse
+#   run 4: indexed p50 0.1500 ms, reference p50 104.6953 ms -> not worse
+# depth 2: 0 of 4 runs worse -> met
+
+[exited with code 0]
+# rendimiento, invocación 2 de 3
+# load: 20000 units, 39958 relations, 3000 change sets, 64 queries; load time 1.1 s
+run,depth,path,answers,p50_ms,p99_ms,mean_visited,mean_hits,loadavg_before,loadavg_after
+1,1,reference,512,26.5262,34.5612,3.3,2.7,0.97 2.28 4.57,0.98 2.20 4.50
+1,1,indexed,512,0.0593,0.1267,3.3,2.7,0.97 2.28 4.57,0.98 2.20 4.50
+# run 1 depth 1: indexed/reference p50 = 0.002, p99 = 0.004
+1,2,reference,512,103.8506,193.3364,11.1,6.3,0.98 2.20 4.50,1.00 1.93 4.22
+1,2,indexed,512,0.1470,0.4322,11.1,6.3,0.98 2.20 4.50,1.00 1.93 4.22
+# run 1 depth 2: indexed/reference p50 = 0.001, p99 = 0.002
+1,3,reference,512,166.5778,624.9506,25.1,12.9,1.00 1.93 4.22,1.04 1.57 3.74
+1,3,indexed,512,0.2454,1.2771,25.1,12.9,1.00 1.93 4.22,1.04 1.57 3.74
+# run 1 depth 3: indexed/reference p50 = 0.001, p99 = 0.002
+2,1,reference,512,27.0243,38.5650,3.3,2.7,1.04 1.57 3.74,1.03 1.53 3.68
+2,1,indexed,512,0.0599,0.1501,3.3,2.7,1.04 1.57 3.74,1.03 1.53 3.68
+# run 2 depth 1: indexed/reference p50 = 0.002, p99 = 0.004
+2,2,reference,512,106.7527,194.6790,11.1,6.3,1.03 1.53 3.68,1.01 1.41 3.47
+2,2,indexed,512,0.1501,0.4264,11.1,6.3,1.03 1.53 3.68,1.01 1.41 3.47
+# run 2 depth 2: indexed/reference p50 = 0.001, p99 = 0.002
+2,3,reference,512,171.1500,650.9119,25.1,12.9,1.01 1.41 3.47,1.13 1.29 3.10
+2,3,indexed,512,0.2413,1.3166,25.1,12.9,1.01 1.41 3.47,1.13 1.29 3.10
+# run 2 depth 3: indexed/reference p50 = 0.001, p99 = 0.002
+3,1,reference,512,27.0096,40.1506,3.3,2.7,1.13 1.29 3.10,1.09 1.27 3.06
+3,1,indexed,512,0.0615,0.1303,3.3,2.7,1.13 1.29 3.10,1.09 1.27 3.06
+# run 3 depth 1: indexed/reference p50 = 0.002, p99 = 0.003
+3,2,reference,512,108.2784,204.9643,11.1,6.3,1.09 1.27 3.06,1.02 1.21 2.89
+3,2,indexed,512,0.1547,0.4138,11.1,6.3,1.09 1.27 3.06,1.02 1.21 2.89
+# run 3 depth 2: indexed/reference p50 = 0.001, p99 = 0.002
+3,3,reference,512,170.5141,645.5890,25.1,12.9,1.02 1.21 2.89,1.00 1.12 2.60
+3,3,indexed,512,0.2466,1.3365,25.1,12.9,1.02 1.21 2.89,1.00 1.12 2.60
+# run 3 depth 3: indexed/reference p50 = 0.001, p99 = 0.002
+4,1,reference,512,27.2455,41.2685,3.3,2.7,1.00 1.12 2.60,1.00 1.11 2.55
+4,1,indexed,512,0.0642,0.1306,3.3,2.7,1.00 1.12 2.60,1.00 1.11 2.55
+# run 4 depth 1: indexed/reference p50 = 0.002, p99 = 0.003
+4,2,reference,512,108.2131,195.6016,11.1,6.3,1.00 1.11 2.55,1.00 1.08 2.43
+4,2,indexed,512,0.1549,0.4219,11.1,6.3,1.00 1.11 2.55,1.00 1.08 2.43
+# run 4 depth 2: indexed/reference p50 = 0.001, p99 = 0.002
+4,3,reference,512,172.3462,654.9127,25.1,12.9,1.00 1.08 2.43,1.00 1.04 2.19
+4,3,indexed,512,0.2518,1.4615,25.1,12.9,1.00 1.08 2.43,1.00 1.04 2.19
+# run 4 depth 3: indexed/reference p50 = 0.001, p99 = 0.002
+# threshold (acta §6.3): depth 2, indexed p50 not worse than reference p50 in every run
+#   run 1: indexed p50 0.1470 ms, reference p50 103.8506 ms -> not worse
+#   run 2: indexed p50 0.1501 ms, reference p50 106.7527 ms -> not worse
+#   run 3: indexed p50 0.1547 ms, reference p50 108.2784 ms -> not worse
+#   run 4: indexed p50 0.1549 ms, reference p50 108.2131 ms -> not worse
+# depth 2: 0 of 4 runs worse -> met
+
+[exited with code 0]
+# rendimiento, invocación 3 de 3
+# load: 20000 units, 39958 relations, 3000 change sets, 64 queries; load time 1.4 s
+run,depth,path,answers,p50_ms,p99_ms,mean_visited,mean_hits,loadavg_before,loadavg_after
+1,1,reference,512,27.8811,42.3346,3.3,2.7,0.94 1.02 2.16,0.96 1.02 2.12
+1,1,indexed,512,0.0659,0.1519,3.3,2.7,0.94 1.02 2.16,0.96 1.02 2.12
+# run 1 depth 1: indexed/reference p50 = 0.002, p99 = 0.004
+1,2,reference,512,110.5134,200.5446,11.1,6.3,0.96 1.02 2.12,0.99 1.01 2.03
+1,2,indexed,512,0.1588,0.4349,11.1,6.3,0.96 1.02 2.12,0.99 1.01 2.03
+# run 1 depth 2: indexed/reference p50 = 0.001, p99 = 0.002
+1,3,reference,512,169.5868,633.8144,25.1,12.9,0.99 1.01 2.03,1.00 1.00 1.86
+1,3,indexed,512,0.2528,1.3450,25.1,12.9,0.99 1.01 2.03,1.00 1.00 1.86
+# run 1 depth 3: indexed/reference p50 = 0.001, p99 = 0.002
+2,1,reference,512,27.7339,42.6048,3.3,2.7,1.00 1.00 1.86,1.00 1.00 1.84
+2,1,indexed,512,0.0639,0.1753,3.3,2.7,1.00 1.00 1.86,1.00 1.00 1.84
+# run 2 depth 1: indexed/reference p50 = 0.002, p99 = 0.004
+2,2,reference,512,108.2287,208.5447,11.1,6.3,1.00 1.00 1.84,1.00 1.00 1.78
+2,2,indexed,512,0.1493,0.4095,11.1,6.3,1.00 1.00 1.84,1.00 1.00 1.78
+# run 2 depth 2: indexed/reference p50 = 0.001, p99 = 0.002
+2,3,reference,512,169.6040,624.4702,25.1,12.9,1.00 1.00 1.78,1.04 1.01 1.65
+2,3,indexed,512,0.2507,1.2840,25.1,12.9,1.00 1.00 1.78,1.04 1.01 1.65
+# run 2 depth 3: indexed/reference p50 = 0.001, p99 = 0.002
+3,1,reference,512,27.2398,41.6911,3.3,2.7,1.04 1.01 1.65,1.02 1.01 1.64
+3,1,indexed,512,0.0630,0.1419,3.3,2.7,1.04 1.01 1.65,1.02 1.01 1.64
+# run 3 depth 1: indexed/reference p50 = 0.002, p99 = 0.003
+3,2,reference,512,107.6515,187.3676,11.1,6.3,1.02 1.01 1.64,1.00 1.00 1.59
+3,2,indexed,512,0.1523,0.4103,11.1,6.3,1.02 1.01 1.64,1.00 1.00 1.59
+# run 3 depth 2: indexed/reference p50 = 0.001, p99 = 0.002
+3,3,reference,512,165.1262,617.9229,25.1,12.9,1.00 1.00 1.59,1.00 1.00 1.49
+3,3,indexed,512,0.2426,1.2203,25.1,12.9,1.00 1.00 1.59,1.00 1.00 1.49
+# run 3 depth 3: indexed/reference p50 = 0.001, p99 = 0.002
+4,1,reference,512,27.4398,40.1858,3.3,2.7,1.00 1.00 1.49,1.06 1.02 1.48
+4,1,indexed,512,0.0612,0.1356,3.3,2.7,1.00 1.00 1.49,1.06 1.02 1.48
+# run 4 depth 1: indexed/reference p50 = 0.002, p99 = 0.003
+4,2,reference,512,108.4628,196.9757,11.1,6.3,1.06 1.02 1.48,1.02 1.01 1.44
+4,2,indexed,512,0.1527,0.4251,11.1,6.3,1.06 1.02 1.48,1.02 1.01 1.44
+# run 4 depth 2: indexed/reference p50 = 0.001, p99 = 0.002
+4,3,reference,512,172.9432,638.3386,25.1,12.9,1.02 1.01 1.44,1.00 1.00 1.37
+4,3,indexed,512,0.2484,1.2540,25.1,12.9,1.02 1.01 1.44,1.00 1.00 1.37
+# run 4 depth 3: indexed/reference p50 = 0.001, p99 = 0.002
+# threshold (acta §6.3): depth 2, indexed p50 not worse than reference p50 in every run
+#   run 1: indexed p50 0.1588 ms, reference p50 110.5134 ms -> not worse
+#   run 2: indexed p50 0.1493 ms, reference p50 108.2287 ms -> not worse
+#   run 3: indexed p50 0.1523 ms, reference p50 107.6515 ms -> not worse
+#   run 4: indexed p50 0.1527 ms, reference p50 108.4628 ms -> not worse
+# depth 2: 0 of 4 runs worse -> met
+
+[exited with code 0]
