@@ -341,7 +341,8 @@ pub trait TestHooks {
 /// engine that does not implement it says so instead of doing nothing.
 pub trait Reclaim {
     /// Writes what the active write buffer holds and compacts every file
-    /// that overlaps `(start, end)` until no deeper level overlaps it.
+    /// that overlaps `(start, end)`, level by level, until no level above the
+    /// last overlaps it.
     /// Returns when that is done.
     fn compact_range(&self, start: Bound<&[u8]>, end: Bound<&[u8]>) -> Result<()> {
         let _ = (start, end);
