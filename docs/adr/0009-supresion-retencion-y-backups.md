@@ -2,8 +2,9 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | Pendiente |
-| Fecha | 2026-10-27 (apertura) |
+| Estado | Aceptado (2026-11-12, por el propietario: opción 3, en los términos de la sección [Decisión](#decisión)) |
+| Fecha | 2026-10-27 (apertura); 2026-11-11 (criterios fijados antes de medir); 2026-11-12 (aceptado) |
+| Decisores | Propietario del proyecto (E9A-00b, [acta de adelanto de la Etapa 9](../architecture/etapa9-adelanto-acta.md) §7, punto 1) |
 | Relacionado con | SAD §8.4, §11.5, §12, NIST SP 800-88 Rev. 2 |
 
 ## Contexto
@@ -28,7 +29,7 @@ Una prueba de extremo a extremo demuestra qué se elimina inmediatamente, qué q
 
 ### Criterios fijados el 2026-11-11, antes de medir
 
-Estos criterios se escriben antes de cualquier ejecución de E9A-01 ([acta de adelanto de la Etapa 9, §3.2](../architecture/etapa9-adelanto-acta.md)). No contienen resultados ni predicciones de resultados, no eligen opción y no cambian el estado de este ADR, que sigue **Pendiente**. Solo los cambia el propietario, con una fecha nueva; no se ajustan a la vista de una medición.
+Estos criterios se escriben antes de cualquier ejecución de E9A-01 ([acta de adelanto de la Etapa 9, §3.2](../architecture/etapa9-adelanto-acta.md)). No contienen resultados ni predicciones de resultados, no eligen opción y no cambian el estado de este ADR, que en esa fecha era **Pendiente** (aceptado el 2026-11-12, ver [Decisión](#decisión)). Solo los cambia el propietario, con una fecha nueva; no se ajustan a la vista de una medición.
 
 **Unidad de observación.** Un centinela *sobrevive* en una etapa si aparece, en bytes o en su forma ASCII, en algún archivo regular del directorio de la base en esa etapa: `MANIFEST`, `MANIFEST.tmp`, `WAL.spare`, los `NNNNNN.wal` y los `NNNNNN.sst`. La clave y el valor se cuentan por separado, porque el MANIFEST guarda extremos de clave de los archivos que se retiran ([DESIGN.md, `compact_range`](../../crates/kerno-storage/DESIGN.md)). Las etapas son las de E9A-01: antes del flush, tras `compact_range`, tras cierre limpio y tras reapertura. La visibilidad (`get` y `scan`) se observa en las mismas etapas.
 
@@ -79,7 +80,7 @@ La opción 2 no se puede medir con E9A-01 mientras no haya cifrado: el formato r
 | B-1 | No | — | — |
 | B-2 | — | Es una constatación sobre el alcance de E9A-01 | — |
 
-Esta sección no elige opción, no fija ningún umbral de tiempo ni de bytes y no decide si ADR-0009 se acepta: eso es E9A-00b y lo decide el propietario. El riesgo T-09 del threat model sigue abierto.
+Esta sección no elige opción, no fija ningún umbral de tiempo ni de bytes y no decide si ADR-0009 se acepta: eso fue E9A-00b, y lo decidió el propietario el 2026-11-12 ([Decisión](#decisión)). El riesgo T-09 del threat model sigue abierto.
 
 ## Lo que aportó M0
 
@@ -91,4 +92,66 @@ Depende de ADR-0001, ADR-0004 y ADR-0006.
 
 ## Decisión
 
-Pendiente. No debe codificarse ningún supuesto de este ADR de forma difícil de revertir hasta que se acepte.
+**Aceptada el 2026-11-12 por el propietario: opción 3 (combinación), en estos términos.** Los criterios de la sección anterior se mantienen como se fijaron el 2026-11-11, antes de medir; esta decisión no los cambia.
+
+1. **Garantía inmediata: borrado lógico.** Tras un `delete` o un `delete_range` confirmados, las lecturas posteriores no devuelven el valor borrado ni una clave cubierta por el rango. Una instantánea tomada antes del borrado sigue viendo el estado anterior hasta que se suelta. Criterios I-1 e I-2.
+2. **Retirada de los archivos vivos al compactar.** Cuando `compact_range` cubre el rango afectado y ninguna instantánea abierta, tomada antes del borrado, retiene un archivo, los archivos vivos del directorio dejan de contener el valor y la clave borrados. Mientras una instantánea así siga abierta, las tablas que retiene permanecen en disco y se liberan al soltarla. Criterios C-1, C-2 y C-3, y el plazo de C-4. La cláusula de conteo de C-4 no se acepta como confirmada (ver la tabla siguiente).
+3. **Sin borrado físico.** No se promete que los bloques liberados desaparezcan del medio: el motor no tiene mecanismo para sobrescribirlos. Criterio C-5 sin medir; el límite queda declarado en el [threat model §6.5](../security/threat-model.md).
+4. **Borrado criptográfico, diferido.** Se difiere hasta que [ADR-0006](0006-cifrado-y-gestion-de-claves.md) (cifrado y gestión de claves) esté aceptado, y solo para los datos que lo requieran. Hoy el formato rechaza el bit `AEAD` con `Incompatible("encryption not supported")`, así que no hay nada que medir. Criterios K-1 a K-4.
+5. **Backups, sin plazo declarado.** No se declara ninguna ventana de backup. El plazo se fija cuando exista una función de copia de seguridad en el motor; hoy no la hay en `crates/`. Hasta entonces, esta ADR no afirma ningún plazo para los backups. Criterios B-1 y B-2.
+
+Los términos no incluyen una API de supresión, y esta aceptación no escribe ninguna.
+
+### Relación con los criterios
+
+Lo que se lista como «confirmado» lo muestra la medición de E9A-01 ([evidencia](#evidencia)). Lo que no se confirma se dice tal cual.
+
+| Criterio | Qué muestra la medición | Estado |
+|---|---|---|
+| I-1 | Tras `delete` y `delete_range`, en cada etapa, `get` y `scan` no devuelven lo borrado (`assert_visible_state`) | **Confirmado** |
+| I-2 | La instantánea tomada antes de los borrados sigue leyendo el estado anterior (`snapshot_unchanged`) | **Confirmado** |
+| C-1 | Tras `compact_range` y cierre limpio, ningún archivo vivo contiene el valor ni la clave. Antes del cierre, el único archivo con el centinela es una tabla que retiene la instantánea (`000007.sst`), contada en `pinned_files` | **Confirmado** para las etapas observadas. La clase de lápidas de punto en el último nivel no se ejercitó |
+| C-2 | Tras el checkpoint de `compact_range`, el MANIFEST no nombra la clave, tampoco con una instantánea abierta | **Confirmado** |
+| C-3 | Los fragmentos de la lápida de rango pasan de 1 a 0 tras `compact_range` | **Confirmado** |
+| C-4 | El plazo se observa: sin instantánea, `compact_range` no retiene tablas (`pinned_files=0`); con una instantánea abierta, al soltarla desaparecen las tres tablas que retenía (`000003.sst`, `000005.sst`, `000007.sst`). El conteo no coincide con los archivos que contienen el centinela: `pinned_files = 3`, y solo `000007.sst` contiene el valor y la clave | **Contradicho tal como está escrito** en su cláusula de conteo (C-4 se contradice si el conteo no coincide). El punto 2 toma de C-4 solo el plazo. La prueba afirma que los archivos con centinela están entre los retenidos, no que el conteo coincida (`suppression_survival.rs`, líneas 536–543) |
+| C-5 | No medido. `compact_range` no sobrescribe bloques (documentación de `compact_range` en `crates/kerno-storage/src/db.rs`) | **No medible con E9A-01**; fuera de los términos (punto 3) |
+| K-1 a K-4 | El formato no tiene cifrado | **No medibles** (punto 4) |
+| A-1 | La opción 3 exige asignar cada colección y clase de dato a una opción. Los términos no hacen esa asignación; el punto 4 la deja para cuando ADR-0006 esté aceptado | **No cumplido** |
+| A-2 | Clases de la opción 1 (puntos 1 a 3): I-1, I-2, C-1, C-2 y C-3 confirmados; C-4 contradicho en su cláusula de conteo; C-5 sin medir y excluido por el punto 3 | **Parcial** |
+| B-1 | Un plazo finito, o la declaración de que no hay ventana y por qué. Los términos no declaran ventana y el punto 5 la difiere | **No cumplido.** Queda abierto hasta que exista la función de backup |
+| B-2 | Las copias de backup están fuera del motor (threat model §4) y E9A-01 no las mide | **No medible** (constatación de alcance) |
+
+### Evidencia
+
+Comando, desde la raíz del repositorio, el 2026-11-12:
+
+```
+cargo test -p kerno-storage --all-features --release --test suppression_survival -- --nocapture
+```
+
+Extractos verbatim de la salida:
+
+```
+[survival] P1 (delete: value still in the log, no flush): HOLDS (delete value in ["000004.wal"])
+[survival] P1 (delete_range: value still in the log, no flush): HOLDS (range value in ["000004.wal"])
+[survival]   compact_range: rewritten=4 pinned_files=3 pinned_bytes=30990 kept_tables=["000003.sst", "000005.sst", "000007.sst"] retained_bytes=31702
+[survival] P2 (value in no live file after flush, compact_range, clean close): HOLDS (delete value in [], range value in [])
+[survival] P3 (tombstone keeps the key in a live file until compaction discards it): HOLDS (before: ["000007.sst", "000009.sst", "MANIFEST"], after close: [])
+[survival] P4 (flushed log is zeros and holds no value): HOLDS (spare is zeros: Some(true); delete value in ["000007.sst"]; range value in ["000007.sst"])
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+```
+
+La prueba es una observación del comportamiento actual, no un contrato (su cabecera). Esta ADR no la cambia.
+
+### Consecuencias
+
+- Lo que el motor promete se reduce a los puntos 1 y 2. Ningún texto del producto debe describir `delete` o `compact_range` como borrado seguro ([threat model §6.5](../security/threat-model.md)).
+- Si el motor cambia lo que observa E9A-01, la prueba puede cambiar con él; no es una regresión de una garantía, porque el motor no promete ninguna más allá de los puntos 1 y 2.
+
+### Seguimiento
+
+- **C-4:** decidir si el conteo de `pinned_files` debe coincidir con los archivos que contienen el centinela, o si el criterio se reescribe con una nueva fecha. No se ajusta a la vista de la medición.
+- **A-1:** asignar cada colección y clase de dato a una opción. Los términos no fijan cuándo se hace.
+- **Opción 2 (K-1 a K-4):** depende de [ADR-0006](0006-cifrado-y-gestion-de-claves.md), pendiente.
+- **B-1:** fijar el plazo de backup cuando exista una función de copia de seguridad en el motor. Hasta entonces, sin plazo.
+- **C-5:** un borrado físico de bloques liberados sería un paquete aparte con su propio criterio ([threat model §4](../security/threat-model.md)).

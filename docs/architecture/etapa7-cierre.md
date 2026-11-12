@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | **Cerrada, pendiente de aprobación del propietario.** No hay bloqueantes abiertos (§3.2). La decisión sobre el arranque de la Etapa 8 y sobre la reescritura de T4 queda para el propietario (§8) |
+| Estado | **Cerrada y aprobada por el propietario el 2026-11-12.** No hay bloqueantes abiertos (§3.2). Las decisiones sobre el arranque de la Etapa 8 y sobre T4 las tomó el propietario el mismo día (§8) |
 | Fecha | 2026-11-12 (E7-06) |
 | Acto | Revisión adversarial de E7-00 a E7-05, comprobación de los criterios de §4 de la acta, umbrales de §6, propuesta de promoción de I-40 e I-41 y actualización de roadmap, SAD e invariantes (acta §3, fila E7-06) |
 | Base revisada | Árbol en `52f026f` (fusión tras el cierre de E7-05). Este cambio solo toca `docs/` y no añade pruebas ni código |
@@ -53,7 +53,7 @@ Este documento describe la etapa tal como queda en el repositorio. Cada cifra sa
 | E7-03 | Ventana de `commit_seq` y filtros de procedencia, actor y fuente en las dos rutas; rastro verificable (I-40) | `703e657` | hecho |
 | E7-04 | Ranking con modo diagnóstico, vectores exactos en memoria (ADR-0011), `RankMode::Off` por defecto | `a2d7500`; marca en acta y roadmap `d13494f` | hecho |
 | E7-05 | Medición de calidad sobre el conjunto congelado y de rendimiento; salida cruda comprometida | `9be5668` | hecho. El ranking no pasa a ser el orden por defecto |
-| E7-06 | Este cierre: revisión adversarial (§3), comprobación de §4 y §6 (§0 y §2), promoción propuesta de I-40 e I-41 (§6), actualización de roadmap, SAD e invariantes | este cambio | hecho; **pendiente de aprobación del propietario** |
+| E7-06 | Este cierre: revisión adversarial (§3), comprobación de §4 y §6 (§0 y §2), promoción propuesta de I-40 e I-41 (§6), actualización de roadmap, SAD e invariantes | este cambio | hecho; **aprobado por el propietario el 2026-11-12** |
 
 No se añadió ningún paquete fuera de la acta. No hay cambios de formato persistente (acta §2.3) ni dependencias nuevas (criterio de §4 de la acta sobre I-31).
 
@@ -194,9 +194,9 @@ Desviaciones registradas en la medición: calentamiento de cuatro rondas de doce
 
 No se ha ejecutado el banco de rendimiento (`assoc_bench`) en E7-06: los números de §4.2 son los del commit (§7).
 
-## 6. Promoción propuesta de I-40 e I-41
+## 6. Promoción de I-40 e I-41
 
-Ambas quedan **promovidas, pendientes de aprobación del propietario**. La evidencia de cada una está en §2 y §3. Ninguna de las observaciones de §3.2 es bloqueante para ellas: R-2 (H-1) afecta a I-32, no a I-40 ni a I-41; R-3 y R-4 afectan a la forma de citar la medición, no a la existencia de la prueba independiente.
+Ambas quedan **promovidas y aprobadas por el propietario el 2026-11-12**. La evidencia de cada una está en §2 y §3. Ninguna de las observaciones de §3.2 es bloqueante para ellas: R-2 (H-1) afecta a I-32, no a I-40 ni a I-41; R-3 y R-4 afectan a la forma de citar la medición, no a la existencia de la prueba independiente.
 
 ### 6.1 I-40
 
@@ -231,9 +231,9 @@ Ambas quedan **promovidas, pendientes de aprobación del propietario**. La evide
 13. **El ranking no ve unidades que el corte deja fuera** (ranking §10): el orden de (saltos, identificador) limita el resultado antes de ordenar por puntuación. Si lo relevante está más allá del límite, el ranking no lo recupera.
 14. **Recencia sin medir por separado**, y el conjunto no tiene actualizaciones de unidades (R-8).
 
-## 8. Decisiones pendientes del propietario
+## 8. Decisiones del propietario
 
-Estas dos decisiones no las toma este cierre. Se registran aquí con la recomendación que sostiene la evidencia.
+El propietario tomó estas dos decisiones el 2026-11-12. Se registran aquí, con la recomendación que sostuvo la evidencia en el momento del cierre.
 
 ### 8.1 ¿Arranca la Etapa 8?
 
@@ -241,7 +241,7 @@ Estas dos decisiones no las toma este cierre. Se registran aquí con la recomend
 
 **Recomendación que sostiene la evidencia:** aceptar este cierre con el orden simple «saltos, luego identificador» como orden por defecto y el ranking como opción apagada (medición §6, primera opción). El [roadmap](../roadmap/README.md#etapa-8--consolidación-y-embeddings) no pone el ranking entre los entregables ni las aceptaciones de la Etapa 8, así que no hay una dependencia que obligue a medirlo antes. Hay una advertencia: la Etapa 8 producirá los embeddings que la señal vectorial del ranking consumiría, y la calidad de esa señal no se ha medido (§7, punto 7). Si el propietario quiere medirla, necesita un conjunto con vectores, que es un conjunto nuevo (§8.2). No condicionar la Etapa 8 a esa medición.
 
-**Lo que el propietario decide:** si acepta el cierre y el resultado negativo, y si la Etapa 8 arranca con ese orden por defecto.
+**Decidido por el propietario el 2026-11-12:** la Etapa 8 arranca. El ranking de resultados asociativos queda **desactivado por defecto y marcado como experimental**. Con el ranking desactivado, el orden de los resultados es el de «saltos, luego identificador».
 
 ### 8.2 ¿Se reescribe T4 antes de cualquier medición nueva?
 
@@ -249,10 +249,10 @@ Estas dos decisiones no las toma este cierre. Se registran aquí con la recomend
 
 **Recomendación que sostiene la evidencia:** no cambiar T4 sobre este conjunto. Si el propietario quiere volver a medir el ranking, reescribir T4 como umbral alcanzable (por ejemplo, no inferior al orden simple, o una mejora en otra métrica) **antes** de medir, dejarlo congelado con fecha, y construir un conjunto nuevo (otra semilla y, si es posible, otro autor para las consultas). No usar este conjunto para ajustar pesos ni umbrales. Medir de nuevo con este conjunto no aporta evidencia nueva, porque ya ha visto los resultados (medición §6).
 
-**Lo que el propietario decide:** si T4 se reescribe, cuándo, y si se construye un conjunto nuevo.
+**Decidido por el propietario el 2026-11-12:** T4 no se reescribe ahora. El texto de T4 en la [acta de la Etapa 7](etapa7-acta.md) (§6.2) queda como está, y no se usa para decidir nada sobre este conjunto. Si el ranking se vuelve a medir, será con un conjunto de evaluación nuevo y un umbral definido en ese momento, antes de medir. No se ajusta ningún peso ni umbral sobre el conjunto congelado.
 
 ## 9. Aprobación
 
 | Fecha | Decisión | Notas |
 |---|---|---|
-| 2026-11-12 | **Cerrada, pendiente de aprobación del propietario** | Sin bloqueantes abiertos (§3.2). Criterios de §2 cumplidos, con H-1 (§2, I-32) y con la excepción de R-1 frente a la fila de E7-05. Umbrales de §0.1 registrados tal como se midieron; T4 no cumplido. I-40 e I-41 promovidas, pendientes de aprobación (§6). Decisiones de §8 pendientes |
+| 2026-11-12 | **Cerrada y aprobada por el propietario** | Sin bloqueantes abiertos (§3.2). Criterios de §2 cumplidos, con H-1 (§2, I-32) y con la excepción de R-1 frente a la fila de E7-05. Umbrales de §0.1 registrados tal como se midieron; T4 no cumplido y no reescrito (§8.2). I-40 e I-41 promovidas y aprobadas (§6). Decisiones de §8: la Etapa 8 arranca con el ranking desactivado por defecto y marcado como experimental |
