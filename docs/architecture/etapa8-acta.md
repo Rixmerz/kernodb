@@ -11,7 +11,7 @@
 
 Esta acta está **aprobada por el propietario el 2026-11-12**. Describe el estado del repositorio tal como se leyó el 2026-11-12 y qué debe hacerse en la Etapa 8. El propietario aprobó las decisiones D1 a D12 con la recomendación de cada una, salvo D10, donde eligió la opción (b); la elección de cada decisión está en §8.1.
 
-E8-00 queda hecho con esta aprobación. E8-S0 (informe SQLite, sin umbrales) sigue pendiente. Ningún código de la Etapa 8 se escribe sin pasar por E8-00.
+E8-00 queda hecho con esta aprobación. E8-S0 (informe SQLite, sin umbrales) está **hecho** (`078839a`). E8-08 (cierre) está **hecho** el 2026-11-12 con [cierre de la Etapa 8](etapa8-cierre.md): cerrada como trabajo de ingeniería, Q4 no demostrada, decisiones de §8 tomadas por delegación del propietario y revocables. Ningún código de la Etapa 8 se escribe sin pasar por E8-00.
 
 Lo que el propietario ya ha decidido y esta acta recoge (§1.1 y §8.1) no se vuelve a proponer.
 
@@ -28,7 +28,7 @@ La Etapa 8 depende de la 7 y de la 6 en el roadmap. Su condición de inicio es �
 | ADR-0009 (supresión, retención y backups) | **Aceptado** el 2026-11-12 con la opción 3 (ver §1.1). Su archivo `docs/adr/0009-supresion-retencion-y-backups.md` y `docs/adr/README.md` dicen «Aceptado», con fecha y con la opción 3. Ese archivo registra la cláusula de conteo de C-4 como contradicha y B-1 sin plazo declarado | **Cumplida** (gate E8-00). El seguimiento de C-4 y B-1 está en el propio ADR |
 | Criterios de ADR-0009 fijados antes de medir | Cumplido: el texto de criterios está en ADR-0009, con fecha 2026-11-11, antes de cualquier ejecución de E9A-01 | Ninguna |
 | Supresión medida (E9A-01) | Existe `crates/kerno-storage/tests/suppression_survival.rs` y el commit `2bab299`. Su cabecera dice que las predicciones P1 a P4 se cumplen. Es una observación del comportamiento actual, no un contrato | Ninguna para E8; E8-05 la extiende a derivados |
-| Informe comparativo con SQLite, sin umbrales (decisión del propietario de 2026-11-11, punto 2) | **No existe.** `docs/testing/f1-report.md` menciona SQLite solo en su método y no contiene resultados. `docs/testing/` no tiene ningún informe con ese nombre | **Gate**: paquete E8-S0 (§3) antes de cerrar E8-00 |
+| Informe comparativo con SQLite, sin umbrales (decisión del propietario de 2026-11-11, punto 2) | **No existe.** `docs/testing/f1-report.md` menciona SQLite solo en su método y no contiene resultados. `docs/testing/` no tiene ningún informe con ese nombre | **Hecho** (E8-S0, `078839a`): [informe](../testing/sqlite-report.md) sin umbrales, en `docs/testing/sqlite-report.md` |
 | Caso de uso real antes de 1.0 (decisión del propietario de 2026-11-11, punto 3) | No aplica a la entrada de la Etapa 8: es un requisito para 1.0 | Paquete E8-09 (§3), fuera del camino crítico de la Etapa 8 |
 | Decisión del propietario sobre reescribir T4 (cierre de la Etapa 7, §8.2) | **Decidida el 2026-11-12: opción (b).** T4 se deja como está en el acta de la Etapa 7 y no se reescribe | Ninguna (§8.1, D10) |
 
@@ -90,7 +90,7 @@ Todos los paquetes con código cumplen las reglas comunes de §4. Cada uno escri
 | **E8-05** Supresión de fuentes y derivados | Borrar una unidad, una revisión (retención) o una relación elimina en el mismo `ChangeSet` los derivados de esa fuente (§5.3). Prueba de qué sobrevive, en la forma de E9A-01, con centinelas también en vectores y resúmenes | E8-03; E8-04 si D2 = persistir | `crates/kerno-units/src/suppression.rs` (nuevo), `crates/kerno-units/src/lib.rs`, `crates/kerno-units/tests/derived_suppression.rs` (nuevo) | — |
 | **E8-06** Consolidación con procedencia | Contrato de resumen como derivado: fuentes obligatorias, descriptor, y el original siempre legible. Adaptador como trait sin red; una implementación de prueba determinista. Sin modelo real | E8-03, E8-05 | `crates/kerno-units/src/consolidation.rs` (nuevo), `crates/kerno-units/src/lib.rs`, `crates/kerno-units/tests/consolidation.rs` (nuevo) | — |
 | **E8-07** Medición | Calidad sobre el conjunto nuevo (§6.2) y rendimiento (§6.3). Salida cruda comprometida | E8-01 a E8-06 | `crates/kerno-units/tests/derived_measure.rs` (nuevo), `crates/kerno-units/examples/derived_bench.rs` (nuevo), `docs/architecture/etapa8-medicion.md` (nuevo), `docs/architecture/etapa8-medicion-salida.txt` | — |
-| **E8-08** Cierre | Revisión adversarial de E8-01 a E8-07. Promoción de I-25, I-38 y las nuevas (§7). Actualización de [invariantes](invariants.md) (I-25 pasa de «Fase 5» a Etapa 8), roadmap y [SAD](SAD.md) como versión nueva numerada | E8-00 a E8-07 | `docs/architecture/etapa8-cierre.md` (nuevo), `docs/architecture/invariants.md`, `docs/roadmap/README.md`, `docs/architecture/SAD.md` (nueva versión) | — |
+| **E8-08** Cierre (**hecho** el 2026-11-12, [cierre](etapa8-cierre.md)) | Revisión adversarial de E8-01 a E8-07. Promoción de I-25, I-38 y las nuevas (§7). Actualización de [invariantes](invariants.md) (I-25 pasa de «Fase 5» a Etapa 8), roadmap y [SAD](SAD.md) como versión nueva numerada | E8-00 a E8-07 | `docs/architecture/etapa8-cierre.md` (nuevo), `docs/architecture/invariants.md`, `docs/roadmap/README.md`, `docs/architecture/SAD.md` (nueva versión) | — |
 | **E8-09** Caso de uso real (pre-1.0) | Memoria para un agente, con solo la API pública y como lo usaría un tercero. Usa el registro de derivados si E8-05 está cerrado | E8-05 (no bloquea el cierre de la Etapa 8) | `examples/agent-memory/**` (fuera del workspace, con dependencia por ruta), sin cambios en `Cargo.toml` del workspace | Puede correr después de E8-05, junto a E8-07 |
 
 ### 3.1 Qué corre a la vez
@@ -212,16 +212,16 @@ Sin umbral absoluto de latencia. La [acta de la Etapa 7](etapa7-acta.md) §6.3 t
 
 | ID | Estado actual | Lo que hace la Etapa 8 | Paquete |
 |---|---|---|---|
-| **I-25** | «Fase 5» en [invariantes](invariants.md) | Todo derivado de embedding referencia la revisión fuente exacta y el perfil de modelo; cambiar la fuente lo marca obsoleto. Se verifica y pasa a «Etapa 8» | E8-02, E8-03, E8-04 si D2 |
-| **I-38** | «Etapa 8» | Todo derivado referencia sus fuentes exactas, su método y su versión; cambiar una fuente lo marca obsoleto o crea una versión nueva. Se verifica | E8-02, E8-03 |
+| **I-25** | «Fase 5» en [invariantes](invariants.md) | Todo derivado de embedding referencia la revisión fuente exacta y el perfil de modelo; cambiar la fuente lo marca obsoleto. Se verifica y pasa a «Etapa 8» | E8-02, E8-03, E8-04 si D2. **Estado tras E8-08:** promovida a Etapa 8 para vectores persistidos ([invariantes §2.6](invariants.md)); la prueba que varíe solo el perfil falta (F-04). Pendiente de aprobación del propietario |
+| **I-38** | «Etapa 8» | Todo derivado referencia sus fuentes exactas, su método y su versión; cambiar una fuente lo marca obsoleto o crea una versión nueva. Se verifica | E8-02, E8-03. **Estado tras E8-08:** verificada y promovida ([invariantes §2.6](invariants.md)). Pendiente de aprobación del propietario |
 | **I-24** | Verificada en índices | Se extiende a derivados: reconstruido igual que nuevo | E8-03, E8-07 (P4) |
 | **I-21** | Verificada en unidades y relaciones | Se extiende a derivados: el descriptor, su estado y su borrado van en el mismo `ChangeSet` que la fuente | E8-05 |
 | **I-1, I-2** (ADR-0009) | Verificadas para el valor | Se extienden a derivados: invisibles tras el commit; visibles en la instantánea abierta | E8-05 |
 | **I-31** | Verificada por revisión de dependencias | Ningún adaptador ni contrato de consolidación introduce red ni modelo en el núcleo | E8-06, E8-08 |
 | **I-37** | Verificada en observaciones | Los centinelas de vectores y resúmenes no salen fuera de `diagnostic` | E8-05, E8-07 |
 | **I-41** | Propuesta de promoción (Etapa 7) | Sin cambio; el ranking apagado sigue cumpliéndola | — |
-| **I-42** (**propuesta**) | No existe | Suprimir una fuente deja sin visibilidad a sus derivados en el mismo `ChangeSet` (§5.3) | E8-05 |
-| **I-43** (**propuesta**) | No existe | Un resumen nunca reemplaza el original mientras el original exista y sea auditable (spec §10) | E8-06 |
+| **I-42** (**propuesta**) | No existe | Suprimir una fuente deja sin visibilidad a sus derivados en el mismo `ChangeSet` (§5.3) | E8-05. **Estado tras E8-08:** verificada en pruebas ([invariantes §2.6](invariants.md)); pendiente de aprobación del propietario |
+| **I-43** (**propuesta**) | No existe | Un resumen nunca reemplaza el original mientras el original exista y sea auditable (spec §10) | E8-06. **Estado tras E8-08:** verificada en pruebas ([invariantes §2.6](invariants.md)); pendiente de aprobación del propietario |
 
 I-42 e I-43 son propuestas. Ninguna se promueve hasta que E8-08 la verifique y el propietario la apruebe. La [acta de adelanto de la Etapa 9](etapa9-adelanto-acta.md) §6 dice que, si ADR-0009 se acepta, la Etapa 8 propondrá su invariante de supresión. Esta acta la propone (I-42) sin ir más allá de ADR-0009.
 
@@ -290,5 +290,6 @@ Las dos condiciones que este párrafo pedía están cumplidas el 2026-11-12: la 
 | Fecha | Decisión | Notas |
 |---|---|---|
 | 2026-11-12 | **Propuesta. Pendiente de aprobación del propietario** | Ninguna parte de la Etapa 8 se aprueba por delegación. Gates de E8-00: esta acta, ADR-0018, ADR-0009 escrito en su archivo, cierre de la Etapa 7 marcado como aprobado, y decisiones D1 a D12. Ningún código de la Etapa 8 antes de esa aprobación |
+| 2026-11-12 | **Cierre de la Etapa 8 (E8-08), hecho** | [Cierre](etapa8-cierre.md). Cerrada como trabajo de ingeniería; Q4 registrada como no demostrada; sin hallazgo bloqueante abierto; decisiones (a) a (e) tomadas por delegación del propietario el 2026-11-12, revocables por él. Ningún umbral ni fichero congelado modificado |
 | 2026-11-12 | **Aprobada por el propietario** | D1 a D12 con la recomendación de §8, salvo D10: opción (b), T4 no se reescribe (§8.1). ADR-0018 aceptado con la opción 2 y ADR-0009 aceptado con la opción 3, ambos en su archivo. Cierre de la Etapa 7 aprobado. E8-00 queda hecho; E8-S0 sigue pendiente. No se modifica ningún umbral de §6 |
 </content>
