@@ -70,8 +70,8 @@ El comando de la primera pasada Sync no se archivó cuando se lanzó; el que se 
 
 | | |
 |---|---|
-| Máquina | VM, Intel Xeon 2,10 GHz, **4 núcleos**, 15,7 GiB, ext4, kernel 6.18.44 |
-| Compilación | `rustc 1.97.0`, `release`; SQLite es el incluido (`bundled`) por `rusqlite 0.41` / `libsqlite3-sys 0.39.1` del `Cargo.lock` |
+| Máquina | VM, 2,10 GHz, **4 núcleos**, 15,7 GiB, ext4, kernel 6.18.44 |
+| Compilación | `rustc 1.97.0`, `release`; SQLite es el incluido (`bundled`) según el `Cargo.lock` |
 | Código | Commit `0d05269` (`env.json`); el binario se reconstruyó para la segunda y tercera tanda sobre el mismo código |
 | `fdatasync` de 4 KiB (`env.json`) | p50 3 994 µs · p95 4 069 µs · p99 7 586 µs · máx 7 999 µs |
 
@@ -80,7 +80,7 @@ El comando de la primera pasada Sync no se archivó cuando se lanzó; el que se 
 | Archivo | Ejecuciones | Carga (1 min), mínimo – mediana – máximo |
 |---|---|---|
 | `results-sync.jsonl` | 114 | 5,04 – 8,99 – 14,18 |
-| `results-sync-concurrent.jsonl` | 10 | 10,98 – 13,30 – 13,56 |
+| `results-sync-concurrent.jsonl` | 10 | 10,98 – 13,125 – 13,56 |
 | `results-buffered.jsonl` | 130 | 8,98 – 11,52 – 12,06 |
 
 Con 4 CPU, una carga de 5 a 14 significa que había entre una y tres veces más tareas ejecutables que CPU. Efectos sobre los números:
@@ -395,7 +395,7 @@ Cada punto se cita con las medianas de las tablas; todo punto está sujeto a los
 
 ## 6. Límites y desviaciones de la ejecución
 
-1. **Primera pasada Sync interrumpida por falta de espacio en disco.** La partición se llenó durante `concurrent_commits` de kerno (repetición 2): `progress-sync.log` registra `No space left on device (os error 28)` y la línea final de `results-sync.jsonl` quedó truncada (se conserva sin editar; `aggregate.py` la ignora). Ese archivo tiene 113 líneas válidas y la truncada, de las 130 ejecuciones previstas; faltan 16: 6 de `concurrent_commits` y las 10 de `rmw_counters`.
+1. **Primera pasada Sync interrumpida por falta de espacio en disco.** La partición se llenó durante `concurrent_commits` de kerno (repetición 2): `progress-sync.log` registra `No space left on device (os error 28)` y la línea final de `results-sync.jsonl` quedó truncada (se conserva sin editar; `aggregate.py` la ignora). Ese archivo tiene 114 líneas válidas y la truncada, de las 130 ejecuciones previstas; faltan 16: 6 de `concurrent_commits` y las 10 de `rmw_counters`.
 2. **`concurrent_commits` en Sync se repitió completa** (5 repeticiones por motor) en `results-sync-concurrent.jsonl`; las 2 repeticiones por motor de la primera pasada **no se usan** en las tablas, para que las 5 sean de la misma tanda. Se midieron más tarde y con más carga que el resto de la primera pasada, y no intercaladas con las demás cargas.
 3. **`rmw_counters` no se tabula** (§1) y en Sync no se ejecutó.
 4. **El comando de la primera pasada Sync es una reconstrucción** (§1.1).
