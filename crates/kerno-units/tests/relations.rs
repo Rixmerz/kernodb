@@ -25,7 +25,7 @@ use kerno_testkit::emulated::Emulated;
 use kerno_testkit::reference::LogEngine;
 use kerno_testkit::rng::Rng;
 use kerno_testkit::vfs::SimVfs;
-use kerno_units::codec::{ChangeSetRecord, Key, RelationRecord};
+use kerno_units::codec::{ChangeSetRecord, Key, RelationRecord, UnitHead};
 use kerno_units::*;
 
 type EmuLog = Emulated<LogEngine>;
@@ -597,6 +597,94 @@ fn verifier_reports_index_damage<E: TxnEngine>() {
     assert!(report.findings.iter().any(|f| f.to_string().contains("Archived")), "{:?}", report.findings);
 }
 
+/// K1 (E9-22): a relation record with only one of its two adjacency entries.
+/// Seen from the end that kept its entry the adjacency answer is right but the
+/// damage is there: the query must not return it as a clean adjacency answer.
+/// Seen from the end that lost its entry there is nothing to traverse, and
+/// the answer is short, from `relations_of` and from `query_relations`: the
+/// known limit (H-1), pinned here so that a change to it is deliberate;
+/// `verify_units` reports both.
+fn one_adjacency_entry_missing<E: TxnEngine>(filler: usize) {
+    let db = open::<E>();
+    let u = units(&db, 4);
+    let id = relate(&db, u[0], u[1], "cites", RelationProvenance::Declared).unwrap();
+    // Enough other relations that the planner's bounded probes cannot see the
+    // inconsistency and choose the adjacency path.
+    for _ in 0..filler {
+        relate(&db, u[2], u[3], "other", RelationProvenance::Declared).unwrap();
+    }
+    let out = Key::RelationOut { unit: u[0], relation_type: "cites".into(), edge: id }.encode().unwrap();
+    let inn = Key::RelationIn { unit: u[1], relation_type: "cites".into(), edge: id }.encode().unwrap();
+    // (damage, the end that kept its entry, the end that lost it)
+    let cases = [
+        ("REL_IN lost", &inn, (u[0], Direction::Out), (u[1], Direction::In)),
+        ("REL_OUT lost", &out, (u[1], Direction::In), (u[0], Direction::Out)),
+    ];
+    for (name, lost, kept, gone) in cases {
+        let undo = vec![(lost.clone(), db.raw_get(lost).unwrap())];
+        put_all(&db, vec![(lost.clone(), None)]);
+        assert!(db.verify_units().unwrap().rules().contains("UNIT-36"), "{name}");
+        let snap = db.snapshot().unwrap();
+
+        let (unit, dir) = kept;
+        let q = RelationQuery { unit, direction: dir, relation_type: Some("cites".into()) };
+        let reference = snap.reference_relations_of(unit, dir, Some("cites")).unwrap();
+        assert_eq!(reference.len(), 1, "{name}");
+        let got = snap.query_relations(&q).unwrap();
+        assert_eq!(got.relations, reference, "{name}: the answer is the reference's");
+        assert_eq!(got.path, PlanPath::RelationsReference, "{name}: the damage sends it to the reference path");
+        if filler > 0 {
+            let fallback = got.fallback.expect("a large store reaches the adjacency path and falls back");
+            assert_eq!(fallback.abandoned, PlanPath::Adjacency, "{name}");
+            assert_eq!(fallback.cause, FallbackCause::Invalid(Violation::Unmirrored), "{name}");
+        }
+
+        let (unit, dir) = gone;
+        let reference = snap.reference_relations_of(unit, dir, Some("cites")).unwrap();
+        assert_eq!(reference.len(), 1, "{name}");
+        assert!(snap.relations_of(unit, dir, Some("cites")).unwrap().is_empty(), "{name}: the lost end is short");
+        let q = RelationQuery { unit, direction: dir, relation_type: Some("cites".into()) };
+        let got = snap.query_relations(&q).unwrap();
+        // Known open limit (K1): the planner's relation probes never compare
+        // the adjacency range with the record range, so the empty answer
+        // stands, on the adjacency path and without a fallback.
+        assert_eq!((got.path, got.relations.len(), got.fallback), (PlanPath::Adjacency, 0, None), "{name}");
+        drop(snap);
+        put_all(&db, undo);
+        assert_clean(&db, name);
+    }
+}
+
+fn is_corruption(e: &UnitError) -> bool {
+    matches!(e, UnitError::Storage(kerno_core::Error::Corruption(_)))
+}
+
+/// K3 (E9-22) does not reproduce: `get_unit` already refuses a head whose
+/// `oldest_rev` is outside `1..=head_rev`, because `UnitHead::decode` checks
+/// it (UNIT-17) before `load_unit` reads anything else.
+fn get_unit_checks_oldest_rev<E: TxnEngine>() {
+    let db = open::<E>();
+    let u = units(&db, 2);
+    let hk = Key::UnitHead { unit: u[0] }.encode().unwrap();
+    let good = db.raw_get(&hk).unwrap().unwrap();
+    // The encoder refuses an invalid head, so forge the bytes: the two
+    // encodings that differ only in `oldest_rev` show where it sits.
+    let head = UnitHead::decode(&good).unwrap();
+    let at = |oldest| UnitHead { head_rev: RevNo(2), oldest_rev: RevNo(oldest), ..head.clone() }.encode().unwrap();
+    let (one, two) = (at(1), at(2));
+    let pos = one.iter().zip(&two).position(|(a, b)| a != b).expect("oldest_rev differs");
+    let mut forged = good.clone();
+    forged[pos] = 0;
+    assert_ne!(forged, good);
+    put_all(&db, vec![(hk.clone(), Some(forged))]);
+    let e = db.get_unit(u[0]).unwrap_err();
+    assert!(is_corruption(&e), "oldest_rev 0: {e}");
+    assert!(!db.verify_units().unwrap().is_clean());
+    put_all(&db, vec![(hk, Some(good))]);
+    assert!(db.get_unit(u[0]).unwrap().is_some());
+    assert_clean(&db, "head restored");
+}
+
 macro_rules! engine_tests {
     ($m:ident, $E:ty) => {
         mod $m {
@@ -647,6 +735,18 @@ macro_rules! engine_tests {
             #[test]
             fn differential_across_scan_pages() {
                 super::differential_across_scan_pages::<E>();
+            }
+            #[test]
+            fn one_adjacency_entry_missing_small_store() {
+                super::one_adjacency_entry_missing::<E>(0);
+            }
+            #[test]
+            fn one_adjacency_entry_missing_large_store() {
+                super::one_adjacency_entry_missing::<E>(70);
+            }
+            #[test]
+            fn get_unit_checks_oldest_rev() {
+                super::get_unit_checks_oldest_rev::<E>();
             }
             #[test]
             fn verifier_reports_index_damage() {

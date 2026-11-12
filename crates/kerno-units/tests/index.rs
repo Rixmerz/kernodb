@@ -738,6 +738,79 @@ fn rebuilt_equals_fresh<E: TxnEngine>(seed: u64) {
 
 // -------------------------------------------------------------- verifier
 
+/// K2 (E9-22): units whose entry was lost. `IDX_META` counts the entries the
+/// build wrote, and a scan of `IDX_PRIMARY` visits all of them whatever the
+/// filter, so a lost entry that the count still includes is `Corruption`
+/// instead of a short answer. Two losses stay invisible to a read and are
+/// pinned as such: a count lowered to match (only the heads can tell), and an
+/// `IDX_TYPE` entry (a type range has no count). `verify_units` reports all.
+fn index_path_with_a_missing_entry<E: TxnEngine>() {
+    #[derive(Clone, Copy, PartialEq, Debug)]
+    enum Read {
+        Corrupt,
+        Right,
+        Short,
+    }
+    let db = open::<E>();
+    let u = create_units(&db, &[("a", 1), ("b", 1), ("a", 2)]);
+    assert_eq!(db.rebuild_index().unwrap(), ready(2));
+    assert_clean(&db, "built");
+    let u0 = u[0];
+    let all = UnitFilter::default();
+    let only_a = UnitFilter { unit_type: Some("a".into()), schema_version: None };
+    // Each patch commits once (and so does its undo), so the watermark has to
+    // name the next sequence for the index to stay `Ready` and answer.
+    // (name, patch, IDX_PRIMARY read of every unit, of type a, IDX_TYPE read of type a)
+    type Case = (&'static str, Box<dyn Fn(u64) -> Patch>, [Read; 3]);
+    let cases: Vec<Case> = vec![
+        (
+            "IDX_PRIMARY missing, count kept",
+            Box::new(move |w| vec![(entry_key(u0), None), (meta_key(), Some(meta_value(w, 3)))]),
+            [Read::Corrupt, Read::Corrupt, Read::Right],
+        ),
+        (
+            "IDX_PRIMARY missing, count lowered",
+            Box::new(move |w| vec![(entry_key(u0), None), (meta_key(), Some(meta_value(w, 2)))]),
+            [Read::Short, Read::Short, Read::Right],
+        ),
+        (
+            "IDX_TYPE missing",
+            Box::new(move |w| vec![(type_key("a", 1, u0), None), (meta_key(), Some(meta_value(w, 3)))]),
+            [Read::Right, Read::Right, Read::Short],
+        ),
+    ];
+    for (name, patch, expected) in cases {
+        let patch = patch(seq(&db) + 1);
+        let undo = undo_of(&db, patch.iter().map(|(k, _)| k.clone()));
+        put_all(&db, patch);
+        assert!(!db.verify_units().unwrap().is_clean(), "{name}: verify_units reports it");
+        let snap = db.snapshot().unwrap();
+        let reads = [
+            (IndexPath::Primary, &all, "IDX_PRIMARY, all"),
+            (IndexPath::Primary, &only_a, "IDX_PRIMARY, type a"),
+            (IndexPath::ByType, &only_a, "IDX_TYPE, type a"),
+        ];
+        for ((path, filter, what), want) in reads.into_iter().zip(expected) {
+            let reference = snap.reference_filter(filter).unwrap();
+            let got = match snap.indexed_scan_via(path, filter) {
+                Ok(units) if units == reference => Read::Right,
+                Ok(units) => {
+                    assert!(units.len() < reference.len(), "{name} / {what}: short, not different");
+                    Read::Short
+                }
+                Err(e) => {
+                    assert!(matches!(&e, UnitError::Storage(kerno_core::Error::Corruption(_))), "{name} / {what}: {e}");
+                    Read::Corrupt
+                }
+            };
+            assert_eq!(got, want, "{name} / {what}");
+        }
+        drop(snap);
+        put_all(&db, undo);
+        assert_clean(&db, name);
+    }
+}
+
 fn verifier_reports_index_damage<E: TxnEngine>() {
     let db = open::<E>();
     let u = create_units(&db, &[("a", 1), ("b", 1), ("a", 2), ("c", 3)]); // commit 1
@@ -1045,6 +1118,10 @@ macro_rules! engine_tests {
         mod $m {
             type E = $E;
             use super::*;
+            #[test]
+            fn index_path_with_a_missing_entry() {
+                super::index_path_with_a_missing_entry::<E>();
+            }
             #[test]
             fn states_and_watermark() {
                 super::states_and_watermark::<E>();
