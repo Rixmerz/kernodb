@@ -12,7 +12,7 @@
 //! # Identity
 //!
 //! [`DerivedDescriptor::id`] hashes the sources (as a set), the method, the
-//! version and the parameters (as a map). The input hash is **not** part of
+//! version, the model profile and the parameters (as a map; ADR-0020 §C.1). The input hash is **not** part of
 //! it: rebuilding the same derived datum over changed input is the same
 //! derived datum. A new method or version has a new identity, so it is a new
 //! entry and the old one is marked `superseded`, never rewritten.
@@ -33,8 +33,9 @@
 //!
 //! # Scope
 //!
-//! Memory only: no persistence and no on-disk format (acta §5.4). The
-//! registry is plain data behind `&mut self`; a caller that shares it wraps
+//! Memory only: the registry holds no bytes on disk; persisted vectors are
+//! [`crate::vector_store`]'s (ADR-0020), which rebuilds this registry from the
+//! database. The registry is plain data behind `&mut self`; a caller that shares it wraps
 //! it in its own lock. Nothing here reads a database.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -43,7 +44,7 @@ use std::fmt;
 use crate::types::{RevisionId, UnitId};
 
 /// Domain tag of the identity hash; bump it if the encoding below changes.
-const IDENTITY_DOMAIN: &[u8] = b"kerno.derived.identity.v1";
+const IDENTITY_DOMAIN: &[u8] = b"kerno.derived.identity.v2";
 
 /// The identity of a derived datum: sources, method, version and parameters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -104,13 +105,30 @@ impl fmt::Display for DerivedError {
 impl std::error::Error for DerivedError {}
 
 /// What a derived datum is made of and how it was made.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct DerivedDescriptor {
     sources: BTreeSet<RevisionId>,
     method: String,
     version: u32,
     params: BTreeMap<String, String>,
     input_hash: [u8; 32],
+    /// The model profile (ADR-0018, I-25), opaque text; empty when the
+    /// datum has none. A persisted vector always has one (ADR-0020 §B.1).
+    profile: String,
+}
+
+impl fmt::Debug for DerivedDescriptor {
+    /// The method, the profile and the parameters are caller-supplied text:
+    /// only their sizes are shown (I-37).
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DerivedDescriptor")
+            .field("sources", &self.sources)
+            .field("method_len", &self.method.len())
+            .field("version", &self.version)
+            .field("profile_len", &self.profile.len())
+            .field("params", &self.params.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl DerivedDescriptor {
@@ -130,7 +148,18 @@ impl DerivedDescriptor {
         if method.is_empty() {
             return Err(DerivedError::EmptyMethod);
         }
-        Ok(DerivedDescriptor { sources, method, version, params, input_hash })
+        Ok(DerivedDescriptor { sources, method, version, params, input_hash, profile: String::new() })
+    }
+
+    /// The same descriptor with a model profile, which is part of the
+    /// identity (ADR-0020 §C.1).
+    pub fn with_profile(mut self, profile: impl Into<String>) -> Self {
+        self.profile = profile.into();
+        self
+    }
+
+    pub fn profile(&self) -> &str {
+        &self.profile
     }
 
     /// The exact sources, in `(unit, revision)` order.
@@ -155,7 +184,7 @@ impl DerivedDescriptor {
     }
 
     /// The identity: equal for descriptors with the same sources, method,
-    /// version and parameters, whatever their input hash.
+    /// version, profile and parameters, whatever their input hash.
     pub fn id(&self) -> DerivedId {
         let mut h = blake3::Hasher::new();
         h.update(IDENTITY_DOMAIN);
@@ -170,6 +199,7 @@ impl DerivedDescriptor {
         }
         field(self.method.as_bytes());
         field(&self.version.to_le_bytes());
+        field(self.profile.as_bytes());
         field(&(self.params.len() as u64).to_le_bytes());
         for (k, v) in &self.params {
             field(k.as_bytes());

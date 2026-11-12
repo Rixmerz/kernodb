@@ -19,7 +19,8 @@
 //! `ExecutionObservation` ([`observation`]). E6-01 adds the dependency model and
 //! learned-state store of the result cache ([`cache`]). E7-01 adds the associative
 //! query model and its reference path ([`assoc`]); E7-02 its indexed path and its
-//! plan ([`planner`]). This crate
+//! plan ([`planner`]). E8-04 persists vectors as derived data, layer version 2
+//! ([`vector_store`], ADR-0020). This crate
 //! stays separate from `kerno-storage`.
 
 pub mod assoc;
@@ -42,6 +43,7 @@ pub mod planner;
 pub mod reference;
 pub mod retention;
 pub mod types;
+pub mod vector_store;
 pub mod verify;
 
 pub use assoc::{
@@ -84,6 +86,10 @@ pub use retention::{CompactReport, RetentionBudget, RetentionPacing, RetentionPo
 pub use types::{
     BuildOutcome, ChangeKind, ChangePurpose, ChangeSetId, CommitSeq, Direction, HistoryPolicy, Lifecycle,
     ProvenanceKind, Purpose, RelationId, RelationProvenance, RevNo, RevisionId, RevisionKind, Timestamp, UnitId,
+};
+pub use vector_store::{
+    DerivedDecodeError, DerivedFinding, DerivedKey, DerivedRule, ReopenReport, RepairReport, StaleCause, VectorCompute,
+    VectorDescriptor, VectorRecipe, VectorSpec, VectorState,
 };
 pub use verify::{
     CrossRule, UnitVerifyReport, VerifyCounts, VerifyFinding, VerifyRule, verify_engine, verify_immutable,
