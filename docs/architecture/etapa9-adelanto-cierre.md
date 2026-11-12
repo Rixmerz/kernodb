@@ -195,7 +195,7 @@ Estado: **resuelto** (corregido y comprobado), **abierto y bloqueante**, o **abi
 | H-9 | Doc (DESIGN.md) | La frase «el borrado tampoco sobrescribe» (sección «Qué puede sobrevivir») vale para la configuración por defecto. Con `wal_preallocate` el WAL volcado se sobrescribe con ceros, como dice la sección de WAL preasignado de la misma guía y mide P4 | `DESIGN.md` (sección de WAL preasignado); salida de P4 | determinista (lectura) | preexistente | no | **Abierto y no bloqueante**: lo que DESIGN declara del WAL no cambió en este cierre, así que no lo reescribo; precisarlo es un cambio posterior |
 | H-10 | Doc (DESIGN.md) | DESIGN.md decía «ADR-0009 pendiente» y «queda para la Fase 4» desde que ADR-0009 se aceptó (2026-11-12) | `grep -n ADR-0009` antes del cambio | determinista | preexistente desde E9A-00b | no | **Resuelto** en este cierre (DESIGN.md, dos frases) |
 | H-11 | Doc (threat model) | La frase «fuzzing del formato (Fase 6)» de T-06 y «sigue pendiente» de §6.2 quedaban desfasadas | Lectura de `threat-model.md` | determinista | preexistente desde E9A-04 | no | **Resuelto** en este cierre (T-06, §6.2, §6.7) |
-| H-12 | Doc (acta) | La acta cita la mutación en `sst.rs:332`; el mensaje está en `sst.rs:335` desde `d89c728` | `git grep -n "referenced by the MANIFEST but missing" -- crates/kerno-storage/src` | determinista | documental (imports añadidos por el cambio de H-1) | no | **Resuelto**: la mutación se reprodujo en ese mensaje (M-A). La referencia de línea del acta queda como histórica |
+| H-12 | Doc (acta) | La acta cita la mutación en `sst.rs:332`; el mensaje está en `sst.rs:335` desde `d89c728` | `sed -n 335p crates/kerno-storage/src/sst.rs` muestra el mensaje «referenced by the MANIFEST but missing»; `grep -n "sst.rs:332" docs/architecture/etapa9-adelanto-acta.md` da las líneas 38 y 103 | determinista | documental (imports añadidos por el cambio de H-1) | no | **Abierto y no bloqueante**: la mutación M-A se reprodujo en la línea 335, pero la cita de la acta sigue en 332 y este cierre no cambia el texto aprobado de la acta. Corregirla es un cambio posterior de documentación |
 | H-13 | Acta | K-E3-7 (lecturas de `kerno-units` que comprueban menos que `verify_units`) no se ha revisado | Acta §2.3 y §7, punto 4: fuera de este adelanto, recomendado para la Etapa 9 después de E7-06 | — | decisión de alcance | no | **Abierto y no bloqueante**: deliberadamente fuera de E9A |
 | H-14 | Acta | I-27, I-28 e I-30 siguen sin verificar | Acta §2.3 y §4 | — | fuera de alcance (Fase 4) | no | **Abierto y no bloqueante**: el adelanto no las incluye |
 
@@ -208,13 +208,17 @@ Todo se ejecutó en la raíz del árbol revisado (`76ff9a4`) salvo las mutacione
 ### 4.1 Suite completa de `kerno-storage`
 
 ```
-$ cargo test -p kerno-storage --all-features --release
-(41 líneas «test result», todas con «ok»)
-$ awk '/^test result/{p+=$4; f+=$6; i+=$8} END{print "passed=" p, "failed=" f, "ignored=" i}' <salida>
+$ cargo test -p kerno-storage --all-features --release > suite.txt 2>&1; echo "exit=$?"
+exit=0
+$ grep -c "^test result: ok" suite.txt
+41
+$ grep -cE "FAILED|panicked" suite.txt
+0
+$ grep "^test result" suite.txt | awk '{p+=$4; f+=$6; i+=$8} END{print "passed=" p, "failed=" f, "ignored=" i}'
 passed=672 failed=0 ignored=4
 ```
 
-Ninguna línea contiene `FAILED` ni `panicked`. Este cambio no añade ni cambia pruebas; el conteo es el del árbol revisado.
+`suite.txt` está fuera del repositorio (carpeta de trabajo de la revisión). Se ejecutó el 2026-11-12 sobre el árbol de este cierre, que no cambia código ni pruebas respecto a `76ff9a4` (`git diff --stat 76ff9a4`: solo `docs/` y `crates/kerno-storage/DESIGN.md`). El conteo coincide con la línea base registrada.
 
 ### 4.2 Pruebas de los cinco paquetes
 
@@ -241,29 +245,29 @@ Mutaciones de la cabecera de `open_properties.rs` que **no** reproduje: la que a
 Un replay ejecuta cada entrada del corpus una vez (`-runs=0`): no genera entradas nuevas y no escribe en el corpus comprometido. Orden de la ejecución: un objetivo por línea.
 
 ```
-$ cargo +<nightly> fuzz run --fuzz-dir crates/kerno-storage/fuzz <objetivo> <directorio-vacio> crates/kerno-storage/fuzz/corpus/<objetivo> -- -runs=0 -max_len=65536 -timeout=1
-varint exit=0 | Done 4 runs in 0 second(s)
-header exit=0 | Done 27 runs in 0 second(s)
-commit exit=0 | Done 3 runs in 0 second(s)
-frame exit=0 | Done 5 runs in 0 second(s)
-data_block exit=0 | Done 3 runs in 0 second(s)
-filter_block exit=0 | Done 2 runs in 0 second(s)
-rangedel_block exit=0 | Done 2 runs in 0 second(s)
-props_block exit=0 | Done 3 runs in 0 second(s)
-index_block exit=0 | Done 2 runs in 0 second(s)
-footer exit=0 | Done 2 runs in 0 second(s)
-record exit=0 | Done 9 runs in 0 second(s)
-wal exit=0 | Done 7 runs in 0 second(s)
-sst exit=0 | Done 4 runs in 0 second(s)
-manifest exit=0 | Done 6 runs in 0 second(s)
-open exit=0 | Done 33 runs in 0 second(s)
+$ cargo +nightly fuzz run --fuzz-dir crates/kerno-storage/fuzz <objetivo> <directorio-vacio> crates/kerno-storage/fuzz/corpus/<objetivo> -- -runs=0 -max_len=65536 -timeout=1; echo "exit=$?"
+varint exit=0 Done 4 runs in 0 second(s)
+header exit=0 Done 27 runs in 0 second(s)
+commit exit=0 Done 3 runs in 0 second(s)
+frame exit=0 Done 5 runs in 0 second(s)
+data_block exit=0 Done 3 runs in 0 second(s)
+filter_block exit=0 Done 2 runs in 0 second(s)
+rangedel_block exit=0 Done 2 runs in 0 second(s)
+props_block exit=0 Done 3 runs in 0 second(s)
+index_block exit=0 Done 2 runs in 0 second(s)
+footer exit=0 Done 2 runs in 0 second(s)
+record exit=0 Done 9 runs in 0 second(s)
+wal exit=0 Done 7 runs in 0 second(s)
+sst exit=0 Done 4 runs in 0 second(s)
+manifest exit=0 Done 6 runs in 0 second(s)
+open exit=0 Done 33 runs in 0 second(s)
 ```
 
-El toolchain de nightly se omite en el comando por el criterio de nombres de herramientas de terceros. El script y las carpetas de trabajo viven fuera del repositorio. El directorio `crates/kerno-storage/fuzz/target/` lo genera la compilación y está ignorado por git.
+Cada línea es el código de salida del comando de un objetivo y la última línea de su registro. Se lanzó un bucle de shell sobre los quince objetivos, con un directorio de trabajo vacío por objetivo (`<directorio-vacio>`), fuera del repositorio. El comando nombra el toolchain `nightly` y el subcomando `fuzz` de `cargo-fuzz` porque forman parte de lo que hay que ejecutar. El directorio `crates/kerno-storage/fuzz/target/` lo genera la compilación y está ignorado por git.
 
 ### 4.5 Formato
 
-`cargo fmt --all --check`: ver §8 (se ejecutó tras los cambios de documentación).
+`cargo fmt --all --check` sobre el árbol de este cierre: sin salida, código de salida 0 (`fmt exit=0`, §8).
 
 ## 5. Promoción de I-29 para `kerno-storage`
 
@@ -313,7 +317,7 @@ No se modificó ningún archivo de `src/`, `tests/`, `fuzz/` ni ningún ADR.
 3. **H-4 y H-5**: ADR-0009 sigue con C-4 contradicho en su cláusula de conteo y con C-5 sin medir. T-09 sigue abierto.
 4. **No verificado:** los 30 minutos por objetivo de fuzzing (H-7). Las mutaciones de la cabecera de `open_properties.rs` que no reproduje (§4.3).
 5. **No verificado:** las cifras 357 claves y 307 ocultas de F-E9A-03-1 (threat model §6.6 y cabecera de `open_properties.rs`). No las reprodujo esta revisión, que solo comprobó el resultado de la prueba.
-6. **Nombres de terceros en texto aprobado:** la acta (§2.2, §3.2, §7) y `fuzz/README.md` nombran herramientas de fuzzing y dependencias. Ese texto no se reescribió en este cierre. Lo que este cierre añade no los nombra.
+6. **Nombres de herramientas en el texto:** la acta (§2.2, §3.2, §7) y `fuzz/README.md` nombran herramientas de fuzzing y dependencias, y ese texto aprobado no se reescribió en este cierre. Este cierre nombra solo lo que sus comandos y archivos necesitan: `proptest`, la biblioteca de las propiedades de `tests/open_properties.rs` (§2.3), y `cargo +nightly fuzz` (comando de §4.4). No nombra modelos, asistentes ni la herramienta que produjo el trabajo.
 7. **Alcance del fuzzing:** cubre los lectores de `kerno-storage` y solo las entradas que la cobertura alcanzó. Esta revisión no amplía esa cobertura.
 8. **Medición de estrés:** el soak y las propiedades son de semilla fija; las ejecuciones se repiten con la misma semilla. Para explorar otras semillas, el encabezado de cada prueba dice cómo (`KERNO_SOAK_SEED`, `OPEN_PROPERTIES_BASE_SEED`).
 
@@ -321,7 +325,7 @@ No se modificó ningún archivo de `src/`, `tests/`, `fuzz/` ni ningún ADR.
 
 | Comprobación | Comando | Resultado |
 |---|---|---|
-| Formato | `cargo fmt --all --check` | Ver la línea siguiente |
+| Formato | `cargo fmt --all --check; echo "fmt exit=$?"` | Sin salida; `fmt exit=0` (ejecutado el 2026-11-12, §4.5) |
 | Suite de `kerno-storage` | `cargo test -p kerno-storage --all-features --release` | `passed=672 failed=0 ignored=4` (§4.1) |
 | Clippy | No ejecutado: este cierre no cambia código ni pruebas | — |
 
