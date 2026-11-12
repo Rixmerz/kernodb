@@ -700,8 +700,10 @@ impl<E: TxnEngine> UnitDb<E> {
 
 /// Engine test hooks as methods of the layer, for the engines that have them.
 /// Only with the `test-support` feature (or in this crate's unit tests), so a
-/// production build has no public physical-reclamation method besides
-/// [`UnitDb::reclaim`] (D23).
+/// production build has no physical-reclamation method on an arbitrary range:
+/// its public reclamation calls are [`UnitDb::reclaim`], over the whole key
+/// space, and [`UnitDb::compact`], over the revision ranges (`REV_META` and
+/// `REV_PAYLOAD`), both through the public `Reclaim` trait (D23).
 #[cfg(any(test, feature = "test-support"))]
 impl<E: TxnEngine + kerno_core::contract::TestHooks> UnitDb<E> {
     /// Flushes the memtable to a table.
@@ -1663,6 +1665,8 @@ mod accessor_tests {
         let seq = db.raw_commit(vec![(k.clone(), Some(b"v1".to_vec()))]).unwrap();
         assert!(seq > before, "a raw commit moves the sequence");
         assert_eq!(db.raw_seq().unwrap(), seq);
+        // What one engine commit moves the sequence by.
+        let one_commit = seq - before;
         assert_eq!(db.raw_get(&k).unwrap(), Some(b"v1".to_vec()));
         // Two different keys stored: each reads its own value.
         db.raw_commit(vec![(other.clone(), Some(b"v2".to_vec()))]).unwrap();
@@ -1670,7 +1674,9 @@ mod accessor_tests {
         assert_eq!(db.raw_get(&other).unwrap(), Some(b"v2".to_vec()));
         assert_eq!(db.raw_get(b"\xf0absent").unwrap(), None);
         // Several entries in one commit, two keys repeated: the last entry
-        // of each wins, whether it puts or deletes.
+        // of each wins, whether it puts or deletes. The sequence moves by one
+        // commit, not by one commit per entry.
+        let before = db.raw_seq().unwrap();
         let seq = db
             .raw_commit(vec![
                 (b"\xf0m1".to_vec(), Some(b"a".to_vec())),
@@ -1680,7 +1686,8 @@ mod accessor_tests {
                 (b"\xf0m3".to_vec(), None),
             ])
             .unwrap();
-        assert_eq!(db.raw_seq().unwrap(), seq, "several entries make one commit");
+        assert_eq!(seq - before, one_commit, "several entries make one commit");
+        assert_eq!(db.raw_seq().unwrap(), seq);
         assert_eq!(db.raw_get(b"\xf0m1").unwrap(), Some(b"c".to_vec()));
         assert_eq!(db.raw_get(b"\xf0m2").unwrap(), Some(b"b".to_vec()));
         assert_eq!(db.raw_get(b"\xf0m3").unwrap(), None);
@@ -1701,8 +1708,10 @@ mod accessor_tests {
         db.close().unwrap();
     }
 
+    /// A counter the engine must report: a missing one fails the test.
     fn stat<E: TxnEngine>(db: &UnitDb<E>, name: &str) -> u64 {
-        db.storage_stats().into_iter().find(|(n, _)| n == name).map_or(0, |(_, v)| v)
+        let found = db.storage_stats().into_iter().find(|(n, _)| n == name);
+        found.unwrap_or_else(|| panic!("the engine reports no counter {name:?}")).1
     }
 
     #[test]
@@ -1764,30 +1773,53 @@ mod accessor_tests {
         // every sync keeps that flush running far longer than the reads of
         // the counters below take.
         disk.set_sync_latency(std::time::Duration::from_millis(20));
+        // Each batch is 256 KiB against a 1 MiB write buffer, so a rotation is
+        // due within a few batches; the bound stops a loop that would never
+        // see one.
         let (flushes, rotations) = (stat(&db, "flushes"), stat(&db, "memtable_rotations"));
-        let mut batch = 0u32;
-        while stat(&db, "memtable_rotations") == rotations {
+        for batch in 0..64u32 {
+            if stat(&db, "memtable_rotations") != rotations {
+                break;
+            }
             let bulk = |i: u32| [&[0xf1][..], &batch.to_be_bytes(), &i.to_be_bytes()].concat();
             db.raw_commit((0..64).map(|i| (bulk(i), Some(vec![0x5a; 4096]))).collect()).unwrap();
-            batch += 1;
         }
+        assert_ne!(stat(&db, "memtable_rotations"), rotations, "64 batches of 256 KiB rotated no memtable");
         db.hook_wait_idle().unwrap();
         disk.set_sync_latency(std::time::Duration::ZERO);
         let rotated = stat(&db, "memtable_rotations") - rotations;
         assert_eq!(stat(&db, "immutable_memtables"), 0, "hook_wait_idle waited for the flush");
         assert_eq!(stat(&db, "flushes"), flushes + rotated, "every rotated memtable was flushed");
         // hook_compact_range over a bounded range whose ends differ in kind
-        // (included start, excluded end): keys 10..=19 are deleted, the range
-        // [key 10, key 20) is compacted, and their tombstones are dropped.
+        // (included start, excluded end). Everything is first pushed to the
+        // last level, so that L0 holds only the two tables written next: the
+        // tombstones of keys 10..=19, inside [key 10, key 20), and those of
+        // keys 20..=31, outside it. Their key ranges do not overlap, and two
+        // tables stay below the L0 compaction trigger, so only the call
+        // under test compacts them. Only the 10 tombstones inside the range
+        // are dropped: unbounded ends would drop 22, swapped ends none, and
+        // an included end would take key 20's table too.
+        db.hook_compact_range(Bound::Unbounded, Bound::Unbounded).unwrap();
+        db.hook_wait_idle().unwrap();
         db.raw_commit((10..20u8).map(|j| (key(j), None)).collect()).unwrap();
+        db.hook_flush().unwrap();
+        db.raw_commit((20..32u8).map(|j| (key(j), None)).collect()).unwrap();
+        db.hook_flush().unwrap();
+        db.hook_wait_idle().unwrap();
         let dropped = stat(&db, "tombstones_dropped");
         db.hook_compact_range(Bound::Included(&key(10)), Bound::Excluded(&key(20))).unwrap();
         db.hook_wait_idle().unwrap();
-        assert!(stat(&db, "tombstones_dropped") > dropped, "hook_compact_range compacted the range");
+        assert_eq!(stat(&db, "tombstones_dropped") - dropped, 10, "only the range's tombstones were dropped");
         for j in 0..32u8 {
-            let want = (!(10..20).contains(&j)).then(|| value(j));
+            let want = (j < 10).then(|| value(j));
             assert_eq!(db.raw_get(&key(j)).unwrap(), want, "key {j}");
         }
+        // The tombstones outside the range were kept: compacting everything
+        // drops them now.
+        let dropped = stat(&db, "tombstones_dropped");
+        db.hook_compact_range(Bound::Unbounded, Bound::Unbounded).unwrap();
+        db.hook_wait_idle().unwrap();
+        assert_eq!(stat(&db, "tombstones_dropped") - dropped, 12, "the tombstones outside the range were kept");
         db.close().unwrap();
     }
 }

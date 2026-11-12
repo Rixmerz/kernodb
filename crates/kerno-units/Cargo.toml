@@ -17,7 +17,9 @@ blake3.workspace = true
 # The raw write accessor (`UnitDb::raw_commit`) and the engine test hooks
 # (`hook_flush`, `hook_wait_idle`, `hook_compact_range`) of `UnitDb` (D23 of
 # etapa9-acta.md). Off by default: a production build has no write path below
-# the layer and no public physical-reclamation method besides `reclaim`. The
+# the layer and no compaction of an arbitrary range; its public reclamation
+# calls are `reclaim` (the whole key space) and `compact` (the revision ranges
+# REV_META and REV_PAYLOAD), both through kerno-core's `Reclaim` trait. The
 # targets below that call them build only with it; plain `cargo test` skips
 # them, `cargo test --features test-support` (or `--all-features`) runs them.
 test-support = []
