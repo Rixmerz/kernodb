@@ -70,7 +70,7 @@ Después de la Fase 1 el trabajo se organiza por las etapas de la [especificaci�
 | 5 Planificador y observabilidad | 4 | Consultas por filtro y relación con ruta de referencia probada | 0015 |
 | 6 Primera plasticidad operacional | 5 | Planificador determinista con prueba diferencial en CI | 0016 |
 | 7 Memoria asociativa | 4, 5 | Recorridos de relaciones y explicación de planes disponibles | 0011 |
-| 8 Consolidación y embeddings | 7, 6 | ADR-0018 aceptado (**pendiente: se acepta en el acta de la Etapa 8**); supresión de derivados definida (ADR-0009, **cumplida el 2026-11-12**) | 0009, 0018 |
+| 8 Consolidación y embeddings | 7, 6 | ADR-0018 aceptado el 2026-11-12; supresión de derivados definida (ADR-0009, **cumplida el 2026-11-12**) | 0009, 0018 |
 | 9 Endurecimiento | todas las anteriores (las partes de seguridad pueden adelantarse) | Ver decisión pendiente sobre el orden | 0005, 0006, 0012 |
 
 ### Etapa 3 — Unidades, revisiones y procedencia
@@ -109,7 +109,7 @@ Después de la Fase 1 el trabajo se organiza por las etapas de la [especificaci�
 
 - **Entregables:** registro común de derivados (ADR-0018); adaptadores o jobs externos para embeddings y resúmenes, fuera del núcleo (I-31); obsolescencia y reconstrucción.
 - **Aceptación:** cada derivado se vincula a sus fuentes y se invalida o reconstruye al cambiarlas (I-25, I-38); suprimir una fuente afecta a sus derivados según ADR-0009; un resumen nunca reemplaza el original auditable.
-- **Estado:** arranca por decisión del propietario del 2026-11-12 ([cierre de la Etapa 7, §8.1](../architecture/etapa7-cierre.md)). La condición de entrada sobre ADR-0009 se cumple desde el 2026-11-12: [ADR-0009](../adr/0009-supresion-retencion-y-backups.md) está aceptado con la opción 3 (E9A-00b). **ADR-0018 sigue Propuesto y se acepta en el acta de la Etapa 8.** La [acta de adelanto de la Etapa 9](../architecture/etapa9-adelanto-acta.md) propone además que E9A-02 esté cerrado antes de que la Etapa 8 escriba ningún derivado; esta entrada no decide esa propuesta.
+- **Estado: iniciada.** El arranque lo decidió el propietario el 2026-11-12 ([cierre de la Etapa 7, §8.1](../architecture/etapa7-cierre.md)). El propietario aprobó el [acta de la Etapa 8](../architecture/etapa8-acta.md) el 2026-11-12, con las decisiones D1 a D12 (D10 en opción b, §8.1 del acta). **E8-00 hecho** el 2026-11-12: [ADR-0018](../adr/0018-versionado-y-reconstruccion-de-derivados.md) aceptado con la opción 2, [ADR-0009](../adr/0009-supresion-retencion-y-backups.md) aceptado con la opción 3 (E9A-00b) y escrito en su archivo, y cierre de la Etapa 7 aprobado. **E8-S0 (informe SQLite, sin umbrales) sigue pendiente**, y el acta lo señala como gate (§1 y §3). La [acta de adelanto de la Etapa 9](../architecture/etapa9-adelanto-acta.md) propone además que E9A-02 esté cerrado antes de que la Etapa 8 escriba ningún derivado; esta entrada no decide esa propuesta.
 
 ### Etapa 9 — Endurecimiento
 
@@ -119,7 +119,7 @@ Después de la Fase 1 el trabajo se organiza por las etapas de la [especificaci�
 ### Decisiones pendientes del propietario para estas etapas
 
 1. **Orden de seguridad frente a IA (resuelta el 2026-11-11 por delegación del propietario, en el [acta de adelanto de la Etapa 9](../architecture/etapa9-adelanto-acta.md), §10):** el SAD hace la seguridad (Fase 4) antes que búsqueda e IA (Fase 5); la especificación la deja en la Etapa 9. Propuesta: adelantar a antes de la Etapa 8 lo que afecta a derivados (supresión, ADR-0009; redacción de logs, I-29) y dejar el resto en la Etapa 9.
-2. Aceptar o modificar ADR-0014…0018 en las etapas indicadas.
+2. Aceptar o modificar ADR-0014…0018 en las etapas indicadas. ADR-0018 quedó aceptado el 2026-11-12 (opción 2).
 3. Umbrales de benchmark frente a SQLite, si se quieren como criterio y no solo como informe.
 
 ### Decisiones del propietario de 2026-11-11

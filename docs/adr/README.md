@@ -28,7 +28,7 @@ Reglas:
 | [0015](0015-privacidad-de-la-observabilidad.md) | Privacidad de la observabilidad | Aceptado el 2026-11-06 con la evidencia de E5-04 (spec v0.2.0 §17.11) |
 | [0016](0016-adaptacion-e-invalidacion.md) | Adaptación operacional e invalidación | Aceptado (2026-11-09; garantías G1–G7) |
 | [0017](0017-semantica-de-la-unidad-neuronal.md) | Semántica de la «unidad neuronal» | Propuesto (spec v0.2.0 §17.13; se decide al iniciar la Etapa 3) |
-| [0018](0018-versionado-y-reconstruccion-de-derivados.md) | Versionado y reconstrucción de artefactos derivados | Propuesto (spec v0.2.0 §17.14; se decide antes de la Etapa 8) |
+| [0018](0018-versionado-y-reconstruccion-de-derivados.md) | Versionado y reconstrucción de artefactos derivados | **Aceptado** (2026-11-12, por el propietario: opción 2, registro común de derivados; [acta de la Etapa 8](../architecture/etapa8-acta.md)) |
 | [0019](0019-licencia-y-contribuciones.md) | Licencia y contribuciones | **Aceptado** (2026-11-11, por el propietario del proyecto) |
 
 Los ADR 0014–0018 provienen de la lista de la [especificación v0.2.0](../spec/especificacion-arquitectonica-v0.2.0.md) §17; la correspondencia completa está en [`docs/spec/`](../spec/README.md).
