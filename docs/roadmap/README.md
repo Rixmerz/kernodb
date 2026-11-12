@@ -113,6 +113,8 @@ Después de la Fase 1 el trabajo se organiza por las etapas de la [especificaci�
 
 ### Etapa 9 — Endurecimiento
 
+- **Acta de entrada:** [etapa9-acta.md](../architecture/etapa9-acta.md). **Aprobada por delegación del propietario el 2026-11-12, revocable.** Fija los paquetes E9-00 a E9-CL, los umbrales antes de medir y las decisiones D1 a D22. Las decisiones que cambian formato o una promesa a usuarios (D1 a D4, D12, D15 y D16) quedan **retenidas para el propietario en persona**; hasta entonces no se escribe código de identificadores, cifrado, congelación de formato ni texto de licencia.
+
 - **Entregables:** IDs públicos (ADR-0005), cifrado y claves (ADR-0006), auditoría minimizada, exportación/importación y migraciones con fixtures de versiones previas, fuzzing de entradas externas, pruebas de estrés, benchmarks comparativos con SQLite y motores de referencia (SAD Fases 4 y 6).
 - **Aceptación:** límites y garantías documentados; fallos críticos resueltos o marcados como bloqueantes; I-27…I-30 verificados.
 - **Adelanto (en paralelo con la Etapa 7):** [acta](../architecture/etapa9-adelanto-acta.md), aprobada por delegación del propietario el 2026-11-11. Paquetes E9A-00a a E9A-06. **Cierre del adelanto (E9A-06) hecho el 2026-11-12:** [cierre](../architecture/etapa9-adelanto-cierre.md). Ningún hallazgo bloqueante abierto; I-29 promovida para `kerno-storage`, aprobada por delegación del propietario el 2026-11-12 y revocable. I-27, I-28 e I-30 siguen pendientes (Fase 4).
