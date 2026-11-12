@@ -117,9 +117,9 @@ fn base<E: TxnEngine>(seed: u64) -> Base {
     let disk = SimVfs::new(seed);
     let db = UnitDb::<E>::open(disk.as_vfs(), Path::new(DIR), &cfg()).expect("open");
     assert_clean(&db.verify_units().unwrap(), "empty store");
-    let mut prev = db.engine().snapshot().unwrap();
+    let mut prev = db.raw_snapshot().unwrap();
     let mut step = |db: &UnitDb<E>, what: &str| {
-        let now = db.engine().snapshot().unwrap();
+        let now = db.raw_snapshot().unwrap();
         assert_clean(&db.verify_units().unwrap(), what);
         let changed = verify_immutable(&prev, &now).unwrap();
         assert!(changed.is_empty(), "{what}: {changed:?}");
@@ -144,7 +144,7 @@ fn base<E: TxnEngine>(seed: u64) -> Base {
     let (c, _) = db.create_unit(new_unit("aud", &[4; 10]), meta()).unwrap();
     update(&db, c, &[5; 10]);
     let (d, _) = db.create_unit(new_unit("non", &[6; 10]), meta()).unwrap();
-    let snap = db.engine().snapshot().unwrap();
+    let snap = db.raw_snapshot().unwrap();
     let d_rev1 = (
         snap.get(&k(Key::RevMeta { unit: d, rev: RevNo(1) })).unwrap().unwrap(),
         snap.get(&k(Key::RevPayload { unit: d, rev: RevNo(1) })).unwrap().unwrap(),
@@ -173,7 +173,7 @@ fn base<E: TxnEngine>(seed: u64) -> Base {
     );
     assert_eq!(report.counts.layer_records, 3);
     assert_eq!(report.counts.unknown, 0);
-    let raw = raw_of(&db.engine().snapshot().unwrap());
+    let raw = raw_of(&db.raw_snapshot().unwrap());
     db.close().unwrap();
     // A reopened store verifies the same.
     let db = UnitDb::<E>::open(disk.as_vfs(), Path::new(DIR), &cfg()).unwrap();
@@ -320,6 +320,10 @@ fn apply<E: Engine>(db: &E, patch: &Patch) {
         };
     }
     db.commit(&b).unwrap();
+}
+
+fn apply_raw<E: TxnEngine>(db: &UnitDb<E>, patch: &Patch) {
+    db.raw_commit(patch.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap();
 }
 
 fn is_damage_error(e: &UnitError) -> bool {
@@ -648,7 +652,7 @@ fn sentinel_no_content<E: TxnEngine>() {
     no_sentinel("retention report", &format!("{:?}", report.unwrap()));
 
     // Damage, one record at a time, read back through the API and verify.
-    let raw = raw_of(&db.engine().snapshot().unwrap());
+    let raw = raw_of(&db.raw_snapshot().unwrap());
     let rev = |r: u64| k(Key::RevMeta { unit: a, rev: RevNo(r) });
     let pay = |r: u64| k(Key::RevPayload { unit: a, rev: RevNo(r) });
     let hk = k(Key::UnitHead { unit: a });
@@ -673,7 +677,7 @@ fn sentinel_no_content<E: TxnEngine>() {
     ];
     for patch in &damages {
         let mut undo: Patch = patch.iter().map(|(k, _)| (k.clone(), raw.get(k).cloned())).collect();
-        apply(db.engine(), patch);
+        apply_raw(&db, patch);
         let snap = db.snapshot().unwrap();
         let reads = [
             db.get_unit(a).map(|_| ()),
@@ -703,7 +707,7 @@ fn sentinel_no_content<E: TxnEngine>() {
         }
         drop(snap);
         undo.reverse();
-        apply(db.engine(), &undo);
+        apply_raw(&db, &undo);
         assert!(db.verify_units().unwrap().is_clean());
     }
     db.close().unwrap();

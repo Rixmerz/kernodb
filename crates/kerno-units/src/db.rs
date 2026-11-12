@@ -485,11 +485,6 @@ impl<E: TxnEngine> UnitDb<E> {
         }
     }
 
-    /// The engine underneath. Writing to it directly bypasses the layer.
-    pub fn engine(&self) -> &E {
-        &self.engine
-    }
-
     pub fn config(&self) -> &UnitConfig {
         &self.cfg
     }
@@ -675,7 +670,7 @@ impl<E: TxnEngine> UnitDb<E> {
     }
 
     /// The engine's counters by name.
-    pub fn engine_stats(&self) -> Vec<(String, u64)> {
+    pub fn storage_stats(&self) -> Vec<(String, u64)> {
         self.engine.stats()
     }
 }
@@ -684,19 +679,19 @@ impl<E: TxnEngine> UnitDb<E> {
 impl<E: TxnEngine + kerno_core::contract::TestHooks> UnitDb<E> {
     /// Flushes the memtable to a table.
     #[doc(hidden)]
-    pub fn engine_flush(&self) -> Result<(), UnitError> {
+    pub fn hook_flush(&self) -> Result<(), UnitError> {
         self.engine.flush().map_err(UnitError::from)
     }
 
     /// Blocks until no background work is running or queued.
     #[doc(hidden)]
-    pub fn engine_wait_idle(&self) -> Result<(), UnitError> {
+    pub fn hook_wait_idle(&self) -> Result<(), UnitError> {
         self.engine.wait_idle().map_err(UnitError::from)
     }
 
     /// Compacts the raw key range `[start, end)` of the engine.
     #[doc(hidden)]
-    pub fn engine_compact_range(&self, start: Bound<&[u8]>, end: Bound<&[u8]>) -> Result<(), UnitError> {
+    pub fn hook_compact_range(&self, start: Bound<&[u8]>, end: Bound<&[u8]>) -> Result<(), UnitError> {
         self.engine.compact_range(start, end).map_err(UnitError::from)
     }
 }
@@ -1665,11 +1660,11 @@ mod accessor_tests {
         let disk = SimVfs::new(0);
         let db = open::<kerno_storage::KernoDb>(&disk);
         db.raw_commit(vec![(b"\xf0a".to_vec(), Some(b"1".to_vec()))]).unwrap();
-        db.engine_flush().unwrap();
-        db.engine_wait_idle().unwrap();
-        db.engine_compact_range(Bound::Unbounded, Bound::Unbounded).unwrap();
+        db.hook_flush().unwrap();
+        db.hook_wait_idle().unwrap();
+        db.hook_compact_range(Bound::Unbounded, Bound::Unbounded).unwrap();
         assert_eq!(db.raw_get(b"\xf0a").unwrap(), Some(b"1".to_vec()));
-        assert!(db.engine_stats().iter().any(|(_, v)| *v > 0), "a flushed engine reports counters");
+        assert!(db.storage_stats().iter().any(|(_, v)| *v > 0), "a flushed engine reports counters");
         db.close().unwrap();
     }
 }

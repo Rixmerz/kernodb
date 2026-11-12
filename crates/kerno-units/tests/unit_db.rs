@@ -63,11 +63,11 @@ fn dump<S: Snapshot>(s: &S) -> Dump {
 }
 
 fn raw<E: TxnEngine>(db: &UnitDb<E>) -> Dump {
-    dump(&db.engine().snapshot().expect("snapshot"))
+    dump(&db.raw_snapshot().expect("snapshot"))
 }
 
 fn seq<E: TxnEngine>(db: &UnitDb<E>) -> u64 {
-    db.engine().snapshot().expect("snapshot").seq()
+    db.raw_snapshot().expect("snapshot").seq()
 }
 
 fn meta() -> ChangeMeta {
@@ -395,9 +395,7 @@ fn seq_prediction<E: TxnEngine>() {
             let (db, blind, k) = (&db, &blind, blind_key.clone());
             s.spawn(move || {
                 for _ in 0..25 {
-                    let mut b = WriteBatch::new();
-                    b.delete(k.clone());
-                    blind.lock().unwrap().push(db.engine().commit(&b).expect("blind commit"));
+                    blind.lock().unwrap().push(db.raw_commit(vec![(k.clone(), None)]).expect("blind commit"));
                 }
             });
         }
@@ -408,7 +406,7 @@ fn seq_prediction<E: TxnEngine>() {
     all.sort_unstable();
     let last = seq(&db);
     assert_eq!(all, (3..=last).collect::<Vec<_>>(), "every commit got the next sequence; aborts consumed none");
-    let snap = db.engine().snapshot().expect("snapshot");
+    let snap = db.raw_snapshot().expect("snapshot");
     for info in &infos {
         let cs_raw = snap.get(&Key::ChangeSet { seq: info.commit_seq }.encode().unwrap()).unwrap().expect("CHANGESET");
         let Record::ChangeSet { record, .. } =
@@ -786,7 +784,7 @@ fn open_and_mark<E: TxnEngine>() {
     db.begin_changeset(meta()).unwrap().commit().unwrap();
     assert_eq!(seq(&db), 0, "an empty change set writes no mark");
     db.create_unit(new_unit("doc", b"x"), meta()).unwrap();
-    let mark = db.engine().snapshot().unwrap().get(&mark_key).unwrap().expect("mark");
+    let mark = db.raw_snapshot().unwrap().get(&mark_key).unwrap().expect("mark");
     assert_eq!(
         LayerMeta::decode(&mark).unwrap(),
         LayerMeta { layer_version: 1, history_policy: HistoryPolicy::Versioned }
@@ -846,17 +844,12 @@ fn corruption_detected<E: TxnEngine>() {
     let rp = Key::RevPayload { unit: a, rev: RevNo(1) }.encode().unwrap();
     let rm = Key::RevMeta { unit: a, rev: RevNo(1) }.encode().unwrap();
     let hk = Key::UnitHead { unit: a }.encode().unwrap();
-    let snap = db.engine().snapshot().unwrap();
+    let snap = db.raw_snapshot().unwrap();
     let (good_payload, good_meta, good_head) =
         (snap.get(&rp).unwrap().unwrap(), snap.get(&rm).unwrap().unwrap(), snap.get(&hk).unwrap().unwrap());
     drop(snap);
     let put = |k: &[u8], v: Option<&[u8]>| {
-        let mut b = WriteBatch::new();
-        match v {
-            Some(v) => b.put(k.to_vec(), v.to_vec()),
-            None => b.delete(k.to_vec()),
-        };
-        db.engine().commit(&b).unwrap();
+        db.raw_commit(vec![(k.to_vec(), v.map(|v| v.to_vec()))]).unwrap();
     };
     let mut flipped = good_payload.clone();
     flipped[0] ^= 1;

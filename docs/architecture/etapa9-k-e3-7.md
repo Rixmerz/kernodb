@@ -97,3 +97,29 @@ K1 y K2 son lo que la acta llama «defecto encontrado» (§3, fila E9-16: «un d
 | F-03 (R10) | Asignado a E9-11 | Acta §9 |
 
 **Revisión independiente:** pendiente. El autor de este documento no puede ser su revisor (§4.10). Este paquete no se fusiona con K1 o K2 abiertos sin decisión del propietario.
+
+## 8. Resultado de E9-22 (2026-11-12)
+
+Paquete abierto por el propietario, bajo delegación, después de esta revisión. Las pruebas se ejecutaron en modo release, en los dos motores (`emulated_log` y `kerno`, este último sobre `KernoDb`). Cada prueba nueva se vio fallar con una mutación en una copia del árbol, borrada después. Ningún formato en disco cambia.
+
+**K1. Se reproduce, en los dos motores.** Prueba: `one_adjacency_entry_missing_{small,large}_store` en `crates/kerno-units/tests/relations.rs`. Borra a mano `REL_IN` y luego `REL_OUT` de una relación, con el mismo medio de daño que ya usan las pruebas del crate (`put_all` sobre la clave), y compara la lectura con `reference_relations_of` y con `verify_units` (UNIT-36).
+- Desde el extremo que conserva su entrada, `query_relations` devolvía la respuesta de adyacencia como limpia. Corrección: `execute_relations` (`planner.rs`) comprueba ahora la entrada espejo de cada relación devuelta (`all_mirrored`, que usa el mismo `is_mirrored` de la ruta de asociativas). Si falta, abandona la adyacencia con `Fallback` `Invalid(Unmirrored)` y responde por la ruta de referencia; un espejo ilegible da `Fallback` `Corrupt`. Coste en un almacén sano: una lectura puntual por relación devuelta y ninguna más. El crate no tiene un contador de lecturas puntuales (los contadores del motor miden bloom y caché de bloques, no `get`), así que el coste queda fijado por construcción en `is_mirrored`, no por un contador.
+- Mutación: `all_mirrored` devuelve siempre `true`. Falla `one_adjacency_entry_missing_large_store` en los dos motores.
+- **Sigue abierto:** desde el extremo que perdió su entrada no hay nada que recorrer. `relations_of` y `query_relations` devuelven la respuesta corta, por la ruta de adyacencia y sin `Fallback`. Detectarlo exige comparar el rango de adyacencia con los `REL`, que cuesta más de una lectura por relación devuelta. La prueba fija este límite para que un cambio en él sea deliberado. `verify_units` lo reporta (UNIT-36).
+
+**K2. Se reproduce, en los dos motores.** Prueba: `index_path_with_a_missing_entry` en `crates/kerno-units/tests/index.rs`. Borra el `IDX_PRIMARY` de una unidad activa y compara `indexed_scan_via` con `reference_filter` y con `verify_units`.
+- Con el conteo de `IDX_META` intacto, la ruta `IDX_PRIMARY` devolvía menos unidades sin error. Corrección: `scan_entries` (`index.rs`) cuenta las entradas que recorre (las recorre todas, sea cual sea el filtro) y da `Corruption` si no coinciden con el conteo de `IDX_META`. El conteo viene de la lectura de `IDX_META` que el llamador ya hacía para saber que el índice está `Ready`: ninguna lectura más. `query` responde entonces por la ruta de referencia con `Fallback`.
+- Mutación: comprobación del conteo desactivada. Falla `index_path_with_a_missing_entry` en los dos motores.
+- **Sigue abierto:** un conteo rebajado para coincidir con la entrada perdida no se ve en la lectura (solo las cabeceras lo dirían), y la ruta `IDX_TYPE` no tiene conteo por tipo, así que una entrada `IDX_TYPE` perdida sigue dando una respuesta corta. La prueba fija los dos casos. `verify_units` los reporta (UNIT-37, UNIT-38).
+
+**K3. No se reproduce.** Prueba: `get_unit_checks_oldest_rev` en `crates/kerno-units/tests/relations.rs`, en los dos motores. Con un `UNIT_HEAD` falsificado con `oldest_rev = 0`, `get_unit` ya da `Corruption`: `UnitHead::decode` exige `oldest_rev` en `1..=head_rev` (UNIT-17) antes de que `load_unit` lea nada más. La lectura de §4 era incorrecta. No se cambió código por K3.
+
+**K4 y K5. Siguen abiertos, menores.** No hay una comprobación de una línea que los cierre sin más lecturas. K4 exige leer el `REV_META` de cada miembro del conjunto de cambios. K5 exige leer las dos cabeceras de los extremos y las dos entradas de adyacencia de la relación. Quedan para el cierre de la etapa (E9-CL), como propone §6.
+
+| Hallazgo | Estado tras E9-22 | Evidencia |
+|---|---|---|
+| K1 | Corregido desde el extremo que conserva su entrada; abierto desde el extremo que la perdió | `one_adjacency_entry_missing_{small,large}_store`, dos motores |
+| K2 | Corregido para `IDX_PRIMARY` con conteo intacto; abierto con conteo rebajado y para `IDX_TYPE` | `index_path_with_a_missing_entry`, dos motores |
+| K3 | No se reproduce | `get_unit_checks_oldest_rev`, dos motores |
+| K4 | Abierto, menor | Sin cambio |
+| K5 | Abierto, menor | Sin cambio |

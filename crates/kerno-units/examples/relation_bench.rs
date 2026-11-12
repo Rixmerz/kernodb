@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-use kerno_core::contract::{Engine, Options, Snapshot, TestHooks};
+use kerno_core::contract::{Options, Snapshot};
 use kerno_core::vfs::StdVfs;
 use kerno_storage::KernoDb;
 use kerno_testkit::rng::Rng;
@@ -111,28 +111,28 @@ impl Drop for TempDir {
     }
 }
 
-fn stat(db: &KernoDb, name: &str) -> u64 {
-    Engine::stats(db).into_iter().find(|(n, _)| n == name).map_or(0, |(_, v)| v)
+fn stat(db: &Units, name: &str) -> u64 {
+    db.storage_stats().into_iter().find(|(n, _)| n == name).map_or(0, |(_, v)| v)
 }
 
-fn stored(db: &KernoDb) -> u64 {
+fn stored(db: &Units) -> u64 {
     let level = |n: &str| {
         n.strip_prefix('l')
             .and_then(|r| r.strip_suffix("_bytes"))
             .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
     };
-    Engine::stats(db).into_iter().filter(|(n, _)| level(n)).map(|(_, v)| v).sum()
+    db.storage_stats().into_iter().filter(|(n, _)| level(n)).map(|(_, v)| v).sum()
 }
 
-fn settle(db: &KernoDb) -> Res<()> {
-    TestHooks::flush(db)?;
-    TestHooks::wait_idle(db)?;
+fn settle(db: &Units) -> Res<()> {
+    db.hook_flush()?;
+    db.hook_wait_idle()?;
     Ok(())
 }
 
 /// Number of keys in the whole store at the latest commit.
-fn key_count(db: &KernoDb) -> Res<u64> {
-    let snap = Engine::snapshot(db)?;
+fn key_count(db: &Units) -> Res<u64> {
+    let snap = db.raw_snapshot()?;
     let mut n = 0u64;
     let mut last: Option<Vec<u8>> = None;
     loop {
@@ -199,14 +199,14 @@ fn build(base: &Path, shape: &Shape, es: &[(usize, usize)], option: u8) -> Res<B
         }
         cs.commit()?;
     }
-    settle(db.engine())?;
+    settle(&db)?;
     let (keys0, wal0, flush0, comp0) = (
-        key_count(db.engine())?,
-        stat(db.engine(), "wal_bytes"),
-        stat(db.engine(), "flush_bytes_written"),
-        stat(db.engine(), "compaction_bytes_written"),
+        key_count(&db)?,
+        stat(&db, "wal_bytes"),
+        stat(&db, "flush_bytes_written"),
+        stat(&db, "compaction_bytes_written"),
     );
-    let stored0 = stored(db.engine());
+    let stored0 = stored(&db);
     let t = Instant::now();
     for chunk in es.chunks(PER_CS) {
         let mut cs = db.begin_changeset(ChangeMeta::default())?;
@@ -225,15 +225,15 @@ fn build(base: &Path, shape: &Shape, es: &[(usize, usize)], option: u8) -> Res<B
         cs.commit()?;
     }
     let load_secs = t.elapsed().as_secs_f64();
-    settle(db.engine())?;
+    settle(&db)?;
     let n = es.len() as f64;
     let d = |a: u64, b: u64| (a as f64 - b as f64) / n;
     let cost = Cost {
-        keys_per_rel: d(key_count(db.engine())?, keys0),
-        wal_per_rel: d(stat(db.engine(), "wal_bytes"), wal0),
-        flush_per_rel: d(stat(db.engine(), "flush_bytes_written"), flush0),
-        compaction_per_rel: d(stat(db.engine(), "compaction_bytes_written"), comp0),
-        stored_per_rel: d(stored(db.engine()), stored0),
+        keys_per_rel: d(key_count(&db)?, keys0),
+        wal_per_rel: d(stat(&db, "wal_bytes"), wal0),
+        flush_per_rel: d(stat(&db, "flush_bytes_written"), flush0),
+        compaction_per_rel: d(stat(&db, "compaction_bytes_written"), comp0),
+        stored_per_rel: d(stored(&db), stored0),
         load_secs,
     };
     Ok(Built { db, nodes, cost, _dir: dir })
