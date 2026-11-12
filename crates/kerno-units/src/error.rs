@@ -263,6 +263,15 @@ impl fmt::Display for UnitError {
     }
 }
 
+impl UnitError {
+    /// Whether another handle holds the database (`Error::Locked`), as
+    /// opposed to damage or any other refusal: the one case a caller can
+    /// wait out and open again.
+    pub fn is_locked(&self) -> bool {
+        matches!(self, UnitError::Storage(kerno_core::Error::Locked))
+    }
+}
+
 impl std::error::Error for UnitError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
