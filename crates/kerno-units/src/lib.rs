@@ -41,6 +41,7 @@ pub mod observation;
 pub mod payload;
 pub mod plan;
 pub mod planner;
+pub mod reclaim;
 pub mod reference;
 pub mod retention;
 pub mod suppression;
