@@ -34,8 +34,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use harness::units::{StepIds, Target, dump, open_units, seq, unit_config, verified};
+use kerno_core::Durability;
 use kerno_core::contract::{Engine, Options, Snapshot, TxnEngine};
-use kerno_core::{Durability, WriteBatch};
 use kerno_storage::KernoDb;
 use kerno_testkit::emulated::Emulated;
 use kerno_testkit::reference::LogEngine;
@@ -102,23 +102,15 @@ fn assert_clean<E: TxnEngine>(db: &UnitDb<E>, ctx: &str) {
 /// Puts (`Some`) and deletions (`None`) applied straight to the engine.
 type Patch = Vec<(Vec<u8>, Option<Vec<u8>>)>;
 
-fn put_all<E: Engine>(db: &E, puts: Patch) {
-    let mut b = WriteBatch::new();
-    for (k, v) in puts {
-        match v {
-            Some(v) => b.put(k, v),
-            None => b.delete(k),
-        };
-    }
-    db.commit(&b).expect("raw commit");
+fn put_all<E: TxnEngine>(db: &UnitDb<E>, puts: Patch) {
+    db.raw_commit(puts).expect("raw commit");
 }
 
 /// The stored values of `keys` right now, as the patch that restores them.
-fn undo_of<E: Engine>(db: &E, keys: impl IntoIterator<Item = Vec<u8>>) -> Patch {
-    let snap = db.snapshot().expect("snapshot");
+fn undo_of<E: TxnEngine>(db: &UnitDb<E>, keys: impl IntoIterator<Item = Vec<u8>>) -> Patch {
     keys.into_iter()
         .map(|k| {
-            let v = snap.get(&k).expect("get");
+            let v = db.raw_get(&k).expect("get");
             (k, v)
         })
         .collect()
@@ -126,7 +118,7 @@ fn undo_of<E: Engine>(db: &E, keys: impl IntoIterator<Item = Vec<u8>>) -> Patch 
 
 /// Every stored `IDX_PRIMARY` and `IDX_TYPE` pair, raw, in key order.
 fn raw_entries<E: TxnEngine>(db: &UnitDb<E>) -> Vec<(Vec<u8>, Vec<u8>)> {
-    dump(&db.engine().snapshot().expect("snapshot")).into_iter().filter(|(k, _)| k[0] == 0x51 || k[0] == 0x52).collect()
+    dump(&db.raw_snapshot().expect("snapshot")).into_iter().filter(|(k, _)| k[0] == 0x51 || k[0] == 0x52).collect()
 }
 
 fn type_key(unit_type: &str, schema_version: u32, unit: UnitId) -> Vec<u8> {
@@ -447,8 +439,8 @@ fn building_is_reported_while_a_build_waits<E: TxnEngine>() {
 
     // A build that fails is no longer counted either.
     let head = Key::UnitHead { unit: held }.encode().unwrap();
-    let good = db.engine().snapshot().unwrap().get(&head).unwrap().unwrap();
-    put_all(db.engine(), vec![(head, Some(good[..good.len() - 1].to_vec()))]);
+    let good = db.raw_snapshot().unwrap().get(&head).unwrap().unwrap();
+    put_all(&db, vec![(head, Some(good[..good.len() - 1].to_vec()))]);
     assert!(db.rebuild_index().is_err());
     assert_eq!(db.index_status().unwrap().state, IndexState::Failed);
 }
@@ -485,9 +477,9 @@ fn failed_build_is_recorded_and_repaired<E: TxnEngine>() {
     let all = UnitFilter::default();
     let u = create_units(&db, &[("a", 1), ("b", 1), ("c", 1)]); // commit 1
     let head = Key::UnitHead { unit: u[1] }.encode().unwrap();
-    let good = db.engine().snapshot().unwrap().get(&head).unwrap().unwrap();
-    let damage = || put_all(db.engine(), vec![(head.clone(), Some(good[..good.len() - 1].to_vec()))]);
-    let repair = || put_all(db.engine(), vec![(head.clone(), Some(good.clone()))]);
+    let good = db.raw_snapshot().unwrap().get(&head).unwrap().unwrap();
+    let damage = || put_all(&db, vec![(head.clone(), Some(good[..good.len() - 1].to_vec()))]);
+    let repair = || put_all(&db, vec![(head.clone(), Some(good.clone()))]);
 
     // The first build fails: failed, and nothing was ever built.
     damage();
@@ -552,8 +544,8 @@ fn status_survives_reopen<E: TxnEngine>() {
 
     // Failed across a close.
     let head = Key::UnitHead { unit: u[1] }.encode().unwrap();
-    let good = db.engine().snapshot().unwrap().get(&head).unwrap().unwrap();
-    put_all(db.engine(), vec![(head, Some(good[..good.len() - 1].to_vec()))]);
+    let good = db.raw_snapshot().unwrap().get(&head).unwrap().unwrap();
+    put_all(&db, vec![(head, Some(good[..good.len() - 1].to_vec()))]);
     assert!(db.rebuild_index().is_err());
     let failure = db.index_status().unwrap();
     assert_eq!(failure, IndexStatus { state: IndexState::Failed, watermark: built.watermark });
@@ -624,10 +616,10 @@ fn planner_falls_back_when_the_index_is_not_ready<E: TxnEngine>() {
 
     // Failed: repairing the data does not clear it, so the reference answers.
     let head = Key::UnitHead { unit: u[0] }.encode().unwrap();
-    let good = db.engine().snapshot().unwrap().get(&head).unwrap().unwrap();
-    put_all(db.engine(), vec![(head.clone(), Some(good[..good.len() - 1].to_vec()))]);
+    let good = db.raw_snapshot().unwrap().get(&head).unwrap().unwrap();
+    put_all(&db, vec![(head.clone(), Some(good[..good.len() - 1].to_vec()))]);
     assert!(db.rebuild_index().is_err());
-    put_all(db.engine(), vec![(head, Some(good))]);
+    put_all(&db, vec![(head, Some(good))]);
     let snap = db.snapshot().unwrap();
     let status = snap.index_status().unwrap();
     assert_eq!(status.state, IndexState::Failed);
@@ -796,44 +788,44 @@ fn verifier_reports_index_damage<E: TxnEngine>() {
         ("type entry of a unit that does not exist", vec![(type_key("a", 1, ghost), Some(type_value()))]),
     ];
     for (name, patch) in type_damages {
-        let undo = undo_of(db.engine(), patch.iter().map(|(k, _)| k.clone()));
-        put_all(db.engine(), patch);
+        let undo = undo_of(&db, patch.iter().map(|(k, _)| k.clone()));
+        put_all(&db, patch);
         let report = db.verify_units().unwrap();
         assert_eq!(report.rules().into_iter().collect::<Vec<_>>(), ["UNIT-38"], "{name}: {:?}", report.findings);
-        put_all(db.engine(), undo);
+        put_all(&db, undo);
         assert_clean(&db, name);
     }
     // A type entry that does not decode is a structure finding only.
-    let undo = undo_of(db.engine(), [type_key("a", 1, u[0])]);
-    put_all(db.engine(), vec![(type_key("a", 1, u[0]), Some(vec![1, 0, 0]))]);
+    let undo = undo_of(&db, [type_key("a", 1, u[0])]);
+    put_all(&db, vec![(type_key("a", 1, u[0]), Some(vec![1, 0, 0]))]);
     let report = db.verify_units().unwrap();
     assert_eq!(report.rules().into_iter().collect::<Vec<_>>(), ["UNIT-10"], "{:?}", report.findings);
-    put_all(db.engine(), undo);
+    put_all(&db, undo);
     assert_clean(&db, "type entry restored");
 
     for (name, patch) in damages {
-        let undo = undo_of(db.engine(), patch.iter().map(|(k, _)| k.clone()));
-        put_all(db.engine(), patch);
+        let undo = undo_of(&db, patch.iter().map(|(k, _)| k.clone()));
+        put_all(&db, patch);
         let report = db.verify_units().unwrap();
         assert!(report.rules().contains("UNIT-37"), "{name}: {:?}", report.findings);
         assert!(report.findings.iter().all(|f| f.class() == ErrorClass::Corruption), "{name}");
-        put_all(db.engine(), undo);
+        put_all(&db, undo);
         assert_clean(&db, name);
     }
 
     // An entry that does not decode is one structure finding, not noise.
-    let undo = undo_of(db.engine(), [entry_key(u[0])]);
-    put_all(db.engine(), vec![(entry_key(u[0]), Some(truncated))]);
+    let undo = undo_of(&db, [entry_key(u[0])]);
+    put_all(&db, vec![(entry_key(u[0]), Some(truncated))]);
     let report = db.verify_units().unwrap();
     assert_eq!(report.rules().into_iter().collect::<Vec<_>>(), ["UNIT-9"], "{:?}", report.findings);
-    put_all(db.engine(), undo);
+    put_all(&db, undo);
     assert_clean(&db, "entry restored");
 
     // Messages carry ids and numbers, never a unit type (IU-10).
-    put_all(db.engine(), vec![(entry_key(u[0]), Some(entry_value("sentinel-type", 1)))]);
+    put_all(&db, vec![(entry_key(u[0]), Some(entry_value("sentinel-type", 1)))]);
     let report = db.verify_units().unwrap();
     assert!(report.findings.iter().all(|f| !f.to_string().contains("sentinel")), "{:?}", report.findings);
-    put_all(db.engine(), vec![(entry_key(u[0]), Some(entry_value("a", 1)))]);
+    put_all(&db, vec![(entry_key(u[0]), Some(entry_value("a", 1)))]);
 
     // Staleness is not damage: units that changed or appeared after the
     // watermark may disagree with the entries, and the verifier says nothing.
@@ -845,7 +837,7 @@ fn verifier_reports_index_damage<E: TxnEngine>() {
     assert_eq!(db.index_status().unwrap().state, IndexState::Stale);
     assert_clean(&db, "a stale index");
     // But an entry for a unit created after the watermark is damage.
-    put_all(db.engine(), vec![(entry_key(fresh), Some(entry_value("d", 1)))]);
+    put_all(&db, vec![(entry_key(fresh), Some(entry_value("d", 1)))]);
     let report = db.verify_units().unwrap();
     assert!(report.rules().contains("UNIT-37"), "{:?}", report.findings);
 }
@@ -868,7 +860,7 @@ fn index_path_refuses_what_it_can_see<E: TxnEngine>() {
     let forge = |mut patch: Patch, entries: u64| {
         let next = seq(&db) + 1;
         patch.push((meta_key(), Some(meta_value(next, entries))));
-        put_all(db.engine(), patch);
+        put_all(&db, patch);
         assert_eq!(db.index_status().unwrap().state, IndexState::Ready);
     };
 

@@ -330,7 +330,7 @@ pub fn run_script<E: TxnEngine>(db: &UnitDb<E>, ids: &StepIds, seq: u64, script:
 
 /// Every unit head of the store, by id.
 pub fn heads<E: TxnEngine>(db: &UnitDb<E>) -> Result<Vec<(UnitId, UnitHead)>, UnitError> {
-    let snap = db.engine().snapshot()?;
+    let snap = db.raw_snapshot()?;
     let (start, end) = Key::tag_range(TAG_UNIT_HEAD);
     let mut out = Vec::new();
     let mut last: Option<Vec<u8>> = None;
@@ -570,11 +570,11 @@ pub fn dump<S: Snapshot>(s: &S) -> Dump {
 }
 
 pub fn raw<E: TxnEngine>(db: &UnitDb<E>) -> Dump {
-    dump(&db.engine().snapshot().expect("snapshot"))
+    dump(&db.raw_snapshot().expect("snapshot"))
 }
 
 pub fn seq<E: TxnEngine>(db: &UnitDb<E>) -> u64 {
-    db.engine().snapshot().expect("snapshot").seq()
+    db.raw_snapshot().expect("snapshot").seq()
 }
 
 /// The first difference between two stores, for failure messages.

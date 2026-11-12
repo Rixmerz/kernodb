@@ -19,7 +19,6 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use kerno_core::WriteBatch;
 use kerno_core::contract::{Engine, Options, Snapshot, TxnEngine};
 use kerno_storage::KernoDb;
 use kerno_testkit::emulated::Emulated;
@@ -269,7 +268,7 @@ fn stored_provenance_corruption_is_detected<E: TxnEngine>() {
     let id = relate(&db, u[0], u[1], "supports", inferred.clone()).unwrap();
     assert_clean(&db, "before damage");
     let key = Key::Relation { edge: id }.encode().unwrap();
-    let good = db.engine().snapshot().unwrap().get(&key).unwrap().unwrap();
+    let good = db.raw_snapshot().unwrap().get(&key).unwrap().unwrap();
     let rec = RelationRecord::decode(&good).unwrap();
     assert_eq!(rec.provenance, inferred);
     let kind_at = good.len() - 2 - 4 - rec_origin_len(&rec) - 1;
@@ -282,7 +281,7 @@ fn stored_provenance_corruption_is_detected<E: TxnEngine>() {
     ] {
         let mut bad = good.clone();
         bad[kind_at] = if name.contains("unknown") { 9 } else { kind.to_byte() };
-        put_all(db.engine(), vec![(key.clone(), Some(bad))]);
+        put_all(&db, vec![(key.clone(), Some(bad))]);
         let snap = db.snapshot().unwrap();
         let e = snap.get_relation(id).unwrap_err();
         assert!(e.to_string().contains("UNIT-13"), "{name}: {e}");
@@ -297,11 +296,11 @@ fn stored_provenance_corruption_is_detected<E: TxnEngine>() {
     let mut emptied = RelationRecord { provenance: RelationProvenance::Declared, ..rec.clone() }.encode().unwrap();
     let k = emptied.len() - 2 - 4 - 1;
     emptied[k] = ProvenanceKind::Inferred.to_byte();
-    put_all(db.engine(), vec![(key.clone(), Some(emptied))]);
+    put_all(&db, vec![(key.clone(), Some(emptied))]);
     assert!(db.snapshot().unwrap().get_relation(id).is_err(), "inferred without origin");
     assert!(db.verify_units().unwrap().rules().contains("UNIT-13"));
 
-    put_all(db.engine(), vec![(key, Some(good))]);
+    put_all(&db, vec![(key, Some(good))]);
     assert_eq!(db.snapshot().unwrap().get_relation(id).unwrap().unwrap().provenance, inferred);
     assert_clean(&db, "provenance restored");
 }
@@ -404,15 +403,15 @@ fn relation_only_changeset_commits<E: TxnEngine>() {
     // It is recorded as `Relation`, so an `Application` change set that lost
     // its members is still corruption (review finding F1).
     let ck = Key::ChangeSet { seq: info.commit_seq }.encode().unwrap();
-    let raw = db.engine().snapshot().unwrap().get(&ck).unwrap().unwrap();
+    let raw = db.raw_snapshot().unwrap().get(&ck).unwrap().unwrap();
     let mut rec = ChangeSetRecord::decode(&raw).unwrap();
     assert_eq!(rec.purpose, Purpose::Relation);
     rec.purpose = Purpose::Application;
-    put_all(db.engine(), vec![(ck.clone(), Some(rec.encode().unwrap()))]);
+    put_all(&db, vec![(ck.clone(), Some(rec.encode().unwrap()))]);
     let report = db.verify_units().unwrap();
     assert!(report.rules().contains("UNIT-33"), "{:?}", report.findings);
     rec.purpose = Purpose::Relation;
-    put_all(db.engine(), vec![(ck, Some(rec.encode().unwrap()))]);
+    put_all(&db, vec![(ck, Some(rec.encode().unwrap()))]);
     assert_clean(&db, "relation purpose restored");
 }
 
@@ -511,15 +510,8 @@ fn differential_across_scan_pages<E: TxnEngine>() {
 /// Puts (`Some`) and deletions (`None`) applied straight to the engine.
 type Patch = Vec<(Vec<u8>, Option<Vec<u8>>)>;
 
-fn put_all<E: Engine>(db: &E, puts: Patch) {
-    let mut b = WriteBatch::new();
-    for (k, v) in puts {
-        match v {
-            Some(v) => b.put(k, v),
-            None => b.delete(k),
-        };
-    }
-    db.commit(&b).unwrap();
+fn put_all<E: TxnEngine>(db: &UnitDb<E>, puts: Patch) {
+    db.raw_commit(puts).unwrap();
 }
 
 fn verifier_reports_index_damage<E: TxnEngine>() {
@@ -533,7 +525,7 @@ fn verifier_reports_index_damage<E: TxnEngine>() {
     let out = Key::RelationOut { unit: u[0], relation_type: "cites".into(), edge: id }.encode().unwrap();
     let inn = Key::RelationIn { unit: u[1], relation_type: "cites".into(), edge: id }.encode().unwrap();
     let rel = Key::Relation { edge: id }.encode().unwrap();
-    let snap = db.engine().snapshot().unwrap();
+    let snap = db.raw_snapshot().unwrap();
     let (out_v, in_v, rel_v) =
         (snap.get(&out).unwrap().unwrap(), snap.get(&inn).unwrap().unwrap(), snap.get(&rel).unwrap().unwrap());
     drop(snap);
@@ -557,7 +549,7 @@ fn verifier_reports_index_damage<E: TxnEngine>() {
                 (k.clone(), Some(v.clone()))
             })
             .collect();
-        put_all(db.engine(), patch);
+        put_all(&db, patch);
         let report = db.verify_units().unwrap();
         assert!(report.rules().contains("UNIT-36"), "{name}: {:?}", report.findings);
         // The index path refuses to answer from damaged data when it can tell.
@@ -568,7 +560,7 @@ fn verifier_reports_index_damage<E: TxnEngine>() {
             _ => {}
         }
         drop(snap);
-        put_all(db.engine(), undo);
+        put_all(&db, undo);
         assert_clean(&db, name);
     }
 
@@ -587,7 +579,7 @@ fn verifier_reports_index_damage<E: TxnEngine>() {
     };
     let fid = RelationId([0xAB; 16]);
     put_all(
-        db.engine(),
+        &db,
         vec![
             (Key::Relation { edge: fid }.encode().unwrap(), Some(forged.encode().unwrap())),
             (
