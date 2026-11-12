@@ -113,6 +113,35 @@ Después de la Fase 1 el trabajo se organiza por las etapas de la [especificaci�
 
 ### Etapa 9 — Endurecimiento
 
+- **Acta de entrada:** [etapa9-acta.md](../architecture/etapa9-acta.md). **Aprobada por delegación del propietario el 2026-11-12, revocable.** Fija los paquetes E9-00 a E9-CL, los umbrales antes de medir y las decisiones D1 a D22. Las decisiones que cambian formato o una promesa a usuarios (D1 a D4, D12, D15 y D16) quedan **retenidas para el propietario en persona**; hasta entonces no se escribe código de identificadores, cifrado, congelación de formato ni texto de licencia.
+
+- **E9-00 (puerta de entrada) hecho el 2026-11-12:** ADR-0012 aceptado en su archivo y en el [índice de ADR](../adr/README.md) (D5); cuerpo de ADR-0014 alineado con su encabezado ([acta §2.3](../architecture/etapa9-acta.md), e). Las decisiones de [acta §8.1](../architecture/etapa9-acta.md) quedan registradas aquí tal como las fijó el acta. Las tomadas por delegación son revocables por el propietario; las retenidas quedan para el propietario en persona.
+
+| Decisión | Estado | Opción registrada |
+|---|---|---|
+| D1 | Retenida | Ninguna. La recomendación (a) no se aplica |
+| D2 | Retenida | Ninguna |
+| D3 | Retenida | Ninguna. Recomendación (b): sin cifrado en 1.0 |
+| D4 | Retenida | Ninguna. Recomendación (a): sin integridad autenticada en 1.0 |
+| D5 | Tomada | (a): ADR-0012 aceptado tal como está. E9-00 lo escribe en su archivo |
+| D6 | Tomada | (a): informe sin umbrales frente a SQLite |
+| D7 | Tomada | (a): sin límite absoluto de latencia |
+| D8 | Tomada | (a): sin formato en disco para resúmenes ni para auditoría en 1.0 |
+| D9 | Tomada | (a): crates actuales, sin fachada; disposiciones de §2.4 |
+| D10 | Tomada en lo que es el borrador | (a): borrador de exportación, sin congelar |
+| D11 | Tomada | (a): fixtures de v1, fixture de ADR-0020 reconstruido o declarado ausente |
+| D12 | Retenida | Ninguna. Recomendación (b): declarar 1.0 después de D13 y de un uso real fuera del equipo |
+| D13 | Tomada como criterio | (a): la lista de requisitos de §8 |
+| D14 | Tomada | (a): `Reclaim` público y `reclaim()` con el texto de ADR-0009 |
+| D15 | Retenida | Ninguna. Recomendación (b): licencia amplia con derecho a relicenciar |
+| D16 | Retenida | Ninguna. Recomendación (b): revisar G1 a G7 antes de confirmar |
+| D17 | Tomada | (a): cláusula de C-4 sin reescribir; contradicción registrada |
+| D18 | Tomada | (a): todas las clases en la opción 1; sin función de copia declarada |
+| D19 | Tomada | (a): I-28 no aplica en 1.0; I-42 e I-43 promovidas si E9-CL las verifica; I-29 para `kerno-units` si E9-03 pasa |
+| D20 | Tomada | (i) aceptar H-3 con su prueba; (ii) exigir evidencia de F-10 (E9-15); (iii) revisar K-E3-7 (E9-16) |
+| D21 | Tomada | (b): pruebas de propiedades con la biblioteca ya presente; sin herramienta nueva |
+| D22 | Tomada | (a): umbrales de §5 sin cambios antes de congelar |
+
 - **Entregables:** IDs públicos (ADR-0005), cifrado y claves (ADR-0006), auditoría minimizada, exportación/importación y migraciones con fixtures de versiones previas, fuzzing de entradas externas, pruebas de estrés, benchmarks comparativos con SQLite y motores de referencia (SAD Fases 4 y 6).
 - **Aceptación:** límites y garantías documentados; fallos críticos resueltos o marcados como bloqueantes; I-27…I-30 verificados.
 - **Adelanto (en paralelo con la Etapa 7):** [acta](../architecture/etapa9-adelanto-acta.md), aprobada por delegación del propietario el 2026-11-11. Paquetes E9A-00a a E9A-06. **Cierre del adelanto (E9A-06) hecho el 2026-11-12:** [cierre](../architecture/etapa9-adelanto-cierre.md). Ningún hallazgo bloqueante abierto; I-29 promovida para `kerno-storage`, aprobada por delegación del propietario el 2026-11-12 y revocable. I-27, I-28 e I-30 siguen pendientes (Fase 4).

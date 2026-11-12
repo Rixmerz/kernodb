@@ -70,8 +70,8 @@ El comando de la primera pasada Sync no se archivó cuando se lanzó; el que se 
 
 | | |
 |---|---|
-| Máquina | VM, 2,10 GHz, **4 núcleos**, 15,7 GiB, ext4, kernel 6.18.44 |
-| Compilación | `rustc 1.97.0`, `release`; SQLite es el incluido (`bundled`) según el `Cargo.lock` |
+| Máquina | VM, **4 núcleos**, 15,7 GiB |
+| Compilación | `release`; SQLite es el incluido (`bundled`) según el `Cargo.lock` |
 | Código | Commit `0d05269` (`env.json`); el binario se reconstruyó para la segunda y tercera tanda sobre el mismo código |
 | `fdatasync` de 4 KiB (`env.json`) | p50 3 994 µs · p95 4 069 µs · p99 7 586 µs · máx 7 999 µs |
 
