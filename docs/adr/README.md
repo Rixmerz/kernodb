@@ -19,7 +19,7 @@ Reglas:
 | [0006](0006-cifrado-y-gestion-de-claves.md) | Cifrado y gestión de claves | Pendiente |
 | [0007](0007-consistencia-de-indices.md) | Consistencia y reconstrucción de índices | Pendiente |
 | [0008](0008-serializacion-documental-y-hashes.md) | Serialización documental y hashes | Aceptado (mínimo: BLAKE3-256 y bytes opacos) |
-| [0009](0009-supresion-retencion-y-backups.md) | Supresión, retención y backups | Pendiente |
+| [0009](0009-supresion-retencion-y-backups.md) | Supresión, retención y backups | **Aceptado** (2026-11-12, opción 3 en los términos de la ADR; sin borrado físico garantizado; sin plazo de backup declarado) |
 | [0010](0010-api-publica-y-crates.md) | API pública y límites de crates | **Aceptado** (2026-10-31; [acta E3-00](../architecture/etapa3-acta-e3-00.md)) |
 | [0011](0011-vectores-y-recuperacion-hibrida.md) | Perfil de vector y recuperación híbrida | **Aceptado** (2026-11-11, E7-00: opción 1; [conjunto de evaluación](../architecture/etapa7-conjunto-evaluacion.md)) |
 | [0012](0012-metodologia-de-benchmarks.md) | Metodología de benchmarks y umbrales de salida | Propuesto (aplicada en M0) |

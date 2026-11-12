@@ -19,10 +19,10 @@ Los paquetes **no son secuenciales**: §3.1 indica cuáles corren a la vez. Ning
 |---|---|
 | Pendiente 1 del roadmap | Resuelta por delegación el 2026-11-11 (§10) |
 | Etapa 7 en curso | E7-00 y E7-01 hechos; E7-02 es el siguiente. **No bloquea**: los paquetes E9A no tocan sus archivos |
-| ADR-0009 (supresión, retención y backups) | **Pendiente, no aceptado.** No bloquea E9A-00a, E9A-01 ni E9A-02. **Bloquea** cualquier API de supresión y la entrada en la Etapa 8. E9A-00b es la puerta |
+| ADR-0009 (supresión, retención y backups) | **Aceptado el 2026-11-12, opción 3, en los términos de la ADR** (E9A-00b, hecho). Ya no bloquea la entrada en la Etapa 8. No autoriza ninguna API de supresión, que no está en esta acta |
 | ADR-0015 (privacidad de la observabilidad) | Aceptado el 2026-11-06. Es la base de E9A-02 |
 | ADR-0013 (formato v1) | **Resuelto el 2026-11-11** (§7, punto 3): aceptado y formato v1 congelado el 2026-10-31. No bloquea ningún E9A; las migraciones de la Etapa 9 siguen pendientes como trabajo propio |
-| Etapa 8 | No empieza. Su condición en el roadmap es ADR-0018 y ADR-0009 aceptados. Propuesta de esta acta, revocable: que E9A-00b y E9A-02 estén cerrados antes de que la Etapa 8 escriba ningún derivado |
+| Etapa 8 | Arranca por decisión del propietario el 2026-11-12 ([cierre de la Etapa 7 §8.1](etapa7-cierre.md)). Su condición sobre ADR-0009 se cumple desde el 2026-11-12. ADR-0018 sigue Propuesto y se acepta en el acta de la Etapa 8. Propuesta de esta acta, revocable: que E9A-02 esté cerrado antes de que la Etapa 8 escriba ningún derivado |
 
 ## 2. Alcance
 
@@ -74,7 +74,7 @@ Todos escriben solo en los archivos indicados. Ninguno cambia `src/` de `kerno-s
 | **E9A-03** Propiedades de apertura | proptest sobre una base creada: muta un archivo (WAL, SST o MANIFEST) con bit flips, truncamientos y reescritura con CRC recalculado; abre en lectura-escritura y en solo lectura y llama a `verify()` | — | `crates/kerno-storage/tests/open_properties.rs` | E9A-01, E9A-02, E9A-05 |
 | **E9A-04** Fuzzing con cobertura | Un objetivo por decodificador (14) y uno para la apertura, con cargo-fuzz en `crates/kerno-storage/fuzz/`, fuera del workspace, con corpus comprometido. No bloqueante en CI | E9A-03; dependencia y cadena de herramientas aprobadas el 2026-11-11 (§7, punto 2) | `crates/kerno-storage/fuzz/**` | — (corre después de E9A-03) |
 | **E9A-05** Estrés del ciclo de vida | Ciclos de escrituras concurrentes (4 escritores), borrados y `delete_range`, `compact_range`, `sync()`, cierre limpio, reapertura y `verify()`. Comparación con el modelo en cada reapertura | — | `crates/kerno-storage/tests/lifecycle_soak.rs` | E9A-01, E9A-02, E9A-03 |
-| **E9A-00b** Decisión sobre ADR-0009 | Elegir la opción 1, 2 o 3 y aceptar ADR-0009, o dejarlo pendiente y prohibir cualquier API de supresión | E9A-00a, E9A-01 | `docs/adr/0009-*.md`, `docs/adr/README.md` | — (decisión del propietario) |
+| **E9A-00b** Decisión sobre ADR-0009 (**hecho el 2026-11-12**, opción 3) | Elegir la opción 1, 2 o 3 y aceptar ADR-0009, o dejarlo pendiente y prohibir cualquier API de supresión | E9A-00a, E9A-01 | `docs/adr/0009-*.md`, `docs/adr/README.md` | — (decisión del propietario) |
 | **E9A-06** Cierre | Revisión adversarial de E9A-01…05. Promoción de I-29 para `kerno-storage` si E9A-02 pasa. Actualización de [invariantes](invariants.md) (I-27…I-30 siguen en «Fase 4»), [threat model](../security/threat-model.md) (T-06, T-08, T-09) y, si cambia lo que declara, [DESIGN.md](../../crates/kerno-storage/DESIGN.md) | E9A-00b, E9A-01…05 | `docs/architecture/etapa9-adelanto-cierre.md`, `invariants.md`, `threat-model.md` | — |
 
 ### 3.1 Qué corre a la vez
@@ -116,7 +116,7 @@ Comunes a todos los paquetes con código: `cargo fmt --all --check`; `cargo clip
 | I-27, I-28, I-30 verificadas | Fuera de esta acta (§2.3) | pendiente, Etapa 9 |
 | Fuzzing de entradas externas | E9A-03 en el árbol; E9A-04 con cobertura, aprobado el 2026-11-11 | pendiente |
 | Pruebas de estrés | E9A-05, además de las pruebas que ya existen (§2.2) | pendiente |
-| ADR-0009 antes de la Etapa 8 | E9A-00b | pendiente, decisión del propietario |
+| ADR-0009 antes de la Etapa 8 | E9A-00b | **hecho el 2026-11-12**: ADR-0009 aceptado con la opción 3 |
 
 ## 5. Umbrales fijados antes de medir
 
@@ -143,7 +143,7 @@ No existe invariante de supresión. Si ADR-0009 se acepta, la Etapa 8 propondrá
 
 ## 7. Decisiones que el propietario debe tomar
 
-1. **Aceptar ADR-0009 (E9A-00b).** No está incluida en la delegación del 2026-11-11, que cubre solo la pendiente 1. Sin decisión, la Etapa 8 no entra y ningún código de supresión se escribe. Recomendación: decidir después de E9A-01, con sus resultados delante.
+1. **Aceptar ADR-0009 (E9A-00b). Resuelto el 2026-11-12:** ADR-0009 se acepta con la opción 3, en los términos que recoge la [ADR](../adr/0009-supresion-retencion-y-backups.md). Hasta esa fecha no estaba incluida en la delegación del 2026-11-11, que cubría solo la pendiente 1, y sin decisión la Etapa 8 no entraba. Recomendación original: decidir después de E9A-01, con sus resultados delante, que es el orden seguido.
 2. **Dependencia de fuzzing con cobertura (E9A-04): aprobada el 2026-11-11** en estos términos: cargo-fuzz con `libfuzzer-sys` y un toolchain nightly, solo en `crates/kerno-storage/fuzz`, fuera del workspace, no bloqueante en CI, y ejecutado después de E9A-03. Motivo de la pregunta original: cargo-fuzz exige `libfuzzer-sys` y un toolchain nightly, y eso es una dependencia nueva en el sentido de la escalera de `ponytail`. Recomendación original: decidirlo después de E9A-03, cuando se sepa qué cobertura falta (ya decidido).
 3. **Estado único de ADR-0013** (§2.4, punto 1). **Resuelta el 2026-11-11:** ADR-0013 está **Aceptado** (2026-10-31) y el formato v1 está congelado desde ese día. Lo confirman el propio ADR-0013, `crates/kerno-storage/src/format/features.rs` y `header.rs` (rechazan el bit `DRAFT` como «pre-freeze draft format») y `crates/kerno-storage/DESIGN.md`. La fila de ADR-0013 en el índice de ADR, la línea del roadmap, I-15 y la cabecera de [`v1.md`](../file-format/v1.md) se corrigen en esa fecha.
 4. **Cuándo revisar K-E3-7.** Recomendación: Etapa 9, después de E7-06 (§2.3).
@@ -152,7 +152,7 @@ No existe invariante de supresión. Si ADR-0009 se acepta, la Etapa 8 propondrá
 
 | ID | Riesgo | Tratamiento |
 |---|---|---|
-| R-E9A-1 | ADR-0009 sin aceptar retrasa la Etapa 8 | E9A-00b, decisión del propietario. Ningún código de supresión antes |
+| R-E9A-1 | ADR-0009 sin aceptar retrasa la Etapa 8 | **Resuelto el 2026-11-12** (E9A-00b). Ningún código de supresión en esta acta |
 | R-E9A-2 | E9A-01 fija un comportamiento que ADR-0009 después cambia | Las pruebas se etiquetan como observación; las predicciones se registran antes de ejecutar |
 | R-E9A-3 | I-29 se verifica sobre errores, verificación y métricas, pero `kerno-storage` no tiene capa de logs. Cuando la haya, la regla vuelve a aplicarse | E9A-02 se repite con cada capa nueva que emita texto |
 | R-E9A-4 | Las pruebas aleatorias de semilla fija no crecen en cobertura | E9A-03 usa un caso por semilla propia y `PROPTEST_CASES`; E9A-04, aprobado el 2026-11-11 |
@@ -170,3 +170,4 @@ Las decisiones de §2.3 y §7 quedan en sus dueños. Esta acta no cambia ningún
 |---|---|---|
 | 2026-11-11 | **Aprobada por delegación del propietario, revocable** | El propietario delegó la decisión pendiente 1 del roadmap y pidió el trabajo de endurecimiento en `kerno-storage` que no dependa de las Etapas 7 ni 8, en paralelo con la Etapa 7. Lo que se decide aquí: lo que afecta a datos derivados (ADR-0009 en su parte de criterios, I-29) se adelanta; el fuzzing, el estrés y las propiedades de apertura son los endurecimientos de `kerno-storage` que corren ahora. El resto queda en la Etapa 9. ADR-0009 no se acepta por esta delegación (§7, punto 1) |
 | 2026-11-11 | **Decisiones del propietario:** fuzzing con cobertura aprobado en los términos de §7, punto 2 (E9A-04 después de E9A-03); estado de ADR-0013 resuelto (§7, punto 3) | ADR-0009 sigue sin decidir (§7, punto 1) |
+| 2026-11-12 | **E9A-00b hecho: ADR-0009 aceptado con la opción 3** | Decisión 1 de §7 resuelta. Términos y relación con los criterios en [ADR-0009](../adr/0009-supresion-retencion-y-backups.md). T-09 sigue abierto ([threat model §6.5](../security/threat-model.md)) |
