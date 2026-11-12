@@ -42,6 +42,7 @@ pub mod plan;
 pub mod planner;
 pub mod reference;
 pub mod retention;
+pub mod suppression;
 pub mod types;
 pub mod vector_store;
 pub mod verify;
@@ -83,6 +84,7 @@ pub use payload::{
 pub use plan::{Candidate, Cost, Plan, PlanError, PlanPath, Reason, Unusable, Usability};
 pub use planner::{AssocOutcome, Fallback, FallbackCause, PLANNER_VERSION, RelationsOutcome, Violation};
 pub use retention::{CompactReport, RetentionBudget, RetentionPacing, RetentionPolicy, RetentionReport, RetentionRule};
+pub use suppression::SuppressionReport;
 pub use types::{
     BuildOutcome, ChangeKind, ChangePurpose, ChangeSetId, CommitSeq, Direction, HistoryPolicy, Lifecycle,
     ProvenanceKind, Purpose, RelationId, RelationProvenance, RevNo, RevisionId, RevisionKind, Timestamp, UnitId,
