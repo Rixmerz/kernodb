@@ -29,6 +29,7 @@ pub mod clock;
 pub mod codec;
 pub mod db;
 pub mod derived;
+pub mod derived_stale;
 pub mod error;
 pub mod fingerprint;
 pub mod history;
@@ -59,6 +60,7 @@ pub use db::{
     Relation, Unit, UnitConfig, UnitDb, UnitSnapshot, UnitUpdate,
 };
 pub use derived::{DerivedDescriptor, DerivedError, DerivedId, DerivedRegistry, DerivedState};
+pub use derived_stale::{Compute, DerivedChangeSet, DerivedDb, DerivedStaleError, SourceInput, input_hash};
 pub use error::{DecodeError, ErrorClass, UnitError, UnitRule};
 pub use fingerprint::{
     FINGERPRINT_VERSION, Fingerprint, FingerprintAlg, FingerprintKey, NormalizedQuery, QueryKind, RelationQuery,
