@@ -67,7 +67,7 @@ fn edit<E: TxnEngineAlias>(db: &DerivedDb<E>, id: UnitId, payload: &[u8]) -> Com
 use kerno_core::contract::TxnEngine as TxnEngineAlias;
 
 fn fresh<E: Target>() -> DerivedDb<E> {
-    DerivedDb::open(open::<E>(&SimVfs::new(1)), Vec::new(), &compute).unwrap()
+    DerivedDb::open(open::<E>(&SimVfs::new(1)), Vec::new(), &compute).unwrap().0
 }
 
 // ------------------------------------------------------------ staleness
@@ -90,11 +90,11 @@ fn a_change_to_a_source_marks_its_dependents_stale_in_the_same_changeset<E: Targ
     assert_eq!(db.value(&on_ab), None, "a stale datum is not served");
     assert!(db.value(&on_c).is_some());
 
-    // Deleting a source also changes it.
+    // Deleting a source removes its data instead of marking them (E8-05).
     let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
     cs.delete(c, None).unwrap();
     cs.commit().unwrap();
-    assert_eq!(db.state(&on_c), Some(DerivedState::Stale));
+    assert_eq!(db.state(&on_c), None);
 }
 
 fn a_changeset_that_fails_or_is_dropped_marks_nothing<E: Target>() {
@@ -148,7 +148,9 @@ fn rebuilding_gives_what_building_anew_gives<E: Target>() {
     }
 }
 
-fn rebuild_uses_only_the_sources_that_are_still_valid<E: Target>() {
+/// Since E8-05 a deletion removes every datum with the unit among its
+/// sources, so there is nothing left to rebuild from the remaining ones.
+fn a_datum_with_a_deleted_source_is_removed_not_rebuilt<E: Target>() {
     let db = fresh::<E>();
     let (a, b) = (make(&db, b"a"), make(&db, b"b"));
     let old = db.build([a, b], "embed", 1, params(), &compute).unwrap();
@@ -156,19 +158,10 @@ fn rebuild_uses_only_the_sources_that_are_still_valid<E: Target>() {
     cs.delete(b, None).unwrap();
     cs.commit().unwrap();
 
-    let rebuilt = db.rebuild(&old, &compute).unwrap();
-    let d = db.descriptor(&rebuilt).unwrap();
-    assert_eq!(d.sources().map(|s| s.unit).collect::<Vec<_>>(), vec![a]);
-    assert_eq!(db.value(&rebuilt).as_deref(), Some(&b"embed@1:a|"[..]));
-
-    // With nothing valid left the datum is failed, never ready.
-    let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
-    cs.delete(a, None).unwrap();
-    cs.commit().unwrap();
-    assert_eq!(db.state(&rebuilt), Some(DerivedState::Stale));
-    assert!(matches!(db.rebuild(&rebuilt, &compute), Err(DerivedStaleError::NoValidSources(_))));
-    assert_eq!(db.state(&rebuilt), Some(DerivedState::Failed));
-    assert_eq!(db.value(&rebuilt), None);
+    assert_eq!(db.state(&old), None);
+    assert!(
+        matches!(db.rebuild(&old, &compute), Err(DerivedStaleError::Derived(DerivedError::Unknown(i))) if i == old)
+    );
 }
 
 fn a_failed_compute_leaves_the_datum_failed_and_a_later_rebuild_fixes_it<E: Target>() {
@@ -238,7 +231,7 @@ fn a_new_version_creates_a_datum_and_supersedes_the_old_one<E: Target>() {
 
 fn reopening_rebuilds_the_registry_to_the_state_before_closing<E: Target>() {
     let disk = SimVfs::new(7);
-    let db = DerivedDb::open(open::<E>(&disk), Vec::new(), &compute).unwrap();
+    let db = DerivedDb::open(open::<E>(&disk), Vec::new(), &compute).unwrap().0;
     let (a, b, c) = (make(&db, b"a"), make(&db, b"b"), make(&db, b"c"));
     let ready = db.build([a, b], "embed", 1, params(), &compute).unwrap();
     let stale = db.build([c], "embed", 1, params(), &compute).unwrap();
@@ -250,7 +243,7 @@ fn reopening_rebuilds_the_registry_to_the_state_before_closing<E: Target>() {
     let value = db.value(&ready);
     db.close().unwrap();
 
-    let db = DerivedDb::open(open::<E>(&disk), known.clone(), &compute).unwrap();
+    let db = DerivedDb::open(open::<E>(&disk), known.clone(), &compute).unwrap().0;
     assert_eq!(db.state(&ready), Some(DerivedState::Ready));
     assert_eq!(db.state(&stale), Some(DerivedState::Stale));
     assert_eq!(db.value(&ready), value, "the rebuilt value equals the one before closing");
@@ -267,7 +260,7 @@ fn reopening_rebuilds_the_registry_to_the_state_before_closing<E: Target>() {
 
 fn a_datum_whose_input_changed_is_never_ready_after_reopening<E: Target>() {
     let disk = SimVfs::new(8);
-    let db = DerivedDb::open(open::<E>(&disk), Vec::new(), &compute).unwrap();
+    let db = DerivedDb::open(open::<E>(&disk), Vec::new(), &compute).unwrap().0;
     let a = make(&db, b"a");
     let first = db.build([a], "embed", 1, params(), &compute).unwrap();
     let old = db.descriptor(&first).unwrap();
@@ -281,7 +274,7 @@ fn a_datum_whose_input_changed_is_never_ready_after_reopening<E: Target>() {
     db.close().unwrap();
 
     let known = [cur.clone(), old.clone(), forged_hash.clone(), old_source.clone()];
-    let db = DerivedDb::open(open::<E>(&disk), known, &compute).unwrap();
+    let db = DerivedDb::open(open::<E>(&disk), known, &compute).unwrap().0;
     assert_eq!(db.state(&current), Some(DerivedState::Ready), "the control is rebuilt");
     assert_eq!(db.state(&first), Some(DerivedState::Stale));
     assert_eq!(db.state(&forged_hash.id()), Some(DerivedState::Stale));
@@ -292,7 +285,7 @@ fn a_datum_whose_input_changed_is_never_ready_after_reopening<E: Target>() {
     db.close().unwrap();
 
     // A compute that fails on reopening leaves the datum failed, never ready.
-    let db = DerivedDb::open(open::<E>(&disk), [cur.clone()], &never).unwrap();
+    let db = DerivedDb::open(open::<E>(&disk), [cur.clone()], &never).unwrap().0;
     assert_eq!(db.state(&current), Some(DerivedState::Failed));
     assert_eq!(db.value(&current), None);
     db.close().unwrap();
@@ -320,7 +313,7 @@ fn rebuild_refuses_an_identity_that_already_exists_and_keeps_the_old_entry<E: Ta
     assert_eq!(db.value(&anew).as_deref(), Some(&b"embed@1:a2|"[..]));
 }
 
-fn superseding_with_no_valid_source_is_refused_and_changes_nothing<E: Target>() {
+fn superseding_a_datum_whose_source_was_deleted_is_refused<E: Target>() {
     let db = fresh::<E>();
     let a = make(&db, b"a");
     let v1 = db.build([a], "embed", 1, params(), &compute).unwrap();
@@ -328,10 +321,10 @@ fn superseding_with_no_valid_source_is_refused_and_changes_nothing<E: Target>() 
     cs.delete(a, None).unwrap();
     cs.commit().unwrap();
 
+    assert_eq!(db.state(&v1), None, "the deletion removed the datum (E8-05)");
     assert!(
-        matches!(db.supersede(&v1, "embed", 2, params(), &compute), Err(DerivedStaleError::NoValidSources(i)) if i == v1)
+        matches!(db.supersede(&v1, "embed", 2, params(), &compute), Err(DerivedStaleError::Derived(DerivedError::Unknown(i))) if i == v1)
     );
-    assert_eq!(db.state(&v1), Some(DerivedState::Stale), "the earlier datum is not superseded");
 }
 
 fn a_datum_left_building_by_a_panic_goes_stale_with_its_source<E: Target>() {
@@ -490,7 +483,7 @@ fn one_changeset_changing_several_units_marks_every_dependent_stale<E: Target>()
 /// `commit()` and the derived datum must still be ready.
 fn a_commit_that_fails_marks_nothing<E: Target>() {
     let disk = SimVfs::new(21);
-    let db = DerivedDb::open(open::<E>(&disk), Vec::new(), &compute).unwrap();
+    let db = DerivedDb::open(open::<E>(&disk), Vec::new(), &compute).unwrap().0;
     let (a, b) = (make(&db, b"a"), make(&db, b"b"));
     let on_a = db.build([a], "embed", 1, params(), &compute).unwrap();
     let on_b = db.build([b], "embed", 1, params(), &compute).unwrap();
@@ -526,7 +519,7 @@ fn a_dependent_on_a_later_revision_goes_stale_with_the_next_change<E: Target>() 
 
 fn open_refuses_a_duplicate_descriptor_in_the_known_list<E: Target>() {
     let disk = SimVfs::new(9);
-    let db = DerivedDb::open(open::<E>(&disk), Vec::new(), &compute).unwrap();
+    let db = DerivedDb::open(open::<E>(&disk), Vec::new(), &compute).unwrap().0;
     let a = make(&db, b"a");
     let id = db.build([a], "embed", 1, params(), &compute).unwrap();
     let d = db.descriptor(&id).unwrap();
@@ -624,8 +617,8 @@ macro_rules! engines {
                 super::rebuilding_gives_what_building_anew_gives::<E>();
             }
             #[test]
-            fn rebuild_uses_only_the_sources_that_are_still_valid() {
-                super::rebuild_uses_only_the_sources_that_are_still_valid::<E>();
+            fn a_datum_with_a_deleted_source_is_removed_not_rebuilt() {
+                super::a_datum_with_a_deleted_source_is_removed_not_rebuilt::<E>();
             }
             #[test]
             fn a_failed_compute_leaves_the_datum_failed_and_a_later_rebuild_fixes_it() {
@@ -648,8 +641,8 @@ macro_rules! engines {
                 super::rebuild_refuses_an_identity_that_already_exists_and_keeps_the_old_entry::<E>();
             }
             #[test]
-            fn superseding_with_no_valid_source_is_refused_and_changes_nothing() {
-                super::superseding_with_no_valid_source_is_refused_and_changes_nothing::<E>();
+            fn superseding_a_datum_whose_source_was_deleted_is_refused() {
+                super::superseding_a_datum_whose_source_was_deleted_is_refused::<E>();
             }
             #[test]
             fn a_datum_left_building_by_a_panic_goes_stale_with_its_source() {

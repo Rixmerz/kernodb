@@ -44,6 +44,7 @@ use crate::db::{ChangeMeta, ChangeSet, CommitInfo, NewUnit, Unit, UnitDb, UnitUp
 use crate::derived::{DerivedDescriptor, DerivedError, DerivedId, DerivedRegistry, DerivedState};
 use crate::error::UnitError;
 use crate::payload::ContentHash;
+use crate::suppression::source_gone;
 use crate::types::{CommitSeq, RelationId, RelationProvenance, RevNo, RevisionId, UnitId};
 
 /// Domain tag of the input hash; bump it if the encoding below changes.
@@ -185,17 +186,29 @@ impl<E: TxnEngine> DerivedDb<E> {
 
     /// Wraps `db` and rebuilds the registry for `known` (see the module
     /// documentation, "Reopening"). `compute` recomputes the data that are
-    /// still current.
+    /// still current. Also returns the ids of the known descriptors dropped
+    /// because a source is deleted or purged.
     pub fn open(
         db: UnitDb<E>,
         known: impl IntoIterator<Item = DerivedDescriptor>,
         compute: Compute<'_>,
-    ) -> Result<Self, DerivedStaleError> {
+    ) -> Result<(Self, Vec<DerivedId>), DerivedStaleError> {
         let this = DerivedDb { db, inner: Mutex::new(Inner::default()) };
+        let mut dropped = Vec::new();
         {
             let mut inner = this.lock();
             for d in known {
                 let units: BTreeSet<UnitId> = d.sources().map(|s| s.unit).collect();
+                // A datum goes when any one of its sources goes (E8-05): it is
+                // dropped and reported, never rebuilt from the sources left.
+                let mut gone = false;
+                for u in &units {
+                    gone |= source_gone(&d, *u, this.db.get_unit(*u)?.as_ref());
+                }
+                if gone {
+                    dropped.push(d.id());
+                    continue;
+                }
                 let id = inner.registry.register(d)?;
                 let desc = inner.registry.descriptor(&id).cloned().ok_or(DerivedError::Unknown(id))?;
                 let inputs = this.read_inputs(units)?;
@@ -210,7 +223,7 @@ impl<E: TxnEngine> DerivedDb<E> {
                 }
             }
         }
-        Ok(this)
+        Ok((this, dropped))
     }
 
     /// Reads a unit. The database itself is not handed out: every write goes
@@ -514,15 +527,19 @@ impl<E: TxnEngine> DerivedChangeSet<'_, E> {
         }
         let heads: BTreeMap<UnitId, RevNo> = info.revisions.iter().map(|r| (r.unit, r.rev)).collect();
         for (unit, head) in heads {
+            if self.deleted.contains(&unit) {
+                // A deletion removes every datum that has the unit among its
+                // sources, whatever its other sources (E8-05, acta §5.3).
+                crate::suppression::remove_dependents_of_unit(&mut inner, unit);
+                continue;
+            }
             for id in inner.registry.dependents_of_unit(unit) {
                 if inner.persisted.contains(&id) {
-                    // Persisted data: a deletion removed them in the commit; a
-                    // change left `Ready` only what is computed from the new
-                    // head, which is what the transaction wrote.
+                    // Persisted data: a change left `Ready` only what is
+                    // computed from the new head, which is what the
+                    // transaction wrote.
                     let from = inner.registry.descriptor(&id).and_then(|d| d.sources().find(|s| s.unit == unit));
-                    if self.deleted.contains(&unit) {
-                        inner.forget(&id);
-                    } else if from.is_some_and(|s| s.rev != head)
+                    if from.is_some_and(|s| s.rev != head)
                         && inner.registry.transition(&id, DerivedState::Stale).is_ok()
                     {
                         inner.vectors.remove(&id);
