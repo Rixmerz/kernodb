@@ -85,15 +85,45 @@ pub enum DerivedStaleError {
     ComputeFailed(DerivedId),
 }
 
+/// A derived id as lower-case hex, 64 digits: ids may appear in messages,
+/// content never does (I-37).
+struct IdHex<'a>(&'a DerivedId);
+
+impl fmt::Display for IdHex<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.0.iter().try_for_each(|b| write!(f, "{b:02x}"))
+    }
+}
+
 impl fmt::Display for DerivedStaleError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            // The identity covers the source revisions, so building again over
+            // sources a rebuild already used finds the rebuilt datum (E8 F-02).
+            DerivedStaleError::Derived(DerivedError::Duplicate(id)) => write!(
+                f,
+                "derived datum {} already exists over these source revisions (built or rebuilt earlier); \
+                 read it by this id instead of building it again",
+                IdHex(id)
+            ),
+            DerivedStaleError::Derived(DerivedError::Unknown(id)) => {
+                write!(f, "no derived datum has the id {}", IdHex(id))
+            }
+            DerivedStaleError::Derived(DerivedError::IllegalTransition { id, from, to }) => {
+                write!(f, "derived datum {} cannot go from {from:?} to {to:?}", IdHex(id))
+            }
             DerivedStaleError::Derived(e) => e.fmt(f),
             DerivedStaleError::Unit(e) => e.fmt(f),
-            DerivedStaleError::MissingSource(_) => f.write_str("a source unit does not exist or is deleted"),
-            DerivedStaleError::Persisted(_) => f.write_str("the derived datum is persisted; use the vector methods"),
+            DerivedStaleError::MissingSource(unit) => write!(f, "source unit {unit} does not exist or is deleted"),
+            DerivedStaleError::Persisted(id) => {
+                write!(f, "derived datum {} is persisted; use the vector methods", IdHex(id))
+            }
+            // ponytail: no id here; tests/consolidation.rs pins this exact text
+            // through ConsolidationError. Add the id together with that test.
             DerivedStaleError::NoValidSources(_) => f.write_str("no source of the derived datum is valid any more"),
-            DerivedStaleError::ComputeFailed(_) => f.write_str("the derived value could not be computed"),
+            DerivedStaleError::ComputeFailed(id) => {
+                write!(f, "the value of derived datum {} could not be computed", IdHex(id))
+            }
         }
     }
 }
@@ -367,8 +397,25 @@ impl<E: TxnEngine> DerivedDb<E> {
         Ok(out)
     }
 
-    pub(crate) fn valid_inputs(&self, d: &DerivedDescriptor) -> Result<Vec<SourceInput>, UnitError> {
-        self.read_inputs(d.sources().map(|s| s.unit).collect())
+    /// The current inputs of the sources of `d`, in unit order. A source that
+    /// is missing or deleted is an error naming it, never an input left out,
+    /// so a rebuild cannot come out over fewer sources than a build would
+    /// (E8 F-03). When no source is valid the result is empty and the caller
+    /// answers `NoValidSources`.
+    pub(crate) fn valid_inputs(&self, d: &DerivedDescriptor) -> Result<Vec<SourceInput>, DerivedStaleError> {
+        let units: BTreeSet<UnitId> = d.sources().map(|s| s.unit).collect();
+        let mut out = Vec::new();
+        let mut missing = None;
+        for u in units {
+            match self.read_input(u)? {
+                Some(input) => out.push(input),
+                None => missing = missing.or(Some(u)),
+            }
+        }
+        match missing {
+            Some(unit) if !out.is_empty() => Err(DerivedStaleError::MissingSource(unit)),
+            _ => Ok(out),
+        }
     }
 
     pub(crate) fn describe(
@@ -559,4 +606,90 @@ impl<E: TxnEngine> DerivedChangeSet<'_, E> {
 
     /// Discards the change set; nothing is marked.
     pub fn abort(self) {}
+}
+
+#[cfg(test)]
+mod tests {
+    //! A source deleted while its dependents stay registered cannot be made
+    //! through the public API (a delete removes them in the same commit), so
+    //! the explicit error of `valid_inputs` is shown here, deleting behind the
+    //! registry.
+
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use kerno_core::contract::Options;
+    use kerno_core::vfs::Vfs;
+    use kerno_storage::KernoDb;
+    use kerno_testkit::emulated::Emulated;
+    use kerno_testkit::reference::LogEngine;
+    use kerno_testkit::vfs::SimVfs;
+
+    use super::*;
+    use crate::clock::{CounterIds, FixedClock};
+    use crate::db::UnitConfig;
+    use crate::types::Timestamp;
+
+    fn cfg() -> UnitConfig {
+        let mut c = UnitConfig::with_sources(Arc::new(FixedClock::new(Timestamp(1))), Arc::new(CounterIds::new(1)));
+        c.engine = Options::small_for_tests();
+        c
+    }
+
+    fn compute(_: &DerivedDescriptor, inputs: &[SourceInput]) -> Option<Vec<u8>> {
+        Some(inputs.iter().flat_map(|i| i.payload.clone()).collect())
+    }
+
+    fn create<E: TxnEngine>(db: &DerivedDb<E>, payload: &[u8]) -> UnitId {
+        let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
+        let unit = NewUnit { unit_type: "doc".into(), schema_version: 1, metadata: vec![], payload: payload.to_vec() };
+        let id = cs.create(unit).unwrap();
+        cs.commit().unwrap();
+        id
+    }
+
+    /// Deletes `unit` on the database itself, so the registry keeps the
+    /// datum a delete through the derived change set would have removed.
+    fn delete_behind_the_registry<E: TxnEngine>(db: &DerivedDb<E>, unit: UnitId) {
+        let mut cs = db.db.begin_changeset(ChangeMeta::default()).unwrap();
+        cs.delete(unit, None).unwrap();
+        cs.commit().unwrap();
+    }
+
+    fn a_missing_source_is_an_error_naming_it<E: TxnEngine>() {
+        let vfs: Arc<dyn Vfs> = Arc::new(SimVfs::new(1));
+        let unit_db = UnitDb::<E>::open(vfs, Path::new("/db"), &cfg()).unwrap();
+        let db = DerivedDb::open(unit_db, Vec::new(), &compute).unwrap().0;
+        let (a, b) = (create(&db, b"a"), create(&db, b"b"));
+        let id = db.build([a, b], "concat", 1, BTreeMap::new(), &compute).unwrap();
+        let desc = db.descriptor(&id).unwrap();
+        let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
+        cs.update(a, UnitUpdate { payload: b"a2".to_vec(), schema_version: None, metadata: None }, None).unwrap();
+        cs.commit().unwrap();
+        assert_eq!(db.state(&id), Some(DerivedState::Stale));
+
+        // One source gone, one valid: an error naming the gone one, never a
+        // datum over the valid one alone.
+        delete_behind_the_registry(&db, b);
+        let names_b = |e: DerivedStaleError| matches!(e, DerivedStaleError::MissingSource(u) if u == b);
+        assert!(names_b(db.valid_inputs(&desc).unwrap_err()));
+        assert!(names_b(db.rebuild(&id, &compute).unwrap_err()));
+        assert!(names_b(db.supersede(&id, "concat", 2, BTreeMap::new(), &compute).unwrap_err()));
+        assert_eq!(db.state(&id), Some(DerivedState::Stale), "a refused rebuild leaves the datum as it was");
+
+        // Every source gone: no input, and the callers answer NoValidSources.
+        delete_behind_the_registry(&db, a);
+        assert!(db.valid_inputs(&desc).unwrap().is_empty());
+        assert!(matches!(db.rebuild(&id, &compute), Err(DerivedStaleError::NoValidSources(i)) if i == id));
+    }
+
+    #[test]
+    fn emulated_log_a_missing_source_is_an_error_naming_it() {
+        a_missing_source_is_an_error_naming_it::<Emulated<LogEngine>>();
+    }
+
+    #[test]
+    fn kerno_db_a_missing_source_is_an_error_naming_it() {
+        a_missing_source_is_an_error_naming_it::<KernoDb>();
+    }
 }
