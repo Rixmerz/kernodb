@@ -588,9 +588,9 @@ impl Tally {
             let key = |w: &Want| w.hits.iter().map(|h| (h.unit, h.path.clone())).collect::<Vec<_>>();
             key(&other) == key(&want)
         };
-        for i in 0..4 {
+        for (i, narrowed) in self.narrowed.iter_mut().enumerate() {
             if let Some(without) = without_condition(q, i) {
-                self.narrowed[i] += u32::from(!same(&without));
+                *narrowed += u32::from(!same(&without));
             }
         }
     }
