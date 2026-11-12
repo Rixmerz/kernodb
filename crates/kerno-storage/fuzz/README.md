@@ -117,6 +117,47 @@ execution counts are lower than an idle machine would give.
 The working corpora of these runs were not committed; the committed corpus is
 the one of the 60-second runs below.
 
+## Stage 9 run on the final code (E9-14): 2026-11-12
+
+Package E9-14 of the Stage 9 acta (`docs/architecture/etapa9-acta.md`, H-7)
+repeats the 30-minute run on the code of `kerno-storage` as Stage 9 leaves it
+(last change to `crates/kerno-storage/src`: commit `be27e74`; tree at
+`cca7ef6`). Same command and limits as above, four targets at a time, with
+nightly 1.102.0 and cargo-fuzz 0.13.2. Each run started from the committed
+corpus and wrote to a working directory outside the repository.
+
+Every target ran its 1,801 seconds and ended with no crash, no timeout and no
+slow unit; `artifacts/` holds no file. No input was added to the committed
+corpus, since none failed.
+
+| target | executions in 30 min | cov | ft | failures |
+|---|---:|---:|---:|---:|
+| varint | 427,959,903 | 72 | 72 | 0 |
+| header | 296,364,723 | 130 | 181 | 0 |
+| commit | 207,625,874 | 231 | 570 | 0 |
+| frame | 313,543,961 | 249 | 460 | 0 |
+| data_block | 198,919,045 | 188 | 288 | 0 |
+| filter_block | 262,139,947 | 160 | 230 | 0 |
+| rangedel_block | 175,649,868 | 197 | 293 | 0 |
+| props_block | 242,636,008 | 254 | 383 | 0 |
+| index_block | 183,972,923 | 197 | 271 | 0 |
+| footer | 499,398,250 | 67 | 67 | 0 |
+| record | 310,873,073 | 263 | 355 | 0 |
+| wal | 4,877,579 | 335 | 985 | 0 |
+| sst | 198,623,700 | 156 | 228 | 0 |
+| manifest | 6,676,172 | 662 | 1,616 | 0 |
+| open | 4,546,088 | 3,838 | 11,053 | 0 |
+
+Limits of this run, stated as they are:
+
+- The acta asks for the machine to itself (section 3.2). It was not: other
+  package builds and tests ran beside both batches (load average about 4 on
+  4 CPUs), so the counts are lower than an idle machine would give.
+- `wal`, `manifest` and `open` do file work per input and reached between 4.5
+  and 6.7 million executions, two orders of magnitude below the pure decoders.
+  Thirty minutes is thin for them; a longer run of those three is the natural
+  next step.
+
 ## 60-second runs (nightly 1.102.0 2026-11-10, cargo-fuzz 0.13.2)
 
 No crash, no input over 1 s (`-timeout=1`; slowest unit reported 0 s) in any
