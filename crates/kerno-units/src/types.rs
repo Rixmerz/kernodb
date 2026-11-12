@@ -67,6 +67,13 @@ pub struct RevisionId {
     pub rev: RevNo,
 }
 
+impl RevisionId {
+    /// The first revision of `unit`, the one `create` writes.
+    pub fn first(unit: UnitId) -> Self {
+        RevisionId { unit, rev: RevNo(1) }
+    }
+}
+
 macro_rules! display_inner {
     ($($t:ty),*) => {$(
         impl fmt::Display for $t {

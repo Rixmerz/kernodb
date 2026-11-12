@@ -1824,6 +1824,13 @@ fn sentinel_vector() -> Vec<f32> {
     SENTINEL.as_chunks::<4>().0.iter().map(|c| f32::from_bits(u32::from_be_bytes(*c))).collect()
 }
 
+/// A recipe whose `dim` equals the length of the sentinel vector.
+fn sentinel_recipe() -> VectorRecipe {
+    let mut r = recipe(1, "model-a");
+    r.params.insert("dim".to_owned(), sentinel_vector().len().to_string());
+    r
+}
+
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }
@@ -1863,12 +1870,9 @@ fn derived_sentinel_survival() {
         let (dd, _) = DerivedDb::open_persisted(db).unwrap();
         let u = make(&dd, b"hello");
         let id = dd
-            .build_vector(
-                u,
-                &recipe(1, "model-a"),
-                ChangeMeta::default(),
-                &|_: &DerivedDescriptor, _: &[SourceInput]| Some(sentinel_vector()),
-            )
+            .build_vector(u, &sentinel_recipe(), ChangeMeta::default(), &|_: &DerivedDescriptor, _: &[SourceInput]| {
+                Some(sentinel_vector())
+            })
             .unwrap();
         dd.close().unwrap();
         let db = open_units::<KernoDb>(disk.as_vfs(), &cfg()).unwrap();
