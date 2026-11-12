@@ -137,8 +137,37 @@ fn open_plain(dir: &Path) -> Res<KernoDb> {
     Ok(<KernoDb as Engine>::open(StdVfs::shared(), dir, &options())?)
 }
 
-fn stat(db: &KernoDb, name: &str) -> u64 {
-    Engine::stats(db).into_iter().find(|(n, _)| n == name).map_or(0, |(_, v)| v)
+/// What the counters and the settle step need, for a bare engine and for the
+/// layer over one, so a measurement reads both through the same code.
+trait Measured {
+    fn counters(&self) -> Vec<(String, u64)>;
+    fn settle(&self) -> Res<()>;
+}
+
+impl Measured for KernoDb {
+    fn counters(&self) -> Vec<(String, u64)> {
+        Engine::stats(self)
+    }
+    fn settle(&self) -> Res<()> {
+        TestHooks::flush(self)?;
+        TestHooks::wait_idle(self)?;
+        Ok(())
+    }
+}
+
+impl Measured for UnitDb<KernoDb> {
+    fn counters(&self) -> Vec<(String, u64)> {
+        self.engine_stats()
+    }
+    fn settle(&self) -> Res<()> {
+        self.engine_flush()?;
+        self.engine_wait_idle()?;
+        Ok(())
+    }
+}
+
+fn stat(db: &impl Measured, name: &str) -> u64 {
+    db.counters().into_iter().find(|(n, _)| n == name).map_or(0, |(_, v)| v)
 }
 
 /// Bytes the engine wrote: WAL, flushes, compactions.
@@ -149,7 +178,7 @@ struct Written {
     compaction: u64,
 }
 
-fn written(db: &KernoDb) -> Written {
+fn written(db: &impl Measured) -> Written {
     Written {
         wal: stat(db, "wal_bytes"),
         flush: stat(db, "flush_bytes_written"),
@@ -158,13 +187,13 @@ fn written(db: &KernoDb) -> Written {
 }
 
 /// Live table bytes (sum of `l<N>_bytes`).
-fn stored(db: &KernoDb) -> u64 {
+fn stored(db: &impl Measured) -> u64 {
     let level = |n: &str| {
         n.strip_prefix('l')
             .and_then(|r| r.strip_suffix("_bytes"))
             .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
     };
-    Engine::stats(db).into_iter().filter(|(n, _)| level(n)).map(|(_, v)| v).sum()
+    db.counters().into_iter().filter(|(n, _)| level(n)).map(|(_, v)| v).sum()
 }
 
 fn plain_key(i: u64) -> Vec<u8> {
@@ -254,10 +283,8 @@ fn put_one(db: &KernoDb, key: Vec<u8>, value: Vec<u8>) -> Res<()> {
 
 /// Settles both engines (memtables flushed, background work done) so that
 /// read measurements start from the same shape.
-fn settle(db: &KernoDb) -> Res<()> {
-    TestHooks::flush(db)?;
-    TestHooks::wait_idle(db)?;
-    Ok(())
+fn settle(db: &impl Measured) -> Res<()> {
+    db.settle()
 }
 
 // ------------------------------------------------------------ statistics
@@ -460,7 +487,7 @@ fn u2(a: &Args, z: &Sizes, out: &mut Vec<Verdict>) -> Res<()> {
         }
         Engine::commit(&plain, &b)?;
     }
-    settle(units.engine())?;
+    settle(&units)?;
     settle(&plain)?;
     // Judged: `history` against the reference scan, alternated round by
     // round, same random stream as before decision 12c. `history_page`
@@ -542,10 +569,10 @@ fn u3(a: &Args, z: &Sizes, out: &mut Vec<Verdict>) -> Res<()> {
     let mut rng = Rng::new(a.seed ^ 0x03);
     let units = open_units(&du.0)?;
     let plain = open_plain(&dp.0)?;
-    let first = units.engine().snapshot()?.seq() + 1;
+    let first = units.raw_seq()? + 1;
     let ids = create_units(&units, &mut rng, z.u3_units, LEN, 1_000)?;
     add_revisions(&units, &mut rng, &ids, z.u3_revs - 1, LEN, 1_000)?;
-    let last = units.engine().snapshot()?.seq();
+    let last = units.raw_seq()?;
     let keys = (z.u3_units * z.u3_revs) as u64;
     for chunk in (0..keys).collect::<Vec<_>>().chunks(1_000) {
         let mut b = WriteBatch::new();
@@ -554,7 +581,7 @@ fn u3(a: &Args, z: &Sizes, out: &mut Vec<Verdict>) -> Res<()> {
         }
         Engine::commit(&plain, &b)?;
     }
-    settle(units.engine())?;
+    settle(&units)?;
     settle(&plain)?;
     let (mut su, mut sp, mut sh) = (Vec::new(), Vec::new(), Vec::new());
     let warm = z.u3_queries / 10;
@@ -617,13 +644,13 @@ fn u4(a: &Args, z: &Sizes, out: &mut Vec<Verdict>) -> Res<()> {
         for i in 0..units_n as u64 {
             put_one(&plain, plain_key(i), rng.bytes(len))?;
         }
-        settle(units.engine())?;
+        settle(&units)?;
         settle(&plain)?;
-        let (wu0, wp0) = (written(units.engine()), written(&plain));
+        let (wu0, wp0) = (written(&units), written(&plain));
         // The WAL cost of one isolated update / put, first, then the run.
-        let w = written(units.engine()).wal;
+        let w = written(&units).wal;
         update_one(&units, ids[0], rng.bytes(len))?;
-        let one_update = written(units.engine()).wal - w;
+        let one_update = written(&units).wal - w;
         let w = written(&plain).wal;
         put_one(&plain, plain_key(0), rng.bytes(len))?;
         let one_put = written(&plain).wal - w;
@@ -632,9 +659,9 @@ fn u4(a: &Args, z: &Sizes, out: &mut Vec<Verdict>) -> Res<()> {
             update_one(&units, ids[pick as usize], rng.bytes(len))?;
             put_one(&plain, plain_key(pick), rng.bytes(len))?;
         }
-        settle(units.engine())?;
+        settle(&units)?;
         settle(&plain)?;
-        let (wu1, wp1) = (written(units.engine()), written(&plain));
+        let (wu1, wp1) = (written(&units), written(&plain));
         let logical = (ops * len) as f64;
         let side = |name: &str, w0: Written, w1: Written| {
             let (wal, flush, comp) = (w1.wal - w0.wal, w1.flush - w0.flush, w1.compaction - w0.compaction);
@@ -687,11 +714,11 @@ fn u5(a: &Args, z: &Sizes, out: &mut Vec<Verdict>) -> Res<()> {
         }
         Engine::commit(&plain, &b)?;
     }
-    for db in [units.engine(), &plain] {
-        db.compact_range(Bound::Unbounded, Bound::Unbounded)?;
-        TestHooks::wait_idle(db)?;
-    }
-    let (su, sp) = (stored(units.engine()), stored(&plain));
+    units.engine_compact_range(Bound::Unbounded, Bound::Unbounded)?;
+    units.engine_wait_idle()?;
+    plain.compact_range(Bound::Unbounded, Bound::Unbounded)?;
+    TestHooks::wait_idle(&plain)?;
+    let (su, sp) = (stored(&units), stored(&plain));
     let (bu, bp) = (su as f64 / revisions as f64, sp as f64 / revisions as f64);
     println!(
         "raw U5: units={} revisions_per_unit={} revisions={revisions} payload={LEN} stored_units={su} \
@@ -833,7 +860,7 @@ fn u6_run(a: &Args, z: &Sizes, out: &mut Vec<Verdict>, budget: RetentionBudget) 
         if a.indexes {
             units.rebuild_index()?;
         }
-        settle(units.engine())?;
+        settle(&units)?;
         let seed = a.seed ^ 0x0600 ^ round as u64;
         let b1 = window(&units, &hot, z, a.relations, seed, || {
             std::thread::sleep(z.u6_window);

@@ -45,7 +45,7 @@ use std::time::Instant;
 
 use harness::derived::{CORPUS, MANIFEST, PermutedIds, QUERIES, T0, VECTORS, f32_vector, load, recipe, unit_id};
 use harness::units::{Target, open_units};
-use kerno_core::contract::{Options, Snapshot};
+use kerno_core::contract::Options;
 use kerno_storage::KernoDb;
 use kerno_testkit::assoc_eval::{self, Judgment};
 use kerno_testkit::assoc_metrics::{ndcg_at, recall_at};
@@ -560,7 +560,7 @@ fn edited(label: &str) -> Vec<u8> {
 }
 
 fn raw_get<E: Target>(db: &UnitDb<E>, key: &[u8]) -> Option<Vec<u8>> {
-    db.engine().snapshot().expect("snapshot").get(key).expect("get")
+    db.raw_get(key).expect("get")
 }
 
 /// The three persisted records of a datum: descriptor, vector, `0x62` entry.

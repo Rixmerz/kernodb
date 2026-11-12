@@ -44,7 +44,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use kerno_core::contract::{Options, TestHooks};
+use kerno_core::contract::Options;
 use kerno_core::vfs::StdVfs;
 use kerno_storage::KernoDb;
 use kerno_testkit::rng::Rng;
@@ -118,8 +118,8 @@ fn load(db: &Units, n: usize, seed: u64) -> Res<Vec<Entry>> {
         }
         cs.commit()?;
     }
-    TestHooks::flush(db.engine())?;
-    TestHooks::wait_idle(db.engine())?;
+    db.engine_flush()?;
+    db.engine_wait_idle()?;
     Ok(active)
 }
 

@@ -51,7 +51,7 @@ use std::ops::Bound;
 use std::sync::Arc;
 
 use harness::units::{Target, open_units};
-use kerno_core::contract::{Engine, Options, Snapshot, TestHooks, Txn};
+use kerno_core::contract::{Options, Snapshot};
 use kerno_storage::KernoDb;
 use kerno_testkit::emulated::Emulated;
 use kerno_testkit::reference::LogEngine;
@@ -123,7 +123,7 @@ fn delete<E: Target>(dd: &DerivedDb<E>, unit: UnitId) {
 }
 
 fn derived_keys<E: Target>(db: &UnitDb<E>) -> usize {
-    let snap = db.engine().snapshot().unwrap();
+    let snap = db.raw_snapshot().unwrap();
     [TAG_DERIVED_DESC, TAG_DERIVED_VEC, TAG_DERIVED_SRC]
         .iter()
         .map(|t| snap.scan(Bound::Included(&[*t][..]), Bound::Excluded(&[*t + 1][..]), usize::MAX).unwrap().len())
@@ -131,7 +131,7 @@ fn derived_keys<E: Target>(db: &UnitDb<E>) -> usize {
 }
 
 fn has_vector<E: Target>(db: &UnitDb<E>, id: DerivedId) -> bool {
-    db.engine().snapshot().unwrap().get(&DerivedKey::Vec(id).encode()).unwrap().is_some()
+    db.raw_get(&DerivedKey::Vec(id).encode()).unwrap().is_some()
 }
 
 // ------------------------------------------------------------------ rules
@@ -376,11 +376,8 @@ fn an_unreadable_unit_is_reported_not_fatal<E: Target>() {
     dd.close().unwrap();
     // Break the note's head revision metadata behind the layer's back.
     let db = open_db::<E>(&disk);
-    let mut t = db.engine().begin_write().unwrap();
-    for u in [n, m] {
-        t.delete(&Key::RevMeta { unit: u, rev: RevNo(1) }.encode().unwrap()).unwrap();
-    }
-    t.commit().unwrap();
+    let dels = [n, m].map(|u| (Key::RevMeta { unit: u, rev: RevNo(1) }.encode().unwrap(), None)).to_vec();
+    db.raw_commit(dels).unwrap();
     db.close().unwrap();
     let dd = open_dd::<E>(&disk);
     let policy = RetentionPolicy::all(RetentionRule::KeepLast(1)).with_type("note", RetentionRule::KeepAll);
@@ -444,17 +441,15 @@ fn survival_of_a_deleted_vector() {
         dd.close().unwrap();
         let db = open_db::<KernoDb>(&disk);
         assert!(!holders(&disk).is_empty(), "the sentinel is on disk before the delete");
-        let held = hold.then(|| db.engine().snapshot().unwrap());
+        let held = hold.then(|| db.raw_snapshot().unwrap());
         let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
         cs.delete(u, None).unwrap();
         cs.commit().unwrap();
         assert_eq!(derived_keys(&db), 0, "I-1: no new read returns a record of the deleted source");
         let before_flush = stage(hold, "before the flush", &disk);
-        db.engine().flush().unwrap();
-        db.engine()
-            .compact_range(Bound::Included(&[TAG_DERIVED_DESC]), Bound::Excluded(&[TAG_DERIVED_SRC + 1]))
-            .unwrap();
-        db.engine().wait_idle().unwrap();
+        db.engine_flush().unwrap();
+        db.engine_compact_range(Bound::Included(&[TAG_DERIVED_DESC]), Bound::Excluded(&[TAG_DERIVED_SRC + 1])).unwrap();
+        db.engine_wait_idle().unwrap();
         let after_compaction = stage(hold, "after compact_range", &disk);
         println!("[suppression survival] before-flush holders: {} file(s)", before_flush.len());
         if let Some(snap) = held {
@@ -464,7 +459,7 @@ fn survival_of_a_deleted_vector() {
             );
             println!("[suppression survival] snapshot held across compaction, holders: {after_compaction:?}");
             drop(snap);
-            db.engine().wait_idle().unwrap();
+            db.engine_wait_idle().unwrap();
         }
         db.close().unwrap();
         let closed = stage(hold, "after a clean close", &disk);
