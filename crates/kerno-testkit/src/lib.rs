@@ -25,6 +25,7 @@
 
 pub mod assoc_eval;
 pub mod assoc_metrics;
+pub mod derived_eval;
 pub mod emulated;
 pub mod harness;
 pub mod process;
