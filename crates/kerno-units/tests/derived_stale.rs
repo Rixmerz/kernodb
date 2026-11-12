@@ -589,7 +589,10 @@ fn every_error_says_what_it_is_without_naming_content() {
     let cases = [
         (DerivedStaleError::Derived(inner.clone()), inner.to_string()),
         (DerivedStaleError::Unit(UnitError::ChangeSetClosed), unit.to_string()),
-        (DerivedStaleError::MissingSource(UnitId([1; 16])), "a source unit does not exist or is deleted".into()),
+        (
+            DerivedStaleError::MissingSource(UnitId([1; 16])),
+            "source unit 01010101010101010101010101010101 does not exist or is deleted".into(),
+        ),
         (DerivedStaleError::NoValidSources(id), "no source of the derived datum is valid any more".into()),
         (DerivedStaleError::ComputeFailed(id), "the derived value could not be computed".into()),
     ];
