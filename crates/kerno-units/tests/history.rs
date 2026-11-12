@@ -20,7 +20,6 @@ use std::ops::Bound;
 use std::path::Path;
 use std::sync::Arc;
 
-use kerno_core::WriteBatch;
 use kerno_core::contract::{Engine, Options, Snapshot, TxnEngine};
 use kerno_storage::KernoDb;
 use kerno_testkit::emulated::Emulated;
@@ -71,7 +70,7 @@ fn upd(payload: &[u8]) -> UnitUpdate {
 }
 
 fn seq<E: TxnEngine>(db: &UnitDb<E>) -> CommitSeq {
-    CommitSeq(db.engine().snapshot().expect("snapshot").seq())
+    CommitSeq(db.raw_snapshot().expect("snapshot").seq())
 }
 
 fn dump<S: Snapshot>(s: &S) -> Dump {
@@ -371,7 +370,7 @@ fn model_as_of<E: TxnEngine>() {
 // ------------------------------------------------------------ restore_keeps_later
 
 fn rev_records<E: TxnEngine>(db: &UnitDb<E>) -> Dump {
-    dump(&db.engine().snapshot().unwrap()).into_iter().filter(|(k, _)| k[0] == 0x20 || k[0] == 0x21).collect()
+    dump(&db.raw_snapshot().unwrap()).into_iter().filter(|(k, _)| k[0] == 0x20 || k[0] == 0x21).collect()
 }
 
 fn restore_keeps_later<E: TxnEngine>() {
@@ -647,14 +646,9 @@ fn history_reads_verify<E: TxnEngine>() {
         cs.update(a, upd(p), None).unwrap();
         seqs.push(cs.commit().unwrap().commit_seq);
     }
-    let get = |k: &[u8]| db.engine().snapshot().unwrap().get(k).unwrap();
+    let get = |k: &[u8]| db.raw_snapshot().unwrap().get(k).unwrap();
     let put = |k: &[u8], v: Option<&[u8]>| {
-        let mut b = WriteBatch::new();
-        match v {
-            Some(v) => b.put(k.to_vec(), v.to_vec()),
-            None => b.delete(k.to_vec()),
-        };
-        db.engine().commit(&b).unwrap();
+        db.raw_commit(vec![(k.to_vec(), v.map(|v| v.to_vec()))]).unwrap();
     };
     let at = |s: CommitSeq| db.unit_as_of(a, AsOf::Seq(s));
 

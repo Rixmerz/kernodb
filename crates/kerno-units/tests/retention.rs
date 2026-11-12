@@ -91,7 +91,7 @@ fn dump<S: Snapshot>(s: &S) -> Dump {
 }
 
 fn raw<E: TxnEngine>(db: &UnitDb<E>) -> Dump {
-    dump(&db.engine().snapshot().expect("snapshot"))
+    dump(&db.raw_snapshot().expect("snapshot"))
 }
 
 /// Revision numbers of the stored `REV_META` and `REV_PAYLOAD` of `unit`.
@@ -309,12 +309,7 @@ fn retention_cleans_policies<E: TxnEngine>() {
     // The rewritten REV_META keep hash and length, without payload.
     let m = RevisionMeta::decode(
         RevNo(1),
-        &db.engine()
-            .snapshot()
-            .unwrap()
-            .get(&Key::RevMeta { unit: a, rev: RevNo(1) }.encode().unwrap())
-            .unwrap()
-            .unwrap(),
+        &db.raw_snapshot().unwrap().get(&Key::RevMeta { unit: a, rev: RevNo(1) }.encode().unwrap()).unwrap().unwrap(),
     )
     .unwrap();
     assert!(!m.payload_present);
@@ -339,9 +334,7 @@ fn retention_detects_damage<E: TxnEngine>() {
     let disk = SimVfs::new(62);
     let db = open::<E>(&disk, &cfg());
     let (a, _) = unit_with(&db, "doc", 4);
-    let mut b = kerno_core::WriteBatch::new();
-    b.delete(Key::RevMeta { unit: a, rev: RevNo(2) }.encode().unwrap());
-    kerno_core::contract::Engine::commit(db.engine(), &b).unwrap();
+    db.raw_commit(vec![(Key::RevMeta { unit: a, rev: RevNo(2) }.encode().unwrap(), None)]).unwrap();
     let s = db.snapshot().unwrap().seq();
     let e =
         db.run_retention(&RetentionPolicy::all(RetentionRule::KeepLast(1)), RetentionBudget::default()).unwrap_err();
@@ -457,9 +450,7 @@ fn retention_every_point<E: Target>(kind: CrashKind, durability: Durability, per
     let before = raw(&db);
     let heads: Vec<Unit> = ids.iter().map(|id| db.get_unit(*id).unwrap().unwrap()).collect();
     let start = disk.mutating_ops();
-    let stat = |db: &UnitDb<E>, name: &str| {
-        kerno_core::contract::Engine::stats(db.engine()).into_iter().find(|(n, _)| n == name).map(|(_, v)| v)
-    };
+    let stat = |db: &UnitDb<E>, name: &str| db.engine_stats().into_iter().find(|(n, _)| n == name).map(|(_, v)| v);
     let (syncs, rotations) = (stat(&db, "wal_syncs"), stat(&db, "memtable_rotations"));
     let r = db.run_retention(&every_point_policy(), RetentionBudget::default()).unwrap();
     assert!(r.change_set.is_some() && r.revisions_pruned > 0 && r.payloads_dropped > 0, "{r:?}");

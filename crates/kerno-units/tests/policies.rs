@@ -92,7 +92,7 @@ fn expect_err<T: std::fmt::Debug>(r: Result<T, UnitError>, want: UnitError, ctx:
 type Stored = BTreeMap<UnitId, (BTreeSet<u64>, BTreeSet<u64>)>;
 
 fn stored<E: TxnEngine>(db: &UnitDb<E>) -> Stored {
-    let snap = db.engine().snapshot().expect("snapshot");
+    let snap = db.raw_snapshot().expect("snapshot");
     let mut out = Stored::new();
     let mut from: Option<Vec<u8>> = None;
     loop {
@@ -376,7 +376,7 @@ fn policy_matrix<E: TxnEngine>() {
     db.set_policy(&long, HistoryPolicy::Audit, meta()).expect("57 bytes");
     assert_eq!(db.policy(&long).unwrap(), HistoryPolicy::Audit);
     let longer = "t".repeat(MAX_POLICY_UNIT_TYPE_LEN + 1);
-    let before = db.engine().snapshot().unwrap().seq();
+    let before = db.raw_snapshot().unwrap().seq();
     for (t, m) in [
         (longer.as_str(), meta()),
         ("", meta()),
@@ -385,7 +385,7 @@ fn policy_matrix<E: TxnEngine>() {
     ] {
         expect_err(db.set_policy(t, HistoryPolicy::None, m), UnitError::InvalidArgument(String::new()), t);
     }
-    assert_eq!(db.engine().snapshot().unwrap().seq(), before, "refused set_policy writes nothing");
+    assert_eq!(db.raw_snapshot().unwrap().seq(), before, "refused set_policy writes nothing");
     assert_eq!(db.policy(&longer).unwrap(), HistoryPolicy::Versioned, "a longer type follows the default");
     let info = db
         .set_policy(
@@ -555,9 +555,9 @@ fn policy_model<E: TxnEngine>() {
         // `None` range deletions, retention): no revision present in two
         // consecutive engine snapshots changes, except `payload_present`
         // 1 → 0 (E3-10 review: the sweep the design calls `immutability_sweep`).
-        let mut prev = db.engine().snapshot().expect("engine snapshot");
+        let mut prev = db.raw_snapshot().expect("engine snapshot");
         let mut immutable = |db: &UnitDb<E>, ctx: &str| {
-            let now = db.engine().snapshot().expect("engine snapshot");
+            let now = db.raw_snapshot().expect("engine snapshot");
             let changed = verify_immutable(&prev, &now).expect("verify_immutable");
             assert!(changed.is_empty(), "{ctx}: IU-1 {changed:?}");
             prev = now;
