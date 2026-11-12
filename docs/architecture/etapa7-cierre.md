@@ -241,7 +241,7 @@ El propietario tomó estas dos decisiones el 2026-11-12. Se registran aquí, con
 
 **Recomendación que sostiene la evidencia:** aceptar este cierre con el orden simple «saltos, luego identificador» como orden por defecto y el ranking como opción apagada (medición §6, primera opción). El [roadmap](../roadmap/README.md#etapa-8--consolidación-y-embeddings) no pone el ranking entre los entregables ni las aceptaciones de la Etapa 8, así que no hay una dependencia que obligue a medirlo antes. Hay una advertencia: la Etapa 8 producirá los embeddings que la señal vectorial del ranking consumiría, y la calidad de esa señal no se ha medido (§7, punto 7). Si el propietario quiere medirla, necesita un conjunto con vectores, que es un conjunto nuevo (§8.2). No condicionar la Etapa 8 a esa medición.
 
-**Decidido por el propietario el 2026-11-12:** la Etapa 8 arranca. El ranking de resultados asociativos queda **desactivado por defecto y marcado como experimental**. Con el ranking desactivado, el orden de los resultados es el de «saltos, luego identificador». La Etapa 8 no condiciona su arranque a medir el ranking de nuevo.
+**Decidido por el propietario el 2026-11-12:** la Etapa 8 arranca. El ranking de resultados asociativos queda **desactivado por defecto y marcado como experimental**. Con el ranking desactivado, el orden de los resultados es el de «saltos, luego identificador».
 
 ### 8.2 ¿Se reescribe T4 antes de cualquier medición nueva?
 
