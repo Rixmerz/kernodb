@@ -181,7 +181,7 @@ Todos devuelven `Poisoned` si el handle está envenenado y `ReadOnly` (salvo `wa
 
 ## Lápidas de rango y `compact_range`
 
-Condición 2 de ADR-0001 como **mecanismo**; sin política de retención ni garantía de borrado físico (C-11, R-52, ADR-0009 pendiente). Semántica en [v1.md §11](../../docs/file-format/v1.md) (SEM-3..SEM-7): `delete_range(start, end)` borra `[start, end)`; un punto `p@s` está oculto en la instantánea `S` si algún fragmento `[a, b)@u` que lo cubre cumple `s < u ≤ S` (con la misma secuencia gana el punto).
+Condición 2 de ADR-0001 como **mecanismo**; sin política de retención ni garantía de borrado físico (C-11, R-52; ADR-0009 aceptado el 2026-11-12, opción 3: sin garantía de borrado físico). Semántica en [v1.md §11](../../docs/file-format/v1.md) (SEM-3..SEM-7): `delete_range(start, end)` borra `[start, end)`; un punto `p@s` está oculto en la instantánea `S` si algún fragmento `[a, b)@u` que lo cubre cumple `s < u ≤ S` (con la misma secuencia gana el punto).
 
 - **Memtable.** La lista de lápidas de la memtable conserva cada `(inicio, fin, seq)`: un lector en la instantánea `S` ignora las de secuencia mayor, como ignora los puntos. Se pasa a fragmentos (`format::rangedel::fragment`: disjuntos, con la mayor secuencia que cubre cada trozo) al volcarla y al hacer `scan`.
 - **SST.** El bloque de rangos guarda fragmentos ordenados y disjuntos con **una** secuencia cada uno, la mayor (SST-F2): una instantánea nunca ve una SST con secuencias mayores que la suya (SEM-5), así que basta con una. Los extremos del archivo (`smallest`, `largest`) incluyen la extensión de los fragmentos; si el último fragmento acaba más allá de la última clave de punto, `largest` es ese fin y es **exclusivo** (`largest_exclusive`). Toda comparación de archivos vecinos (`Table::ends_before`, igual que `FileMeta::ends_before`, MAN-S3) tiene en cuenta la exclusividad: dos archivos de un nivel pueden tocarse en una clave si el primero acaba en ella sin contenerla. Se permiten SST sin puntos.
@@ -211,7 +211,7 @@ Es un mecanismo para sacar datos y lápidas de los archivos vivos, **no** una ga
 - **Lápidas de punto en el último nivel.** Una tabla con lápidas de punto que un movimiento trivial de segundo plano llevó al último nivel (comportamiento del M0) conserva esas lápidas: `compact_range` no compacta L6 contra sí mismo.
 - **Copias del directorio** hechas fuera del motor y la historia del sistema de archivos.
 
-El diseño de supresión con garantías (ADR-0009) queda para la Fase 4.
+ADR-0009, aceptado el 2026-11-12 con la opción 3, fija lo que el motor promete: borrado lógico inmediato y retirada de los archivos vivos al compactar, si ninguna instantánea abierta anterior al borrado los retiene. No promete borrado físico ni plazo de backup, y el borrado criptográfico queda para ADR-0006 (Fase 4). `tests/suppression_survival.rs` (E9A-01) mide en el escenario de prueba los dos puntos de la lista que son archivos del directorio (las instantáneas y el WAL); el resto no se mide.
 
 ## Versiones, instantáneas y vida de los archivos
 

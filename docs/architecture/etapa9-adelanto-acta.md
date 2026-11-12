@@ -75,7 +75,7 @@ Todos escriben solo en los archivos indicados. Ninguno cambia `src/` de `kerno-s
 | **E9A-04** Fuzzing con cobertura | Un objetivo por decodificador (14) y uno para la apertura, con cargo-fuzz en `crates/kerno-storage/fuzz/`, fuera del workspace, con corpus comprometido. No bloqueante en CI | E9A-03; dependencia y cadena de herramientas aprobadas el 2026-11-11 (§7, punto 2) | `crates/kerno-storage/fuzz/**` | — (corre después de E9A-03) |
 | **E9A-05** Estrés del ciclo de vida | Ciclos de escrituras concurrentes (4 escritores), borrados y `delete_range`, `compact_range`, `sync()`, cierre limpio, reapertura y `verify()`. Comparación con el modelo en cada reapertura | — | `crates/kerno-storage/tests/lifecycle_soak.rs` | E9A-01, E9A-02, E9A-03 |
 | **E9A-00b** Decisión sobre ADR-0009 (**hecho el 2026-11-12**, opción 3) | Elegir la opción 1, 2 o 3 y aceptar ADR-0009, o dejarlo pendiente y prohibir cualquier API de supresión | E9A-00a, E9A-01 | `docs/adr/0009-*.md`, `docs/adr/README.md` | — (decisión del propietario) |
-| **E9A-06** Cierre | Revisión adversarial de E9A-01…05. Promoción de I-29 para `kerno-storage` si E9A-02 pasa. Actualización de [invariantes](invariants.md) (I-27…I-30 siguen en «Fase 4»), [threat model](../security/threat-model.md) (T-06, T-08, T-09) y, si cambia lo que declara, [DESIGN.md](../../crates/kerno-storage/DESIGN.md) | E9A-00b, E9A-01…05 | `docs/architecture/etapa9-adelanto-cierre.md`, `invariants.md`, `threat-model.md` | — |
+| **E9A-06** Cierre (**hecho el 2026-11-12**, [cierre](etapa9-adelanto-cierre.md)) | Revisión adversarial de E9A-01…05. Promoción de I-29 para `kerno-storage` si E9A-02 pasa. Actualización de [invariantes](invariants.md) (I-27…I-30 siguen en «Fase 4»), [threat model](../security/threat-model.md) (T-06, T-08, T-09) y, si cambia lo que declara, [DESIGN.md](../../crates/kerno-storage/DESIGN.md) | E9A-00b, E9A-01…05 | `docs/architecture/etapa9-adelanto-cierre.md`, `invariants.md`, `threat-model.md` | — |
 
 ### 3.1 Qué corre a la vez
 
@@ -110,12 +110,12 @@ Comunes a todos los paquetes con código: `cargo fmt --all --check`; `cargo clip
 
 | Criterio (roadmap, Etapa 9) | Cómo se cumple | Estado |
 |---|---|---|
-| Límites y garantías documentados | E9A-01 mide lo que sobrevive; E9A-06 lo escribe | pendiente |
-| Fallos críticos resueltos o marcados como bloqueantes | Cada hallazgo se registra en el informe de E9A-06 | pendiente |
-| I-29 verificada | E9A-02 (solo `kerno-storage`). Las observaciones de la Etapa 5 ya las cubre I-37 y ADR-0015 | pendiente |
+| Límites y garantías documentados | E9A-01 mide lo que sobrevive; E9A-06 lo escribe ([cierre](etapa9-adelanto-cierre.md)) | **hecho** (E9A-06) |
+| Fallos críticos resueltos o marcados como bloqueantes | Cada hallazgo se registra en el [cierre](etapa9-adelanto-cierre.md) con su estado; ninguno bloqueante abierto | **hecho** (E9A-06) |
+| I-29 verificada | E9A-02 (solo `kerno-storage`). Las observaciones de la Etapa 5 ya las cubre I-37 y ADR-0015 | **hecho para `kerno-storage`** (E9A-06, promovida por delegación del propietario el 2026-11-12, revocable). Las capas de logs siguen en Fase 4 |
 | I-27, I-28, I-30 verificadas | Fuera de esta acta (§2.3) | pendiente, Etapa 9 |
-| Fuzzing de entradas externas | E9A-03 en el árbol; E9A-04 con cobertura, aprobado el 2026-11-11. Umbral de 30 minutos por objetivo cumplido el 2026-11-12: 15 objetivos, cero fallos, ninguna entrada de más de 1 s ([resultados](../../crates/kerno-storage/fuzz/README.md)) | hecho, a falta del cierre E9A-06 |
-| Pruebas de estrés | E9A-05, además de las pruebas que ya existen (§2.2) | pendiente |
+| Fuzzing de entradas externas | E9A-03 en el árbol; E9A-04 con cobertura, aprobado el 2026-11-11. Umbral de 30 minutos por objetivo cumplido el 2026-11-12: 15 objetivos, cero fallos, ninguna entrada de más de 1 s ([resultados](../../crates/kerno-storage/fuzz/README.md)) | **hecho** (cierre en E9A-06) |
+| Pruebas de estrés | E9A-05, además de las pruebas que ya existen (§2.2) | **hecho** (E9A-05; `tests/lifecycle_soak.rs` pasa en la suite de 2026-11-12, cierre en E9A-06) |
 | ADR-0009 antes de la Etapa 8 | E9A-00b | **hecho el 2026-11-12**: ADR-0009 aceptado con la opción 3 |
 
 ## 5. Umbrales fijados antes de medir
@@ -134,7 +134,7 @@ Estos umbrales los fija esta acta, por la delegación del 2026-11-11, y el propi
 
 | ID | Qué hace el adelanto | Estado tras el paquete |
 |---|---|---|
-| I-29 | E9A-02 la verifica para `kerno-storage` | Promovida solo si E9A-02 pasa; pendiente de aprobación |
+| I-29 | E9A-02 la verifica para `kerno-storage` | **Promovida para `kerno-storage` en E9A-06 (2026-11-12), aprobada por delegación del propietario, revocable**; sigue en Fase 4 para logs y auditoría |
 | I-08 | E9A-03 la refuerza con entradas fabricadas al azar | Ya verificada; sin cambio de estado |
 | I-02, I-09 | E9A-05 las refuerza con ciclos de cierre, reapertura y estrés | Ya verificadas; sin cambio de estado |
 | I-27, I-28, I-30 | Fuera de esta acta | Pendientes (Fase 4) |
@@ -171,3 +171,4 @@ Las decisiones de §2.3 y §7 quedan en sus dueños. Esta acta no cambia ningún
 | 2026-11-11 | **Aprobada por delegación del propietario, revocable** | El propietario delegó la decisión pendiente 1 del roadmap y pidió el trabajo de endurecimiento en `kerno-storage` que no dependa de las Etapas 7 ni 8, en paralelo con la Etapa 7. Lo que se decide aquí: lo que afecta a datos derivados (ADR-0009 en su parte de criterios, I-29) se adelanta; el fuzzing, el estrés y las propiedades de apertura son los endurecimientos de `kerno-storage` que corren ahora. El resto queda en la Etapa 9. ADR-0009 no se acepta por esta delegación (§7, punto 1) |
 | 2026-11-11 | **Decisiones del propietario:** fuzzing con cobertura aprobado en los términos de §7, punto 2 (E9A-04 después de E9A-03); estado de ADR-0013 resuelto (§7, punto 3) | ADR-0009 sigue sin decidir (§7, punto 1) |
 | 2026-11-12 | **E9A-00b hecho: ADR-0009 aceptado con la opción 3** | Decisión 1 de §7 resuelta. Términos y relación con los criterios en [ADR-0009](../adr/0009-supresion-retencion-y-backups.md). T-09 sigue abierto ([threat model §6.5](../security/threat-model.md)) |
+| 2026-11-12 | **E9A-06 hecho: cierre del adelanto** | Revisión adversarial de E9A-01 a E9A-05 en [cierre](etapa9-adelanto-cierre.md). Ningún hallazgo bloqueante abierto. I-29 promovida para `kerno-storage` por delegación del propietario, revocable. Actualizados invariantes, threat model (T-06, T-08, T-09), DESIGN.md (estado de ADR-0009) y roadmap |
