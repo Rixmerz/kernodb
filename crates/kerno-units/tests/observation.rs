@@ -118,8 +118,8 @@ fn observing_does_not_change_the_data<E: Target>() {
 
     assert_eq!(commits_off, commits_obs, "commit sequences");
     assert_eq!(reads_off, reads_obs, "answers");
-    assert_eq!(dump(&off.engine().snapshot().unwrap()), dump(&observed.engine().snapshot().unwrap()), "engine bytes");
-    assert_eq!(off.engine().snapshot().unwrap().seq(), observed.engine().snapshot().unwrap().seq());
+    assert_eq!(dump(&off.raw_snapshot().unwrap()), dump(&observed.raw_snapshot().unwrap()), "engine bytes");
+    assert_eq!(off.raw_snapshot().unwrap().seq(), observed.raw_snapshot().unwrap().seq());
 
     // The observed run did record, and the unobserved one did not.
     assert_eq!(off.observer().stats(), ObservationStats::default());

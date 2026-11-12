@@ -25,7 +25,7 @@ use std::ops::Bound;
 use std::path::Path;
 use std::sync::Arc;
 
-use harness::assoc::{CORPUS, Patch, QUERIES, corpus_query, load_corpus, put_all, undo_of};
+use harness::assoc::{CORPUS, Patch, QUERIES, corpus_query, load_corpus};
 use kerno_core::contract::{Engine, Options, Snapshot, TxnEngine};
 use kerno_storage::KernoDb;
 use kerno_testkit::assoc_eval;
@@ -37,6 +37,16 @@ use kerno_units::codec::{Adjacency, Key, RelationRecord, TAG_REL_OUT};
 use kerno_units::*;
 
 type EmuLog = Emulated<LogEngine>;
+
+fn put_all<E: TxnEngine>(db: &UnitDb<E>, puts: Patch) {
+    db.raw_commit(puts).expect("raw commit");
+}
+
+/// What the store holds now under each of `keys`, as a patch that puts it
+/// back (a deletion for a key that is absent).
+fn undo_of<E: TxnEngine>(db: &UnitDb<E>, keys: &[Vec<u8>]) -> Patch {
+    keys.iter().map(|k| (k.clone(), db.raw_get(k).expect("get"))).collect()
+}
 
 const T0: Timestamp = Timestamp(1_700_000_000_000_000);
 
@@ -523,7 +533,7 @@ fn damages<E: TxnEngine>() -> Vec<Damage<E>> {
         Damage {
             name: "absent index: no outgoing entry at all",
             patch: |fx| {
-                let snap = fx.db.engine().snapshot().unwrap();
+                let snap = fx.db.raw_snapshot().unwrap();
                 let (start, end) = Key::tag_range(TAG_REL_OUT);
                 let all = snap.scan(Bound::Included(&start), Bound::Excluded(&end), 10_000).unwrap();
                 all.into_iter().map(|(k, _)| (k, None)).collect()
@@ -546,9 +556,9 @@ fn false_answer_is_caught<E: TxnEngine>(d: &Damage<E>, filler: usize) {
     let key = FingerprintKey::from_bytes([0x42; 32]);
 
     let patch = (d.patch)(&fx);
-    let undo = undo_of(fx.db.engine(), &patch.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>());
+    let undo = undo_of(&fx.db, &patch.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>());
     let baseline = fx.db.snapshot().unwrap().reference_assoc_query(&q).unwrap();
-    put_all(fx.db.engine(), patch);
+    put_all(&fx.db, patch);
 
     let snap = fx.db.snapshot().unwrap();
     // The reference path never reads the index: the damage cannot reach it.
@@ -610,7 +620,7 @@ fn false_answer_is_caught<E: TxnEngine>(d: &Damage<E>, filler: usize) {
 
     // Back to the original bytes: the index path answers, with no fallback.
     drop(snap);
-    put_all(fx.db.engine(), undo);
+    put_all(&fx.db, undo);
     let healed = fx.db.snapshot().unwrap();
     let again = healed.assoc_query(&q).unwrap();
     assert_eq!((again.path, again.fallback), (PlanPath::AssocAdjacency, None), "{ctx}: healed");
@@ -658,8 +668,8 @@ fn a_failure_that_is_not_damage_is_not_hidden<E: TxnEngine>() {
     assert!(matches!(snap.assoc_query(&zero), Err(AssocError::Query(AssocQueryError::DepthOutOfRange { .. }))));
     // Damage to a unit head the traversal opens fails the reference path too: the error is returned.
     let head = Key::UnitHead { unit: fx.u[1] }.encode().unwrap();
-    let good = fx.db.engine().snapshot().unwrap().get(&head).unwrap().unwrap();
-    put_all(fx.db.engine(), vec![(head, Some(good[..good.len() - 1].to_vec()))]);
+    let good = fx.db.raw_snapshot().unwrap().get(&head).unwrap().unwrap();
+    put_all(&fx.db, vec![(head, Some(good[..good.len() - 1].to_vec()))]);
     let snap = fx.db.snapshot().unwrap();
     let err = snap.assoc_query(&q).unwrap_err();
     assert!(matches!(err, AssocError::Unit(UnitError::Storage(kerno_core::Error::Corruption(_)))), "{err:?}");

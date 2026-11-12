@@ -447,9 +447,9 @@ impl<E: Engine> UnitSnapshot<E> {
     /// Steps 1 to 7 for units without learned state: what `query` was before
     /// the result cache existed.
     fn plan_units(&self, filter: &UnitFilter) -> Result<QueryOutcome, UnitError> {
-        self.decide_units(filter).and_then(|(status, decision)| {
-            self.execute_units(filter, status, decision.chosen().path, |via, f| self.scan_path(via, f))
-        })
+        let (status, entries) = self.index_stats()?;
+        let (status, decision) = self.decide_units_with(filter, status, entries)?;
+        self.execute_units(filter, status, decision.chosen().path, |via, f| self.scan_path(via, f, entries))
     }
 
     /// `query` with the result cache as the first thing considered (E6-02).
@@ -526,7 +526,7 @@ impl<E: Engine> UnitSnapshot<E> {
             },
             None => {
                 let (status, decision) = self.decide_units_with(filter, status, entries)?;
-                self.execute_units(filter, status, decision.chosen().path, |via, f| self.scan_path(via, f))?
+                self.execute_units(filter, status, decision.chosen().path, |via, f| self.scan_path(via, f, entries))?
             }
         };
         if self.cache.worth_storing(&fingerprint, &query, &now) {
@@ -771,6 +771,20 @@ impl<E: Engine> UnitSnapshot<E> {
         Ok(())
     }
 
+    /// Whether every relation of an adjacency answer has its mirror entry,
+    /// one lookup per relation (K1). A relation that lost the entry on the
+    /// other end is damage the answer still shows from this end. The end
+    /// that lost its own entry has nothing to traverse and stays invisible
+    /// here; `verify_units` sees it.
+    fn all_mirrored(&self, query: &RelationQuery, relations: &[Relation]) -> Result<bool, UnitError> {
+        for r in relations {
+            if !self.is_mirrored(query.direction, r)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     /// Whether the entry of `r` on the other end from `dir` exists and names
     /// this end.
     fn is_mirrored(&self, dir: Direction, r: &Relation) -> Result<bool, UnitError> {
@@ -798,7 +812,19 @@ impl<E: Engine> UnitSnapshot<E> {
         if chosen == PlanPath::Adjacency {
             match adjacency(query) {
                 Ok(relations) => match check_relations(query, &relations) {
-                    Ok(()) => return Ok(RelationsOutcome { relations, path: chosen, fallback: None }),
+                    Ok(()) => match self.all_mirrored(query, &relations) {
+                        Ok(true) => return Ok(RelationsOutcome { relations, path: chosen, fallback: None }),
+                        Ok(false) => {
+                            fallback = Some(Fallback {
+                                abandoned: chosen,
+                                cause: FallbackCause::Invalid(Violation::Unmirrored),
+                            });
+                        }
+                        Err(e) if is_corruption(&e) => {
+                            fallback = Some(Fallback { abandoned: chosen, cause: FallbackCause::Corrupt });
+                        }
+                        Err(e) => return Err(e),
+                    },
                     Err(v) => fallback = Some(Fallback { abandoned: chosen, cause: FallbackCause::Invalid(v) }),
                 },
                 Err(e) if is_corruption(&e) => {

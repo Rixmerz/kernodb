@@ -412,7 +412,7 @@ impl<E: TxnEngine> UnitDb<E> {
         // The policy epoch before the snapshot: a policy committed after it
         // is caught by the check under the write slot.
         let epoch = self.policy_epoch.load(std::sync::atomic::Ordering::SeqCst);
-        let snap = self.engine().snapshot()?;
+        let snap = self.raw_snapshot()?;
         let mut mark = vec![TAG_LAYER_META];
         mark.extend_from_slice(LAYER_MARK_NAME.as_bytes());
         if kerno_core::contract::Snapshot::get(&snap, &mark)?.is_none() {
@@ -668,9 +668,13 @@ impl<E: TxnEngine + TestHooks> UnitDb<E> {
     /// (I-05).
     pub fn compact(&self) -> Result<CompactReport, UnitError> {
         self.check_poisoned()?;
-        let before = stored_bytes(&self.engine().stats());
-        self.engine().compact_range(Bound::Included(&[TAG_REV_META]), Bound::Excluded(&[TAG_REV_PAYLOAD + 1]))?;
-        let after = stored_bytes(&self.engine().stats());
+        let before = stored_bytes(&self.storage_stats());
+        TestHooks::compact_range(
+            &self.engine,
+            Bound::Included(&[TAG_REV_META]),
+            Bound::Excluded(&[TAG_REV_PAYLOAD + 1]),
+        )?;
+        let after = stored_bytes(&self.storage_stats());
         Ok(CompactReport { stored_bytes_before: before, stored_bytes_after: after })
     }
 }

@@ -33,9 +33,9 @@
 //! thresholds are those of the Stage 6 acta (§6) and are not parameters.
 //!
 //! ```text
-//! cargo run --release -p kerno-units --example index_bench            # full
-//! cargo run --release -p kerno-units --example index_bench -- --quick # smoke
-//! cargo run --release -p kerno-units --example index_bench -- --cache # E6-04
+//! cargo run --release -p kerno-units --features test-support --example index_bench            # full
+//! cargo run --release -p kerno-units --features test-support --example index_bench -- --quick # smoke
+//! cargo run --release -p kerno-units --features test-support --example index_bench -- --cache # E6-04
 //! ```
 //!
 //! Options: `--quick`, `--cache`, `--dir <path>`, `--seed <u64>`.
@@ -44,7 +44,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use kerno_core::contract::{Options, TestHooks};
+use kerno_core::contract::Options;
 use kerno_core::vfs::StdVfs;
 use kerno_storage::KernoDb;
 use kerno_testkit::rng::Rng;
@@ -118,8 +118,8 @@ fn load(db: &Units, n: usize, seed: u64) -> Res<Vec<Entry>> {
         }
         cs.commit()?;
     }
-    TestHooks::flush(db.engine())?;
-    TestHooks::wait_idle(db.engine())?;
+    db.hook_flush()?;
+    db.hook_wait_idle()?;
     Ok(active)
 }
 

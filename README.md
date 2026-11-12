@@ -1,63 +1,96 @@
 # Kerno
 
-**Versioned Embedded Data Engine** — motor de datos embebido y local-first que combina persistencia transaccional, evolución versionada de los datos e integridad verificable, con una ruta de extensión hacia la recuperación híbrida para aplicaciones de IA.
+**Versioned Embedded Data Engine** — an embedded, local-first data engine that combines transactional persistence, versioned evolution of data and verifiable integrity, with an extension path toward hybrid retrieval for AI applications.
 
-> Un dato se almacena una vez, sus representaciones derivadas se mantienen coherentes, su evolución puede reconstruirse y sus políticas de acceso y conservación son explícitas.
+> Each piece of data is stored once, its derived representations stay consistent, its evolution can be reconstructed, and its access and retention policies are explicit.
 
-## Estado
+## Status
 
-**Fase 0 / M0 cerrada** (ADR-0001/0002/0003 aceptados el 2026-10-28); **Fase 1 (núcleo persistente) en curso.** Todavía no existe el motor de Kerno ni una API utilizable: este repositorio contiene la arquitectura de referencia, los ADR y un *spike* que compara dos arquitecturas de almacenamiento (copy-on-write B+ tree y LSM tree) con las mismas pruebas de fallos y los mismos benchmarks.
+Kerno is under development. **There is no 1.0 release, and no stability promise yet for the file format or the API.** The on-disk format v1 is frozen in the repository ([ADR-0013](docs/adr/0013-formato-v1-y-protocolo-del-motor.md)), and the test vectors fail if one of its bytes changes, but that freeze is not a compatibility promise to users. Whether and when to declare 1.0 is reserved to the project owner.
 
-**Decisión de M0 ([ADR-0001](docs/adr/0001-motor-de-almacenamiento.md), aceptada): LSM nivelado.** Ambos candidatos superan la misma batería de pruebas de caídas, fallos de E/S y corrupción. En los casos de referencia de Kerno el LSM rinde en escritura desde lo mismo (memoria de agentes) hasta 8× más (escribir historial), con 2,8× en commits durables tipo Cauce y 1,6× en LiveSpec (parte de esa distancia es de madurez del prototipo B+ tree: entre motores maduros, fjall frente a redb, va de un empate en LiveSpec a 1,7× en Cauce y 5,4× en historial); escribe ~100× menos bytes por commit pequeño, tiene mejores colas en esos commits y mantiene un prefijo consistente sin `fsync` por commit. El B+ tree conserva mejores colas cuando la compactación del LSM compite con escrituras sostenidas, lecturas de historial más rápidas y apertura y cierre inmediatos. Detalle en el [informe de M0](docs/testing/m0-report.md).
+Stages follow the [roadmap](docs/roadmap/README.md):
 
-No crees bases de datos reales con el código de `spikes/`: los formatos de los prototipos no están congelados y se descartarán o reescribirán en la Fase 1.
+- **Phase 0 / M0 — closed** (2026-10-28). The storage decision and ADR-0002 and ADR-0003 were accepted. See the [storage decision](#storage-decision-of-m0) below.
+- **Stage 3, units, revisions and provenance — closed** (2026-11-04), with two performance risks accepted by the owner as open (K-E3-8 and K-E3-9).
+- **Stage 4, relations and indexes — closed** (2026-11-05).
+- **Stage 5, planner and observability — closed** (2026-11-06).
+- **Stage 6, first operational adaptation — closed** (2026-11-11). Its one optimization, a result cache, is disabled by default, and no net performance improvement is claimed.
+- **Stage 7, associative memory — closed** (2026-11-12). The ranking of associative results is off by default and marked experimental.
+- **Stage 8, consolidation and embeddings — closed as engineering work** (2026-11-12). Criterion Q4, retrieval quality with and without the vector signal, is **not demonstrated** and is recorded as not met; it could be checked on only one of the four query classes. A second frozen evaluation set (E8-10) is required before 1.0.
+- **Stage 9, hardening — in progress.** Its entry acta is approved by delegation of the owner, which the owner can revoke, and the entry gate (E9-00) is done. The advance of Stage 9 work brought forward beside Stage 7 (E9A) closed on 2026-11-12. Some decisions are reserved for the owner in person: public identifiers, encryption and key management, format freezing, the 1.0 declaration and the license text for contributors. Work on identifiers, encryption, format freezing and the license text waits for that decision.
 
-## Documentación
+### Storage decision of M0
 
-| Documento | Contenido |
+**[ADR-0001](docs/adr/0001-motor-de-almacenamiento.md) (accepted 2026-10-28): leveled LSM tree.** Two prototypes, a copy-on-write B+ tree and a leveled LSM tree, passed the same crash, I/O-failure and corruption tests and were compared with the same benchmarks. The LSM tree was chosen. The [M0 report](docs/testing/m0-report.md) has the results.
+
+## Documentation
+
+| Document | Content |
 |---|---|
-| [SAD v0.1.0](docs/architecture/SAD.md) | Arquitectura de referencia y plan de implementación (baseline) |
-| [ADR](docs/adr/README.md) | Decisiones de arquitectura y su estado |
-| [ADR-0001](docs/adr/0001-motor-de-almacenamiento.md) | Motor de almacenamiento: decisión (LSM nivelado) y evidencia de M0 |
-| [Invariantes y riesgos](docs/architecture/invariants.md) | Lo que ninguna funcionalidad puede romper, y cómo se prueba |
-| [Matriz de fallos](docs/architecture/failure-matrix.md) | Qué ocurre si el proceso o la energía caen en cada punto del commit |
-| [Informe de M0](docs/testing/m0-report.md) | Resultados de pruebas y benchmarks |
-| [Plan de pruebas](docs/testing/test-plan.md) | Cómo se verifican las garantías |
-| [Roadmap](docs/roadmap/README.md) | Estado por fase y checklist de M0 |
+| [SAD](docs/architecture/SAD.md) | Reference architecture and implementation plan (version 0.3.0) |
+| [ADR index](docs/adr/README.md) | Architecture decisions and their status |
+| [ADR-0001](docs/adr/0001-motor-de-almacenamiento.md) | Storage engine: decision (leveled LSM tree) and M0 evidence |
+| [Invariants](docs/architecture/invariants.md) | What no feature may break, and how it is tested |
+| [Failure matrix](docs/architecture/failure-matrix.md) | What happens if the process or the power fails at each point of a commit |
+| [M0 report](docs/testing/m0-report.md) | Test and benchmark results of M0 |
+| [Test plan](docs/testing/test-plan.md) | How the guarantees are verified |
+| [File format v1](docs/file-format/v1.md) | On-disk format v1, frozen under ADR-0013 |
+| [Threat model](docs/security/threat-model.md) | Assets, adversaries, scope and the limits stated so far |
+| [Roadmap](docs/roadmap/README.md) | State by phase and stage |
 
-## Estructura
+The linked documents are written in Spanish and remain so; this README is in English.
+
+## Structure
 
 ```text
-docs/                    arquitectura, ADR, formato, seguridad, pruebas, roadmap
-crates/                  crates del producto (Fase 1)
-  kerno-core/            contrato común, errores, lotes de escritura y abstracción Vfs
-  kerno-testkit/         VFS con simulación de fallos, suites de pruebas compartidas y LogEngine
-spikes/storage/          spike de M0 (no es el motor de Kerno)
-  spike-core/            shim: re-exporta kerno-core y kerno-testkit con las rutas de M0
-  spike-btree/           prototipo copy-on-write B+ tree
-  spike-lsm/             prototipo LSM tree
-  spike-bench/           benchmarks M0 (+ redb, fjall y SQLite como referencia)
-  run-benchmarks.sh      reproduce los benchmarks con un único comando
+crates/kerno-core/      contract shared by the crates: errors, write batches, durability modes and the Vfs file abstraction
+crates/kerno-storage/   storage engine: leveled LSM tree on format v1, WAL, MANIFEST, transactions; all file access goes through Vfs
+crates/kerno-testkit/   test kit: Vfs with crash and failure simulation, shared test suites and a reference engine
+crates/kerno-units/     units layer over the engine: units, revisions, relations, indexes, planner and derived data
+examples/               agent-memory: an example that uses only the public API; it is outside the workspace
+spikes/                 M0 prototypes and benchmarks; not the engine, and their formats are not frozen, so do not create databases with them
+docs/                   architecture, ADRs, file format, security, testing and roadmap
 ```
 
-La estructura de crates del producto (SAD §14) se creará en la Fase 1, cuando los contratos estén estables.
+## Development
 
-## Desarrollo
+Requirements: Rust 1.89 or later (the workspace `rust-version`; tested with Rust 1.97) and Linux. The benchmark crates compile SQLite and need a C compiler.
 
-Requisitos: Rust ≥ 1.89 (probado con 1.97), Linux. Los benchmarks de referencia compilan SQLite (necesitan un compilador de C).
+The commands below are the ones the CI runs (`.github/workflows/ci.yml`). The CI also writes the test output to a log and copies its "Outcomes" lines into the job summary; these commands omit that.
 
 ```bash
-cargo test --workspace --all-features --release       # todas las suites y la prueba diferencial (lo que ejecuta la CI)
-spikes/storage/run-benchmarks.sh                       # benchmarks de M0 (ver ADR-0012)
+# checks job: formatting and lints
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+# checks job: dependency and file-access guards (each must exit with code 0)
+test "$(cargo tree -p kerno-core -e normal --prefix none | wc -l)" -eq 1
+tree=$(cargo tree -p kerno-storage -e normal --prefix none) && grep -q '^kerno-storage ' <<<"$tree" && ! grep -E '^(spike-|kerno-testkit|proptest|loom)' <<<"$tree"
+if grep -rn 'std::fs' crates/kerno-storage/src; then false; else test $? -eq 1; fi
+
+# test-spikes job: all workspace crates except kerno-storage
+cargo test --workspace --exclude kerno-storage --all-features --release -- --nocapture
+
+# test-kerno job: the kerno-storage suites in all profiles
+cargo test -p kerno-storage --all-features --release -- --nocapture
+
+# bench-smoke job: tiny-scale benchmark run from the repository root
+cargo build --release -p spike-bench --features candidates,kerno
+target/release/spike-bench suite --engines btree,lsm,kerno,redb,fjall,sqlite --workloads all --scales tiny --reps 1 --dir bench-data --out smoke.jsonl
+target/release/spike-bench report --input smoke.jsonl
+! grep -q '"error"' smoke.jsonl
+cargo run --release -p kerno-units --features test-support --example unit_bench -- --quick
 ```
 
-Convenciones de contribución en [CONTRIBUTING.md](CONTRIBUTING.md).
+The weekly scheduled run sets `SPIKE_SEEDS=1000` and `KERNO_KILL_ITERS=200` for the randomized and `kill -9` tests. Two further jobs run only weekly or on demand: `loom` (the commit-queue models, built with `RUSTFLAGS=--cfg kerno_loom`) and the LazyFS scenario, which needs FUSE (`.github/workflows/lazyfs.yml`). The M0 benchmarks are described in [spikes/storage/README.md](spikes/storage/README.md).
 
-## Licencia
+Contribution conventions are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
-Kerno se distribuye bajo cualquiera de estas dos licencias, a tu elección:
+## License
+
+Kerno is distributed under either of these two licenses, at your option:
 
 - Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT ([LICENSE-MIT](LICENSE-MIT))
+- MIT License ([LICENSE-MIT](LICENSE-MIT))
 
-Salvo que indiques expresamente lo contrario, toda contribución que envíes para su inclusión en Kerno, tal como se define en la licencia Apache-2.0, se licencia con esas mismas dos licencias, sin términos ni condiciones adicionales.
+Unless you explicitly state otherwise, any contribution you intentionally submit for inclusion in Kerno, as defined in the Apache-2.0 license, is licensed under these two licenses, without any additional terms or conditions.

@@ -33,8 +33,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use harness::units::{Target, open_units};
-use kerno_core::WriteBatch;
-use kerno_core::contract::{Engine, Options, Snapshot};
+use kerno_core::contract::Options;
 use kerno_testkit::emulated::Emulated;
 use kerno_testkit::reference::LogEngine;
 use kerno_testkit::vfs::SimVfs;
@@ -160,12 +159,10 @@ fn assert_shape_only(reported: impl IntoIterator<Item = Fingerprint>, shapes: &[
 }
 
 /// Truncates the head of `unit` in the engine, so reading it is corruption.
-fn damage_head<E: Engine>(engine: &E, unit: UnitId) {
+fn damage_head<E: Target>(db: &UnitDb<E>, unit: UnitId) {
     let head = Key::UnitHead { unit }.encode().unwrap();
-    let good = engine.snapshot().unwrap().get(&head).unwrap().unwrap();
-    let mut batch = WriteBatch::new();
-    batch.put(head, good[..good.len() - 1].to_vec());
-    engine.commit(&batch).expect("raw commit");
+    let good = db.raw_get(&head).unwrap().unwrap();
+    db.raw_commit(vec![(head, Some(good[..good.len() - 1].to_vec()))]).expect("raw commit");
 }
 
 fn evidence() -> Evidence {
@@ -387,7 +384,7 @@ fn no_literal_in_anything_the_cache_path_reports<E: Target>() {
     // Damage the head of the second unit: the reference path now fails, and
     // with the cache still holding entries from before, the errors come from
     // a read that the cache could not serve.
-    damage_head(db.engine(), ids[1]);
+    damage_head(&db, ids[1]);
     outputs.extend(pass(&db, ids, true));
 
     assert!(

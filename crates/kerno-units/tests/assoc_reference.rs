@@ -22,7 +22,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use kerno_core::WriteBatch;
 use kerno_core::contract::{Engine, Options, TxnEngine};
 use kerno_storage::KernoDb;
 use kerno_testkit::assoc_eval::{self, Direction as EvalDirection, Kind as EvalKind, Provenance as StoryProvenance};
@@ -146,15 +145,8 @@ fn rejected<E: Engine>(snap: &UnitSnapshot<E>, q: &AssocQuery) -> AssocQueryErro
 
 type Patch = Vec<(Vec<u8>, Option<Vec<u8>>)>;
 
-fn put_all<E: Engine>(db: &E, puts: Patch) {
-    let mut b = WriteBatch::new();
-    for (k, v) in puts {
-        match v {
-            Some(v) => b.put(k, v),
-            None => b.delete(k),
-        };
-    }
-    db.commit(&b).unwrap();
+fn put_all<E: TxnEngine>(db: &UnitDb<E>, puts: Patch) {
+    db.raw_commit(puts).unwrap();
 }
 
 // -------------------------------------------------------------- validation
@@ -888,7 +880,7 @@ fn ends_that_are_not_active_are_absent<E: TxnEngine>() {
     for (edge, from, to) in [(0xA1, x, z), (0xA2, x, d), (0xA3, x, missing), (0xA4, z, w), (0xA5, d, w)] {
         patch.extend(forge(edge, from, to));
     }
-    put_all(db.engine(), patch);
+    put_all(&db, patch);
     let snap = db.snapshot().unwrap();
 
     // The forged relations exist for the reference relation read.
@@ -936,7 +928,7 @@ fn the_reference_path_never_reads_the_adjacency_index<E: TxnEngine>() {
         ));
         patch.push((Key::RelationIn { unit: rel.to, relation_type: t, edge: rel.id }.encode().unwrap(), None));
     }
-    put_all(g.db.engine(), patch);
+    put_all(&g.db, patch);
     let damaged = g.db.snapshot().unwrap();
     assert!(damaged.relations_of(g.u[0], Direction::Out, None).unwrap().is_empty(), "the index is gone");
     assert_eq!(damaged.reference_relations_of(g.u[0], Direction::Out, None).unwrap().len(), 3);
