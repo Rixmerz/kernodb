@@ -108,5 +108,5 @@ jobs:
         shell: bash
       # Stage 3 U metrics (E3-09), quick mode: a few seconds, reports only;
       # a threshold miss prints FAIL but does not fail the job.
-      - run: cargo run --release -p kerno-units --example unit_bench -- --quick | tee -a "$GITHUB_STEP_SUMMARY"
+      - run: cargo run --release -p kerno-units --features test-support --example unit_bench -- --quick | tee -a "$GITHUB_STEP_SUMMARY"
         shell: bash

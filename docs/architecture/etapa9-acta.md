@@ -4,7 +4,7 @@
 |---|---|
 | Fecha | 2026-11-12 |
 | Estado | **Aprobada por delegación del propietario el 2026-11-12, revocable por él** (§8.1). Las decisiones retenidas para el propietario en persona (D1 a D4, D12, D15 y D16) no se toman por delegación y bloquean los paquetes que indica §8.1 |
-| Acto | Alcance, estado de partida comprobado en código, paquetes E9-00 a E9-CL, umbrales, invariantes, riesgos y decisiones D1 a D22 |
+| Acto | Alcance, estado de partida comprobado en código, paquetes E9-00 a E9-CL, umbrales, invariantes, riesgos y decisiones D1 a D23 |
 | Documentos | [Roadmap](../roadmap/README.md) · [acta de la Etapa 8](etapa8-acta.md) · [cierre de la Etapa 8](etapa8-cierre.md) · [acta del adelanto de la Etapa 9](etapa9-adelanto-acta.md) · [cierre del adelanto](etapa9-adelanto-cierre.md) · [SAD](SAD.md) (§11, §12, §13, §16, Fases 4 y 6) · [invariantes](invariants.md) · [threat model](../security/threat-model.md) · [ADR-0005](../adr/0005-identificadores-publicos.md) · [ADR-0006](../adr/0006-cifrado-y-gestion-de-claves.md) · [ADR-0009](../adr/0009-supresion-retencion-y-backups.md) · [ADR-0010](../adr/0010-api-publica-y-crates.md) · [ADR-0012](../adr/0012-metodologia-de-benchmarks.md) · [ADR-0019](../adr/0019-licencia-y-contribuciones.md) · [ADR-0020](../adr/0020-persistencia-de-vectores-como-derivados.md) · [informe SQLite](../testing/sqlite-report.md) · [lista de fricción](../../examples/agent-memory/FRICTION.md) |
 
 Esta acta describe el repositorio tal como está el 2026-11-12. Cada afirmación sobre el código se comprobó leyéndolo; las citas de cifras de pruebas (856 en `kerno-units` y `kerno-testkit`, 672 en `kerno-storage`) vienen de cierres anteriores y **no se han reejecutado** aquí. Además de leer el código, lo único ejecutado para esta acta es `cargo fmt --all --check` (salida vacía, `exit=0`). Esta acta no cambia código ni pruebas.
@@ -338,6 +338,7 @@ El propietario delegó el 2026-11-12 las decisiones pendientes del roadmap y de 
 | **D20** | Tomada | (i) aceptar H-3 con su prueba; (ii) exigir evidencia de F-10 (E9-15); (iii) revisar K-E3-7 (E9-16) | Sí | — |
 | **D21** | Tomada | (b): pruebas de propiedades con la biblioteca ya presente; sin herramienta nueva | Sí | Una herramienta de fuzzing nueva en `kerno-units` |
 | **D22** | Tomada | (a): umbrales de §5 sin cambios antes de congelar | Sí | — |
+| **D23** | Tomada el 2026-11-12 por delegación (E9-08f) | El accesor de escritura crudo de `UnitDb` (`raw_commit`) y sus ganchos de prueba (`hook_flush`, `hook_wait_idle`, `hook_compact_range`) existen solo bajo la característica `test-support` de `kerno-units`, apagada por defecto. Los accesores de lectura (`raw_snapshot`, `raw_get`, `raw_seq`, `storage_stats`) se mantienen sin ella. Detalle en [usos de `engine()`](etapa9-usos-de-engine.md) | Sí | — |
 
 **Lo que sigue bloqueado para el propietario en persona:** D1, D2, D3, D4, D12, D15 y D16. Ninguno de los paquetes E9-00, E9-01, E9-03 a E9-14, E9-15 a E9-21 ni E9-CL depende de ellos, salvo E9-02, que está retenido, y E9-CL, que declara como «sin verificar» lo que dependa de las decisiones retenidas.
 

@@ -79,7 +79,7 @@ cargo build --release -p spike-bench --features candidates,kerno
 target/release/spike-bench suite --engines btree,lsm,kerno,redb,fjall,sqlite --workloads all --scales tiny --reps 1 --dir bench-data --out smoke.jsonl
 target/release/spike-bench report --input smoke.jsonl
 ! grep -q '"error"' smoke.jsonl
-cargo run --release -p kerno-units --example unit_bench -- --quick
+cargo run --release -p kerno-units --features test-support --example unit_bench -- --quick
 ```
 
 The weekly scheduled run sets `SPIKE_SEEDS=1000` and `KERNO_KILL_ITERS=200` for the randomized and `kill -9` tests. Two further jobs run only weekly or on demand: `loom` (the commit-queue models, built with `RUSTFLAGS=--cfg kerno_loom`) and the LazyFS scenario, which needs FUSE (`.github/workflows/lazyfs.yml`). The M0 benchmarks are described in [spikes/storage/README.md](spikes/storage/README.md).
