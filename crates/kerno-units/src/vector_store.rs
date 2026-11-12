@@ -931,6 +931,20 @@ impl fmt::Debug for VectorSpec {
 }
 
 impl VectorSpec {
+    /// The recipe may declare the dimension as the `dim` parameter; it must be
+    /// the length of the vector it produced (FRICTION 10).
+    fn check_dim(&self) -> Result<(), UnitError> {
+        if let Some(declared) = self.params.get("dim")
+            && declared.parse::<usize>().ok() != Some(self.vector.len())
+        {
+            return Err(UnitError::InvalidArgument(format!(
+                "recipe parameter dim is {declared:?} but the vector has {} elements",
+                self.vector.len()
+            )));
+        }
+        Ok(())
+    }
+
     /// The descriptor and the encoded vector this spec persists.
     fn build(&self) -> Result<(VectorDescriptor, Vec<u8>), UnitError> {
         let value = encode_vector(&self.vector)?;
@@ -1049,7 +1063,10 @@ impl<E: TxnEngine> DerivedChangeSet<'_, E> {
     /// this change set (and the layer mark at version 2 if this is the first).
     /// Refused with `InvalidArgument`, writing nothing, if `spec.source` is not
     /// the head of its unit in this change set (T22).
+    /// Refused with `InvalidArgument` if `spec.params["dim"]` is not the length
+    /// of `spec.vector`.
     pub fn put_vector(&mut self, spec: &VectorSpec) -> Result<DerivedId, DerivedStaleError> {
+        spec.check_dim()?;
         let (id, desc, vector) = self.cs.write_vector(spec)?;
         self.pending.push(Pending::Put { desc: desc.to_descriptor(), vector });
         Ok(id)
@@ -1080,7 +1097,8 @@ impl<E: TxnEngine> DerivedChangeSet<'_, E> {
     /// describes: the old records are deleted and the new ones written in this
     /// change set. The persisted descriptor may still say `Ready` (opening
     /// demotes a datum in memory without writing); a `Superseded` one is final.
-    pub(crate) fn replace_vector(&mut self, old: DerivedId, spec: &VectorSpec) -> Result<DerivedId, DerivedStaleError> {
+    /// Nothing of `old` survives and the id of the new datum is returned.
+    pub fn replace_vector(&mut self, old: DerivedId, spec: &VectorSpec) -> Result<DerivedId, DerivedStaleError> {
         let prev = self.cs.read_desc(old)?;
         if prev.state == VectorState::Superseded {
             return Err(DerivedError::IllegalTransition {
