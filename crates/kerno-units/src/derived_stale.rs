@@ -10,9 +10,8 @@
 //!   registry's inverse index. The registry lock is taken before the commit
 //!   and released after the marking, and every read of a derived state takes
 //!   the same lock, so no reader sees the database ahead of the registry. A
-//!   change set that fails to commit marks nothing. Units changed through
-//!   [`DerivedDb::db`] directly bypass this; [`DerivedDb::open`] is the way
-//!   to reconcile after such a change.
+//!   change set that fails to commit marks nothing. The database is never
+//!   handed out, so no write can bypass the marking.
 //! * **Rebuild.** [`DerivedDb::rebuild`] recomputes a `stale` or `failed`
 //!   datum from the sources that are still valid (the units that still exist,
 //!   at their current revision). The result is the datum a fresh
@@ -42,7 +41,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use kerno_core::contract::TxnEngine;
 
-use crate::db::{ChangeMeta, ChangeSet, CommitInfo, UnitDb};
+use crate::db::{ChangeMeta, ChangeSet, CommitInfo, Unit, UnitDb};
 use crate::derived::{DerivedDescriptor, DerivedError, DerivedId, DerivedRegistry, DerivedState};
 use crate::error::UnitError;
 use crate::payload::ContentHash;
@@ -109,8 +108,9 @@ impl From<UnitError> for DerivedStaleError {
     }
 }
 
-/// The hash of the input of a derived datum: each source's revision and
-/// content hash, in order.
+/// The hash of the input of a derived datum: each source's unit and revision,
+/// in order. A revision is immutable and identifies its content, so the
+/// content hash adds nothing to the identity and is not hashed.
 pub fn input_hash(inputs: &[SourceInput]) -> [u8; 32] {
     let mut h = blake3::Hasher::new();
     h.update(INPUT_DOMAIN);
@@ -118,7 +118,6 @@ pub fn input_hash(inputs: &[SourceInput]) -> [u8; 32] {
     for i in inputs {
         h.update(&i.id.unit.0);
         h.update(&i.id.rev.0.to_le_bytes());
-        h.update(&i.content_hash.digest);
     }
     *h.finalize().as_bytes()
 }
@@ -131,6 +130,16 @@ struct Inner {
 }
 
 /// A unit database and the registry of the data derived from it.
+///
+/// The database is not reachable except through reads and
+/// [`DerivedDb::begin_changeset`], so a source cannot change without its
+/// dependents being marked in the same commit:
+///
+/// ```compile_fail
+/// fn bypass<E: kerno_core::contract::TxnEngine>(d: &kerno_units::DerivedDb<E>) {
+///     let _ = d.db();
+/// }
+/// ```
 pub struct DerivedDb<E: TxnEngine> {
     db: UnitDb<E>,
     inner: Mutex<Inner>,
@@ -167,10 +176,11 @@ impl<E: TxnEngine> DerivedDb<E> {
         Ok(this)
     }
 
-    /// The underlying database, for reads. A change written through it is
-    /// not tracked; use [`DerivedDb::begin_changeset`].
-    pub fn db(&self) -> &UnitDb<E> {
-        &self.db
+    /// Reads a unit. The database itself is not handed out: every write goes
+    /// through [`DerivedDb::begin_changeset`], so the registry cannot fall
+    /// behind it.
+    pub fn get_unit(&self, id: UnitId) -> Result<Option<Unit>, UnitError> {
+        self.db.get_unit(id)
     }
 
     pub fn close(self) -> Result<(), UnitError> {

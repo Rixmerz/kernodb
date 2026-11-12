@@ -117,7 +117,7 @@ fn a_changeset_that_fails_or_is_dropped_marks_nothing<E: Target>() {
     cs.abort();
     db.begin_changeset(ChangeMeta::default()).unwrap().commit().unwrap();
     assert_eq!(db.state(&id), Some(DerivedState::Ready));
-    assert_eq!(db.db().get_unit(a).unwrap().unwrap().payload.as_deref(), Some(&b"a"[..]));
+    assert_eq!(db.get_unit(a).unwrap().unwrap().payload.as_deref(), Some(&b"a"[..]));
 }
 
 // ------------------------------------------------------------ rebuild
