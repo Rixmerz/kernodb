@@ -1661,6 +1661,12 @@ impl TestHooks for KernoDb {
     }
 }
 
+impl kerno_core::contract::Reclaim for KernoDb {
+    fn compact_range(&self, start: Bound<&[u8]>, end: Bound<&[u8]>) -> Result<()> {
+        KernoDb::compact_range(self, start, end).map(drop)
+    }
+}
+
 #[cfg(test)]
 impl KernoDb {
     /// Wakes every thread waiting on the engine's condition variable. Every

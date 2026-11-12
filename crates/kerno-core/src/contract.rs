@@ -327,6 +327,28 @@ pub trait TestHooks {
     }
 }
 
+/// Public reclamation of live files (ADR-0009 option 3, point 2).
+///
+/// After a logical deletion, `compact_range` rewrites the files that overlap
+/// the range so that the live files stop holding the deleted keys and
+/// values, except the files that an open snapshot taken before the deletion
+/// retains; those stay until the snapshot is released. This is a mechanism,
+/// not a promise of physical or secure erasure: the engine does not
+/// overwrite the blocks it frees (ADR-0009 point 3, threat model §6.5).
+///
+/// The method has a default body that returns
+/// `Err(Error::InvalidArgument("unsupported"))`, as in [`TestHooks`], so an
+/// engine that does not implement it says so instead of doing nothing.
+pub trait Reclaim {
+    /// Writes what the active write buffer holds and compacts every file
+    /// that overlaps `(start, end)` until no deeper level overlaps it.
+    /// Returns when that is done.
+    fn compact_range(&self, start: Bound<&[u8]>, end: Bound<&[u8]>) -> Result<()> {
+        let _ = (start, end);
+        Err(unsupported())
+    }
+}
+
 fn unsupported() -> crate::Error {
     crate::Error::InvalidArgument("unsupported".into())
 }
