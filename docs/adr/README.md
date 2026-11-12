@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-Cada ADR registra una decisión duradera, su contexto, las opciones evaluadas, la evidencia y sus consecuencias ([plantilla](template.md)). La numeración y las preguntas iniciales de 0001–0012 provienen de [SAD §15](../architecture/SAD.md#15-architecture-decision-records-adr); 0013 del diseño de la Fase 1; 0014–0018 de la [especificación v0.2.0](../spec/README.md); 0019 de una decisión del propietario de 2026-11-11.
+Cada ADR registra una decisión duradera, su contexto, las opciones evaluadas, la evidencia y sus consecuencias ([plantilla](template.md)). La numeración y las preguntas iniciales de 0001–0012 provienen de [SAD §15](../architecture/SAD.md#15-architecture-decision-records-adr); 0013 del diseño de la Fase 1; 0014–0018 de la [especificación v0.2.0](../spec/README.md); 0019 de una decisión del propietario de 2026-11-11; 0020 de la decisión de 2026-11-12 sobre la persistencia de vectores (acta de la Etapa 8, D2).
 
 Reglas:
 
@@ -30,5 +30,6 @@ Reglas:
 | [0017](0017-semantica-de-la-unidad-neuronal.md) | Semántica de la «unidad neuronal» | Propuesto (spec v0.2.0 §17.13; se decide al iniciar la Etapa 3) |
 | [0018](0018-versionado-y-reconstruccion-de-derivados.md) | Versionado y reconstrucción de artefactos derivados | **Aceptado** (2026-11-12, por el propietario: opción 2, registro común de derivados; [acta de la Etapa 8](../architecture/etapa8-acta.md)) |
 | [0019](0019-licencia-y-contribuciones.md) | Licencia y contribuciones | **Aceptado** (2026-11-11, por el propietario del proyecto) |
+| [0020](0020-persistencia-de-vectores-como-derivados.md) | Persistencia de vectores como derivados | **Aceptado** (2026-11-12, por delegación del propietario, revocable por él; condición de D2 cumplida: E8-03 pasó; [acta de la Etapa 8](../architecture/etapa8-acta.md) §5.4 y D2). Reemplaza la cláusula de persistencia de ADR-0011, que no se edita |
 
 Los ADR 0014–0018 provienen de la lista de la [especificación v0.2.0](../spec/especificacion-arquitectonica-v0.2.0.md) §17; la correspondencia completa está en [`docs/spec/`](../spec/README.md).

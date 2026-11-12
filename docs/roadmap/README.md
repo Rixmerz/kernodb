@@ -70,7 +70,7 @@ Después de la Fase 1 el trabajo se organiza por las etapas de la [especificaci�
 | 5 Planificador y observabilidad | 4 | Consultas por filtro y relación con ruta de referencia probada | 0015 |
 | 6 Primera plasticidad operacional | 5 | Planificador determinista con prueba diferencial en CI | 0016 |
 | 7 Memoria asociativa | 4, 5 | Recorridos de relaciones y explicación de planes disponibles | 0011 |
-| 8 Consolidación y embeddings | 7, 6 | ADR-0018 aceptado el 2026-11-12; supresión de derivados definida (ADR-0009, **cumplida el 2026-11-12**) | 0009, 0018 |
+| 8 Consolidación y embeddings | 7, 6 | ADR-0018 aceptado el 2026-11-12; supresión de derivados definida (ADR-0009, **cumplida el 2026-11-12**) | 0009, 0018, 0020 (persistencia de vectores, aceptado el 2026-11-12 por delegación del propietario) |
 | 9 Endurecimiento | todas las anteriores (las partes de seguridad pueden adelantarse) | Ver decisión pendiente sobre el orden | 0005, 0006, 0012 |
 
 ### Etapa 3 — Unidades, revisiones y procedencia
@@ -107,7 +107,7 @@ Después de la Fase 1 el trabajo se organiza por las etapas de la [especificaci�
 
 ### Etapa 8 — Consolidación y embeddings
 
-- **Entregables:** registro común de derivados (ADR-0018); adaptadores o jobs externos para embeddings y resúmenes, fuera del núcleo (I-31); obsolescencia y reconstrucción.
+- **Entregables:** registro común de derivados (ADR-0018); persistencia de vectores como derivados de la capa de unidades, con su bit de versión de capa 2 y sus criterios de aceptación (ADR-0020); adaptadores o jobs externos para embeddings y resúmenes, fuera del núcleo (I-31); obsolescencia y reconstrucción.
 - **Aceptación:** cada derivado se vincula a sus fuentes y se invalida o reconstruye al cambiarlas (I-25, I-38); suprimir una fuente afecta a sus derivados según ADR-0009; un resumen nunca reemplaza el original auditable.
 - **Estado: iniciada.** El arranque lo decidió el propietario el 2026-11-12 ([cierre de la Etapa 7, §8.1](../architecture/etapa7-cierre.md)). El propietario aprobó el [acta de la Etapa 8](../architecture/etapa8-acta.md) el 2026-11-12, con las decisiones D1 a D12 (D10 en opción b, §8.1 del acta). **E8-00 hecho** el 2026-11-12: [ADR-0018](../adr/0018-versionado-y-reconstruccion-de-derivados.md) aceptado con la opción 2, [ADR-0009](../adr/0009-supresion-retencion-y-backups.md) aceptado con la opción 3 (E9A-00b) y escrito en su archivo, y cierre de la Etapa 7 aprobado. **E8-S0 (informe SQLite, sin umbrales) sigue pendiente**, y el acta lo señala como gate (§1 y §3). La [acta de adelanto de la Etapa 9](../architecture/etapa9-adelanto-acta.md) propone además que E9A-02 esté cerrado antes de que la Etapa 8 escriba ningún derivado; esta entrada no decide esa propuesta.
 
