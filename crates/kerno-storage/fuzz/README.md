@@ -82,21 +82,40 @@ A crash is written to `fuzz/artifacts/<target>/`; commit it there.
 cargo +nightly fuzz run <target> fuzz/artifacts/<target>/<file>
 ```
 
-## Acceptance of the acta: NOT met, still owed
+## Acceptance of the acta: met on 2026-11-12
 
 The acta (etapa9-adelanto-acta.md, E9A-04) requires **30 minutes per target,
-zero failures and no input slower than 1 s**. The runs done with this change
-were **60 seconds per target** (15 targets, 15 minutes in all). That does
-**not** meet the threshold; the 30-minute runs remain owed. Command (about
-7.5 hours for the 15 targets):
+zero failures and no input slower than 1 s**. The 30-minute runs were done on
+2026-11-12 on the local 4-CPU machine, four targets at a time, each with:
 
 ```sh
-cd crates/kerno-storage
-for t in $(cargo +nightly fuzz list); do
-  mkdir -p /tmp/fuzz-work/$t
-  cargo +nightly fuzz run $t /tmp/fuzz-work/$t fuzz/corpus/$t -- -max_total_time=1800 -max_len=65536 -timeout=1 || break
-done
+cargo +nightly fuzz run <target> <work>/<target> corpus/<target> -- -max_total_time=1800 -max_len=65536 -timeout=1
 ```
+
+Every target ran its 1,801 seconds and ended with no crash, no timeout and no
+slow unit. The machine was shared with other builds during the runs, so the
+execution counts are lower than an idle machine would give.
+
+| target | executions in 30 min | failures |
+|---|---:|---:|
+| varint | 405,996,980 | 0 |
+| header | 211,566,339 | 0 |
+| commit | 135,577,990 | 0 |
+| frame | 219,033,334 | 0 |
+| data_block | 103,763,480 | 0 |
+| filter_block | 125,316,472 | 0 |
+| rangedel_block | 195,665,581 | 0 |
+| props_block | 221,177,481 | 0 |
+| index_block | 75,895,281 | 0 |
+| footer | 222,420,953 | 0 |
+| record | 200,338,530 | 0 |
+| wal | 5,698,047 | 0 |
+| sst | 206,800,162 | 0 |
+| manifest | 7,420,267 | 0 |
+| open | 4,959,653 | 0 |
+
+The working corpora of these runs were not committed; the committed corpus is
+the one of the 60-second runs below.
 
 ## 60-second runs (nightly 1.102.0 2026-11-10, cargo-fuzz 0.13.2)
 
