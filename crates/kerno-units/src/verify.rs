@@ -92,6 +92,7 @@ use crate::db::{MAX_POLICY_UNIT_TYPE_LEN, UnitDb, UnitSnapshot};
 use crate::error::{DecodeError, ErrorClass, UnitError, UnitRule};
 use crate::payload::{PayloadRule, verify_payload};
 use crate::types::{CommitSeq, HistoryPolicy, Lifecycle, Purpose, RelationId, RevNo, RevisionKind, UnitId};
+use crate::vector_store::DerivedRule;
 
 /// Keys read per engine scan.
 pub const VERIFY_PAGE: usize = 32;
@@ -141,6 +142,8 @@ pub enum VerifyRule {
     Structure(UnitRule),
     /// A payload against its `REV_META` (`units-v1.md` §5.1).
     Payload(PayloadRule),
+    /// A persisted derived record (`units-v2.md`, `DV-n`; layer version 2).
+    Derived(DerivedRule),
     /// A rule between records (`units-v1.md` §5.2).
     Cross(CrossRule),
 }
@@ -151,6 +154,7 @@ impl VerifyRule {
         match self {
             VerifyRule::Structure(r) => r.id(),
             VerifyRule::Payload(r) => r.id().to_owned(),
+            VerifyRule::Derived(r) => r.id(),
             VerifyRule::Cross(r) => format!("UNIT-{}", r.number()),
         }
     }
@@ -160,6 +164,7 @@ impl VerifyRule {
     pub fn class(self) -> ErrorClass {
         match self {
             VerifyRule::Structure(r) => r.class(),
+            VerifyRule::Derived(r) => r.class(),
             _ => ErrorClass::Corruption,
         }
     }
@@ -194,7 +199,7 @@ impl VerifyFinding {
     /// newer `layer_version`.
     pub fn to_error(&self) -> UnitError {
         if let (VerifyRule::Structure(UnitRule::Unit16), Some(found)) = (self.rule, self.found_layer_version) {
-            return UnitError::IncompatibleLayer { found, supported: crate::codec::LAYER_VERSION };
+            return UnitError::IncompatibleLayer { found, supported: crate::codec::MAX_LAYER_VERSION };
         }
         let msg = self.to_string();
         UnitError::Storage(match self.class() {
@@ -225,6 +230,8 @@ pub struct VerifyCounts {
     pub index_entries: u64,
     /// Keys with a tag this layer does not know.
     pub unknown: u64,
+    /// Persisted derived records (`0x60..=0x62`, layer version 2).
+    pub derived_records: u64,
 }
 
 /// Result of [`verify_snapshot`].
@@ -427,6 +434,11 @@ impl State {
     /// One pair of the walk: decode it and keep what later checks need.
     fn visit(&mut self, k: Vec<u8>, v: Vec<u8>) {
         self.any_key = true;
+        if matches!(k.first(), Some(crate::codec::TAG_DERIVED_DESC..=crate::codec::TAG_DERIVED_SRC)) {
+            // Read as a whole by `vector_store` after the walk.
+            self.counts.derived_records += 1;
+            return;
+        }
         let decoded_key = match Key::decode(&k) {
             Ok(key) => key,
             Err(e) => {
@@ -441,7 +453,7 @@ impl State {
             self.check_payload(k, unit, rev, &v);
             return;
         }
-        match Record::decode(&k, &v) {
+        match Record::decode_upto(&k, &v, crate::codec::MAX_LAYER_VERSION) {
             Ok(rec) => self.keep(rec),
             Err(e) => {
                 match &decoded_key {
@@ -1015,13 +1027,17 @@ impl State {
                 // E4-02: a change set that only creates or deletes relations.
                 // E4-03: one that only writes primary-index records.
                 Purpose::Relation | Purpose::Index => rec.member_count == 0,
+                // ADR-0020 §B.5, DV-13: persisted-derived records only.
+                Purpose::Derived => rec.member_count == 0,
             };
             if !shape_ok {
-                self.cross(
-                    CrossRule::Unit33,
-                    ck(),
-                    format!("change set {seq}: purpose {:?} with member_count {}", rec.purpose, rec.member_count),
-                );
+                let detail =
+                    format!("change set {seq}: purpose {:?} with member_count {}", rec.purpose, rec.member_count);
+                if rec.purpose == Purpose::Derived {
+                    self.push(VerifyRule::Derived(DerivedRule::Dv(13)), ck(), detail);
+                } else {
+                    self.cross(CrossRule::Unit33, ck(), detail);
+                }
             }
             if self.bad_members.contains(seq) {
                 continue;
@@ -1126,6 +1142,10 @@ pub fn verify_snapshot<S: Snapshot>(snap: &S) -> Result<UnitVerifyReport, UnitEr
     let mut st = State { seq: snap.seq(), ..State::default() };
     for_each_pair(snap, &[], None, |k, v| st.visit(k, v))?;
     st.finish();
+    let mark = st.mark.as_ref().map(|m| m.layer_version);
+    for f in crate::vector_store::verify_findings(snap, mark)? {
+        st.push(VerifyRule::Derived(f.rule), f.key, f.detail);
+    }
     Ok(UnitVerifyReport {
         seq: CommitSeq(st.seq),
         counts: st.counts,

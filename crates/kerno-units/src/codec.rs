@@ -35,11 +35,22 @@ pub const TAG_IDX_META: u8 = 0x50;
 pub const TAG_IDX_PRIMARY: u8 = 0x51;
 /// Secondary index by `(unit_type, schema_version)` (E4-04, workload W1).
 pub const TAG_IDX_TYPE: u8 = 0x52;
+/// Persisted derived data (E8-04, ADR-0020): descriptor, vector and the
+/// inverse index source -> derived datum. Layer version 2 only.
+pub const TAG_DERIVED_DESC: u8 = 0x60;
+pub const TAG_DERIVED_VEC: u8 = 0x61;
+pub const TAG_DERIVED_SRC: u8 = 0x62;
 
 /// `envelope_version` written and accepted (§1.1).
 pub const ENVELOPE_VERSION: u8 = 1;
 /// `layer_version` written and accepted (UNIT-15, UNIT-16).
 pub const LAYER_VERSION: u32 = 1;
+/// `layer_version` of a database that holds a persisted vector
+/// (`DERIVED_VECTORS`, ADR-0020). It is written by the first change set that
+/// persists one, never before and never lowered.
+pub const LAYER_VERSION_DERIVED: u32 = 2;
+/// The newest `layer_version` this build reads and writes.
+pub const MAX_LAYER_VERSION: u32 = LAYER_VERSION_DERIVED;
 /// The `LAYER_META` name of the layer mark (design §2.6).
 pub const LAYER_MARK_NAME: &str = "layer";
 /// Length limits of §1.2.
@@ -465,7 +476,7 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn enumeration<T>(&mut self, field: &str, from: fn(u8) -> Option<T>) -> Res<T> {
+    fn enumeration<T>(&mut self, field: &str, from: impl Fn(u8) -> Option<T>) -> Res<T> {
         let b = self.u8(field)?;
         match from(b) {
             Some(v) => Ok(v),
@@ -544,20 +555,33 @@ impl LayerMeta {
         let mut w = Writer::envelope();
         w.u32(self.layer_version);
         w.u8(self.history_policy.to_byte());
-        Self::decode(&w.0).map_err(|e| refuse("LAYER_META", &e))?;
+        Self::decode_upto(&w.0, MAX_LAYER_VERSION).map_err(|e| refuse("LAYER_META", &e))?;
         Ok(w.0)
     }
 
+    /// Decodes with the layer 1 reader of `units-v1.md`: any `layer_version`
+    /// above [`LAYER_VERSION`] is UNIT-16. This is the reader a build that
+    /// predates `DERIVED_VECTORS` has (ADR-0020, T6); this build's own paths
+    /// use [`LayerMeta::decode_upto`] with [`MAX_LAYER_VERSION`].
     pub fn decode(value: &[u8]) -> Res<Self> {
+        Self::decode_upto(value, LAYER_VERSION)
+    }
+
+    /// Decodes as a reader that only knows layers up to `max` does: a newer
+    /// `layer_version` is UNIT-16 with the version found. `max = 1` is the
+    /// reader of a build that predates `DERIVED_VECTORS`.
+    pub fn decode_upto(value: &[u8], max: u32) -> Res<Self> {
         let mut r = Reader::new(value, "LAYER_META");
         r.envelope()?;
         let layer_version = r.u32("layer_version")?;
         match layer_version {
             0 => return reject(UnitRule::Unit15, "LAYER_META.layer_version 0"),
-            LAYER_VERSION => {}
+            v if v <= max => {}
             v => {
-                let mut e = DecodeError::new(UnitRule::Unit16, format!("LAYER_META.layer_version {v} is newer than 1"));
+                let mut e =
+                    DecodeError::new(UnitRule::Unit16, format!("LAYER_META.layer_version {v} is newer than {max}"));
                 e.found_layer_version = Some(v);
+                e.supported_layer_version = Some(max);
                 return Err(e);
             }
         }
@@ -906,11 +930,18 @@ impl ChangeSetRecord {
         w.bytes(&self.actor_ref, MAX_CHANGESET_FIELD_LEN, "CHANGESET.actor_ref")?;
         w.bytes(&self.source_ref, MAX_CHANGESET_FIELD_LEN, "CHANGESET.source_ref")?;
         w.bytes(&self.correlation, MAX_CHANGESET_FIELD_LEN, "CHANGESET.correlation")?;
-        Self::decode(&w.0).map_err(|e| refuse("CHANGESET", &e))?;
+        Self::decode_upto(&w.0, MAX_LAYER_VERSION).map_err(|e| refuse("CHANGESET", &e))?;
         Ok(w.0)
     }
 
+    /// Decodes with the layer 1 reader: purpose `Derived` is outside its table.
     pub fn decode(value: &[u8]) -> Res<Self> {
+        Self::decode_upto(value, LAYER_VERSION)
+    }
+
+    /// [`ChangeSetRecord::decode`] for a reader that knows layers up to
+    /// `max`: purpose `Derived` (5) exists from layer version 2.
+    pub fn decode_upto(value: &[u8], max: u32) -> Res<Self> {
         let mut r = Reader::new(value, "CHANGESET");
         r.envelope()?;
         let created_at = r.i64("created_at")?;
@@ -921,7 +952,9 @@ impl ChangeSetRecord {
                 format!("CHANGESET.member_count {member_count} exceeds {MAX_MEMBER_COUNT}"),
             );
         }
-        let purpose = r.enumeration("purpose", Purpose::from_byte)?;
+        let purpose = r.enumeration("purpose", |b| {
+            Purpose::from_byte(b).filter(|p| *p != Purpose::Derived || max >= LAYER_VERSION_DERIVED)
+        })?;
         let reason = r.bytes(MAX_CHANGESET_FIELD_LEN, "reason")?.to_vec();
         let actor_ref = r.bytes(MAX_CHANGESET_FIELD_LEN, "actor_ref")?.to_vec();
         let source_ref = r.bytes(MAX_CHANGESET_FIELD_LEN, "source_ref")?.to_vec();
@@ -1261,12 +1294,19 @@ impl Record {
     /// Decodes a pair in the order of `units-v1.md` §6 and returns the first
     /// rule broken.
     pub fn decode(key: &[u8], value: &[u8]) -> Res<Self> {
+        Self::decode_upto(key, value, LAYER_VERSION)
+    }
+
+    /// [`Record::decode`] for a reader that knows layers up to `max`. The
+    /// persisted-derived keys (`0x60..=0x62`) are not records of this enum:
+    /// they are read by [`crate::vector_store`].
+    pub fn decode_upto(key: &[u8], value: &[u8], max: u32) -> Res<Self> {
         Ok(match Key::decode(key)? {
-            Key::LayerMeta { name } => Record::LayerMeta { name, meta: LayerMeta::decode(value)? },
+            Key::LayerMeta { name } => Record::LayerMeta { name, meta: LayerMeta::decode_upto(value, max)? },
             Key::UnitHead { unit } => Record::UnitHead { unit, head: UnitHead::decode(value)? },
             Key::RevMeta { unit, rev } => Record::RevMeta { unit, rev, meta: RevisionMeta::decode(rev, value)? },
             Key::RevPayload { unit, rev } => Record::RevPayload { unit, rev, payload: value.to_vec() },
-            Key::ChangeSet { seq } => Record::ChangeSet { seq, record: ChangeSetRecord::decode(value)? },
+            Key::ChangeSet { seq } => Record::ChangeSet { seq, record: ChangeSetRecord::decode_upto(value, max)? },
             Key::CsMember { seq, ordinal } => Record::CsMember { seq, ordinal, member: CsMember::decode(value)? },
             Key::Relation { edge } => Record::Relation { edge, record: RelationRecord::decode(value)? },
             Key::RelationOut { unit, relation_type, edge } => {

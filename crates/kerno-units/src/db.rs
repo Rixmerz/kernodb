@@ -75,9 +75,9 @@ use kerno_core::{Durability, MAX_VALUE_LEN};
 
 use crate::clock::{Clock, SystemClock, UnitIdSource, UuidV7Source};
 use crate::codec::{
-    Adjacency, ChangeSetRecord, CsMember, Key, LAYER_MARK_NAME, LAYER_VERSION, LayerMeta, MAX_CHANGESET_FIELD_LEN,
-    MAX_MEMBER_COUNT, MAX_METADATA_LEN, MAX_REV_REF_LEN, MAX_UNIT_TYPE_LEN, RelationRecord, RevisionMeta, TAG_REL_IN,
-    TAG_REL_OUT, UnitHead, valid_relation_type,
+    Adjacency, ChangeSetRecord, CsMember, Key, LAYER_MARK_NAME, LAYER_VERSION, LAYER_VERSION_DERIVED, LayerMeta,
+    MAX_CHANGESET_FIELD_LEN, MAX_LAYER_VERSION, MAX_MEMBER_COUNT, MAX_METADATA_LEN, MAX_REV_REF_LEN, MAX_UNIT_TYPE_LEN,
+    RelationRecord, RevisionMeta, TAG_REL_IN, TAG_REL_OUT, UnitHead, valid_relation_type,
 };
 use crate::error::{DecodeError, UnitError};
 use crate::payload::{ContentHash, MAX_PAYLOAD_LEN, PAYLOAD_CODEC_OPAQUE, verify_payload};
@@ -347,11 +347,14 @@ pub(crate) fn policy_of(get: &GetFn<'_>, unit_type: &str, fallback: HistoryPolic
     if let Some(k) = policy_key(unit_type)
         && let Some(v) = get(&k)?
     {
-        let m = LayerMeta::decode(&v).map_err(|e| context(e, &format!("LAYER_META \"policy/{unit_type}\"")))?;
+        let m = LayerMeta::decode_upto(&v, MAX_LAYER_VERSION)
+            .map_err(|e| context(e, &format!("LAYER_META \"policy/{unit_type}\"")))?;
         return Ok(m.history_policy);
     }
     match get(&layer_mark_key())? {
-        Some(v) => Ok(LayerMeta::decode(&v).map_err(|e| context(e, "LAYER_META \"layer\""))?.history_policy),
+        Some(v) => Ok(LayerMeta::decode_upto(&v, MAX_LAYER_VERSION)
+            .map_err(|e| context(e, "LAYER_META \"layer\""))?
+            .history_policy),
         None => Ok(fallback),
     }
 }
@@ -374,7 +377,8 @@ pub(crate) type GetFn<'a> = dyn Fn(&[u8]) -> kerno_core::Result<Option<Vec<u8>>>
 
 /// What the layer mark says (design §2.6).
 enum MarkState {
-    Present,
+    /// The mark is there, with this `layer_version`.
+    Present(u32),
     /// No mark and no key at all: a new database.
     Empty,
 }
@@ -384,8 +388,8 @@ enum MarkState {
 fn read_mark(get: &GetFn<'_>, any_key: &dyn Fn() -> kerno_core::Result<bool>) -> Result<MarkState, UnitError> {
     match get(&layer_mark_key())? {
         Some(v) => {
-            LayerMeta::decode(&v).map_err(|e| context(e, "LAYER_META \"layer\""))?;
-            Ok(MarkState::Present)
+            let mark = LayerMeta::decode_upto(&v, MAX_LAYER_VERSION).map_err(|e| context(e, "LAYER_META \"layer\""))?;
+            Ok(MarkState::Present(mark.layer_version))
         }
         None if any_key()? => Err(UnitError::NotAUnitDatabase),
         None => Ok(MarkState::Empty),
@@ -534,11 +538,11 @@ impl<E: TxnEngine> UnitDb<E> {
         self.check_poisoned()?;
         meta.validate()?;
         let txn = self.engine.begin_write()?;
-        let need_mark = match read_mark(&|k| txn.get(k), &|| {
+        let (need_mark, layer_version) = match read_mark(&|k| txn.get(k), &|| {
             Ok(!txn.scan(Bound::Unbounded, Bound::Unbounded, 1)?.is_empty())
         })? {
-            MarkState::Present => false,
-            MarkState::Empty if self.cfg.create_if_missing => true,
+            MarkState::Present(v) => (false, v),
+            MarkState::Empty if self.cfg.create_if_missing => (true, LAYER_VERSION),
             MarkState::Empty => {
                 return Err(UnitError::InvalidArgument("the database is empty and create_if_missing is false".into()));
             }
@@ -555,6 +559,8 @@ impl<E: TxnEngine> UnitDb<E> {
             meta,
             now,
             need_mark,
+            layer_version,
+            derived_ops: 0,
             members: Vec::new(),
             relation_ops: 0,
             touched: BTreeSet::new(),
@@ -622,7 +628,9 @@ impl<E: TxnEngine> UnitDb<E> {
         }
         let mut cs = self.begin_changeset(ChangeMeta { purpose: Purpose::Application, ..meta })?;
         cs.meta.purpose = Purpose::Maintenance;
-        let v = LayerMeta { layer_version: LAYER_VERSION, history_policy: p }.encode()?;
+        // Never below the mark (ADR-0020 §S3.5): a database with derived data
+        // keeps writing version 2.
+        let v = LayerMeta { layer_version: cs.layer_version, history_policy: p }.encode()?;
         cs.put(&k, &v)?;
         cs.maintenance = true;
         cs.commit()
@@ -694,6 +702,19 @@ impl<E: Engine> UnitSnapshot<E> {
             }
         }
         Ok(p)
+    }
+
+    /// The `layer_version` of the layer mark at this snapshot, or `None`
+    /// without a mark.
+    pub fn layer_version(&self) -> Result<Option<u32>, UnitError> {
+        match self.snap.get(&layer_mark_key())? {
+            Some(v) => Ok(Some(
+                LayerMeta::decode_upto(&v, MAX_LAYER_VERSION)
+                    .map_err(|e| context(e, "LAYER_META \"layer\""))?
+                    .layer_version,
+            )),
+            None => Ok(None),
+        }
     }
 
     /// The unit at this snapshot (see [`UnitDb::get_unit`]).
@@ -818,6 +839,13 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     meta: ChangeMeta,
     now: Timestamp,
     need_mark: bool,
+    /// The `layer_version` of the mark this change set read (`1` when it is
+    /// about to write the first mark). A database at `2` has persisted
+    /// derived data to keep in step with its sources.
+    pub(crate) layer_version: u32,
+    /// Persisted-derived writes so far (ADR-0020): they make the change set
+    /// non-empty and decide its purpose when it has no members.
+    pub(crate) derived_ops: usize,
     members: Vec<(RevisionId, RevisionKind)>,
     /// Relations created or deleted so far (E4-02): they are not members, but
     /// they count against `max_changeset_ops` and make the change set non-empty.
@@ -855,6 +883,17 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
     /// The sequence this change set will commit with.
     pub fn commit_seq(&self) -> CommitSeq {
         self.seq
+    }
+
+    /// Checks before a persisted-derived write: the change set is open and
+    /// has room for one more operation.
+    pub(crate) fn admit_derived(&self) -> Result<(), UnitError> {
+        self.txn()?;
+        let ops = self.members.len() + self.relation_ops + self.derived_ops;
+        if ops >= self.db.cfg.max_changeset_ops {
+            return Err(UnitError::ChangeSetTooLarge { ops: ops + 1, bytes: self.bytes });
+        }
+        Ok(())
     }
 
     pub(crate) fn txn(&self) -> Result<&E::Txn<'db>, UnitError> {
@@ -935,13 +974,44 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         }
     }
 
-    fn apply(&mut self, plan: Planned) -> Result<RevNo, UnitError> {
+    /// [`apply`](Self::apply) without the derived follow-up, for a plan that
+    /// already carries it.
+    fn apply_planned_only(&mut self, plan: Planned) -> Result<RevNo, UnitError> {
         for w in &plan.writes {
             self.write(w)?;
         }
         self.touched.insert(plan.rev.unit);
         self.members.push((plan.rev, plan.kind));
         Ok(plan.rev.rev)
+    }
+
+    fn apply(&mut self, plan: Planned) -> Result<RevNo, UnitError> {
+        // The persisted derived data of the unit follow the source in this
+        // same transaction (ADR-0020 §S3): read before the first write, so a
+        // refusal leaves the change set untouched.
+        let derived = self.derived_follow(plan.rev.unit, plan.kind)?;
+        for w in plan.writes.iter().chain(&derived) {
+            self.write(w)?;
+        }
+        self.touched.insert(plan.rev.unit);
+        self.members.push((plan.rev, plan.kind));
+        Ok(plan.rev.rev)
+    }
+
+    /// What the persisted derived data of `unit` need when a revision of
+    /// `kind` is written: stale marks for a change, removal for a deletion.
+    /// Nothing for a database below layer version 2.
+    fn derived_follow(&self, unit: UnitId, kind: RevisionKind) -> Result<Vec<Write>, UnitError> {
+        if self.layer_version < LAYER_VERSION_DERIVED && self.derived_ops == 0 {
+            return Ok(Vec::new());
+        }
+        let txn = self.txn()?;
+        let event = if kind == RevisionKind::Delete {
+            crate::vector_store::SourceEvent::Deleted
+        } else {
+            crate::vector_store::SourceEvent::Changed
+        };
+        crate::vector_store::plan_source_event(&crate::vector_store::TxnReader(txn), unit, event)
     }
 
     fn actor(&self) -> Vec<u8> {
@@ -1345,7 +1415,12 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
     pub fn commit(mut self) -> Result<CommitInfo, UnitError> {
         self.txn()?;
         let durable = self.db.cfg.engine.durability == Durability::Sync;
-        if self.members.is_empty() && !self.maintenance && !self.index && self.relation_ops == 0 {
+        if self.members.is_empty()
+            && !self.maintenance
+            && !self.index
+            && self.relation_ops == 0
+            && self.derived_ops == 0
+        {
             let current = CommitSeq(self.seq.0 - 1);
             if let Some(t) = self.txn.take() {
                 t.abort();
@@ -1369,9 +1444,22 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
             db.policy_epoch.fetch_add(1, Ordering::SeqCst);
             EpochBump(&db.policy_epoch)
         });
+        // The mark goes to version 2 in the transaction of the first derived
+        // record, and no writer lowers it (ADR-0020 §S3.4, §S3.5).
+        let wants = if self.derived_ops > 0 { LAYER_VERSION_DERIVED } else { LAYER_VERSION };
         if self.need_mark {
-            let mark = LayerMeta { layer_version: LAYER_VERSION, history_policy: self.db.cfg.default_policy };
+            let mark = LayerMeta { layer_version: wants, history_policy: self.db.cfg.default_policy };
             let v = mark.encode()?;
+            self.put(&layer_mark_key(), &v)?;
+        } else if self.layer_version < wants {
+            let txn = self.txn()?;
+            let current = match txn.get(&layer_mark_key())? {
+                Some(raw) => {
+                    LayerMeta::decode_upto(&raw, MAX_LAYER_VERSION).map_err(|e| context(e, "LAYER_META \"layer\""))?
+                }
+                None => return Err(UnitError::NotAUnitDatabase),
+            };
+            let v = LayerMeta { layer_version: wants, history_policy: current.history_policy }.encode()?;
             self.put(&layer_mark_key(), &v)?;
         }
         let record = ChangeSetRecord {
@@ -1380,7 +1468,8 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
             // A member-less application change set is relation-only: say so,
             // so a lost-members change set stays detectable (UNIT-30).
             purpose: if self.meta.purpose == Purpose::Application && self.members.is_empty() {
-                Purpose::Relation
+                // ADR-0020 §B.5: derived records only, no relation touched.
+                if self.relation_ops == 0 && self.derived_ops > 0 { Purpose::Derived } else { Purpose::Relation }
             } else {
                 self.meta.purpose
             },
@@ -1450,7 +1539,14 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
             .map_err(|_| UnitError::ChangeSetTooLarge { ops: self.members.len() + 1, bytes: self.bytes })?;
         let member = CsMember { unit, rev_no: rev, kind };
         writes.push(Write::Put(key(Key::CsMember { seq: self.seq, ordinal })?, member.encode()?));
-        self.apply(Planned { writes, rev: RevisionId { unit, rev }, kind })?;
+        // A revision retention purges takes the derived data computed from it
+        // (ADR-0020 §S5.1), in this same change set.
+        if self.layer_version >= LAYER_VERSION_DERIVED {
+            let txn = self.txn()?;
+            let purge = crate::vector_store::SourceEvent::Purged(rev);
+            writes.extend(crate::vector_store::plan_source_event(&crate::vector_store::TxnReader(txn), unit, purge)?);
+        }
+        self.apply_planned_only(Planned { writes, rev: RevisionId { unit, rev }, kind })?;
         Ok(())
     }
 

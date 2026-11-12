@@ -505,6 +505,190 @@ fn levels_below_diagnostic_carry_no_shape_text<E: Target>() {
     }
 }
 
+// ---------------------------------------------------------------- E8-04
+
+const S_VEC_PROFILE: &str = "SNT-PROFILE-9d41b6e3";
+const S_VEC_METHOD: &str = "SNT-METHOD-70ac2f58";
+const S_VEC_PARAM: &str = "SNT-PARAM-b3e81c07";
+/// A vector element, as a number a text search can find in any of its forms.
+const S_VEC_ELEM: f32 = 4_071_337.5;
+
+fn vector_forms() -> Vec<String> {
+    let bits = S_VEC_ELEM.to_bits();
+    let mut out = vec![
+        format!("{S_VEC_ELEM}"),
+        format!("{S_VEC_ELEM:?}"),
+        format!("{S_VEC_ELEM:e}"),
+        bits.to_string(),
+        format!("{bits:08x}"),
+        "4071337".to_string(),
+    ];
+    let be = bits.to_be_bytes();
+    out.push(be.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(", "));
+    out
+}
+
+fn vector_sentinels() -> Vec<(&'static str, Vec<String>)> {
+    let mut all: Vec<_> =
+        sentinels().into_iter().filter(|(n, _)| matches!(*n, "payload" | "metadata" | "unit type")).collect();
+    all.push(("vector element", vector_forms()));
+    all.push(("vector profile", forms(S_VEC_PROFILE.as_bytes())));
+    all.push(("vector method", forms(S_VEC_METHOD.as_bytes())));
+    all.push(("vector param", forms(S_VEC_PARAM.as_bytes())));
+    all
+}
+
+/// E8-04 (ADR-0020, T24, I-37): the values of a vector and the contents of the
+/// units it was made from appear in no error, no `Debug` or `Display` of the
+/// new types, no report of opening and no finding of `verify_units`, for
+/// healthy data and for every damage the records can suffer.
+fn no_sentinel_in_vector_types_errors_or_reports<E: Target>() {
+    let disk = SimVfs::new(5);
+    let db = open_units::<E>(disk.as_vfs(), &config()).unwrap();
+    let (dd, _) = DerivedDb::open_persisted(db).unwrap();
+    let mut cs = dd.begin_changeset(ChangeMeta::default()).unwrap();
+    let u = cs
+        .create(NewUnit {
+            unit_type: S_TYPE.into(),
+            schema_version: 1,
+            metadata: S_METADATA.to_vec(),
+            payload: S_PAYLOAD.to_vec(),
+        })
+        .unwrap();
+    let spec = VectorSpec {
+        source: RevisionId { unit: u, rev: RevNo(1) },
+        method: S_VEC_METHOD.into(),
+        method_version: 1,
+        profile: S_VEC_PROFILE.into(),
+        params: std::collections::BTreeMap::from([("k".to_owned(), S_VEC_PARAM.to_owned())]),
+        vector: vec![S_VEC_ELEM, 1.0],
+    };
+    let id = cs.put_vector(&spec).unwrap();
+    cs.commit().unwrap();
+
+    let mut out = String::new();
+    let mut say = |what: &str, text: String| out.push_str(&format!("[{what}] {text}\n"));
+    // The control: the caller does get its vector, so the search could find it.
+    let served = format!("{:?}", dd.vector(&id));
+    assert!(
+        vector_forms().iter().any(|f| served.contains(f.as_str())),
+        "the search must be able to find the sentinel: {served}"
+    );
+    say("spec", format!("{spec:?}"));
+    say("descriptor", format!("{:?}", dd.descriptor(&id)));
+    say("state", format!("{:?}", dd.state(&id)));
+
+    // Refusals.
+    let mut cs = dd.begin_changeset(ChangeMeta::default()).unwrap();
+    for bad in [
+        VectorSpec { vector: vec![S_VEC_ELEM, f32::NAN], ..spec.clone() },
+        VectorSpec { vector: vec![S_VEC_ELEM; 5000], ..spec.clone() },
+        VectorSpec { profile: S_VEC_PROFILE.repeat(5), ..spec.clone() },
+        VectorSpec { source: RevisionId { unit: u, rev: RevNo(7) }, ..spec.clone() },
+        spec.clone(),
+    ] {
+        match cs.put_vector(&bad) {
+            Ok(_) => panic!("refused spec accepted"),
+            Err(e) => say("put_vector", format!("{e} / {e:?}")),
+        }
+    }
+    cs.abort();
+    dd.close().unwrap();
+
+    // Healthy and damaged records: every byte of the descriptor and of the
+    // vector flipped in turn, then opened and verified.
+    let healthy = disk.dump();
+    let key = |t: u8| {
+        let db = open_units::<E>(SimVfs::restore(&healthy).as_vfs(), &config()).unwrap();
+        let snap = db.engine().snapshot().unwrap();
+        let all = snap.scan(std::ops::Bound::Included(&[t][..]), std::ops::Bound::Excluded(&[t + 1][..]), 10).unwrap();
+        db.close().ok();
+        all.into_iter().next().unwrap()
+    };
+    let (desc_k, desc_v) = key(0x60);
+    let (vec_k, vec_v) = key(0x61);
+    let mut damages = vec![(desc_k.clone(), None), (vec_k.clone(), None)];
+    for i in 0..desc_v.len() {
+        let mut v = desc_v.clone();
+        v[i] ^= 0x04;
+        damages.push((desc_k.clone(), Some(v)));
+    }
+    for i in 0..vec_v.len() {
+        let mut v = vec_v.clone();
+        v[i] ^= 0x04;
+        damages.push((vec_k.clone(), Some(v)));
+    }
+    damages.push((desc_k.clone(), Some(desc_v[..desc_v.len() - 1].to_vec())));
+    for e in vector_decode_errors(&desc_v, &vec_v) {
+        say("decode", e);
+    }
+    for (n, (k, v)) in damages.into_iter().enumerate() {
+        let disk = SimVfs::restore(&healthy);
+        let db = open_units::<E>(disk.as_vfs(), &config()).unwrap();
+        let mut b = WriteBatch::new();
+        match v {
+            Some(v) => b.put(k, v),
+            None => b.delete(k),
+        };
+        db.engine().commit(&b).unwrap();
+        let report = db.verify_units().unwrap();
+        say(
+            "verify",
+            format!("{n}: {:?} {}", report.findings, report.findings.iter().map(|f| f.to_string()).collect::<String>()),
+        );
+        for f in &report.findings {
+            say("finding error", format!("{:?} {}", f.to_error(), f.to_error()));
+        }
+        match DerivedDb::open_persisted(db) {
+            Ok((dd, r)) => {
+                say("reopen", format!("{n}: {r:?} {:?}", r.findings));
+                match dd.repair_derived(ChangeMeta::default()) {
+                    Ok(r) => say("repair", format!("{r:?}")),
+                    Err(e) => say("repair error", format!("{e} / {e:?}")),
+                }
+                let c = dd.begin_changeset(ChangeMeta::default()).unwrap();
+                c.abort();
+            }
+            Err(e) => say("reopen error", format!("{n}: {e} / {e:?}")),
+        }
+    }
+    for (what, spellings) in vector_sentinels() {
+        for form in spellings {
+            assert!(!out.contains(&form), "{what} sentinel `{form}` appears in the output of the vector types:\n{out}");
+        }
+    }
+}
+
+/// The text of the errors the codecs give for the descriptor and the vector
+/// with each byte changed and each length cut.
+fn vector_decode_errors(desc: &[u8], vec: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    for (i, _) in desc.iter().enumerate() {
+        for cut in [false, true] {
+            let mut d = desc.to_vec();
+            if cut {
+                d.truncate(i);
+            } else {
+                d[i] ^= 0xff;
+            }
+            if let Err(e) = kerno_units::VectorDescriptor::decode(&d) {
+                out.push(format!("{e} {e:?}"));
+            }
+        }
+    }
+    for (i, _) in vec.iter().enumerate() {
+        let mut v = vec.to_vec();
+        v[i] ^= 0xff;
+        if let Err(e) = kerno_units::vector_store::decode_vector(&v) {
+            out.push(format!("{e} {e:?}"));
+        }
+        if let Err(e) = kerno_units::vector_store::decode_vector(&vec[..i]) {
+            out.push(format!("{e} {e:?}"));
+        }
+    }
+    out
+}
+
 macro_rules! engines {
     ($($name:ident: $engine:ty),*) => {$(
         mod $name {
@@ -516,6 +700,10 @@ macro_rules! engines {
             #[test]
             fn no_sentinel_in_any_associative_plan_observation_or_error() {
                 super::no_sentinel_in_any_associative_plan_observation_or_error::<E>();
+            }
+            #[test]
+            fn no_sentinel_in_vector_types_errors_or_reports() {
+                super::no_sentinel_in_vector_types_errors_or_reports::<E>();
             }
             #[test]
             fn levels_below_diagnostic_carry_no_shape_text() {
