@@ -376,9 +376,10 @@ impl<E: TxnEngine> DerivedChangeSet<'_, E> {
         let units: BTreeSet<UnitId> = info.revisions.iter().map(|r| r.unit).collect();
         for unit in units {
             for id in inner.registry.dependents_of_unit(unit) {
-                if matches!(inner.registry.state(&id), Some(DerivedState::Ready | DerivedState::Building)) {
-                    // Both states may become stale (DerivedState::can_become).
-                    inner.registry.transition(&id, DerivedState::Stale).ok();
+                // `ready` and `building` may become stale (DerivedState::can_become);
+                // `stale`, `failed` and `superseded` data have nothing to mark,
+                // so the refusal of those transitions is the answer, not an error.
+                if inner.registry.transition(&id, DerivedState::Stale).is_ok() {
                     inner.values.remove(&id);
                 }
             }

@@ -220,6 +220,9 @@ fn a_new_version_creates_a_datum_and_supersedes_the_old_one<E: Target>() {
         db.supersede(&v1, "embed", 3, params(), &compute),
         Err(DerivedStaleError::Derived(DerivedError::IllegalTransition { .. }))
     ));
+    // The refusal left nothing behind: the datum it would have made is new.
+    let v3 = db.build([a], "embed", 3, params(), &compute).unwrap();
+    assert_eq!(db.state(&v3), Some(DerivedState::Ready));
     // Superseding with the same identity is refused and changes nothing.
     assert!(matches!(
         db.supersede(&m, "cluster", 1, params(), &compute),
@@ -299,6 +302,147 @@ fn a_datum_whose_input_changed_is_never_ready_after_reopening<E: Target>() {
     db.close().unwrap();
 }
 
+// ------------------------------------------------------------ edge cases
+
+fn rebuild_refuses_an_identity_that_already_exists_and_keeps_the_old_entry<E: Target>() {
+    let db = fresh::<E>();
+    let a = make(&db, b"a");
+    let old = db.build([a], "embed", 1, params(), &compute).unwrap();
+    edit(&db, a, b"a2");
+    // The same data, built anew while `old` is still stale: the identity a
+    // rebuild of `old` would get is taken.
+    let anew = db.build([a], "embed", 1, params(), &compute).unwrap();
+    assert_ne!(old, anew);
+
+    let before = db.descriptor(&old);
+    assert!(
+        matches!(db.rebuild(&old, &compute), Err(DerivedStaleError::Derived(DerivedError::Duplicate(d))) if d == anew)
+    );
+    assert_eq!(db.state(&old), Some(DerivedState::Stale), "the refused rebuild did not lose the entry");
+    assert_eq!(db.descriptor(&old), before);
+    assert_eq!(db.state(&anew), Some(DerivedState::Ready));
+    assert_eq!(db.value(&anew).as_deref(), Some(&b"embed@1:a2|"[..]));
+    assert!(db.index_is_exact());
+}
+
+fn superseding_with_no_valid_source_is_refused_and_changes_nothing<E: Target>() {
+    let db = fresh::<E>();
+    let a = make(&db, b"a");
+    let v1 = db.build([a], "embed", 1, params(), &compute).unwrap();
+    let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
+    cs.delete(a, None).unwrap();
+    cs.commit().unwrap();
+
+    assert!(
+        matches!(db.supersede(&v1, "embed", 2, params(), &compute), Err(DerivedStaleError::NoValidSources(i)) if i == v1)
+    );
+    assert_eq!(db.state(&v1), Some(DerivedState::Stale), "the earlier datum is not superseded");
+    assert!(db.index_is_exact());
+}
+
+fn a_datum_left_building_by_a_panic_goes_stale_with_its_source<E: Target>() {
+    let db = fresh::<E>();
+    let a = make(&db, b"a");
+    let seen = std::cell::Cell::new(None);
+    let panics = |d: &DerivedDescriptor, _: &[SourceInput]| -> Option<Vec<u8>> {
+        seen.set(Some(d.id()));
+        panic!("the compute function failed")
+    };
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| db.build([a], "embed", 1, params(), &panics)));
+    assert!(r.is_err());
+    let id = seen.get().expect("compute ran");
+    // The registry lock was poisoned by the panic and is still usable.
+    assert_eq!(db.state(&id), Some(DerivedState::Building));
+
+    edit(&db, a, b"a2");
+    assert_eq!(db.state(&id), Some(DerivedState::Stale));
+    let rebuilt = db.rebuild(&id, &compute).unwrap();
+    assert_eq!(db.state(&rebuilt), Some(DerivedState::Ready));
+}
+
+fn a_failed_datum_stays_failed_when_its_source_changes<E: Target>() {
+    let db = fresh::<E>();
+    let a = make(&db, b"a");
+    let failed = match db.build([a], "embed", 1, params(), &never).unwrap_err() {
+        DerivedStaleError::ComputeFailed(f) => f,
+        other => panic!("unexpected {other}"),
+    };
+    edit(&db, a, b"a2");
+    assert_eq!(db.state(&failed), Some(DerivedState::Failed));
+    assert!(db.index_is_exact());
+}
+
+fn build_normalises_the_unit_set_and_refuses_a_missing_source<E: Target>() {
+    let db = fresh::<E>();
+    let (a, b) = (make(&db, b"a"), make(&db, b"b"));
+    let first = db.build([a, b], "embed", 1, params(), &compute).unwrap();
+    // The same set in another order, with a repeat, is the same datum.
+    assert!(matches!(
+        db.build([b, a, a], "embed", 1, params(), &compute),
+        Err(DerivedStaleError::Derived(DerivedError::Duplicate(d))) if d == first
+    ));
+    assert_eq!(db.state(&first), Some(DerivedState::Ready));
+
+    let nobody = UnitId([0xEE; 16]);
+    assert!(
+        matches!(db.build([a, nobody], "x", 1, params(), &compute), Err(DerivedStaleError::MissingSource(u)) if u == nobody)
+    );
+    let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
+    cs.delete(b, None).unwrap();
+    cs.commit().unwrap();
+    assert!(matches!(db.build([a, b], "x", 1, params(), &compute), Err(DerivedStaleError::MissingSource(u)) if u == b));
+    assert!(db.index_is_exact());
+}
+
+// ------------------------------------------------------------ input hash
+
+fn source(unit: u8, rev: u64, payload: &[u8], digest: u8) -> SourceInput {
+    SourceInput {
+        id: RevisionId { unit: UnitId([unit; 16]), rev: RevNo(rev) },
+        content_hash: ContentHash { alg: HashAlg::Blake3, digest: [digest; 32] },
+        payload: payload.to_vec(),
+    }
+}
+
+#[test]
+fn the_input_hash_is_the_documented_encoding_of_unit_and_revision_per_source() {
+    let inputs = [source(1, 3, b"x", 0), source(2, 5, b"y", 0)];
+    let mut h = blake3::Hasher::new();
+    h.update(b"kerno.derived.input.v1");
+    h.update(&2u64.to_le_bytes());
+    for (u, r) in [(1u8, 3u64), (2, 5)] {
+        h.update(&[u; 16]);
+        h.update(&r.to_le_bytes());
+    }
+    assert_eq!(input_hash(&inputs), *h.finalize().as_bytes());
+}
+
+#[test]
+fn the_input_hash_tells_apart_revision_unit_order_and_count_but_not_the_payload() {
+    let base = input_hash(&[source(1, 3, b"x", 0), source(2, 5, b"y", 0)]);
+    let others = [
+        input_hash(&[source(1, 4, b"x", 0), source(2, 5, b"y", 0)]),
+        input_hash(&[source(1, 3, b"x", 0), source(2, 6, b"y", 0)]),
+        input_hash(&[source(9, 3, b"x", 0), source(2, 5, b"y", 0)]),
+        input_hash(&[source(2, 5, b"y", 0), source(1, 3, b"x", 0)]),
+        input_hash(&[source(1, 3, b"x", 0)]),
+        input_hash(&[]),
+    ];
+    for (i, o) in others.iter().enumerate() {
+        assert_ne!(&base, o, "variant {i}");
+    }
+    // A revision is immutable and names its content: payload and content hash
+    // carry nothing more.
+    assert_eq!(base, input_hash(&[source(1, 3, b"other", 7), source(2, 5, b"y", 8)]));
+}
+
+#[test]
+fn a_source_input_shows_no_content_when_debug_printed() {
+    let text = format!("{:?}", source(1, 3, b"SECRET-PAYLOAD", 0));
+    assert!(!text.contains("SECRET"), "{text}");
+    assert!(text.contains("payload_len"), "{text}");
+}
+
 macro_rules! engines {
     ($($name:ident: $engine:ty),*) => {$(
         mod $name {
@@ -334,6 +478,26 @@ macro_rules! engines {
             #[test]
             fn a_datum_whose_input_changed_is_never_ready_after_reopening() {
                 super::a_datum_whose_input_changed_is_never_ready_after_reopening::<E>();
+            }
+            #[test]
+            fn rebuild_refuses_an_identity_that_already_exists_and_keeps_the_old_entry() {
+                super::rebuild_refuses_an_identity_that_already_exists_and_keeps_the_old_entry::<E>();
+            }
+            #[test]
+            fn superseding_with_no_valid_source_is_refused_and_changes_nothing() {
+                super::superseding_with_no_valid_source_is_refused_and_changes_nothing::<E>();
+            }
+            #[test]
+            fn a_datum_left_building_by_a_panic_goes_stale_with_its_source() {
+                super::a_datum_left_building_by_a_panic_goes_stale_with_its_source::<E>();
+            }
+            #[test]
+            fn build_normalises_the_unit_set_and_refuses_a_missing_source() {
+                super::build_normalises_the_unit_set_and_refuses_a_missing_source::<E>();
+            }
+            #[test]
+            fn a_failed_datum_stays_failed_when_its_source_changes() {
+                super::a_failed_datum_stays_failed_when_its_source_changes::<E>();
             }
         }
     )*};
