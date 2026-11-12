@@ -36,7 +36,7 @@ fn trunc() -> TruncatingSummarizer {
 }
 
 fn fresh<E: Target>(disk: &SimVfs) -> DerivedDb<E> {
-    open_summaries(open_db::<E>(disk), Vec::new(), &trunc()).unwrap()
+    open_summaries(open_db::<E>(disk), Vec::new(), &trunc()).unwrap().0
 }
 
 fn make<E: TxnEngine>(db: &DerivedDb<E>, payload: &[u8]) -> UnitId {
@@ -335,14 +335,14 @@ fn summaries_are_rebuilt_on_open_from_their_sources<E: Target>() {
     db.close().unwrap();
 
     // Unchanged sources: recomputed, ready, same identity and text.
-    let db = open_summaries(open_db::<E>(&disk), [known.clone()], &trunc()).unwrap();
+    let db = open_summaries(open_db::<E>(&disk), [known.clone()], &trunc()).unwrap().0;
     assert_eq!(db.state(&id), Some(DerivedState::Ready));
     assert_eq!(db.summary(&id).as_deref(), Some(&b"aaaa\nbbbb"[..]));
     edit(&db, a, b"aaaa2");
     db.close().unwrap();
 
     // The source moved while the summary was not in memory: stale, never ready.
-    let db = open_summaries(open_db::<E>(&disk), [known.clone()], &trunc()).unwrap();
+    let db = open_summaries(open_db::<E>(&disk), [known.clone()], &trunc()).unwrap().0;
     assert_eq!(db.state(&id), Some(DerivedState::Stale));
     assert_eq!(db.summary(&id), None);
 

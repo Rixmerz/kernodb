@@ -67,7 +67,7 @@ fn edit<E: TxnEngineAlias>(db: &DerivedDb<E>, id: UnitId, payload: &[u8]) -> Com
 use kerno_core::contract::TxnEngine as TxnEngineAlias;
 
 fn fresh<E: Target>() -> DerivedDb<E> {
-    DerivedDb::open(open::<E>(&SimVfs::new(1)), Vec::new(), &compute).unwrap()
+    DerivedDb::open(open::<E>(&SimVfs::new(1)), Vec::new(), &compute).unwrap().0
 }
 
 // ------------------------------------------------------------ staleness
@@ -231,7 +231,7 @@ fn a_new_version_creates_a_datum_and_supersedes_the_old_one<E: Target>() {
 
 fn reopening_rebuilds_the_registry_to_the_state_before_closing<E: Target>() {
     let disk = SimVfs::new(7);
-    let db = DerivedDb::open(open::<E>(&disk), Vec::new(), &compute).unwrap();
+    let db = DerivedDb::open(open::<E>(&disk), Vec::new(), &compute).unwrap().0;
     let (a, b, c) = (make(&db, b"a"), make(&db, b"b"), make(&db, b"c"));
     let ready = db.build([a, b], "embed", 1, params(), &compute).unwrap();
     let stale = db.build([c], "embed", 1, params(), &compute).unwrap();
@@ -243,7 +243,7 @@ fn reopening_rebuilds_the_registry_to_the_state_before_closing<E: Target>() {
     let value = db.value(&ready);
     db.close().unwrap();
 
-    let db = DerivedDb::open(open::<E>(&disk), known.clone(), &compute).unwrap();
+    let db = DerivedDb::open(open::<E>(&disk), known.clone(), &compute).unwrap().0;
     assert_eq!(db.state(&ready), Some(DerivedState::Ready));
     assert_eq!(db.state(&stale), Some(DerivedState::Stale));
     assert_eq!(db.value(&ready), value, "the rebuilt value equals the one before closing");
@@ -260,7 +260,7 @@ fn reopening_rebuilds_the_registry_to_the_state_before_closing<E: Target>() {
 
 fn a_datum_whose_input_changed_is_never_ready_after_reopening<E: Target>() {
     let disk = SimVfs::new(8);
-    let db = DerivedDb::open(open::<E>(&disk), Vec::new(), &compute).unwrap();
+    let db = DerivedDb::open(open::<E>(&disk), Vec::new(), &compute).unwrap().0;
     let a = make(&db, b"a");
     let first = db.build([a], "embed", 1, params(), &compute).unwrap();
     let old = db.descriptor(&first).unwrap();
@@ -274,7 +274,7 @@ fn a_datum_whose_input_changed_is_never_ready_after_reopening<E: Target>() {
     db.close().unwrap();
 
     let known = [cur.clone(), old.clone(), forged_hash.clone(), old_source.clone()];
-    let db = DerivedDb::open(open::<E>(&disk), known, &compute).unwrap();
+    let db = DerivedDb::open(open::<E>(&disk), known, &compute).unwrap().0;
     assert_eq!(db.state(&current), Some(DerivedState::Ready), "the control is rebuilt");
     assert_eq!(db.state(&first), Some(DerivedState::Stale));
     assert_eq!(db.state(&forged_hash.id()), Some(DerivedState::Stale));
@@ -285,7 +285,7 @@ fn a_datum_whose_input_changed_is_never_ready_after_reopening<E: Target>() {
     db.close().unwrap();
 
     // A compute that fails on reopening leaves the datum failed, never ready.
-    let db = DerivedDb::open(open::<E>(&disk), [cur.clone()], &never).unwrap();
+    let db = DerivedDb::open(open::<E>(&disk), [cur.clone()], &never).unwrap().0;
     assert_eq!(db.state(&current), Some(DerivedState::Failed));
     assert_eq!(db.value(&current), None);
     db.close().unwrap();
@@ -483,7 +483,7 @@ fn one_changeset_changing_several_units_marks_every_dependent_stale<E: Target>()
 /// `commit()` and the derived datum must still be ready.
 fn a_commit_that_fails_marks_nothing<E: Target>() {
     let disk = SimVfs::new(21);
-    let db = DerivedDb::open(open::<E>(&disk), Vec::new(), &compute).unwrap();
+    let db = DerivedDb::open(open::<E>(&disk), Vec::new(), &compute).unwrap().0;
     let (a, b) = (make(&db, b"a"), make(&db, b"b"));
     let on_a = db.build([a], "embed", 1, params(), &compute).unwrap();
     let on_b = db.build([b], "embed", 1, params(), &compute).unwrap();
@@ -519,7 +519,7 @@ fn a_dependent_on_a_later_revision_goes_stale_with_the_next_change<E: Target>() 
 
 fn open_refuses_a_duplicate_descriptor_in_the_known_list<E: Target>() {
     let disk = SimVfs::new(9);
-    let db = DerivedDb::open(open::<E>(&disk), Vec::new(), &compute).unwrap();
+    let db = DerivedDb::open(open::<E>(&disk), Vec::new(), &compute).unwrap().0;
     let a = make(&db, b"a");
     let id = db.build([a], "embed", 1, params(), &compute).unwrap();
     let d = db.descriptor(&id).unwrap();

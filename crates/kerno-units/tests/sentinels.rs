@@ -717,7 +717,7 @@ impl Summarizer for Echo {
 fn no_sentinel_in_summary_types_or_errors<E: Target>() {
     let disk = SimVfs::new(6);
     let db = open_units::<E>(disk.as_vfs(), &config()).unwrap();
-    let dd = open_summaries(db, Vec::new(), &Echo).unwrap();
+    let dd = open_summaries(db, Vec::new(), &Echo).unwrap().0;
     let mut cs = dd.begin_changeset(ChangeMeta::default()).unwrap();
     let u = cs
         .create(NewUnit {

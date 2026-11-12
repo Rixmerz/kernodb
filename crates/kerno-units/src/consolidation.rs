@@ -168,12 +168,13 @@ fn made_by(d: &DerivedDescriptor, s: &dyn Summarizer) -> Result<bool, Consolidat
 
 /// Opens the registry of summaries over `db` (see the module documentation,
 /// "Persistence"). `known` are the descriptors of the summaries the caller
-/// still uses; each must have been made by `summarizer`.
+/// still uses; each must have been made by `summarizer`. The ids returned are
+/// those of the known summaries dropped because a source is gone.
 pub fn open_summaries<E: TxnEngine>(
     db: UnitDb<E>,
     known: impl IntoIterator<Item = DerivedDescriptor>,
     summarizer: &dyn Summarizer,
-) -> Result<DerivedDb<E>, ConsolidationError> {
+) -> Result<(DerivedDb<E>, Vec<DerivedId>), ConsolidationError> {
     let known: Vec<DerivedDescriptor> = known.into_iter().collect();
     for d in &known {
         if !is_summary_descriptor(d) {
