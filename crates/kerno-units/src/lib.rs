@@ -34,6 +34,7 @@ pub mod derived;
 pub mod derived_query;
 pub mod derived_stale;
 pub mod error;
+pub mod export;
 pub mod fingerprint;
 pub mod history;
 pub mod index;
