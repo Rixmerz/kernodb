@@ -689,6 +689,90 @@ fn vector_decode_errors(desc: &[u8], vec: &[u8]) -> Vec<String> {
     out
 }
 
+// ---------------------------------------------------------------- E8-06
+
+const S_SUM_PARAM: &str = "SNT-SUMPARAM-4c18e9a2";
+
+/// A summarizer whose method and parameters are sentinels, and whose text is
+/// the source payload itself.
+struct Echo;
+
+impl Summarizer for Echo {
+    fn method(&self) -> &str {
+        "SNT-SUMMETHOD-d2a60b71"
+    }
+    fn version(&self) -> u32 {
+        1
+    }
+    fn params(&self) -> std::collections::BTreeMap<String, String> {
+        std::collections::BTreeMap::from([("k".to_owned(), S_SUM_PARAM.to_owned())])
+    }
+    fn summarize(&self, sources: &[SourceInput]) -> Option<Vec<u8>> {
+        sources.first().map(|s| s.payload.clone())
+    }
+}
+
+/// E8-06 (I-37, I-43): the text of a summary and the content of its sources
+/// appear in no error, no `Debug` or `Display` of the new types.
+fn no_sentinel_in_summary_types_or_errors<E: Target>() {
+    let disk = SimVfs::new(6);
+    let db = open_units::<E>(disk.as_vfs(), &config()).unwrap();
+    let dd = open_summaries(db, Vec::new(), &Echo).unwrap().0;
+    let mut cs = dd.begin_changeset(ChangeMeta::default()).unwrap();
+    let u = cs
+        .create(NewUnit {
+            unit_type: S_TYPE.into(),
+            schema_version: 1,
+            metadata: S_METADATA.to_vec(),
+            payload: S_PAYLOAD.to_vec(),
+        })
+        .unwrap();
+    cs.commit().unwrap();
+    let id = dd.build_summary([u], &Echo).unwrap();
+
+    let mut out = String::new();
+    let mut say = |what: &str, text: String| out.push_str(&format!("[{what}] {text}\n"));
+    // The control: the caller does get its summary text, so the search could find it.
+    let served = format!("{:?}", dd.summary(&id));
+    assert!(served.contains(&forms(S_PAYLOAD)[1]), "the search must be able to find the sentinel: {served}");
+    say("descriptor", format!("{:?}", dd.descriptor(&id)));
+    say("state", format!("{:?}", dd.state(&id)));
+    say("source", format!("{:?}", dd.get_unit(u).map(|o| o.map(|u| u.head))));
+
+    let other = dd.build([u], "plain", 1, Default::default(), &|_, _| Some(S_PAYLOAD.to_vec())).unwrap();
+    let results = [
+        dd.build_summary(Vec::<UnitId>::new(), &Echo),
+        dd.build_summary([UnitId([7; 16])], &Echo),
+        dd.build_summary([u], &Echo), // duplicate
+        dd.rebuild_summary(&other, &Echo),
+        dd.supersede_summary(&other, &Echo),
+        dd.rebuild_summary(&id, &TruncatingSummarizer::new(3, 1)),
+        dd.supersede_summary(&DerivedId([1; 32]), &Echo),
+    ];
+    for r in results {
+        match r {
+            Ok(_) => {}
+            Err(e) => say("error", format!("{e} / {e:?}")),
+        }
+    }
+    let mut cs = dd.begin_changeset(ChangeMeta::default()).unwrap();
+    cs.delete(u, None).unwrap();
+    cs.commit().unwrap();
+    say("after delete", format!("{:?} {:?}", dd.state(&id), dd.descriptor(&id)));
+    for (what, spellings) in sentinels()
+        .into_iter()
+        .filter(|(n, _)| matches!(*n, "payload" | "metadata" | "unit type"))
+        .chain([("summary method", forms(b"SNT-SUMMETHOD-d2a60b71")), ("summary param", forms(S_SUM_PARAM.as_bytes()))])
+    {
+        for form in spellings {
+            assert!(
+                !out.contains(&form),
+                "{what} sentinel `{form}` appears in the output of the summary types:\n{out}"
+            );
+        }
+    }
+}
+
 macro_rules! engines {
     ($($name:ident: $engine:ty),*) => {$(
         mod $name {
@@ -704,6 +788,10 @@ macro_rules! engines {
             #[test]
             fn no_sentinel_in_vector_types_errors_or_reports() {
                 super::no_sentinel_in_vector_types_errors_or_reports::<E>();
+            }
+            #[test]
+            fn no_sentinel_in_summary_types_or_errors() {
+                super::no_sentinel_in_summary_types_or_errors::<E>();
             }
             #[test]
             fn levels_below_diagnostic_carry_no_shape_text() {

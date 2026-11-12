@@ -44,6 +44,7 @@ use crate::db::{ChangeMeta, ChangeSet, CommitInfo, NewUnit, Unit, UnitDb, UnitUp
 use crate::derived::{DerivedDescriptor, DerivedError, DerivedId, DerivedRegistry, DerivedState};
 use crate::error::UnitError;
 use crate::payload::ContentHash;
+use crate::suppression::source_gone;
 use crate::types::{CommitSeq, RelationId, RelationProvenance, RevNo, RevisionId, UnitId};
 
 /// Domain tag of the input hash; bump it if the encoding below changes.
@@ -185,17 +186,29 @@ impl<E: TxnEngine> DerivedDb<E> {
 
     /// Wraps `db` and rebuilds the registry for `known` (see the module
     /// documentation, "Reopening"). `compute` recomputes the data that are
-    /// still current.
+    /// still current. Also returns the ids of the known descriptors dropped
+    /// because a source is deleted or purged.
     pub fn open(
         db: UnitDb<E>,
         known: impl IntoIterator<Item = DerivedDescriptor>,
         compute: Compute<'_>,
-    ) -> Result<Self, DerivedStaleError> {
+    ) -> Result<(Self, Vec<DerivedId>), DerivedStaleError> {
         let this = DerivedDb { db, inner: Mutex::new(Inner::default()) };
+        let mut dropped = Vec::new();
         {
             let mut inner = this.lock();
             for d in known {
                 let units: BTreeSet<UnitId> = d.sources().map(|s| s.unit).collect();
+                // A datum goes when any one of its sources goes (E8-05): it is
+                // dropped and reported, never rebuilt from the sources left.
+                let mut gone = false;
+                for u in &units {
+                    gone |= source_gone(&d, *u, this.db.get_unit(*u)?.as_ref());
+                }
+                if gone {
+                    dropped.push(d.id());
+                    continue;
+                }
                 let id = inner.registry.register(d)?;
                 let desc = inner.registry.descriptor(&id).cloned().ok_or(DerivedError::Unknown(id))?;
                 let inputs = this.read_inputs(units)?;
@@ -210,7 +223,7 @@ impl<E: TxnEngine> DerivedDb<E> {
                 }
             }
         }
-        Ok(this)
+        Ok((this, dropped))
     }
 
     /// Reads a unit. The database itself is not handed out: every write goes

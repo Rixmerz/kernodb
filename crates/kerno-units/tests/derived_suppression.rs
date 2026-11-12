@@ -33,6 +33,16 @@
 //!   the release and a clean close it is in none.
 //!
 //! No promise of physical erasure is made or asserted.
+//!
+//! # Sentinels in summaries: declared gap
+//!
+//! The acta asks for sentinel stages for a unit with a vector and with a
+//! summary; only the vector is measured. Summaries (`consolidation.rs`) are
+//! held in memory only: ADR-0020 fixes on-disk bytes for vectors and for
+//! nothing else, so a summary has no record in any file, and there is nothing
+//! on disk to measure. Deleting the unit removes the summary from the registry
+//! (`delete_removes_every_datum_with_the_source`, which builds the
+//! non-persisted data with the same registry), and no file ever held its text.
 
 mod harness;
 
@@ -41,11 +51,12 @@ use std::ops::Bound;
 use std::sync::Arc;
 
 use harness::units::{Target, open_units};
-use kerno_core::contract::{Engine, Options, Snapshot, TestHooks};
+use kerno_core::contract::{Engine, Options, Snapshot, TestHooks, Txn};
 use kerno_storage::KernoDb;
 use kerno_testkit::emulated::Emulated;
 use kerno_testkit::reference::LogEngine;
 use kerno_testkit::vfs::{CrashKind, OpKind, SimVfs};
+use kerno_units::codec::Key;
 use kerno_units::codec::{TAG_DERIVED_DESC, TAG_DERIVED_SRC, TAG_DERIVED_VEC};
 use kerno_units::vector_store::{DerivedKey, VectorRecipe};
 use kerno_units::*;
@@ -270,6 +281,122 @@ fn an_aborted_delete_removes_nothing<E: Target>() {
     dd.close().unwrap();
 }
 
+/// A known descriptor with a deleted, purged or missing source is dropped on
+/// open and reported, never registered nor rebuilt from the sources left.
+fn reopen_drops_a_datum_whose_source_is_gone<E: Target>() {
+    let disk = SimVfs::new(76);
+    let dd = open_dd::<E>(&disk);
+    let (a, b, c) = (make(&dd, b"a1"), make(&dd, b"b"), make(&dd, b"c"));
+    let on_a = build(&dd, &[a]);
+    let on_ab = build(&dd, &[a, b]);
+    let on_b = build(&dd, &[b]);
+    edit(&dd, c, b"c2");
+    edit(&dd, c, b"c3");
+    let on_c3 = build(&dd, &[c]);
+    // Retention purges revision 1 of `c`.
+    let policy = RetentionPolicy::all(RetentionRule::KeepLast(1));
+    dd.run_retention(&policy, RetentionBudget::default()).unwrap();
+    let missing = DerivedDescriptor::new(
+        [RevisionId { unit: UnitId([0xEE; 16]), rev: RevNo(1) }],
+        "summary",
+        1,
+        BTreeMap::new(),
+        [0; 32],
+    )
+    .unwrap();
+    let ids = [on_a, on_ab, on_b, on_c3];
+    let mut known: Vec<DerivedDescriptor> = ids.iter().map(|i| dd.descriptor(i).unwrap()).collect();
+    known.push(missing.clone());
+    let purged = {
+        // The descriptor of the purged datum is read back from before the purge:
+        // rebuild it from its parts, as a caller that kept it would.
+        let d = DerivedDescriptor::new([RevisionId { unit: c, rev: RevNo(1) }], "summary", 1, BTreeMap::new(), [1; 32])
+            .unwrap();
+        known.push(d.clone());
+        d
+    };
+    delete(&dd, a);
+    dd.close().unwrap();
+    let (dd, mut dropped) = DerivedDb::open(open_db::<E>(&disk), known, &compute).unwrap();
+    dropped.sort();
+    let mut want = vec![on_a, on_ab, missing.id(), purged.id()];
+    want.sort();
+    assert_eq!(dropped, want, "exactly the data with a deleted, missing or purged source");
+    for gone in &want {
+        assert_eq!(dd.state(gone), None, "a dropped datum is not registered");
+        assert_eq!(dd.value(gone), None);
+        assert!(dd.rebuild(gone, &compute).is_err(), "and cannot be rebuilt");
+    }
+    for kept in [on_b, on_c3] {
+        assert_eq!(dd.state(&kept), Some(DerivedState::Ready));
+    }
+    dd.close().unwrap();
+}
+
+/// A retention that fails to commit removes nothing from the registry.
+fn a_failed_retention_removes_nothing_from_the_registry<E: Target>() {
+    let disk = SimVfs::new(77);
+    let dd = open_dd::<E>(&disk);
+    let a = make(&dd, b"a1");
+    let old_mem = build(&dd, &[a]);
+    let old_vec = vector(&dd, a);
+    edit(&dd, a, b"a2");
+    edit(&dd, a, b"a3");
+    let before = (dd.state(&old_mem), dd.state(&old_vec));
+    // Retention commits without a sync of its own (decision 12c): fail the write.
+    disk.fail_when(|op| op.kind == OpKind::WriteAt, 1, None);
+    let result = dd.run_retention(&RetentionPolicy::all(RetentionRule::KeepLast(1)), RetentionBudget::default());
+    assert!(disk.fault_injected(), "the fault did not fire");
+    assert!(result.is_err(), "a failed retention went unreported");
+    for kept in [old_mem, old_vec] {
+        assert!(dd.descriptor(&kept).is_some(), "a retention that did not commit removed a registry entry");
+    }
+    assert_eq!((dd.state(&old_mem), dd.state(&old_vec)), before, "and changed no state");
+}
+
+/// A unit that cannot be read does not discard the report of a retention that
+/// committed, nor stop the reconciliation of the other units.
+fn an_unreadable_unit_is_reported_not_fatal<E: Target>() {
+    let disk = SimVfs::new(78);
+    let dd = open_dd::<E>(&disk);
+    let a = make(&dd, b"a1");
+    let mut cs = dd.begin_changeset(ChangeMeta::default()).unwrap();
+    let mut note = || {
+        cs.create(NewUnit { unit_type: "note".into(), schema_version: 1, metadata: vec![], payload: b"n".to_vec() })
+            .unwrap()
+    };
+    let (n, m) = (note(), note());
+    cs.commit().unwrap();
+    let old_vec = vector(&dd, a);
+    let note_vec = vector(&dd, n);
+    let other_vec = vector(&dd, m);
+    edit(&dd, a, b"a2");
+    edit(&dd, a, b"a3");
+    let new_vec = vector(&dd, a);
+    dd.close().unwrap();
+    // Break the note's head revision metadata behind the layer's back.
+    let db = open_db::<E>(&disk);
+    let mut t = db.engine().begin_write().unwrap();
+    for u in [n, m] {
+        t.delete(&Key::RevMeta { unit: u, rev: RevNo(1) }.encode().unwrap()).unwrap();
+    }
+    t.commit().unwrap();
+    db.close().unwrap();
+    let dd = open_dd::<E>(&disk);
+    let policy = RetentionPolicy::all(RetentionRule::KeepLast(1)).with_type("note", RetentionRule::KeepAll);
+    let report =
+        dd.run_retention(&policy, RetentionBudget::default()).expect("a committed retention returns its report");
+    let mut both = vec![n, m];
+    both.sort();
+    assert_eq!(report.unreadable, both, "every unreadable unit is listed, none stops the walk");
+    assert_eq!(report.removed, vec![old_vec], "the readable units are still reconciled");
+    assert!(
+        dd.descriptor(&note_vec).is_some() && dd.descriptor(&other_vec).is_some(),
+        "unreadable units' data are left alone"
+    );
+    assert!(dd.descriptor(&new_vec).is_some());
+}
+
 // ------------------------------------------------------------- survival
 
 /// The sentinel of the vector: the bits of two f32 that spell it.
@@ -373,6 +500,9 @@ macro_rules! engines {
                 deleting_a_relation_removes_no_derived_datum,
                 a_failed_delete_removes_nothing,
                 an_aborted_delete_removes_nothing,
+                reopen_drops_a_datum_whose_source_is_gone,
+                a_failed_retention_removes_nothing_from_the_registry,
+                an_unreadable_unit_is_reported_not_fatal,
             );
         }
     )*};

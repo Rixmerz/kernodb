@@ -27,7 +27,8 @@
 
 use kerno_core::contract::TxnEngine;
 
-use crate::derived::DerivedId;
+use crate::db::Unit;
+use crate::derived::{DerivedDescriptor, DerivedId};
 use crate::derived_stale::{DerivedDb, Inner};
 use crate::error::UnitError;
 use crate::retention::{RetentionBudget, RetentionPolicy, RetentionReport};
@@ -40,6 +41,16 @@ pub struct SuppressionReport {
     pub retention: RetentionReport,
     /// The registry entries dropped because a source revision was purged.
     pub removed: Vec<DerivedId>,
+    /// The units that could not be read while reconciling; their dependents
+    /// were left in the registry. Empty when every unit was read.
+    pub unreadable: Vec<UnitId>,
+}
+
+/// Whether a source of `desc` on `unit` no longer exists: the unit is missing
+/// or deleted, or the revision was purged by retention. `head` is the unit as
+/// read now.
+pub(crate) fn source_gone(desc: &DerivedDescriptor, unit: UnitId, head: Option<&Unit>) -> bool {
+    desc.sources().any(|s| s.unit == unit && head.is_none_or(|u| u.lifecycle == Lifecycle::Deleted || s.rev < u.oldest))
 }
 
 /// Drops from the registry and from every map each datum that has `unit`
@@ -59,7 +70,8 @@ impl<E: TxnEngine> DerivedDb<E> {
     /// derived state never sees the purge without the removal.
     ///
     /// If the retention fails the registry is still reconciled with what did
-    /// commit, and the error is returned.
+    /// commit, and the error is returned. A retention that committed always
+    /// returns its report; units that could not be read are listed in it.
     pub fn run_retention(
         &self,
         policy: &RetentionPolicy,
@@ -67,28 +79,27 @@ impl<E: TxnEngine> DerivedDb<E> {
     ) -> Result<SuppressionReport, UnitError> {
         let mut inner = self.lock();
         let ran = self.db.run_retention(policy, budget);
-        let removed = self.drop_gone_sources(&mut inner)?;
-        Ok(SuppressionReport { retention: ran?, removed })
+        let (removed, unreadable) = self.drop_gone_sources(&mut inner);
+        Ok(SuppressionReport { retention: ran?, removed, unreadable })
     }
 
-    /// Removes the entries with a source that no longer exists.
-    fn drop_gone_sources(&self, inner: &mut Inner) -> Result<Vec<DerivedId>, UnitError> {
+    /// Removes the entries with a source that no longer exists. A unit that
+    /// cannot be read is reported and skipped, never a reason to stop half way.
+    fn drop_gone_sources(&self, inner: &mut Inner) -> (Vec<DerivedId>, Vec<UnitId>) {
         let mut removed = Vec::new();
+        let mut unreadable = Vec::new();
         for unit in inner.registry.source_units() {
-            let head = self.db.get_unit(unit)?;
+            let Ok(head) = self.db.get_unit(unit) else {
+                unreadable.push(unit);
+                continue;
+            };
             for id in inner.registry.dependents_of_unit(unit) {
-                let gone = inner.registry.descriptor(&id).is_some_and(|d| {
-                    d.sources().any(|s| {
-                        s.unit == unit
-                            && head.as_ref().is_none_or(|u| u.lifecycle == Lifecycle::Deleted || s.rev < u.oldest)
-                    })
-                });
-                if gone {
+                if inner.registry.descriptor(&id).is_some_and(|d| source_gone(d, unit, head.as_ref())) {
                     inner.forget(&id);
                     removed.push(id);
                 }
             }
         }
-        Ok(removed)
+        (removed, unreadable)
     }
 }

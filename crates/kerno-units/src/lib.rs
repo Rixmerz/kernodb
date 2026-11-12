@@ -20,7 +20,7 @@
 //! learned-state store of the result cache ([`cache`]). E7-01 adds the associative
 //! query model and its reference path ([`assoc`]); E7-02 its indexed path and its
 //! plan ([`planner`]). E8-04 persists vectors as derived data, layer version 2
-//! ([`vector_store`], ADR-0020). This crate
+//! ([`vector_store`], ADR-0020). E8-06 adds summaries as derived data ([`consolidation`]). This crate
 //! stays separate from `kerno-storage`.
 
 pub mod assoc;
@@ -28,6 +28,7 @@ pub mod assoc_rank;
 pub mod cache;
 pub mod clock;
 pub mod codec;
+pub mod consolidation;
 pub mod db;
 pub mod derived;
 pub mod derived_stale;
@@ -58,6 +59,7 @@ pub use cache::{
 };
 pub use clock::{Clock, CounterIds, FixedClock, SystemClock, UnitIdSource, UuidV7Source};
 pub use codec::{ChangeSetRecord, CsMember, Key, LayerMeta, Record, RevisionMeta, UnitHead};
+pub use consolidation::{ConsolidationError, KIND_PARAM, Summarizer, TruncatingSummarizer, open_summaries};
 pub use db::{
     ChangeMeta, ChangeSet, CommitInfo, CreatedUnit, DEFAULT_MAX_CHANGESET_OPS, MAX_POLICY_UNIT_TYPE_LEN, NewUnit,
     Relation, Unit, UnitConfig, UnitDb, UnitSnapshot, UnitUpdate,
