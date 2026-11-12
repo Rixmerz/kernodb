@@ -535,9 +535,10 @@ fn watch_for_deadlocks() {
 #[cfg(not(feature = "deadlock_detection"))]
 fn watch_for_deadlocks() {}
 
-/// 10^4 commits from four writers while the file system yields and sleeps at
-/// random in front of the WAL's writes and syncs: leadership changes hands
-/// at every interleaving the delays produce. Every commit is acknowledged
+/// Four writers commit 1 500 (default groups) and 1 000 (groups of 3) times
+/// each, 6 000 and 4 000 commits in the two runs, while the file system
+/// yields and sleeps at random in front of the WAL's writes and syncs:
+/// leadership changes hands at every interleaving the delays produce. Every commit is acknowledged
 /// once with a contiguous sequence, and nothing deadlocks (the writers have a
 /// deadline, and with `--features deadlock_detection` parking_lot watches the
 /// engine's locks).

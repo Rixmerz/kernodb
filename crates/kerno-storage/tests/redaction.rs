@@ -94,7 +94,18 @@ fn forms(bytes: &[u8]) -> Vec<(&'static str, String)> {
     forms.into_iter().map(|(n, f)| (n, norm(&f))).collect()
 }
 
-/// Which sentinels and forms `text` contains.
+/// Shortest run of a sentinel that counts as a fragment of it (H-6).
+const FRAGMENT: usize = 8;
+
+/// The forms of a fragment. The text forms of bytes that are not UTF-8 would
+/// be replacement characters, which say nothing about the bytes.
+fn fragment_forms(bytes: &[u8]) -> Vec<(&'static str, String)> {
+    let utf8 = std::str::from_utf8(bytes).is_ok();
+    forms(bytes).into_iter().filter(|(form, _)| utf8 || !form.starts_with("text")).collect()
+}
+
+/// Which sentinels, whole or in fragments of `FRAGMENT` bytes or more, and
+/// which forms `text` contains.
 fn find_sentinels(text: &str) -> Vec<String> {
     let text = norm(text);
     let mut hits = Vec::new();
@@ -102,6 +113,13 @@ fn find_sentinels(text: &str) -> Vec<String> {
         for (form, needle) in forms(s.bytes) {
             if text.contains(&needle) {
                 hits.push(format!("{} as {form}", s.name));
+            }
+        }
+        for window in s.bytes.windows(FRAGMENT) {
+            for (form, needle) in fragment_forms(window) {
+                if text.contains(&needle) {
+                    hits.push(format!("a fragment of {} as {form}", s.name));
+                }
             }
         }
     }
@@ -578,6 +596,27 @@ fn detector_finds_every_form_of_every_sentinel() {
             assert!(!find_sentinels(&wrapped).is_empty(), "{}: not found in {wrapped:?}", s.name);
         }
     }
+    // H-6: a fragment of a key or a value, in each form, is found too; one
+    // byte short of `FRAGMENT` is not.
+    for s in SENTINELS {
+        let part = &s.bytes[2..2 + FRAGMENT];
+        let part_owned = part.to_vec();
+        let mut renderings = vec![
+            format!("{part_owned:?}"),
+            format!("{part_owned:x?}"),
+            part.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+            part.iter().map(|b| format!("\\x{b:02x}")).collect::<String>(),
+        ];
+        if let Ok(text) = std::str::from_utf8(part) {
+            renderings.push(text.to_string());
+        }
+        for r in renderings {
+            let wrapped = format!("corruption detected: 000007.sst: key {r} is missing (rule SST-O3)");
+            assert!(!find_sentinels(&wrapped).is_empty(), "{}: fragment not found in {wrapped:?}", s.name);
+        }
+    }
+    let short = String::from_utf8_lossy(&KEY_TEXT.bytes[..FRAGMENT - 1]).into_owned();
+    assert!(find_sentinels(&short).is_empty());
     let clean = "corruption detected: 000007.sst: referenced by the MANIFEST but missing at offset 4096, \
                  crc 0x1f2e3d4c, entries 55, rule SST-O3";
     assert!(find_sentinels(clean).is_empty());
