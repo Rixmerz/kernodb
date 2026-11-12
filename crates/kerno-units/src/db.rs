@@ -1798,7 +1798,7 @@ mod accessor_tests {
         // tables stay below the L0 compaction trigger, so only the call
         // under test compacts them. Only the 10 tombstones inside the range
         // are dropped: unbounded ends would drop 22, swapped ends none, and
-        // an included end (or excluded start) would take key 20's table too.
+        // an included end would take key 20's table too.
         db.hook_compact_range(Bound::Unbounded, Bound::Unbounded).unwrap();
         db.hook_wait_idle().unwrap();
         db.raw_commit((10..20u8).map(|j| (key(j), None)).collect()).unwrap();
