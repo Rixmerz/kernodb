@@ -175,6 +175,29 @@ fn an_aborted_change_set_leaves_no_count<E: Target>() {
     clean(&db, "after abort");
 }
 
+/// A create refused at encode for its provenance (an `Imported` source of
+/// zero bytes) leaves no count in the open change set: a later valid write
+/// and commit of the same change set must leave both ends readable and the
+/// store clean.
+fn a_refused_create_leaves_no_count<E: Target>() {
+    let db = open::<E>();
+    let u = units(&db, 3);
+    let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
+    let bad = RelationProvenance::Imported { source: vec![] };
+    assert!(cs.create_relation(u[0], u[1], "cites", bad).is_err(), "the encode refuses the provenance");
+    cs.create_relation(u[1], u[2], "cites", RelationProvenance::Declared).unwrap();
+    cs.commit().unwrap();
+    let snap = db.snapshot().unwrap();
+    for (unit, dir, want) in
+        [(u[0], Direction::Out, 0), (u[1], Direction::In, 0), (u[1], Direction::Out, 1), (u[2], Direction::In, 1)]
+    {
+        let n = snap.relations_of(unit, dir, None).expect("relations_of succeeds").len();
+        assert_eq!(n, want, "{unit:?} {dir:?}");
+    }
+    assert_eq!(count_records(&db).len(), 2, "only the counts of the one relation written");
+    clean(&db, "after a refused create and a valid write");
+}
+
 // ---------------------------------------------------------------- K1
 
 /// The answer of every read from `(unit, dir)`, typed and untyped, is the
@@ -658,6 +681,10 @@ macro_rules! engines {
             #[test]
             fn deleting_a_legacy_relation_counts_what_is_left() {
                 super::deleting_a_legacy_relation_counts_what_is_left::<E>();
+            }
+            #[test]
+            fn a_refused_create_leaves_no_count() {
+                super::a_refused_create_leaves_no_count::<E>();
             }
             #[test]
             fn export_import_keeps_the_counts() {
