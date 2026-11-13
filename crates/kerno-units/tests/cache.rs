@@ -139,7 +139,7 @@ fn a_commit_invalidates_the_cached_result_of_an_earlier_snapshot<E: Target>() {
     let outcome = snap.query(filter).unwrap();
     let before = deps_of(&snap, true);
     cache
-        .create(CacheEntry::new(fp, uq.clone(), before, CachedResult::Units(outcome.units.clone()), ev).unwrap())
+        .create(CacheEntry::new(fp, uq.clone(), before, CachedResult::Units(outcome.units.clone()), ev, 1_000).unwrap())
         .unwrap();
     cache.activate(&fp).unwrap();
 
@@ -172,7 +172,7 @@ fn a_commit_invalidates_the_cached_result_of_an_earlier_snapshot<E: Target>() {
     // sequence moves and the entry of the old snapshot is not served.
     let outcome = after.query(filter).unwrap();
     cache
-        .create(CacheEntry::new(fp, uq.clone(), now, CachedResult::Units(outcome.units.clone()), ev).unwrap())
+        .create(CacheEntry::new(fp, uq.clone(), now, CachedResult::Units(outcome.units.clone()), ev, 1_000).unwrap())
         .unwrap();
     cache.activate(&fp).unwrap();
     db.rebuild_index().unwrap();
@@ -185,7 +185,7 @@ fn a_commit_invalidates_the_cached_result_of_an_earlier_snapshot<E: Target>() {
         other => panic!("expected Invalidated, got {other:?}"),
     }
     cache
-        .create(CacheEntry::new(fp, uq.clone(), rebuilt_deps, CachedResult::Units(outcome.units), ev).unwrap())
+        .create(CacheEntry::new(fp, uq.clone(), rebuilt_deps, CachedResult::Units(outcome.units), ev, 1_000).unwrap())
         .unwrap();
     cache.activate(&fp).unwrap();
     assert!(matches!(cache.lookup(&fp, &uq, &rebuilt_deps), Lookup::Hit(_)));
@@ -197,7 +197,7 @@ fn a_commit_invalidates_the_cached_result_of_an_earlier_snapshot<E: Target>() {
     assert_ne!(rfp, fp);
     let rows = rebuilt.query_relations(&q).unwrap().relations;
     let rdeps = deps_of(&rebuilt, false);
-    cache.create(CacheEntry::new(rfp, rq.clone(), rdeps, CachedResult::Relations(rows), ev).unwrap()).unwrap();
+    cache.create(CacheEntry::new(rfp, rq.clone(), rdeps, CachedResult::Relations(rows), ev, 1_000).unwrap()).unwrap();
     cache.activate(&rfp).unwrap();
     assert!(matches!(cache.lookup(&rfp, &rq, &rdeps), Lookup::Hit(_)));
     let moved = Dependencies { commit_seq: CommitSeq(rdeps.commit_seq.0 + 1), ..rdeps };
@@ -309,7 +309,7 @@ fn no_filter_literal_in_any_transition_record_at_any_level<E: Target>() {
 
         let ev = evidence_from(&db.observer().stats());
         for (fp, query, result, deps) in jobs {
-            let entry = CacheEntry::new(fp, query, deps, result, ev).unwrap();
+            let entry = CacheEntry::new(fp, query, deps, result, ev, 1_000).unwrap();
             reported.push(fp);
             drive(&cache, fp, &entry, deps, &mut text);
         }
@@ -318,14 +318,22 @@ fn no_filter_literal_in_any_transition_record_at_any_level<E: Target>() {
         let rel_deps = deps_of(&snap, false);
         let any_units = || CachedQuery::Units(UnitFilter::default());
         let bad = [
-            CacheEntry::new(units_fp, any_units(), rel_deps, CachedResult::Units(Vec::new()), ev),
-            CacheEntry::new(units_fp, any_units(), deps_of(&snap, true), CachedResult::Relations(Vec::new()), ev),
+            CacheEntry::new(units_fp, any_units(), rel_deps, CachedResult::Units(Vec::new()), ev, 1_000),
+            CacheEntry::new(
+                units_fp,
+                any_units(),
+                deps_of(&snap, true),
+                CachedResult::Relations(Vec::new()),
+                ev,
+                1_000,
+            ),
             CacheEntry::new(
                 units_fp,
                 CachedQuery::Relations(relation_query(ids[0])),
                 deps_of(&snap, true),
                 CachedResult::Units(Vec::new()),
                 ev,
+                1_000,
             ),
             CacheEntry::new(
                 units_fp,
@@ -333,6 +341,7 @@ fn no_filter_literal_in_any_transition_record_at_any_level<E: Target>() {
                 deps_of(&snap, true),
                 CachedResult::Units(Vec::new()),
                 Evidence { observations: 0, window: Duration::ZERO },
+                1_000,
             ),
         ];
         for r in bad {

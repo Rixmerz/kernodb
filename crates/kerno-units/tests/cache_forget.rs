@@ -45,6 +45,7 @@ fn warmed<E: Target>(db: &UnitDb<E>, f: &UnitFilter) -> Vec<Unit> {
 fn a_deleted_unit_is_not_served_from_the_cache<E: Target>() {
     let db = open::<E>();
     let ids = seed(&db);
+    db.observer().set_level(ObservationLevel::Fingerprint).unwrap(); // evidence for an entry
     db.result_cache().set_enabled(true);
     let f = everything();
     let before = warmed(&db, &f);
@@ -90,6 +91,7 @@ fn a_retention_purge_is_not_served_from_the_cache<E: Target>() {
         cs.update(ids[0], upd, None).unwrap();
         cs.commit().unwrap();
     }
+    db.observer().set_level(ObservationLevel::Fingerprint).unwrap(); // evidence for an entry
     db.result_cache().set_enabled(true);
     let f = everything();
     warmed(&db, &f);

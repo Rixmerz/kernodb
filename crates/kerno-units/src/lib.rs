@@ -60,8 +60,8 @@ pub use assoc::{
 };
 pub use cache::{
     CacheConfig, CacheEntry, CacheError, CacheFallbackCause, CacheStats, CachedQuery, CachedResult, DeleteReason,
-    Dependencies, Dependency, Evidence, Lookup, MissCause, OPTIMIZATION_VERSION, ResultCache, Switch, Transition,
-    TransitionRecord,
+    Dependencies, Dependency, Evidence, Lookup, MissCause, OPTIMIZATION_VERSION, Peek, PeekHit, ResultCache, Switch,
+    Transition, TransitionRecord,
 };
 pub use clock::{Clock, CounterIds, FixedClock, SystemClock, UnitIdSource, UuidV7Source};
 pub use codec::{ChangeSetRecord, CsMember, Key, LayerMeta, Record, RevisionMeta, UnitHead};
@@ -90,7 +90,7 @@ pub use observation::{
 pub use payload::{
     ContentHash, HashAlg, MAX_PAYLOAD_LEN, PayloadDecl, PayloadError, PayloadRule, VerifiedPayload, verify_payload,
 };
-pub use plan::{Candidate, Cost, Plan, PlanError, PlanPath, Reason, Unusable, Usability};
+pub use plan::{CacheView, Candidate, Cost, Plan, PlanError, PlanPath, Reason, Unusable, Usability};
 pub use planner::{AssocOutcome, Fallback, FallbackCause, PLANNER_VERSION, RelationsOutcome, Violation};
 pub use retention::{CompactReport, RetentionBudget, RetentionPacing, RetentionPolicy, RetentionReport, RetentionRule};
 pub use suppression::SuppressionReport;

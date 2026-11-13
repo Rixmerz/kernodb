@@ -5,7 +5,7 @@
 | Fecha | 2026-11-13 |
 | Fuente | [Cierre de la Etapa 9](etapa9-cierre.md) §5, los doce puntos, en su orden |
 | Qué es | La lista de los puntos abiertos del cierre con su estado actual. Se actualiza por paquete posterior; el cierre no se edita |
-| Paquete que la abre | **P1** (K1). **P2** actualiza los puntos 3, 4, 5, 6, 10 y 11. Los demás puntos están como los dejó el cierre: «sin cambio» quiere decir que ni P1 ni P2 los tocaron, no que se hayan revisado de nuevo |
+| Paquete que la abre | **P1** (K1). **P2** actualiza los puntos 3, 4, 5, 6, 10 y 11. **P3** cierra los tres trabajos abiertos de la revisión del ADR-0016 y el H-3 de la Etapa 6 (sección «Paquete P3»). Los demás puntos están como los dejó el cierre: «sin cambio» quiere decir que ni P1 ni P2 los tocaron, no que se hayan revisado de nuevo |
 
 | # | Punto del cierre | Estado | Nota |
 |---|---|---|---|
@@ -60,3 +60,16 @@ El límite H-1 de [etapa7-cierre.md](etapa7-cierre.md) (R-2): con 64 relaciones 
 **Mutaciones** ([post9-mutaciones.md](post9-mutaciones.md), P2): Q14 (`compaction.rs`, la compactación deja de quitar los puntos que cubre un rango) deja en rojo la aserción de claves; Q15 (`deleter.rs`, los archivos obsoletos nunca se borran) deja en rojo la de tamaño de las dos pruebas, en todos los perfiles, después de agotar la espera; Q16 (`settled_size` devuelve 0 sin medir) deja en rojo la prueba del arnés que exige que un motor que no reclama falle.
 
 **Límites.** (1) El primer llenado se sigue midiendo una vez, sin esperar: con carga sale mayor y eso solo afloja la cota en esa ejecución, como antes. (2) Con un motor que no reclama, la prueba tarda 30 s más en fallar. (3) Que no haya fallado en 600 ejecuciones con carga no prueba que no pueda fallar: un fondo parado más de 30 s la haría fallar.
+
+## Paquete P3: trabajo abierto del ADR-0016 y H-3
+
+Origen: «Revisión de 2026-11-13» del [ADR-0016](../adr/0016-adaptacion-e-invalidacion.md), punto 4, y H-3 del [cierre de la Etapa 6](etapa6-cierre.md). Mutaciones: [post9-mutaciones.md](post9-mutaciones.md), P3.
+
+| # | Punto | Estado | Qué lo muestra |
+|---|---|---|---|
+| P3-1 | La explicación del plan (`Plan`, `explain_*`) no decía si se consultó la caché ni si se usó estado aprendido | **Resuelto en P3** | `Plan::cache()` (`CacheView`) y `Plan::answering_path()`; `explain_filter` y `explain_relations` lo calculan con `ResultCache::peek` sin tocar la caché. Prueba en los dos motores: `the_plan_says_whether_the_cache_was_consulted_and_whether_learned_state_answers` y `the_plan_does_not_announce_an_entry_that_fails_its_check` (`cache_planner.rs`), que comparan el plan con el `path` y el `source` de la lectura siguiente. `explain_assoc` devuelve `NotApplicable`: la consulta asociativa no consulta la caché |
+| P3-2 | Evidencia de creación constante `{1, 0}` | **Resuelto en P3**, con un cambio de comportamiento | La evidencia es la del observador (`Observer::evidence_of`); sin ella no se crea la entrada, así que no se activa. Con el observador por debajo de `Fingerprint` (su valor por defecto es `Off`) la caché encendida no guarda nada. `observations_never_act_as_authority` y `relation_evidence_comes_from_the_observer` (`cache_planner.rs`) |
+| P3-3 | Las entradas no llevan coste | **Resuelto en P3** | `CacheEntry::cost_ns` (nanosegundos medidos de la ejecución que sustituye), `Transition::Created { evidence, cost_ns }`, `CacheView::Hit { cost_ns }`; `NoCost` si falta. Límite: una sola medida por entrada, no un modelo de coste |
+| P3-4 | `set_key` borra sin registro | **Resuelto en P3** | `Transition::KeyReplaced { entries }` en el registro nuevo. `replacing_the_key_leaves_a_record_of_the_wipe` (`cache_planner.rs`, dos motores) y `set_key_leaves_one_record_of_the_wipe_in_the_new_log` (`cache.rs`) |
+
+**Efecto sobre otras piezas.** El banco `index_bench` sube el observador a `Fingerprint` en el brazo con caché (sin eso la caché no guardaría nada) y por tanto su medida de ese brazo incluye el coste de observar: no es comparable con la de la Etapa 6. Las pruebas `cache_admission`, `cache_forget`, `cache_reversibility` y `cache_sentinels` suben el observador por la misma razón.
