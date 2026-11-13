@@ -21,7 +21,7 @@ in this stage) or **held** (waits for an owner decision; none is held since 2026
 | 3 | Partly (E9-10) | `DerivedChangeSet::replace_vector` replaces a stale vector in the same commit as anything else (`attach_vector`). `rebuild_vector` still returns a new id, but nothing records it. The id still changes with the source revision: that is a format change, which D12 does not decide, so it is not changed in this stage. |
 | 4 | In scope (E9-07) | `AgentMemory::reclaim` calls `DerivedDb::reclaim`. It compacts the live files; the removal stays logical and no physical erasure is promised (ADR-0009, option 3). Test: `reclaim_rewrites_the_live_files_and_leaves_the_logical_state`. |
 | 5 | Declared limit (D8) | Summaries are memory-only; their definitions stay in the catalog (`sum` lines). |
-| 6 | Done in the tree (E9-02, D1 taken 2026-11-13, option 1 of ADR-0005; not merged) | The example keeps its own `UnitIdSource` for short numbers. |
+| 6 | Done (E9-02, D1 taken 2026-11-13, option 1 of ADR-0005; merged 2026-11-13, squash 2697980) | The example keeps its own `UnitIdSource` for short numbers. |
 | 7 | In scope (E9-10) | `RevisionId::first(unit)` replaces the literal revision number. |
 | 8 | In scope (E9-10) | A caller-computed vector goes through `replace_vector`, not through the "recompute" closure. |
 | 9 | In scope (E9-09) | `DerivedDb::search_vectors` builds the `VectorSet` once per batch of queries; `recall_similar` no longer copies the vectors. |
@@ -129,7 +129,7 @@ Sections A and B are the first version's text, as found.
    catalog (line 244). The default `UuidV7Source` would avoid it, at the cost
    of ids no one can type.
 
-   *Now available (E9-02, in the tree, not merged):* `create_public`
+   *Now available (E9-02, merged 2026-11-13):* `create_public`
    on `ChangeSet` and `DerivedChangeSet`, and `public_id` and
    `resolve_public_id` on `UnitDb` and `DerivedDb`, give each unit an opaque public token (`k1_` plus 26 characters) that is
    stable across reopen, export and import and is removed when the unit is

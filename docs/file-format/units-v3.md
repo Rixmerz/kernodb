@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | Normativo desde E9-02, **hecho en el árbol y no fusionado**. Copia las decisiones de [ADR-0005](../adr/0005-identificadores-publicos.md) (opción 1), que manda si hay una discrepancia. Decisiones D-a a D-f del 2026-11-13, tomadas por delegación expresa del propietario |
+| Estado | Normativo desde E9-02, **fusionado el 2026-11-13** (squash `2697980`). Copia las decisiones de [ADR-0005](../adr/0005-identificadores-publicos.md) (opción 1), que manda si hay una discrepancia. Decisiones D-a a D-f del 2026-11-13, tomadas por delegación expresa del propietario |
 | Versión de la capa | `layer_version = 3`, `envelope_version = 1` |
 | Relacionado con | [capa de unidades v1](units-v1.md) (no se edita) y [v2](units-v2.md) (editada solo en tres sitios, por la nueva marca máxima: la fila «Versión de la capa» del encabezado, el tercer punto de §2 y una fila de §8; este documento solo añade), [ADR-0005](../adr/0005-identificadores-publicos.md), [exportación lógica](export-v0-borrador.md), [formato v1 del motor](v1.md) (congelado, sin cambios) |
 
