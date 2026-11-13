@@ -207,7 +207,7 @@ Es un mecanismo para sacar datos y lápidas de los archivos vivos, **no** una ga
 - **Archivos retenidos por instantáneas** (`pinned_files`, `pinned_bytes`): mientras una instantánea o una versión que ella retiene viva, sus tablas siguen en disco con lo que cubrían las lápidas.
 - **Bloques liberados de archivos borrados.** Borrar un archivo no sobrescribe sus bloques; siguen en el medio hasta que el sistema de archivos los reutilice (y un SSD puede conservarlos más).
 - **Memoria y caché.** El motor purga de la caché de bloques las tablas reemplazadas, pero el contenido puede estar aún en la memoria del proceso (valores devueltos, instantáneas, búferes) y en la caché de páginas del sistema operativo.
-- **El WAL.** Se retira solo tras el `FLUSH` de su memtable; `compact_range` rota y vuelca antes de compactar, así que los WAL con datos del rango se borran, pero el borrado tampoco sobrescribe.
+- **El WAL.** Se retira solo tras el `FLUSH` de su memtable; `compact_range` rota y vuelca antes de compactar, así que los WAL con datos del rango se borran, pero el borrado tampoco sobrescribe. Esto vale para la configuración por defecto: con `wal_preallocate` un WAL volcado se sobrescribe con ceros y queda como reserva (sección «WAL preasignado y reciclado»). Eso no es una garantía de borrado: la reserva es un archivo vivo del directorio, y la sobrescritura no alcanza a los bloques que el sistema de archivos o el medio hayan conservado.
 - **Lápidas de punto en el último nivel.** Una tabla con lápidas de punto que un movimiento trivial de segundo plano llevó al último nivel (comportamiento del M0) conserva esas lápidas: `compact_range` no compacta L6 contra sí mismo.
 - **Copias del directorio** hechas fuera del motor y la historia del sistema de archivos.
 
