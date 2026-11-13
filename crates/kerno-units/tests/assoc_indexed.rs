@@ -427,8 +427,6 @@ enum Caught {
     Planner(Unusable),
     /// During it: a hop failed its check or the index reported damage.
     Hop(FallbackCause),
-    /// Not at all (the documented limit, `completeness_is_not_a_query_time_check`).
-    Missed,
 }
 
 struct Damage<E: TxnEngine> {
@@ -463,7 +461,9 @@ fn damages<E: TxnEngine>() -> Vec<Damage<E>> {
             patch: |fx| vec![(out_key(fx.u[0], "t", fx.r[1]), None)],
             changes_data: false,
             small: inconsistent,
-            large: unmirrored,
+            // P1: the end that lost the entry now refuses its own read (count
+            // record), before the mirror check of the other end is reached.
+            large: corrupt,
         },
         Damage {
             name: "missing entry: a mirror that names another unit",
@@ -487,7 +487,9 @@ fn damages<E: TxnEngine>() -> Vec<Damage<E>> {
             },
             changes_data: true,
             small: inconsistent,
-            large: unmirrored,
+            // P1: an entry the count record did not record is refused by the
+            // count before the mirror check is reached.
+            large: corrupt,
         },
         Damage {
             name: "an entry that names the wrong unit",
@@ -528,7 +530,8 @@ fn damages<E: TxnEngine>() -> Vec<Damage<E>> {
             },
             changes_data: false,
             small: inconsistent,
-            large: Caught::Missed,
+            // P1: both entries lost, the counts of both ends still say one.
+            large: corrupt,
         },
         Damage {
             name: "absent index: no outgoing entry at all",
@@ -569,9 +572,7 @@ fn false_answer_is_caught<E: TxnEngine>(d: &Damage<E>, filler: usize) {
     fx.db.observer().set_level(ObservationLevel::Fingerprint).unwrap();
     let plan = snap.explain_assoc(&key, &q).unwrap();
     let out = snap.assoc_query(&q).unwrap();
-    if !matches!(expected, Caught::Missed) {
-        assert_eq!(out.result, want, "{ctx}: the answer is the reference's");
-    }
+    assert_eq!(out.result, want, "{ctx}: the answer is the reference's");
 
     let abandoned = PlanPath::AssocAdjacency;
     let adjacency = plan.candidates()[1];
@@ -599,12 +600,6 @@ fn false_answer_is_caught<E: TxnEngine>(d: &Damage<E>, filler: usize) {
                 (_, other) => panic!("{ctx}: the index path answered {other:?}"),
             }
         }
-        Caught::Missed => {
-            assert_eq!((out.path, out.fallback), (abandoned, None), "{ctx}: nothing flags it");
-            assert_ne!(out.result, want, "{ctx}: and the answer is wrong");
-            let report = fx.db.verify_units().unwrap();
-            assert!(report.rules().contains("UNIT-36"), "{ctx}: only the verifier sees it: {:?}", report.findings);
-        }
     }
 
     // The observation says the same as the outcome.
@@ -631,12 +626,8 @@ fn false_answer_is_caught<E: TxnEngine>(d: &Damage<E>, filler: usize) {
 
 fn false_index_answers_are_detected_and_answered_through_the_fallback<E: TxnEngine>() {
     for d in damages::<E>() {
-        if !matches!(d.small, Caught::Missed) {
-            false_answer_is_caught(&d, 0);
-        }
-        if !matches!(d.large, Caught::Missed) {
-            false_answer_is_caught(&d, 70);
-        }
+        false_answer_is_caught(&d, 0);
+        false_answer_is_caught(&d, 70);
     }
 }
 
@@ -644,9 +635,12 @@ fn false_index_answers_are_detected_and_answered_through_the_fallback<E: TxnEngi
 /// compare, and a store of more than 64 records is more than a probe sees
 /// (acta §5, H-1): the answer is wrong and nothing flags it. A small store
 /// shows the same damage to the planner. The verifier sees it in both.
-fn completeness_is_not_a_query_time_check<E: TxnEngine>() {
+/// A relation created since with both of its entries lost used to be the one
+/// damage nothing flagged on a large store (K1, from both ends). With the
+/// counts (P1) the large store catches it at the hop.
+fn a_relation_lost_with_both_entries_is_caught_by_its_counts<E: TxnEngine>() {
     let missing = damages::<E>().into_iter().find(|d| d.name.contains("has no entries")).unwrap();
-    assert!(matches!((missing.small, missing.large), (Caught::Planner(_), Caught::Missed)));
+    assert!(matches!((missing.small, missing.large), (Caught::Planner(_), Caught::Hop(FallbackCause::Corrupt))));
     false_answer_is_caught(&missing, 0);
     false_answer_is_caught(&missing, 70);
 }
@@ -857,8 +851,8 @@ macro_rules! engine_tests {
                 super::false_index_answers_are_detected_and_answered_through_the_fallback::<E>();
             }
             #[test]
-            fn completeness_is_not_a_query_time_check() {
-                super::completeness_is_not_a_query_time_check::<E>();
+            fn a_relation_lost_with_both_entries_is_caught_by_its_counts() {
+                super::a_relation_lost_with_both_entries_is_caught_by_its_counts::<E>();
             }
             #[test]
             fn a_failure_that_is_not_damage_is_not_hidden() {

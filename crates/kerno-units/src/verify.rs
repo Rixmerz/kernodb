@@ -149,6 +149,11 @@ pub enum CrossRule {
     Unit43,
     /// Token records in a database whose layer mark is below version 3.
     Unit44,
+    /// An adjacency count record (`0x72`) that disagrees with the adjacency
+    /// entries it counts (`units-v4.md`, K1).
+    Unit45,
+    /// Count records in a database whose layer mark is below version 4.
+    Unit46,
 }
 
 impl CrossRule {
@@ -380,6 +385,9 @@ struct State {
     bad_tokens: BTreeSet<[u8; 16]>,
     bad_reverses: BTreeSet<UnitId>,
     first_public_key: Option<Vec<u8>>,
+    /// Adjacency count records that decode, by `(unit, direction, type)`.
+    rel_counts: BTreeMap<(UnitId, u8, String), u64>,
+    first_count_key: Option<Vec<u8>>,
 }
 
 fn key_of(k: Key) -> Vec<u8> {
@@ -492,6 +500,16 @@ impl State {
                     self.decode_error(k, e);
                 }
                 (Ok(_), None) => {}
+            }
+            return;
+        }
+        if k.first() == Some(&crate::adj_count::TAG_REL_COUNT) {
+            self.first_count_key.get_or_insert_with(|| k.clone());
+            match crate::adj_count::decode_record(&k, &v) {
+                Ok(c) => {
+                    self.rel_counts.insert((c.unit, crate::adj_count::dir_byte(c.dir), c.relation_type), c.count);
+                }
+                Err(e) => self.decode_error(k, e),
             }
             return;
         }
@@ -649,6 +667,7 @@ impl State {
         self.check_change_sets();
         self.check_revision_provenance();
         self.check_relations();
+        self.check_rel_counts();
         self.check_index();
         self.check_type_index();
         self.check_public_ids();
@@ -890,6 +909,47 @@ impl State {
         self.relations = relations;
         self.adj_out = adj_out;
         self.adj_in = adj_in;
+    }
+
+    /// UNIT-45 and UNIT-46 (K1): every adjacency count record equals the
+    /// number of adjacency entries of its unit, direction and type, and
+    /// exists only in a database whose mark is at layer 4. A unit with
+    /// entries and no record is not a finding: a database written before
+    /// layer 4 has none (`adj_count.rs`). Entries that do not decode are
+    /// already structure findings, so the comparison is skipped for them.
+    fn check_rel_counts(&mut self) {
+        if let (Some(first), Some(mark)) = (&self.first_count_key, &self.mark)
+            && mark.layer_version < crate::codec::LAYER_VERSION_REL_COUNTS
+        {
+            let first = first.clone();
+            self.cross(
+                CrossRule::Unit46,
+                first,
+                "adjacency count records in a database whose layer mark is below 4".into(),
+            );
+        }
+        if !self.bad_adjacency.is_empty() {
+            return;
+        }
+        let mut actual: BTreeMap<(UnitId, u8, String), u64> = BTreeMap::new();
+        for (unit, ty, _) in self.adj_out.keys() {
+            *actual.entry((*unit, 0u8, ty.clone())).or_insert(0) += 1;
+        }
+        for (unit, ty, _) in self.adj_in.keys() {
+            *actual.entry((*unit, 1u8, ty.clone())).or_insert(0) += 1;
+        }
+        let counts = std::mem::take(&mut self.rel_counts);
+        for ((unit, dir, ty), want) in &counts {
+            let got = actual.get(&(*unit, *dir, ty.clone())).copied().unwrap_or(0);
+            if got != *want {
+                self.cross(
+                    CrossRule::Unit45,
+                    crate::adj_count::count_key(*unit, crate::adj_count::dir_of(*dir), ty),
+                    format!("count record of unit {unit} says {want} adjacency entries, the store has {got}"),
+                );
+            }
+        }
+        self.rel_counts = counts;
     }
 
     fn check_mark(&mut self) {

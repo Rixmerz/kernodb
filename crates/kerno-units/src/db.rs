@@ -76,9 +76,9 @@ use kerno_core::{Durability, MAX_VALUE_LEN};
 use crate::clock::{Clock, SystemClock, UnitIdSource, UuidV7Source};
 use crate::codec::{
     Adjacency, ChangeSetRecord, CsMember, Key, LAYER_MARK_NAME, LAYER_VERSION, LAYER_VERSION_DERIVED,
-    LAYER_VERSION_PUBLIC_IDS, LayerMeta, MAX_CHANGESET_FIELD_LEN, MAX_LAYER_VERSION, MAX_MEMBER_COUNT,
-    MAX_METADATA_LEN, MAX_REV_REF_LEN, MAX_UNIT_TYPE_LEN, RelationRecord, RevisionMeta, TAG_REL_IN, TAG_REL_OUT,
-    UnitHead, valid_relation_type,
+    LAYER_VERSION_PUBLIC_IDS, LAYER_VERSION_REL_COUNTS, LayerMeta, MAX_CHANGESET_FIELD_LEN, MAX_LAYER_VERSION,
+    MAX_MEMBER_COUNT, MAX_METADATA_LEN, MAX_REV_REF_LEN, MAX_UNIT_TYPE_LEN, RelationRecord, RevisionMeta, TAG_REL_IN,
+    TAG_REL_OUT, UnitHead, valid_relation_type,
 };
 use crate::error::{DecodeError, UnitError};
 use crate::payload::{ContentHash, MAX_PAYLOAD_LEN, PAYLOAD_CODEC_OPAQUE, verify_payload};
@@ -566,6 +566,7 @@ impl<E: TxnEngine> UnitDb<E> {
             layer_version,
             derived_ops: 0,
             token_ops: 0,
+            count_ops: 0,
             members: Vec::new(),
             relation_ops: 0,
             touched: BTreeSet::new(),
@@ -828,6 +829,13 @@ impl<E: Engine> UnitSnapshot<E> {
     /// against its `REL` record; a missing record or a disagreement is
     /// `Storage(Corruption)`. The result must equal
     /// [`UnitSnapshot::reference_relations_of`] on the same snapshot (I-32).
+    ///
+    /// The read is never silently short (K1, P1): the entries it scanned are
+    /// compared, per relation type, with the count records of
+    /// [`crate::adj_count`] (one point read for a typed read, one range scan
+    /// of the unit's count records for an untyped one), and a disagreement is
+    /// `Storage(Corruption)`. The limits (a store written before layer 4, a
+    /// count lost with its entries) are in that module.
     pub fn relations_of(
         &self,
         unit: UnitId,
@@ -841,6 +849,9 @@ impl<E: Engine> UnitSnapshot<E> {
         let Some((start, end)) = Key::adjacency_range(tag, unit, relation_type) else {
             return Ok(Vec::new());
         };
+        // K1: the counts the scan must meet, by type (P1).
+        let expected = crate::adj_count::expected(&self.snap, unit, dir, relation_type)?;
+        let mut seen: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
         let mut out = Vec::new();
         scan_all(&self.snap, start, end, |k, v| {
             let (edge, ty) = match Key::decode(k)? {
@@ -857,9 +868,11 @@ impl<E: Engine> UnitSnapshot<E> {
             if here != unit || there != other || rel.relation_type != ty {
                 return Err(corruption(format!("adjacency entry of relation {edge} disagrees with its REL record")));
             }
+            *seen.entry(ty).or_insert(0) += 1;
             out.push(rel);
             Ok(())
         })?;
+        crate::adj_count::compare(unit, &expected, &seen)?;
         Ok(out)
     }
 }
@@ -939,6 +952,9 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     /// Public id records written so far (ADR-0005): they raise the mark to
     /// layer version 3 and always travel with a member.
     pub(crate) token_ops: usize,
+    /// Adjacency count records written so far (P1): they raise the mark to
+    /// layer version 4.
+    pub(crate) count_ops: usize,
     members: Vec<(RevisionId, RevisionKind)>,
     /// Relations created or deleted so far (E4-02): they are not members, but
     /// they count against `max_changeset_ops` and make the change set non-empty.
@@ -1451,6 +1467,10 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         let record =
             RelationRecord { from, to, relation_type: relation_type.to_owned(), created_seq: self.seq, provenance };
         let t = || relation_type.to_owned();
+        // Counts first: a missing record is built from the entries that
+        // exist, and the new ones are not written yet.
+        self.adjust_count(from, Direction::Out, relation_type, 1)?;
+        self.adjust_count(to, Direction::In, relation_type, 1)?;
         let writes = [
             Write::Put(key(Key::Relation { edge })?, record.encode()?),
             Write::Put(
@@ -1477,6 +1497,8 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         };
         let r = RelationRecord::decode(&raw).map_err(|e| context(e, &format!("REL {edge}")))?;
         let t = || r.relation_type.clone();
+        self.adjust_count(r.from, Direction::Out, &r.relation_type, -1)?;
+        self.adjust_count(r.to, Direction::In, &r.relation_type, -1)?;
         let writes = [
             Write::Delete(key(Key::Relation { edge })?),
             Write::Delete(key(Key::RelationOut { unit: r.from, relation_type: t(), edge })?),
@@ -1544,7 +1566,9 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         });
         // The mark goes to version 2 in the transaction of the first derived
         // record, and no writer lowers it (ADR-0020 §S3.4, §S3.5).
-        let wants = if self.token_ops > 0 {
+        let wants = if self.count_ops > 0 {
+            LAYER_VERSION_REL_COUNTS
+        } else if self.token_ops > 0 {
             LAYER_VERSION_PUBLIC_IDS
         } else if self.derived_ops > 0 {
             LAYER_VERSION_DERIVED

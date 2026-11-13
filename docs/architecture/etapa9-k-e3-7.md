@@ -123,3 +123,33 @@ Paquete abierto por el propietario, bajo delegación, después de esta revisión
 | K3 | No se reproduce | `get_unit_checks_oldest_rev`, dos motores |
 | K4 | Abierto, menor | Sin cambio |
 | K5 | Abierto, menor | Sin cambio |
+
+## 9. Resultado de P1 posterior a la Etapa 9 (2026-11-13): K1 desde el extremo que perdió su entrada
+
+Paquete P1, abierto por el propietario bajo delegación después del cierre de la etapa ([etapa9-cierre.md](etapa9-cierre.md) §5, punto 2). §8 dejaba K1 corregido solo desde el extremo que conserva su entrada. Este paquete lo cierra desde el extremo que la perdió. **Sí cambia el formato en disco** (a diferencia de E9-22): se documenta en [units-v4.md](../file-format/units-v4.md).
+
+**Diseño elegido y por qué.** Desde el extremo que perdió su entrada no hay nada que recorrer y nada apunta desde la unidad a sus relaciones, así que ninguna comprobación sin una marca previa puede verlo; recorrer los `REL` costaría más de una lectura por relación devuelta y rompería la ruta normal. Se escoge una marca que el lector compara: un registro `0x72` por `(unidad, dirección, tipo de relación)` con el número de entradas de adyacencia, escrito en la misma transacción que las entradas. Se descartó un total por unidad: un tipo dado exigiría recorrer todos los tipos para comprobar uno.
+
+**Coste en la ruta normal** (documentado en `crates/kerno-units/src/adj_count.rs` y en units-v4 §5):
+
+| Operación | Coste añadido |
+|---|---|
+| `relations_of` con tipo | una lectura puntual (el registro de ese tipo) |
+| `relations_of` sin tipo | un recorrido de rango sobre los registros de esa unidad y dirección (uno por tipo distinto) |
+| crear o borrar una relación | una lectura y una escritura de registro por entrada de adyacencia, en la transacción que ya existe; un recorrido de arranque una sola vez por `(unidad, dirección, tipo)` en una base de antes de la capa 4 |
+
+**Resultado.** Con un conteo que discrepa, `relations_of` devuelve `Storage(Corruption)` y `query_relations` responde por la ruta de referencia con `Fallback` `Corrupt` (la respuesta es la de referencia, completa). `verify_units` añade UNIT-45 (el conteo no es el número de entradas) y UNIT-46 (conteos con marca menor que 4). Pruebas en `crates/kerno-units/tests/rel_counts.rs` y `relations.rs` (`one_adjacency_entry_missing_{small,large}_store`, que antes fijaba la respuesta corta como límite), en los dos motores. Mutaciones en [post9-mutaciones.md](post9-mutaciones.md).
+
+**Compatibilidad.** La marca sube a 4 con el primer conteo; una build de capa 3 o menor rechaza esa base entera (UNIT-16). Un directorio escrito antes (fixture [etapa9-fixtures.md](etapa9-fixtures.md) §6) abre, se lee y verifica limpio sin escribir nada.
+
+**Límites que quedan abiertos, declarados.**
+- Una base escrita antes de la capa 4 no tiene conteos hasta que se crea o borra una relación de ese `(unidad, dirección, tipo)`: hasta entonces **K1 sigue como en §8** para esas relaciones. Cerrarlo del todo exige una migración que recorra todas las relaciones; no se hace porque abrir no escribe (I-18).
+- Una entrada perdida **junto con** su registro de conteo (doble daño) deja una lectura que concuerda consigo misma; `verify_units` ve la entrada que falta (UNIT-36).
+
+| Hallazgo | Estado tras P1 | Evidencia |
+|---|---|---|
+| K1 | **Cerrado desde el extremo que perdió su entrada** para relaciones con conteo (capa 4); abierto para relaciones de antes de la capa 4 sin conteo y para el doble daño | `rel_counts.rs`, `one_adjacency_entry_missing_{small,large}_store`, dos motores |
+| K2 | Sin cambio (§8) | — |
+| K3 | No se reproduce (§8) | — |
+| K4 | **Abierto, menor, sin cambio**: P1 no lo cierra | — |
+| K5 | **Abierto, menor, sin cambio**: P1 no lo cierra (que `get_relation` no compruebe sus entradas sigue igual) | — |
