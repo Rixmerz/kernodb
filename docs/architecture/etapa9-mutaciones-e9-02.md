@@ -20,7 +20,7 @@ Una sola copia del árbol (sin `target` ni `.git`), con su propio directorio de 
 | M08 delete keeps the mapping | `crates/kerno-units/src/db.rs:1089` | `derived.extend(self.plan_token_removal(plan.rev.unit)?);` → `let _ = self.plan_token_removal(plan.rev.unit)?;` | `emulated_log::deleting_a_unit_removes_its_token_like_one_never_issued` | **falla** (10) |
 | M09 import does not restore the token | `crates/kerno-units/src/import.rs:164` | `cs.restore_public_id(u.id, token)?;` → `let _ = (u.id, token);` | `emulated_log::export_carries_tokens_and_import_restores_them` | **falla** (5) |
 | M10 import accepts one token for two units | `crates/kerno-units/src/import.rs:432` | `if !seen.insert(bytes) {` → `if !seen.insert(bytes) && false {` | `emulated_log::import_refuses_one_token_for_two_units` | **falla** (3) |
-| M11 export writes a wrong token | `crates/kerno-units/src/export.rs:133` | `w.0.extend_from_slice(&token.to_bytes());` → `w.0.extend_from_slice(&[7u8; 16]);` | `emulated_log::export_carries_tokens_and_import_restores_them` | **falla** (7) |
+| M11 export writes a wrong token | `crates/kerno-units/src/export.rs:135` | `w.0.extend_from_slice(&token.to_bytes());` → `w.0.extend_from_slice(&[7u8; 16]);` | `emulated_log::export_carries_tokens_and_import_restores_them` | **falla** (7) |
 | M12 public_id skips the reverse check | `crates/kerno-units/src/ids.rs:420` | `if self.unit_of(&token)? != Some(unit) {` → `if false {` | `emulated_log::stored::a_reverse_record_without_its_token_is_corruption_in_public_id` | **falla** (6) |
 | M13 public_id serves a deleted unit | `crates/kerno-units/src/ids.rs:417` | `if !self.is_live(unit)? {` → `if false {` | `emulated_log::stored::cross_a_pair_left_on_a_deleted_unit` | **falla** (4) |
 | M14 resolve serves a deleted unit | `crates/kerno-units/src/ids.rs:436` | `if !self.is_live(unit)? {` → `if false {` | `emulated_log::stored::cross_a_pair_left_on_a_deleted_unit` | **falla** (4) |
@@ -44,7 +44,7 @@ Notas. (1) M25 no tenía prueba que lo detectara: `is_live` pasaba por `get_unit
 
 «falla (n)» es el número de pruebas fallidas, contando los dos motores. Las 28 mutaciones (M01 a M25, M27 a M29; no hay M26) fueron detectadas; ninguna sobrevivió. Cada una se aplicó sobre su propia copia del árbol, con su propio directorio de compilación, y ambos se borraron al terminar.
 
-**Ejecutado en esta ronda**: M12, M13, M14 y M25. **Solo se comprobó el número de línea** (con `grep` sobre el árbol final; todos coinciden, ninguno se desplazó): M01 a M11 y M15 a M24, M27, M28 y M29. Esas filas conservan la salida de su ejecución anterior; ninguna toca código que haya cambiado después, salvo `is_live`, que solo afecta a M12 a M14 y M25.
+**Ejecutado en esta ronda**: M12, M13, M14 y M25. **Solo se comprobó el número de línea** (con `grep` sobre el árbol final; una revisión posterior encontró desplazada la de M11, de `export.rs:133` a `export.rs:135`, y se corrigió; las demás coinciden): M01 a M11 y M15 a M24, M27, M28 y M29. Esas filas conservan la salida de su ejecución anterior; ninguna toca código que haya cambiado después, salvo `is_live`, que solo afecta a M12 a M14 y M25.
 
 ## Líneas FAILED (hasta tres por mutación)
 
