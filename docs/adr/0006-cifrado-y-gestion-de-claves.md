@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | Pendiente |
+| Estado | Pendiente (no aceptado). Si se construye cifrado, el diseño elegido es la opción 1 (AEAD por bloque), decidido el 2026-11-13 por delegación expresa del propietario (D2 de la [acta de la Etapa 9](../architecture/etapa9-acta.md)); nada se implementa, y 1.0 no incluye cifrado (D3) |
 | Fecha | 2026-10-27 (apertura) |
 | Relacionado con | SAD §11.3, D-09, invariante I-28, [threat model](../security/threat-model.md) |
 

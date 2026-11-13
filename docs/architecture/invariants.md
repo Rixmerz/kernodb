@@ -170,9 +170,9 @@ Las promociones de esta sección son por delegación del propietario (D19) y **r
 
 | ID | Invariante | Estado | Pruebas |
 |---|---|---|---|
-| **I-27** | Un token manipulado se rechaza y un token válido no autoriza | **Sin verificar.** Depende de D1 (retenida); E9-02 no existe | — |
-| **I-28** | Las claves no están en el directorio de datos | **No aplica en 1.0** si no hay cifrado (D3, retenida). Lo que se comprueba hoy es que `verify()` no halla archivos desconocidos | `lifecycle_soak.rs` |
-| **I-30** | La exportación lógica es independiente del formato físico y puede reimportarse | **Verificada para el borrador** de exportación. La congelación del formato es D12 (retenida) | `export_import.rs`, `export_physical.rs` (`kerno-units`) |
+| **I-27** | Un token manipulado se rechaza y un token válido no autoriza | **Sin verificar.** D1 tomada el 2026-11-13 (opción 1 de ADR-0005); E9-02 liberado, no fusionado | — |
+| **I-28** | Las claves no están en el directorio de datos | **No aplica en 1.0** si no hay cifrado (D3, tomada el 2026-11-13: sin cifrado en 1.0). Lo que se comprueba hoy es que `verify()` no halla archivos desconocidos | `lifecycle_soak.rs` |
+| **I-30** | La exportación lógica es independiente del formato físico y puede reimportarse | **Verificada para el borrador** de exportación. La congelación del formato no se hace: D12 (tomada el 2026-11-13) la deja para después de D13 y de un uso real fuera del equipo | `export_import.rs`, `export_physical.rs` (`kerno-units`) |
 | **I-44** (antes I-N1, nueva) | La reclamación pública no promete borrado físico y solo retira archivos vivos que ninguna instantánea retiene (ADR-0009, puntos 2 y 3) | **Verificada en pruebas** (E9-07) | `tests/reclaim.rs` |
 | **I-45** (antes I-N2, nueva) | Ninguna función pública de la capa devuelve el motor que guarda | **Verificada** (E9-08e): `grep -rn "pub fn engine" crates/kerno-units/src` sin resultados (T-EN1) | el `grep`; accesores en `accessor_tests` de `db.rs` |
 

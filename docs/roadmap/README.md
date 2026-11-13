@@ -5,7 +5,7 @@ El plan completo, con objetivos y salidas por fase, está en [SAD §16](../archi
 | Fase | Contenido | Estado |
 |---|---|---|
 | 0 / M0 | Spike de almacenamiento, harness, ADR iniciales, invariantes, matriz de fallos | **Cerrada** (2026-10-28): ADR-0001/0002/0003 aceptados — ver checklist |
-| 1 | Núcleo persistente | **En curso** |
+| 1 | Núcleo persistente | **Cerrada** (2026-11-11, según el texto de la sección «Fase 1: plan de trabajo»; [acta E3-00](../architecture/etapa3-acta-e3-00.md)) |
 | 2 | Transacciones y documentos | — |
 | 3 | Versionado (Revision Engine) | **Cerrada** (Etapa 3, 2026-11-04): riesgos abiertos K-E3-8 y K-E3-9 ([cierre](../architecture/etapa3-cierre.md)) |
 | 4 | Seguridad y ciclo de vida | — |
@@ -34,7 +34,7 @@ El plan completo, con objetivos y salidas por fase, está en [SAD §16](../archi
 | 4 | Harness de pruebas y benchmark de M0 | Hecho (+ CI en `.github/workflows/ci.yml`) |
 | 5 | Spike B+ tree frente a LSM con resultados reproducibles | Hecho |
 | 6 | Aprobar formato y semántica de commit antes de crear bases de usuarios | Semántica de commit (ADR-0002) y reglas de formato (ADR-0003) aceptadas; el formato v1 concreto se especifica y congela en Fase 1 |
-| 7 | Núcleo persistente solo tras cerrar M0 | M0 cerrado; Fase 1 en curso |
+| 7 | Núcleo persistente solo tras cerrar M0 | M0 cerrado; Fase 1 cerrada (2026-11-11) |
 
 ## Fase 1: plan de trabajo
 
@@ -113,16 +113,16 @@ Después de la Fase 1 el trabajo se organiza por las etapas de la [especificaci�
 
 ### Etapa 9 — Endurecimiento
 
-- **Acta de entrada:** [etapa9-acta.md](../architecture/etapa9-acta.md). **Aprobada por delegación del propietario el 2026-11-12, revocable.** Fija los paquetes E9-00 a E9-CL, los umbrales antes de medir y las decisiones D1 a D22. Las decisiones que cambian formato o una promesa a usuarios (D1 a D4, D12, D15 y D16) quedan **retenidas para el propietario en persona**; hasta entonces no se escribe código de identificadores, cifrado, congelación de formato ni texto de licencia.
+- **Acta de entrada:** [etapa9-acta.md](../architecture/etapa9-acta.md). **Aprobada por delegación del propietario el 2026-11-12, revocable.** Fija los paquetes E9-00 a E9-CL, los umbrales antes de medir y las decisiones D1 a D23. Las decisiones que cambian formato o una promesa a usuarios (D1 a D4, D12, D15 y D16) se **retuvieron para el propietario en persona el 2026-11-12** y quedan **tomadas el 2026-11-13 por delegación expresa del propietario, revocables** (acta §8.1). Siguen pendientes, sin ser decisiones por delegación: la aprobación del propietario del texto del CLA antes de aceptar cualquier contribución externa, la revisión de G1 a G7 de ADR-0016 y la declaración de 1.0, que solo ocurre después de D13 y de un uso real fuera del equipo.
 
 - **E9-00 (puerta de entrada) hecho el 2026-11-12:** ADR-0012 aceptado en su archivo y en el [índice de ADR](../adr/README.md) (D5); cuerpo de ADR-0014 alineado con su encabezado ([acta §2.3](../architecture/etapa9-acta.md), e). Las decisiones de [acta §8.1](../architecture/etapa9-acta.md) quedan registradas aquí tal como las fijó el acta. Las tomadas por delegación son revocables por el propietario; las retenidas quedan para el propietario en persona.
 
 | Decisión | Estado | Opción registrada |
 |---|---|---|
-| D1 | Retenida | Ninguna. La recomendación (a) no se aplica |
-| D2 | Retenida | Ninguna |
-| D3 | Retenida | Ninguna. Recomendación (b): sin cifrado en 1.0 |
-| D4 | Retenida | Ninguna. Recomendación (a): sin integridad autenticada en 1.0 |
+| D1 | Tomada el 2026-11-13 (retenida el 2026-11-12) | (a): token aleatorio opaco con mapeo persistido (opción 1 de ADR-0005). E9-02 liberado, no hecho |
+| D2 | Tomada el 2026-11-13 (retenida el 2026-11-12) | (a): AEAD por bloque, como diseño si se construye cifrado. Nada se implementa |
+| D3 | Tomada el 2026-11-13 (retenida el 2026-11-12) | (b): sin cifrado en 1.0; 1.0 no promete confidencialidad en reposo ni gestión de claves, y lo declara |
+| D4 | Tomada el 2026-11-13 (retenida el 2026-11-12) | (a): sin integridad autenticada en 1.0; el límite queda en el threat model y `verify()` con `deep` es el recurso. H-2 cerrado como límite aceptado y documentado |
 | D5 | Tomada | (a): ADR-0012 aceptado tal como está. E9-00 lo escribe en su archivo |
 | D6 | Tomada | (a): informe sin umbrales frente a SQLite |
 | D7 | Tomada | (a): sin límite absoluto de latencia |
@@ -130,11 +130,11 @@ Después de la Fase 1 el trabajo se organiza por las etapas de la [especificaci�
 | D9 | Tomada | (a): crates actuales, sin fachada; disposiciones de §2.4 |
 | D10 | Tomada en lo que es el borrador | (a): borrador de exportación, sin congelar |
 | D11 | Tomada | (a): fixtures de v1, fixture de ADR-0020 reconstruido o declarado ausente |
-| D12 | Retenida | Ninguna. Recomendación (b): declarar 1.0 después de D13 y de un uso real fuera del equipo |
+| D12 | Tomada el 2026-11-13 (retenida el 2026-11-12) | (b): 1.0 se declara solo después de D13 y de un uso real fuera del equipo. **1.0 no se declara ahora** |
 | D13 | Tomada como criterio | (a): la lista de requisitos de §8 |
 | D14 | Tomada | (a): `Reclaim` público y `reclaim()` con el texto de ADR-0009 |
-| D15 | Retenida | Ninguna. Recomendación (b): licencia amplia con derecho a relicenciar |
-| D16 | Retenida | Ninguna. Recomendación (b): revisar G1 a G7 antes de confirmar |
+| D15 | Tomada el 2026-11-13 como dirección (retenida el 2026-11-12) | (b): licencia amplia no exclusiva con derecho a relicenciar. El texto legal no está escrito y necesita la aprobación del propietario antes de aceptar cualquier contribución externa |
+| D16 | Tomada el 2026-11-13 (retenida el 2026-11-12) | (b): ADR-0016 queda pendiente de confirmación hasta revisar G1 a G7; la revisión corre como tarea aparte |
 | D17 | Tomada | (a): cláusula de C-4 sin reescribir; contradicción registrada |
 | D18 | Tomada | (a): todas las clases en la opción 1; sin función de copia declarada |
 | D19 | Tomada | (a): I-28 no aplica en 1.0; I-42 e I-43 promovidas si E9-CL las verifica; I-29 para `kerno-units` si E9-03 pasa |
@@ -143,7 +143,7 @@ Después de la Fase 1 el trabajo se organiza por las etapas de la [especificaci�
 | D22 | Tomada | (a): umbrales de §5 sin cambios antes de congelar |
 | D23 | Tomada por delegación (E9-08f) | Escritura cruda y ganchos de prueba de `UnitDb` solo bajo la característica `test-support` |
 
-- **Cierre (E9-CL) redactado el 2026-11-13:** [cierre de la Etapa 9](../architecture/etapa9-cierre.md). Todos los paquetes están fusionados **salvo E9-02 (identificadores públicos), retenido por D1**; I-27 queda **sin verificar**. D1, D2, D3, D4, D12, D15 y D16 siguen **retenidas para el propietario en persona**: no se declara 1.0 (D12), no hay cifrado (D2, D3), H-2 sigue como límite (D4) y ADR-0016 queda pendiente de confirmación (D16). Las demás decisiones (D5 a D11, D13, D14, D17 a D23) las tomó el delegado del propietario y son **revocables**. I-29 (para `kerno-units`), I-42 e I-43 promovidas por D19, e I-44 e I-45 nuevas, también por delegación y revocables ([invariantes](../architecture/invariants.md) §2.7). SAD en versión 0.4.0. Pendientes y límites conocidos, no cerrados: K1 (desde el extremo que perdió su entrada), K4 y K5 abiertos; fuzzing de `wal`, `manifest` y `open` con pocas ejecuciones y la máquina no libre; P1 y P2 medidos sin la máquina en reposo; una prueba de storage posiblemente intermitente; y un estado inconsistente de la Fase 1 en la tabla de fases de este fichero (dice «En curso», el texto la da por cerrada), que queda fuera de esta sección ([cierre](../architecture/etapa9-cierre.md) §5). **El cierre espera la aprobación del propietario.**
+- **Cierre (E9-CL) redactado el 2026-11-13:** [cierre de la Etapa 9](../architecture/etapa9-cierre.md). Todos los paquetes están fusionados **salvo E9-02 (identificadores públicos), liberado por D1 el 2026-11-13 y no fusionado**; I-27 queda **sin verificar**. D1, D2, D3, D4, D12, D15 y D16, retenidas el 2026-11-12, quedan **tomadas el 2026-11-13 por delegación expresa del propietario, revocables**: no se declara 1.0 (D12), no hay cifrado (D2, D3), H-2 queda cerrado como límite aceptado (D4) y ADR-0016 queda pendiente de confirmación (D16). Las demás decisiones (D5 a D11, D13, D14, D17 a D23) las tomó el delegado del propietario y son **revocables**. I-29 (para `kerno-units`), I-42 e I-43 promovidas por D19, e I-44 e I-45 nuevas, también por delegación y revocables ([invariantes](../architecture/invariants.md) §2.7). SAD en versión 0.4.1. Pendientes y límites conocidos, no cerrados: K1 (desde el extremo que perdió su entrada), K4 y K5 abiertos; fuzzing de `wal`, `manifest` y `open` con pocas ejecuciones y la máquina no libre; P1 y P2 medidos sin la máquina en reposo; una prueba de storage posiblemente intermitente; y la fecha de la Fase 1 en la tabla de fases de este fichero, que estaba en «en curso» y se corrigió a «Cerrada» (2026-11-11, la del texto; [cierre](../architecture/etapa9-cierre.md) §5, punto 1). **El cierre espera la aprobación del propietario.**
 - **Entregables:** IDs públicos (ADR-0005), cifrado y claves (ADR-0006), auditoría minimizada, exportación/importación y migraciones con fixtures de versiones previas, fuzzing de entradas externas, pruebas de estrés, benchmarks comparativos con SQLite y motores de referencia (SAD Fases 4 y 6).
 - **Aceptación:** límites y garantías documentados; fallos críticos resueltos o marcados como bloqueantes; I-27…I-30 verificados.
 - **Adelanto (en paralelo con la Etapa 7):** [acta](../architecture/etapa9-adelanto-acta.md), aprobada por delegación del propietario el 2026-11-11. Paquetes E9A-00a a E9A-06. **Cierre del adelanto (E9A-06) hecho el 2026-11-12:** [cierre](../architecture/etapa9-adelanto-cierre.md). Ningún hallazgo bloqueante abierto; I-29 promovida para `kerno-storage`, aprobada por delegación del propietario el 2026-11-12 y revocable. I-27, I-28 e I-30 siguen pendientes (Fase 4).

@@ -4,9 +4,9 @@
 |---|---|
 | Fecha | 2026-11-13 |
 | Paquete | E9-CL de [la acta de la Etapa 9](etapa9-acta.md) (§3) |
-| Estado | **Cierre redactado, pendiente de aprobación del propietario.** La etapa queda cerrada como trabajo de ingeniería **con E9-02 retenido** y con las decisiones D1, D2, D3, D4, D12, D15 y D16 sin tomar. Lo que depende de ellas se declara «sin verificar» (§3), no hecho |
+| Estado | **Cierre redactado, pendiente de aprobación del propietario.** La etapa queda cerrada como trabajo de ingeniería **con E9-02 liberado y no fusionado**. Las decisiones D1, D2, D3, D4, D12, D15 y D16, retenidas el 2026-11-12, quedan **tomadas el 2026-11-13 por delegación expresa del propietario**, revocables (§2). Lo que depende de ellas y no está hecho se declara «sin verificar» o «sin hacer» (§3), no hecho |
 | Alcance de este documento | Documentación. No cambia código ni pruebas. Compara los documentos de cada paquete con el repositorio y deja escritos los límites que cada uno declara; **no repite** las mediciones ni la revisión de cada paquete |
-| Lo que no se afirma | Que la revisión independiente de cada paquete (acta §4.10) se haya rehecho aquí: sus registros están en cada paquete. Que haya 1.0: declararlo es D12, retenida |
+| Lo que no se afirma | Que la revisión independiente de cada paquete (acta §4.10) se haya rehecho aquí: sus registros están en cada paquete. Que haya 1.0: no se declara; D12 (tomada el 2026-11-13) lo condiciona a D13 y a un uso real fuera del equipo |
 
 ## 1. Estado de los paquetes, comprobado en el repositorio
 
@@ -16,7 +16,7 @@ Se comprobó con `git log` y con los ficheros. Todos los paquetes están fusiona
 |---|---|---|
 | E9-00 Puerta de entrada | Fusionado | ADR-0012 y ADR-0014 alineados; decisiones en el roadmap |
 | E9-01 Fixtures | Fusionado | [etapa9-fixtures.md](etapa9-fixtures.md); `crates/kerno-units/tests/layer_fixtures.rs`; `tests/vectors/derived-v2/` |
-| **E9-02 Identificadores públicos** | **Retenido (D1). No existe** | `crates/kerno-units/src/ids.rs` y `tests/public_ids.rs` no existen. I-27 queda **sin verificar** |
+| **E9-02 Identificadores públicos** | **Liberado por D1 (2026-11-13), no hecho. No existe** | `crates/kerno-units/src/ids.rs` y `tests/public_ids.rs` no existen. Es un paquete propio que se hace después; I-27 queda **sin verificar** hasta que se fusione |
 | E9-03 Auditoría minimizada | Fusionado | [etapa9-auditoria.md](etapa9-auditoria.md); `tests/redaction_units.rs` |
 | E9-04 a E9-06 Exportación | Fusionados | `src/export.rs`, `src/import.rs`, `tests/export_import.rs`, `tests/export_physical.rs`; [borrador](../file-format/export-v0-borrador.md) |
 | E9-07 Reclamación pública | Fusionado | trait `Reclaim` en `kerno-core/src/contract.rs`; `src/reclaim.rs`; `tests/reclaim.rs` |
@@ -39,16 +39,17 @@ Se comprobó con `git log` y con los ficheros. Todos los paquetes están fusiona
 
 **Tomadas por delegación del propietario (2026-11-12). Todas revocables por él:** D5, D6, D7, D8, D9, D10 (en lo que es el borrador), D11, D13 (como criterio), D14, D17, D18, D19, D20, D21, D22 y D23. La tabla con la opción de cada una está en [acta §8.1](etapa9-acta.md). Si el propietario revoca una, lo que dependa de ella se revisa; ninguna cambia el formato en disco.
 
-**Retenidas para el propietario en persona:** D1, D2, D3, D4, D12, D15 y D16. No se tomó ninguna, ni se escribió código ni texto que las presuponga:
+**Retenidas el 2026-11-12 y tomadas el 2026-11-13 por delegación expresa del propietario, revocables** (el propietario, en persona, pidió al delegado tomar la mejor decisión en cada punto pendiente). Cada una se toma con la opción que recomendaba la acta. Lo que queda sin verificar o sin hacer:
 
-| Decisión | Qué queda **sin verificar** o sin hacer |
-|---|---|
-| D1 | E9-02 (identificadores públicos); I-27; ADR-0005 sigue Propuesto |
-| D2, D3 | Cifrado y claves; K-1 a K-4 de ADR-0009 sin medir; la lista de requisitos de 1.0 (D13) no puede darse por definitiva |
-| D4 | H-2: un filtro reescrito con CRC válido (§5 de este documento y threat model §6.6); la ranura de 40 bytes |
-| D12 | Declarar 1.0, congelar el formato de exportación, prometer semver |
-| D15 | Texto del CLA; no se acepta ninguna contribución externa |
-| D16 | ADR-0016 figura como aceptado en su archivo, pero queda **pendiente de confirmación**: el propietario pidió revisar G1 a G7. Nada de la etapa depende de él |
+| Decisión | Opción tomada | Qué queda **sin verificar** o sin hacer |
+|---|---|---|
+| D1 | (a): token aleatorio opaco con mapeo persistido (opción 1 de ADR-0005) | E9-02 liberado, no hecho; I-27 sin verificar hasta que se fusione. ADR-0005 queda **Aceptado** con esa opción |
+| D2 | (a): AEAD por bloque, como diseño a usar si se construye cifrado | Nada se implementa. ADR-0006 sigue **Pendiente** |
+| D3 | (b): sin cifrado en 1.0; 1.0 no promete confidencialidad en reposo ni gestión de claves, y lo declara | K-1 a K-4 de ADR-0009 sin medir, porque no hay cifrado |
+| D4 | (a): sin integridad autenticada en 1.0; el límite queda en el threat model §6.6 y `verify()` con `deep` es el recurso | H-2 queda cerrado como límite aceptado y documentado (§5 de este documento, §6) |
+| D12 | (b): 1.0 se declara solo después de D13 y de un uso real fuera del equipo | **1.0 no se declara**. No se congela el formato de exportación ni se promete semver |
+| D15 | (b) como dirección: licencia amplia no exclusiva con derecho a relicenciar | El texto legal del CLA **no está escrito** y necesita la aprobación del propietario antes de aceptar cualquier contribución externa. No se acepta ninguna |
+| D16 | (b): ADR-0016 queda **pendiente de confirmación** hasta revisar G1 a G7 | Revisión de G1 a G7 como tarea aparte. Nada de la etapa depende de ADR-0016 |
 
 ## 3. Criterios comunes (acta §4) y umbrales (acta §5)
 
@@ -61,7 +62,7 @@ Las cifras de esta tabla se **citan** de los documentos de cada paquete. Solo se
 | T-FZ1 | Cumplido con salvedades | 15 objetivos, 1 801 s cada uno, sin fallos. Salvedades en §5, punto 7 |
 | T-PR1 | Cumplido según E9-13 | `decoders_robust.rs` |
 | T-ST1 | Cumplido con un límite | Salvedad en §5, punto 4 |
-| T-FR1 | 15 de 15 con disposición | `examples/agent-memory/FRICTION.md`. Retenidos: puntos 6 (D1) y la parte de identidad del punto 3 (D12) |
+| T-FR1 | 15 de 15 con disposición | `examples/agent-memory/FRICTION.md`. Sin hacer: punto 6, pendiente de E9-02 (D1 tomada el 2026-11-13); la parte de identidad del punto 3 es un cambio de formato que D12 no decide |
 | T-EN1 | Cumplido | `grep -rn "pub fn engine" crates/kerno-units/src`: sin resultados |
 | T-MU1 | Cumplido con salvedades | E9-15 (19 de 19 pruebas), E9-03, E9-20. Salvedades en §5, puntos 5, 6, 9 y 10 |
 | T-SQ1, T-NM | Cumplidos para el informe nuevo | Precondición de carga anotada en el informe; sin nombres de terceros distintos de SQLite. La carga de las mediciones de E9-14 y E9-20 no fue la de una máquina libre (§5) |
@@ -86,9 +87,9 @@ redaction_units:     test result: ok. 3 passed; 0 failed
 | **I-29** para `kerno-units` | **Promovida** (D19, E9-03 pasa). Con el límite de §5, punto 5 |
 | **I-42** | **Promovida** (D19): verificada de nuevo con `reclaim`, que no escribe en la capa (`reclaim_changes_no_visible_state`) |
 | **I-43** | **Promovida** (D19): verificada de nuevo con `the_original_stays_readable_through_every_summary_operation` y `reads_of_a_source_are_the_same_with_and_without_summaries` |
-| **I-28** | **No aplica en 1.0** (D19, sin cifrado según la recomendación de D3, que está **retenida**). Lo que se puede decir hoy: `verify()` no encuentra archivos desconocidos en el directorio (`lifecycle_soak.rs`) |
-| **I-30** | Verificada **para el borrador** y para la reimportación. La congelación del formato es D12 (retenida) |
-| **I-27** | **Sin verificar**: depende de D1 |
+| **I-28** | **No aplica en 1.0** (D19; D3 tomada el 2026-11-13: sin cifrado en 1.0). Lo que se puede decir hoy: `verify()` no encuentra archivos desconocidos en el directorio (`lifecycle_soak.rs`) |
+| **I-30** | Verificada **para el borrador** y para la reimportación. La congelación del formato no se hace: D12 (tomada el 2026-11-13) la deja para después de D13 y de un uso real |
+| **I-27** | **Sin verificar**: E9-02 está liberado por D1 (2026-11-13) pero no fusionado |
 | **I-31** | Verificada por revisión de dependencias (§1) |
 | I-N1 (reclamación) | Registrada como **I-44** en [invariantes](invariants.md) §2.7 |
 | I-N2 (envoltura) | Registrada como **I-45** en [invariantes](invariants.md) §2.7 |
@@ -97,9 +98,9 @@ La promoción de I-29, I-42, I-43, I-44 e I-45 es una elección **por delegació
 
 ## 5. Límites conocidos y puntos abiertos
 
-Cada punto es un límite o un pendiente. Ninguno está cerrado.
+Cada punto es un límite o un pendiente. El punto 1 está resuelto; los demás siguen abiertos.
 
-1. **Roadmap, estado de la Fase 1.** En `docs/roadmap/README.md` la tabla de fases dice «En curso» para la Fase 1 (línea 8) y el texto de la sección «Fase 1: plan de trabajo» dice que quedó cerrada el 2026-11-11. La fila de E9-CL solo permite escribir en la sección de la Etapa 9 de ese fichero, y la tabla de fases está fuera de ella. **Pendiente**: decide el propietario o un paquete de documentos con permiso sobre esa tabla.
+1. **Roadmap, estado de la Fase 1. Resuelto el 2026-11-13** por delegación expresa del propietario: la tabla de fases y la tabla de tareas de SAD §20 de `docs/roadmap/README.md` dicen «Cerrada» para la Fase 1 con la fecha 2026-11-11, que es la que da el texto de la sección «Fase 1: plan de trabajo». El informe de la Fase 1 (`docs/testing/f1-report.md`) es de 2026-10-29 y describe el estado de entonces, anterior al cierre.
 2. **K-E3-7 (E9-16 y E9-22).** *K1*: corregido desde el extremo que conserva su entrada de adyacencia; **sigue abierto** desde el extremo que la perdió, donde `relations_of` y `query_relations` devuelven una respuesta corta sin `Fallback`; `verify_units` (UNIT-36) la reporta. *K2*: corregido para `IDX_PRIMARY` con el conteo intacto; abierto con el conteo rebajado y para `IDX_TYPE`. *K3*: no se reproduce. *K4* (`change_set_info` no cruza los miembros con su `REV_META`) y *K5* (`get_relation` no comprueba `created_seq` ni los extremos): **siguen abiertos, menores y sin cambio**. La revisión independiente de E9-16 figura como pendiente en su registro.
 3. **Mensaje de `NoValidSources`.** El texto «no source of the derived datum is valid any more» no se cambió porque `crates/kerno-units/tests/consolidation.rs` (línea 496) fija ese texto. Mejorarlo exigiría cambiar esa prueba, que es de otro paquete.
 4. **E9-12, estrés de derivados (F-09).** La prueba comprueba que ningún derivado queda `ready` después de que un cambio de su fuente ha vuelto. **Un bloqueo tardío posterior al commit sigue en verde**: el orden exacto de bloqueo del commit guardado no tiene prueba determinista. F-09 queda cubierto solo en parte.
@@ -114,7 +115,7 @@ Cada punto es un límite o un pendiente. Ninguno está cerrado.
 
 ## 6. Threat model y DESIGN
 
-- [Threat model](../security/threat-model.md): T-03 y T-04 siguen **abiertas** (sin cifrado ni autenticación; D2, D3 y D4 retenidas). **H-2**: el motor no protege frente a una reescritura deliberada con CRC válido; la defensa disponible es `verify()` con `deep`. T-09 sigue **abierta**; la reclamación pública es mecanismo, no borrado físico. T-10: `ci.yml` no ejecuta fuzzing ni auditoría de dependencias; sigue abierta.
+- [Threat model](../security/threat-model.md): T-03 y T-04 siguen **abiertas** (sin cifrado ni autenticación en 1.0; D2, D3 y D4 tomadas el 2026-11-13). **H-2**: el motor no protege frente a una reescritura deliberada con CRC válido; la defensa disponible es `verify()` con `deep`. H-2 queda cerrado como límite aceptado y documentado (D4). T-09 sigue **abierta**; la reclamación pública es mecanismo, no borrado físico. T-10: `ci.yml` no ejecuta fuzzing ni auditoría de dependencias; sigue abierta.
 - [`DESIGN.md`](../../crates/kerno-storage/DESIGN.md): H-9 precisada en la sección «Qué puede sobrevivir».
 - **H-5 (lo que no se mide)**: C-5 (bloques liberados del medio), memoria, cachés, lápidas, hilo de borrado y handle. Sin medir.
 
@@ -129,7 +130,7 @@ Cada punto es un límite o un pendiente. Ninguno está cerrado.
 
 | Hallazgo | Estado al cierre |
 |---|---|
-| H-2 | Abierto, límite declarado (D4 retenida) |
+| H-2 | Cerrado como límite aceptado y documentado (D4, tomada el 2026-11-13) |
 | H-3 | Aceptado a posteriori (D20 i) |
 | H-4 | Se mantiene contradicha, sin reescribir (D17) |
 | H-5 | Sin medir; declarado (§6) |
@@ -137,7 +138,7 @@ Cada punto es un límite o un pendiente. Ninguno está cerrado.
 | H-7 | **Verificado con los límites del punto 7** |
 | H-9, H-12 | Cerrados en este paquete |
 | H-13 | Revisado (E9-16); K1, K2, K4 y K5 con el estado del punto 2 |
-| H-14 | I-27: sin verificar (D1). I-28: no aplica. I-30: verificada para el borrador |
+| H-14 | I-27: sin verificar hasta fusionar E9-02 (D1). I-28: no aplica. I-30: verificada para el borrador |
 | F-02, F-03 | E9-11 |
 | F-04 | E9-10 |
 | F-05 | Abierto: no hay formato en disco para resúmenes (D8) |
@@ -157,4 +158,4 @@ Pre-1.0, sin promesa que romper (D9): `Reclaim` en `kerno-core`; `UnitDb::reclai
 
 ## 10. Qué sigue
 
-Decisiones del propietario en persona (§2); revisión de ADR-0016 (D16); E9-02 si D1 se decide; investigar la prueba intermitente (punto 11); corrida más larga de fuzzing de `wal`, `manifest` y `open`; reparar el estado de la Fase 1 en la tabla del roadmap (punto 1); K1/K2/K4/K5 abiertos (punto 2).
+E9-02, liberado por D1 y no fusionado (I-27 sin verificar); aprobación del propietario del texto del CLA antes de aceptar cualquier contribución externa (D15); revisión de G1 a G7 de ADR-0016, tarea aparte (D16); declaración de 1.0 solo después de D13 y de un uso real fuera del equipo (D12); investigar la prueba intermitente (punto 11); corrida más larga de fuzzing de `wal`, `manifest` y `open`; K1/K2/K4/K5 abiertos (punto 2). El estado de la Fase 1 en el roadmap ya está resuelto (punto 1).
