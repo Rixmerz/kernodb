@@ -67,17 +67,17 @@ use std::ops::Bound;
 
 use kerno_core::contract::{Engine, Snapshot};
 
-use std::time::Duration;
+use std::time::Instant;
 
 use crate::assoc::{AssocError, AssocQuery, AssocResult};
-use crate::cache::{CacheEntry, CacheFallbackCause, CachedQuery, CachedResult, Dependencies, Evidence, Lookup};
+use crate::cache::{CacheEntry, CacheFallbackCause, CachedQuery, CachedResult, Dependencies, Lookup, Peek};
 use crate::codec::{Adjacency, Key, TAG_REL, TAG_REL_IN, TAG_REL_OUT};
 use crate::db::{Relation, Unit, UnitSnapshot, context, corruption, key};
 use crate::error::UnitError;
 use crate::fingerprint::{FingerprintKey, NormalizedQuery, QueryKind, RelationQuery};
 use crate::index::{IndexPath, IndexState, IndexStatus, QueryOutcome, QuerySource, UnitFilter};
 use crate::observation::{Ended, ErrorKind, Observed};
-use crate::plan::{Candidate, Cost, Decision, Plan, PlanError, PlanPath, Unusable, Usability};
+use crate::plan::{CacheView, Candidate, Cost, Decision, Plan, PlanError, PlanPath, Unusable, Usability};
 use crate::types::{Direction, Lifecycle, UnitId};
 
 /// Version of the planner, recorded in every observation (E5-03). Bump it
@@ -314,6 +314,12 @@ pub(crate) fn check_relations(query: &RelationQuery, relations: &[Relation]) -> 
     Ok(())
 }
 
+/// Nanoseconds since `started`, never 0: a duration below the clock's
+/// resolution is one tick, because an entry without a cost is not created.
+fn measured_ns(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX).max(1)
+}
+
 fn internal(e: PlanError) -> UnitError {
     // The candidates above are built to satisfy `Decision::new`; reaching
     // this is a planner bug, reported as an error rather than a panic.
@@ -332,15 +338,9 @@ impl<E: Engine> UnitSnapshot<E> {
         Ok(Probe { found: n as u64, complete: n < PROBE })
     }
 
-    /// Steps 1 to 4 for a unit filter: the status the decision saw and the
-    /// decision.
-    fn decide_units(&self, filter: &UnitFilter) -> Result<(IndexStatus, Decision), UnitError> {
-        let (status, entries) = self.index_stats()?;
-        self.decide_units_with(filter, status, entries)
-    }
-
-    /// [`decide_units`](Self::decide_units) over the status and entry count of
-    /// an `IDX_META` read the caller already made.
+    /// Steps 1 to 4 for a unit filter, over the status and entry count of an
+    /// `IDX_META` read the caller already made: the status the decision saw
+    /// and the decision.
     fn decide_units_with(
         &self,
         filter: &UnitFilter,
@@ -407,22 +407,64 @@ impl<E: Engine> UnitSnapshot<E> {
         q.validate()?;
         let seeds: BTreeSet<UnitId> = q.seeds.iter().copied().collect();
         let decision = self.decide_assoc(q, &seeds)?;
-        Ok(Plan::of(NormalizedQuery::of_assoc(q).fingerprint(key), decision))
+        Ok(Plan::of(NormalizedQuery::of_assoc(q).fingerprint(key), decision, CacheView::NotApplicable))
     }
 
     /// The plan `query` follows for `filter` on this snapshot, to inspect:
     /// every candidate with its cost and usability, the one chosen, why, and
-    /// the index freshness the decision saw (I-23). The plan holds the
-    /// fingerprint of the query under `key`, never the filter.
+    /// the index freshness the decision saw (I-23), and whether the result
+    /// cache is consulted and answers ([`Plan::cache`]), read without
+    /// changing the cache. The plan holds the fingerprint of the query under
+    /// `key`, never the filter.
     pub fn explain_filter(&self, key: &FingerprintKey, filter: &UnitFilter) -> Result<Plan, UnitError> {
-        let (_, decision) = self.decide_units(filter)?;
-        Ok(Plan::of(NormalizedQuery::of_filter(filter).fingerprint(key), decision))
+        let (status, entries) = self.index_stats()?;
+        let (status, decision) = self.decide_units_with(filter, status, entries)?;
+        let query = CachedQuery::Units(filter.clone());
+        let cache = self.cache_view(&query, Dependencies::in_force(self.seq(), Some(status)), |result| match result {
+            CachedResult::Units(units) => check_units(filter, units),
+            CachedResult::Relations(_) => Err(Violation::NotMatching),
+        });
+        Ok(Plan::of(NormalizedQuery::of_filter(filter).fingerprint(key), decision, cache))
     }
 
-    /// The plan `query_relations` follows for `query` on this snapshot.
+    /// The plan `query_relations` follows for `query` on this snapshot,
+    /// including what the result cache does ([`Plan::cache`]).
     pub fn explain_relations(&self, key: &FingerprintKey, query: &RelationQuery) -> Result<Plan, UnitError> {
         let decision = self.decide_relations(query)?;
-        Ok(Plan::of(NormalizedQuery::of_relations(query).fingerprint(key), decision))
+        let cached = CachedQuery::Relations(query.clone());
+        let cache = self.cache_view(&cached, Dependencies::in_force(self.seq(), None), |result| match result {
+            CachedResult::Relations(relations) => check_relations(query, relations),
+            CachedResult::Units(_) => Err(Violation::NotMatching),
+        });
+        Ok(Plan::of(NormalizedQuery::of_relations(query).fingerprint(key), decision, cache))
+    }
+
+    /// What `query` / `query_relations` would do with the result cache right
+    /// now, from [`ResultCache::peek`](crate::ResultCache::peek): nothing is
+    /// recorded, counted or dropped. `check` is the planned path's check of
+    /// the rows, so an entry that would be refused at use is not announced.
+    fn cache_view(
+        &self,
+        query: &CachedQuery,
+        now: Dependencies,
+        check: impl FnOnce(&CachedResult) -> Result<(), Violation>,
+    ) -> CacheView {
+        // Off is decided before asking for a fingerprint: asking creates the key.
+        if !self.cache.enabled() {
+            return CacheView::Off;
+        }
+        let Some(fingerprint) = self.cache.fingerprint_of(query) else {
+            return CacheView::Off;
+        };
+        match self.cache.peek(&fingerprint, query, &now) {
+            Peek::Disabled => CacheView::Off,
+            Peek::Miss(cause) => CacheView::Miss(cause),
+            Peek::Invalidated(dependency) => CacheView::Invalidated(dependency),
+            Peek::Hit(hit) => match check(&hit.result) {
+                Ok(()) => CacheView::Hit { evidence: hit.evidence, cost_ns: hit.cost_ns },
+                Err(violation) => CacheView::Discrepancy(violation),
+            },
+        }
     }
 
     /// Every active unit matching `filter`, in unit id order, through the path
@@ -464,8 +506,10 @@ impl<E: Engine> UnitSnapshot<E> {
     ///   the planner and stores its answer under the dependencies of this
     ///   snapshot.
     ///
-    /// Nothing here reads an [`Observer`](crate::observation::Observer): what
-    /// was observed never decides whether an entry may be used (G3).
+    /// What was observed never decides whether an entry may be used (G3): the
+    /// lookup does not read the [`Observer`](crate::observation::Observer). It
+    /// is read only when an answer is stored, for the evidence the entry is
+    /// created on (`store`).
     fn answer_units(&self, filter: &UnitFilter) -> Result<QueryOutcome, UnitError> {
         if !self.cache.enabled() {
             return self.plan_units(filter);
@@ -517,6 +561,7 @@ impl<E: Engine> UnitSnapshot<E> {
             // Already on the record, with the cause, as `Transition::Missed`.
             Lookup::Miss | Lookup::Inactive => {}
         }
+        let started = Instant::now();
         let outcome = match discrepancy {
             Some(fallback) => QueryOutcome {
                 units: self.reference_filter(filter)?,
@@ -529,8 +574,9 @@ impl<E: Engine> UnitSnapshot<E> {
                 self.execute_units(filter, status, decision.chosen().path, |via, f| self.scan_path(via, f, entries))?
             }
         };
+        let cost_ns = measured_ns(started);
         if self.cache.worth_storing(&fingerprint, &query, &now) {
-            self.store(fingerprint, query, now, CachedResult::Units(outcome.units.clone()));
+            self.store(fingerprint, query, now, CachedResult::Units(outcome.units.clone()), cost_ns);
         }
         Ok(outcome)
     }
@@ -539,17 +585,25 @@ impl<E: Engine> UnitSnapshot<E> {
     /// the dependencies of the snapshot it read. Failing to store (the cache
     /// was switched off meanwhile, or the result is over the byte bound) never
     /// fails the query: the cache is advisory.
+    ///
+    /// The evidence of the entry is what the observer holds about this query
+    /// shape (a signal to propose an entry, never a check of one: nothing
+    /// observed decides whether an entry is served, G3), and `cost_ns` is what
+    /// the execution that produced `result` took, which a hit replaces. With no
+    /// evidence (the observer below `Fingerprint`) nothing is created, so
+    /// nothing can be activated without it (spec §9).
     fn store(
         &self,
         fingerprint: crate::fingerprint::Fingerprint,
         query: CachedQuery,
         now: Dependencies,
         result: CachedResult,
+        cost_ns: u64,
     ) {
-        // The execution that produced the answer is the evidence: one
-        // observation, no span. The observer is not consulted (G3).
-        let evidence = Evidence { observations: 1, window: Duration::ZERO };
-        if let Ok(entry) = CacheEntry::build(fingerprint, query, now, result, evidence)
+        let Some(evidence) = self.observer.evidence_of(&query.normalized()) else {
+            return;
+        };
+        if let Ok(entry) = CacheEntry::build(fingerprint, query, now, result, evidence, cost_ns)
             && self.cache.store(entry).is_ok()
         {
             // Fails only if the cache was switched off since `ResultCache::store`; then
@@ -669,6 +723,7 @@ impl<E: Engine> UnitSnapshot<E> {
             Lookup::Disabled => self.cache.fallback(&fingerprint, CacheFallbackCause::Disabled),
             Lookup::Miss | Lookup::Inactive => {}
         }
+        let started = Instant::now();
         let outcome = match discrepancy {
             Some(fallback) => RelationsOutcome {
                 relations: self.reference_relations_of(query.unit, query.direction, query.relation_type.as_deref())?,
@@ -677,8 +732,9 @@ impl<E: Engine> UnitSnapshot<E> {
             },
             None => self.plan_relations(query)?,
         };
+        let cost_ns = measured_ns(started);
         if self.cache.worth_storing(&fingerprint, &cached_query, &now) {
-            self.store(fingerprint, cached_query, now, CachedResult::Relations(outcome.relations.clone()));
+            self.store(fingerprint, cached_query, now, CachedResult::Relations(outcome.relations.clone()), cost_ns);
         }
         Ok(outcome)
     }

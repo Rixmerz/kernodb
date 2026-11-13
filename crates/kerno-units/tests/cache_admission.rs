@@ -36,6 +36,7 @@ fn a_stream_of_queries_that_never_repeat_copies_nothing<E: Target>() {
     let (off, db) = (open::<E>(), open::<E>());
     seed(&off);
     seed(&db);
+    db.observer().set_level(ObservationLevel::Fingerprint).unwrap(); // evidence for an entry
     db.result_cache().set_enabled(true);
     let (s_off, snap) = (off.snapshot().unwrap(), db.snapshot().unwrap());
 
@@ -60,6 +61,7 @@ fn a_stream_of_queries_that_never_repeat_copies_nothing<E: Target>() {
 fn a_query_that_comes_twice_is_stored_and_then_served<E: Target>() {
     let db = open::<E>();
     seed(&db);
+    db.observer().set_level(ObservationLevel::Fingerprint).unwrap(); // evidence for an entry
     db.result_cache().set_enabled(true);
     let snap = db.snapshot().unwrap();
 
@@ -75,6 +77,7 @@ fn a_query_that_comes_twice_is_stored_and_then_served<E: Target>() {
 fn a_slot_that_served_is_replaced_at_once<E: Target>() {
     let db = open::<E>();
     seed(&db);
+    db.observer().set_level(ObservationLevel::Fingerprint).unwrap(); // evidence for an entry
     db.result_cache().set_enabled(true);
     let snap = db.snapshot().unwrap();
 

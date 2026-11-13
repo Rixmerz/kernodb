@@ -72,6 +72,7 @@ use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
 
 use crate::assoc::AssocQuery;
+use crate::cache::Evidence;
 use crate::clock::{Clock, SystemClock};
 use crate::error::UnitError;
 use crate::fingerprint::{Fingerprint, FingerprintKey, NormalizedQuery, RelationQuery};
@@ -411,6 +412,36 @@ impl Observer {
         let now = st.clock.now();
         st.prune(now);
         st.records.iter().cloned().collect()
+    }
+
+    /// What the retained records say about the query shape `shape`, for the
+    /// result cache to create an entry on (spec §9): how many executions of
+    /// that shape ended `Ok` and over how long, **counting the execution that
+    /// is concluding**, which `query` records right after the planner asks.
+    /// `None`, so no evidence, below `Fingerprint` (no per-execution record
+    /// exists), without a key, or if the observer is busy: the planner never
+    /// waits for it.
+    pub(crate) fn evidence_of(&self, shape: &NormalizedQuery) -> Option<Evidence> {
+        if self.level() < ObservationLevel::Fingerprint {
+            return None;
+        }
+        let st = match self.state.try_lock() {
+            Ok(g) => g,
+            Err(TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(TryLockError::WouldBlock) => return None,
+        };
+        let fingerprint = shape.fingerprint(st.key.as_ref()?);
+        let now = st.clock.now();
+        let oldest_kept = now.0.saturating_sub(st.config.max_age_micros());
+        let mut same = st
+            .records
+            .iter()
+            .filter(|r| r.fingerprint == fingerprint && r.outcome == Outcome::Ok && r.recorded_at.0 >= oldest_kept);
+        let first = same.next().map(|r| r.recorded_at.0);
+        let observations = 1 + u64::from(first.is_some()) + same.count() as u64;
+        let window = first
+            .map_or(Duration::ZERO, |at| Duration::from_micros(u64::try_from(now.0.saturating_sub(at)).unwrap_or(0)));
+        Some(Evidence { observations, window })
     }
 
     /// Forgets every record and every counter. Data is not affected (I-34).

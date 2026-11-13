@@ -55,6 +55,14 @@
 //!   A stream of queries that never repeat then copies and evicts nothing.
 //! * [`ResultCache::clear`] deletes all learned state: entries, log and
 //!   counters. It keeps the switches, like `Observer::clear` keeps the level.
+//! * [`ResultCache::set_key`] does the same and also drops the per-query
+//!   switches; it leaves a [`Transition::KeyReplaced`] record in the new log.
+//! * **Evidence and cost** (spec §9). An entry is created only with the
+//!   [`Evidence`] the planner had (the observer's count of that query shape
+//!   and the span it covers) and the measured cost, in nanoseconds, of the
+//!   execution it replaces; `CacheEntry::build` refuses an entry without
+//!   either, so none can be activated without them. Both are in the
+//!   [`Transition::Created`] record and in the plan's [`CacheView`](crate::CacheView).
 //!
 //! # The transition log (G7)
 //!
@@ -271,7 +279,7 @@ impl CachedQuery {
         }
     }
 
-    fn normalized(&self) -> NormalizedQuery {
+    pub(crate) fn normalized(&self) -> NormalizedQuery {
         match self {
             CachedQuery::Units(filter) => NormalizedQuery::of_filter(filter),
             CachedQuery::Relations(query) => NormalizedQuery::of_relations(query),
@@ -297,6 +305,9 @@ pub struct CacheEntry {
     dependencies: Dependencies,
     result: Arc<CachedResult>,
     evidence: Evidence,
+    /// What the execution this entry replaces cost, in nanoseconds as the
+    /// observer measures them (`ExecutionObservation::duration_ns`). More than 0.
+    cost_ns: u64,
 }
 
 impl CacheEntry {
@@ -309,22 +320,25 @@ impl CacheEntry {
         dependencies: Dependencies,
         result: CachedResult,
         evidence: Evidence,
+        cost_ns: u64,
     ) -> Result<Self, CacheError> {
-        Self::build(fingerprint, query, dependencies, result, evidence)
+        Self::build(fingerprint, query, dependencies, result, evidence, cost_ns)
     }
 
     /// An entry for `query`, whose shape has `fingerprint`. Refused when it
     /// could not be explained truthfully: the query or the result is of the
     /// other kind of query than the fingerprint's, the
     /// index status does not match the kind (a unit query records one, a
-    /// relation query none, as in [`Plan::new`](crate::Plan::new)), or there
-    /// is no evidence.
+    /// relation query none, as in [`Plan::new`](crate::Plan::new)), there
+    /// is no evidence, or no measured cost (spec §9: an optimization without
+    /// either is not created, so it cannot be activated).
     pub(crate) fn build(
         fingerprint: Fingerprint,
         query: CachedQuery,
         dependencies: Dependencies,
         result: CachedResult,
         evidence: Evidence,
+        cost_ns: u64,
     ) -> Result<Self, CacheError> {
         let kind = fingerprint.kind();
         if result.kind() != kind || query.kind() != kind {
@@ -336,7 +350,10 @@ impl CacheEntry {
         if evidence.observations == 0 {
             return Err(CacheError::NoEvidence);
         }
-        Ok(CacheEntry { fingerprint, query, dependencies, result: Arc::new(result), evidence })
+        if cost_ns == 0 {
+            return Err(CacheError::NoCost);
+        }
+        Ok(CacheEntry { fingerprint, query, dependencies, result: Arc::new(result), evidence, cost_ns })
     }
 
     pub fn fingerprint(&self) -> &Fingerprint {
@@ -354,6 +371,11 @@ impl CacheEntry {
     pub fn evidence(&self) -> Evidence {
         self.evidence
     }
+
+    /// The measured cost, in nanoseconds, of the execution this entry replaces.
+    pub fn cost_ns(&self) -> u64 {
+        self.cost_ns
+    }
 }
 
 /// Why the store refused something. A class, never content.
@@ -367,6 +389,8 @@ pub enum CacheError {
     IndexStatus { kind: QueryKind },
     /// An optimization without evidence is not created (spec §9).
     NoEvidence,
+    /// An optimization without a measured cost is not created (spec §9).
+    NoCost,
     /// The result alone is larger than `max_bytes`.
     TooLarge,
     /// No entry for that fingerprint.
@@ -382,6 +406,7 @@ impl fmt::Display for CacheError {
             }
             CacheError::IndexStatus { kind } => write!(f, "the index status does not match a {kind:?} query"),
             CacheError::NoEvidence => f.write_str("a cache entry needs at least one observation as evidence"),
+            CacheError::NoCost => f.write_str("a cache entry needs the measured cost of the execution it replaces"),
             CacheError::TooLarge => f.write_str("the result is larger than the cache's byte bound"),
             CacheError::NoEntry => f.write_str("no cache entry for that fingerprint"),
         }
@@ -499,6 +524,8 @@ pub enum Transition {
     /// An entry was created, on this evidence. It serves nothing until activated.
     Created {
         evidence: Evidence,
+        /// Measured nanoseconds of the execution the entry replaces.
+        cost_ns: u64,
     },
     Activated,
     /// An active entry served a lookup.
@@ -525,6 +552,11 @@ pub enum Transition {
     },
     /// [`ResultCache::clear`] deleted this many entries and every earlier record.
     Cleared {
+        entries: u64,
+    },
+    /// [`ResultCache::set_key`] replaced the fingerprint key: this many entries,
+    /// every earlier record, the counters and the per-query switches are gone.
+    KeyReplaced {
         entries: u64,
     },
 }
@@ -563,6 +595,27 @@ pub enum Lookup {
     Invalidated(Dependency),
     /// The cache is off, globally or for this query. Nothing was read.
     Disabled,
+}
+
+/// What [`ResultCache::peek`] found.
+#[derive(Clone, Debug)]
+pub enum Peek {
+    /// The cache is off, globally or for this query.
+    Disabled,
+    /// Nothing to serve, for this cause.
+    Miss(MissCause),
+    /// A dependency changed: a real lookup would drop the entry.
+    Invalidated(Dependency),
+    /// An active entry whose dependencies all match.
+    Hit(Box<PeekHit>),
+}
+
+/// The entry a [`Peek::Hit`] found.
+#[derive(Clone, Debug)]
+pub struct PeekHit {
+    pub result: Arc<CachedResult>,
+    pub evidence: Evidence,
+    pub cost_ns: u64,
 }
 
 /// Counters of the store since the last [`clear`](ResultCache::clear).
@@ -880,7 +933,12 @@ impl ResultCache {
         }
         let now = st.clock.now();
         st.remove(&fp, Some(DeleteReason::Replaced), now);
-        st.record(Some(fp), Transition::Created { evidence: entry.evidence }, Some(&entry.dependencies), now);
+        st.record(
+            Some(fp),
+            Transition::Created { evidence: entry.evidence, cost_ns: entry.cost_ns },
+            Some(&entry.dependencies),
+            now,
+        );
         let seq = st.next_slot;
         st.next_slot = st.next_slot.saturating_add(1);
         st.bytes = st.bytes.saturating_add(bytes);
@@ -969,6 +1027,41 @@ impl ResultCache {
         Lookup::Hit(result)
     }
 
+    /// What [`lookup`](Self::lookup) would answer for this query now, without
+    /// doing any of what it does: no record, no counter, no entry dropped. It
+    /// is how a plan is explained without changing the thing it explains.
+    pub fn peek(&self, fingerprint: &Fingerprint, query: &CachedQuery, now: &Dependencies) -> Peek {
+        if !self.enabled() {
+            return Peek::Disabled;
+        }
+        let st = self.lock();
+        if !self.enabled() || st.disabled_queries.contains(fingerprint) {
+            return Peek::Disabled;
+        }
+        let at = st.clock.now();
+        let oldest_kept = at.0.saturating_sub(st.config.max_age_micros());
+        let Some(slot) = st.entries.get(fingerprint) else {
+            return Peek::Miss(MissCause::NoEntry);
+        };
+        if slot.created_at.0 < oldest_kept {
+            return Peek::Miss(MissCause::Expired);
+        }
+        if slot.entry.query != *query {
+            return Peek::Miss(MissCause::OtherQuery);
+        }
+        if !slot.active {
+            return Peek::Miss(MissCause::NotActive);
+        }
+        if let Some(dependency) = slot.entry.dependencies.first_change(now) {
+            return Peek::Invalidated(dependency);
+        }
+        Peek::Hit(Box::new(PeekHit {
+            result: slot.entry.result.clone(),
+            evidence: slot.entry.evidence,
+            cost_ns: slot.entry.cost_ns,
+        }))
+    }
+
     /// Whether the answer to `query`, just computed at `now`, is worth the
     /// copy that storing it costs. Advisory, and called by the planner between
     /// a miss and `create`; it records nothing.
@@ -1028,13 +1121,16 @@ impl ResultCache {
     /// Replaces the fingerprint key, for reproducible tests. Fingerprints are
     /// comparable only under one key, so all learned state is dropped, as in
     /// [`clear`](Self::clear), and so are the per-query switches, which are
-    /// keyed by fingerprint. The global switch stays.
+    /// keyed by fingerprint. The global switch stays. One
+    /// [`Transition::KeyReplaced`] record is left in the new log.
     pub fn set_key(&self, key: FingerprintKey) {
         let mut st = self.lock();
         st.key = Some(key);
         st.shapes = [None; SHAPES];
         st.disabled_queries.clear();
-        st.wipe();
+        let entries = st.wipe();
+        let now = st.clock.now();
+        st.record(None, Transition::KeyReplaced { entries }, None, now);
     }
 
     /// Records that a query fell back to the reference path for `cause`. A
@@ -1133,7 +1229,7 @@ mod tests {
 
     /// `CacheEntry::new` for the query `query_of(&f)` stands for.
     fn new_entry(f: Fingerprint, d: Dependencies, r: CachedResult, e: Evidence) -> Result<CacheEntry, CacheError> {
-        CacheEntry::new(f, query_of(&f), d, r, e)
+        CacheEntry::new(f, query_of(&f), d, r, e, COST_NS)
     }
 
     fn ready(watermark: u64) -> Option<IndexStatus> {
@@ -1143,6 +1239,8 @@ mod tests {
     fn deps(seq: u64) -> Dependencies {
         Dependencies::current(CommitSeq(seq), ready(seq))
     }
+
+    const COST_NS: u64 = 4_200;
 
     fn evidence() -> Evidence {
         Evidence { observations: 3, window: Duration::from_secs(60) }
@@ -1318,6 +1416,13 @@ mod tests {
         // No evidence.
         let none = Evidence { observations: 0, window: Duration::ZERO };
         assert_eq!(new_entry(fp("t"), deps(1), units(), none), Err(CacheError::NoEvidence));
+        // No measured cost: the cost of the execution the entry replaces is not optional (spec §9).
+        assert_eq!(
+            CacheEntry::new(fp("t"), query_of(&fp("t")), deps(1), units(), evidence(), 0),
+            Err(CacheError::NoCost)
+        );
+        let e = CacheEntry::new(fp("t"), query_of(&fp("t")), deps(1), units(), evidence(), 77).unwrap();
+        assert_eq!((e.cost_ns(), e.evidence()), (77, evidence()));
     }
 
     #[test]
@@ -1528,24 +1633,24 @@ mod tests {
         c.set_enabled(true); // Enabled(Global)
 
         let want = [
-            Transition::Created { evidence: ev },
+            Transition::Created { evidence: ev, cost_ns: COST_NS },
             Transition::Activated,
             Transition::Used,
             Transition::Fallback { cause: CacheFallbackCause::PreconditionFailed },
             Transition::Fallback { cause: CacheFallbackCause::Invalidated },
             Transition::Fallback { cause: CacheFallbackCause::Disabled },
             Transition::Invalidated { dependency: Dependency::CommitSeq },
-            Transition::Created { evidence: ev },
+            Transition::Created { evidence: ev, cost_ns: COST_NS },
             Transition::Activated,
             Transition::Fallback { cause: CacheFallbackCause::Discrepancy },
             Transition::Deleted { reason: DeleteReason::Discrepancy },
-            Transition::Created { evidence: ev },
+            Transition::Created { evidence: ev, cost_ns: COST_NS },
             Transition::Deleted { reason: DeleteReason::Replaced },
-            Transition::Created { evidence: ev },
+            Transition::Created { evidence: ev, cost_ns: COST_NS },
             Transition::Deleted { reason: DeleteReason::Requested },
             Transition::Disabled { switch: Switch::Query },
             Transition::Enabled { switch: Switch::Query },
-            Transition::Created { evidence: ev },
+            Transition::Created { evidence: ev, cost_ns: COST_NS },
             Transition::Disabled { switch: Switch::Global },
             Transition::Deleted { reason: DeleteReason::Disabled },
             Transition::Enabled { switch: Switch::Global },
@@ -1600,6 +1705,73 @@ mod tests {
         // The switches are not learned state.
         assert!(c.enabled());
         assert!(!c.query_enabled(&fp_other()));
+    }
+
+    #[test]
+    fn the_created_record_carries_the_evidence_and_the_measured_cost() {
+        let (c, _) = on();
+        c.create(
+            CacheEntry::new(fp("t"), query_of(&fp("t")), deps(10), CachedResult::Units(Vec::new()), evidence(), 9_001)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            kinds(&c),
+            [
+                Transition::Enabled { switch: Switch::Global },
+                Transition::Created { evidence: evidence(), cost_ns: 9_001 }
+            ]
+        );
+    }
+
+    #[test]
+    fn peek_says_what_lookup_would_and_changes_nothing() {
+        let (c, clock) = active();
+        let before = (c.records(), c.stats());
+        // An active entry with every dependency matching: a hit with its evidence and cost.
+        match c.peek(&fp("t"), &query_of(&fp("t")), &deps(10)) {
+            Peek::Hit(h) => assert_eq!((h.evidence, h.cost_ns), (evidence(), COST_NS)),
+            other => panic!("expected a hit, got {other:?}"),
+        }
+        // A changed dependency: named, and the entry is still there.
+        let later = Dependencies { commit_seq: CommitSeq(11), ..deps(10) };
+        assert!(matches!(c.peek(&fp("t"), &query_of(&fp("t")), &later), Peek::Invalidated(Dependency::CommitSeq)));
+        let other_query = CachedQuery::Units(UnitFilter { unit_type: Some("other".into()), schema_version: None });
+        assert!(matches!(c.peek(&fp("t"), &other_query, &deps(10)), Peek::Miss(MissCause::OtherQuery)));
+        assert!(matches!(c.peek(&fp("b"), &query_of(&fp("b")), &deps(10)), Peek::Miss(MissCause::NoEntry)));
+        assert_eq!((c.records(), c.stats()), before, "peeking leaves no record and no counter");
+        assert!(matches!(look(&c, &fp("t"), &deps(10)), Lookup::Hit(_)), "the entry was not dropped");
+        // Not active, expired, disabled.
+        let (c2, _) = on();
+        c2.create(entry(deps(10))).unwrap();
+        assert!(matches!(c2.peek(&fp("t"), &query_of(&fp("t")), &deps(10)), Peek::Miss(MissCause::NotActive)));
+        clock.set(Timestamp(T0.0 + 3_600_000_001));
+        assert!(matches!(c.peek(&fp("t"), &query_of(&fp("t")), &deps(10)), Peek::Miss(MissCause::Expired)));
+        c.disable_query(fp("t"));
+        assert!(matches!(c.peek(&fp("t"), &query_of(&fp("t")), &deps(10)), Peek::Disabled));
+        c.set_enabled(false);
+        assert!(matches!(c.peek(&fp("t"), &query_of(&fp("t")), &deps(10)), Peek::Disabled));
+    }
+
+    #[test]
+    fn set_key_leaves_one_record_of_the_wipe_in_the_new_log() {
+        let (c, _) = active();
+        c.disable_query(fp_other());
+        look(&c, &fp("t"), &deps(10));
+        c.set_key(FingerprintKey::from_bytes([3; 32]));
+        // Everything learned is gone, and the one thing in the log says so.
+        let s = c.stats();
+        assert_eq!((s.entries, s.bytes, s.reads, s.writes, s.hits), (0, 0, 0, 0, 0));
+        assert_eq!(kinds(&c), [Transition::KeyReplaced { entries: 1 }]);
+        let record = c.records().remove(0);
+        assert_eq!((record.fingerprint, record.commit_seq), (None, None));
+        assert_eq!((record.optimization_version, record.planner_version), (OPTIMIZATION_VERSION, PLANNER_VERSION));
+        // The global switch stays, the per-query switch does not.
+        assert!(c.enabled());
+        assert!(c.query_enabled(&fp_other()));
+        // An empty cache says so too, and the record it replaces is gone: the new log holds one.
+        c.set_key(FingerprintKey::from_bytes([4; 32]));
+        assert_eq!(kinds(&c), [Transition::KeyReplaced { entries: 0 }]);
     }
 
     #[test]
@@ -1668,7 +1840,8 @@ mod tests {
 
     /// An active entry of `fp("t")` answering `query_with(t)`, read at `d`.
     fn store_active(c: &ResultCache, t: &str, d: Dependencies) {
-        let e = CacheEntry::new(fp("t"), query_with(t), d, CachedResult::Units(Vec::new()), evidence()).unwrap();
+        let e =
+            CacheEntry::new(fp("t"), query_with(t), d, CachedResult::Units(Vec::new()), evidence(), COST_NS).unwrap();
         c.create(e).unwrap();
         c.activate(&fp("t")).unwrap();
     }
