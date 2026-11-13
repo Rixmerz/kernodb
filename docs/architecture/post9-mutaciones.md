@@ -232,7 +232,7 @@ test kerno::deleting_a_legacy_relation_counts_what_is_left ... FAILED
 test kerno::legacy_relations_work_and_get_a_count_when_next_changed ... FAILED
 ```
 
-### M8: `crates/kerno-units/src/import.rs:205`
+### M8: `crates/kerno-units/src/import.rs:213`
 
 - Cambio: `'    cs.adjust_count(r.from, crate::types::Direction::Out, ty, 1)?;\n    cs.adjust_count(r.to, crate::types::Direction::In, ty, 1)?;\n'` → `''`
 - `exit=101`
@@ -484,4 +484,4 @@ test emulated_log::a_refused_create_leaves_no_count ... FAILED
 test kerno::a_refused_create_leaves_no_count ... FAILED
 ```
 
-Los demás caminos que ajustan contadores se auditaron: `delete_relation` (tras la corrección sus únicos errores previos a la escritura son lecturas y claves; los de `adjust_count` solo se dan con un registro de contador dañado o con un fallo del motor, que deja el change set roto), importación (`import.rs:205`: `parse` valida antes de escribir y un error en `replay` abandona el change set sin `commit`), borrado y olvido de unidades (no ajustan contadores: `ensure_no_relations` exige que no haya relaciones), y los lotes (`DerivedChangeSet::create_relation` delega en `create_relation`).
+Los demás caminos que ajustan contadores se auditaron: `delete_relation` (tras la corrección sus únicos errores previos a la escritura son lecturas y claves; los de `adjust_count` solo se dan con un registro de contador dañado o con un fallo del motor, que deja el change set roto), importación (`import.rs:213`: tenía la misma forma —codificaba el registro tras ajustar los contadores—, pero el change set es privado de `replay` y se abandona sin `commit` ante cualquier error, así que el daño no era alcanzable y no admite prueba; se reordenó igualmente para que construya y codifique antes de tocar los contadores), borrado y olvido de unidades (no ajustan contadores: `ensure_no_relations` exige que no haya relaciones), y los lotes (`DerivedChangeSet::create_relation` delega en `create_relation`).
