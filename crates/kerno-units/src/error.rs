@@ -223,6 +223,9 @@ pub enum UnitError {
         state: IndexState,
         watermark: Option<CommitSeq>,
     },
+    /// A public id is already held by a unit: an import would give one token
+    /// to two units. The text names neither the token nor a unit.
+    PublicIdTaken,
 }
 
 impl fmt::Display for UnitError {
@@ -253,6 +256,7 @@ impl fmt::Display for UnitError {
                 f,
                 "unit {unit} still has live relations (for instance {relation}); delete them before archiving or deleting the unit"
             ),
+            UnitError::PublicIdTaken => f.write_str("a public id would name two units"),
             UnitError::IndexNotReady { state, watermark: Some(w) } => {
                 write!(f, "the primary index is {state:?} (watermark {w}); rebuild it or use the reference path")
             }

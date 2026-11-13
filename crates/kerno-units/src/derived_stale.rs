@@ -43,6 +43,7 @@ use kerno_core::contract::TxnEngine;
 use crate::db::{ChangeMeta, ChangeSet, CommitInfo, NewUnit, Unit, UnitDb, UnitUpdate};
 use crate::derived::{DerivedDescriptor, DerivedError, DerivedId, DerivedRegistry, DerivedState};
 use crate::error::UnitError;
+use crate::ids::PublicId;
 use crate::payload::ContentHash;
 use crate::suppression::source_gone;
 use crate::types::{CommitSeq, RelationId, RelationProvenance, RevNo, RevisionId, UnitId};
@@ -492,6 +493,12 @@ impl<E: TxnEngine> DerivedChangeSet<'_, E> {
 
     pub fn create(&mut self, new: NewUnit) -> Result<UnitId, UnitError> {
         self.cs.create(new)
+    }
+
+    /// [`ChangeSet::create_public`]: a unit and its public id, in this change
+    /// set. The id is stored with the unit and removed with it by `delete`.
+    pub fn create_public(&mut self, new: NewUnit) -> Result<(UnitId, PublicId), UnitError> {
+        self.cs.create_public(new)
     }
 
     pub fn update(&mut self, id: UnitId, upd: UnitUpdate, expected: Option<RevNo>) -> Result<RevNo, UnitError> {

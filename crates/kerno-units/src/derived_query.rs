@@ -11,6 +11,7 @@ use crate::derived::DerivedId;
 use crate::derived_stale::DerivedDb;
 use crate::error::UnitError;
 use crate::history::{HistoryQuery, Revision};
+use crate::ids::PublicId;
 use crate::index::{QueryOutcome, UnitFilter};
 use crate::types::UnitId;
 use kerno_core::contract::TxnEngine;
@@ -21,6 +22,19 @@ impl<E: TxnEngine> DerivedDb<E> {
     /// relations) is read from one point.
     pub fn snapshot(&self) -> Result<UnitSnapshot<E>, UnitError> {
         self.db.snapshot()
+    }
+
+    /// [`UnitDb::public_id`](crate::UnitDb::public_id): the token issued for
+    /// `unit` at the current commit, `None` for a unit without one.
+    pub fn public_id(&self, unit: UnitId) -> Result<Option<PublicId>, UnitError> {
+        self.db.public_id(unit)
+    }
+
+    /// [`UnitDb::resolve_public_id`](crate::UnitDb::resolve_public_id): the
+    /// unit `token` names, `None` if it was never issued or its unit was
+    /// deleted. A token grants nothing (I-27).
+    pub fn resolve_public_id(&self, token: &PublicId) -> Result<Option<UnitId>, UnitError> {
+        self.db.resolve_public_id(token)
     }
 
     /// Every active unit matching `filter`, through the planner's path (see

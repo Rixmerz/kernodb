@@ -54,6 +54,14 @@
 //!   entry `(unit_type, schema_version, unit)` per `IDX_PRIMARY` entry and no
 //!   other. Both are written by the same build, so this holds whatever the
 //!   staleness; UNIT-37 then ties the primary entries to the units.
+//! * **Public ids** (UNIT-39 to UNIT-44, E9-02, `units-v3.md`): every token
+//!   record `0x70` has the reverse record `0x71` of its unit and the reverse
+//!   one names the same token (UNIT-39, UNIT-40); a pair names a unit that
+//!   has a `UNIT_HEAD` (UNIT-41); a unit has one token (UNIT-42) and a token
+//!   one unit (UNIT-43); the mark is at layer version 3 (UNIT-44). Each is its
+//!   own finding; a record that does not decode is a structure finding and its
+//!   pair is not reported again as missing. Details name neither a token nor
+//!   a unit id together.
 //!
 //! # Contracts
 //!
@@ -127,6 +135,20 @@ pub enum CrossRule {
     /// The secondary index by type is not exactly the primary index keyed
     /// by `(unit_type, schema_version)` (E4-04, I-23, I-24).
     Unit38,
+    /// A token record (`0x70`) without the reverse record of its unit
+    /// (`units-v3.md`, ADR-0005).
+    Unit39,
+    /// A reverse record (`0x71`) without the token record it names.
+    Unit40,
+    /// A token pair that names a unit with no `UNIT_HEAD`.
+    Unit41,
+    /// Two tokens for one unit: a token record whose unit has another token.
+    Unit42,
+    /// One token for two units: a reverse record whose token names another
+    /// unit, or is named by another reverse record.
+    Unit43,
+    /// Token records in a database whose layer mark is below version 3.
+    Unit44,
 }
 
 impl CrossRule {
@@ -232,6 +254,8 @@ pub struct VerifyCounts {
     pub unknown: u64,
     /// Persisted derived records (`0x60..=0x62`, layer version 2).
     pub derived_records: u64,
+    /// Public id records (`0x70` and `0x71`, layer version 3).
+    pub public_id_records: u64,
 }
 
 /// Result of [`verify_snapshot`].
@@ -349,6 +373,13 @@ struct State {
     bad_idx_entries: BTreeSet<UnitId>,
     idx_types: BTreeSet<(UnitId, String, u32)>,
     bad_idx_types: BTreeSet<UnitId>,
+    /// Public id records that decode: token to unit, and unit to token.
+    tokens: BTreeMap<[u8; 16], UnitId>,
+    reverses: BTreeMap<UnitId, [u8; 16]>,
+    /// Record keys (the 16 bytes after the tag) whose value does not decode.
+    bad_tokens: BTreeSet<[u8; 16]>,
+    bad_reverses: BTreeSet<UnitId>,
+    first_public_key: Option<Vec<u8>>,
 }
 
 fn key_of(k: Key) -> Vec<u8> {
@@ -440,8 +471,27 @@ impl State {
             return;
         }
         if matches!(k.first(), Some(&(crate::ids::TAG_PUBLIC_ID | crate::ids::TAG_PUBLIC_ID_OF))) {
-            if let Err(e) = crate::ids::check_record(&k, &v) {
-                self.decode_error(k, e);
+            self.counts.public_id_records += 1;
+            self.first_public_key.get_or_insert_with(|| k.clone());
+            let body: Option<[u8; 16]> = k.get(1..).and_then(|b| b.try_into().ok());
+            match (crate::ids::check_record(&k, &v), body) {
+                (Ok(other), Some(body)) if k[0] == crate::ids::TAG_PUBLIC_ID => {
+                    self.tokens.insert(body, UnitId(other));
+                }
+                (Ok(other), Some(body)) => {
+                    self.reverses.insert(UnitId(body), other);
+                }
+                (Err(e), body) => {
+                    if let Some(body) = body {
+                        if k[0] == crate::ids::TAG_PUBLIC_ID {
+                            self.bad_tokens.insert(body);
+                        } else {
+                            self.bad_reverses.insert(UnitId(body));
+                        }
+                    }
+                    self.decode_error(k, e);
+                }
+                (Ok(_), None) => {}
             }
             return;
         }
@@ -601,6 +651,80 @@ impl State {
         self.check_relations();
         self.check_index();
         self.check_type_index();
+        self.check_public_ids();
+    }
+
+    /// UNIT-39 to UNIT-44: the token records are pairs, one token per unit
+    /// and one unit per token, and name units that exist. A record that does
+    /// not decode is already a structure finding and is not counted again as
+    /// a missing half. Details name the record, never a token and a unit
+    /// together.
+    fn check_public_ids(&mut self) {
+        let token_key = |t: &[u8; 16]| [&[crate::ids::TAG_PUBLIC_ID][..], &t[..]].concat();
+        let unit_key = |u: &UnitId| [&[crate::ids::TAG_PUBLIC_ID_OF][..], &u.0[..]].concat();
+        let exists = |s: &Self, u: &UnitId| s.heads.contains_key(u) || s.bad_heads.contains(u);
+        let mut found: Vec<(CrossRule, Vec<u8>, &str)> = Vec::new();
+        if let (Some(first), Some(mark)) = (&self.first_public_key, &self.mark)
+            && mark.layer_version < crate::codec::LAYER_VERSION_PUBLIC_IDS
+        {
+            found.push((
+                CrossRule::Unit44,
+                first.clone(),
+                "public id records in a database whose layer mark is below 3",
+            ));
+        }
+        let mut of_unit: BTreeMap<UnitId, Vec<[u8; 16]>> = BTreeMap::new();
+        for (t, u) in &self.tokens {
+            of_unit.entry(*u).or_default().push(*t);
+        }
+        for (u, ts) in &of_unit {
+            let reverse = self.reverses.get(u);
+            if reverse.is_none() && !self.bad_reverses.contains(u) {
+                for t in ts {
+                    found.push((CrossRule::Unit39, token_key(t), "token record without its reverse record"));
+                }
+            }
+            for (i, t) in ts.iter().enumerate() {
+                let extra = match reverse {
+                    Some(r) => r != t,
+                    None => i > 0,
+                };
+                if extra {
+                    found.push((CrossRule::Unit42, token_key(t), "a second token for one unit"));
+                }
+                if !exists(self, u) {
+                    found.push((CrossRule::Unit41, token_key(t), "token record names a unit that does not exist"));
+                }
+            }
+        }
+        let mut of_token: BTreeMap<[u8; 16], Vec<UnitId>> = BTreeMap::new();
+        for (u, t) in &self.reverses {
+            of_token.entry(*t).or_default().push(*u);
+        }
+        for (t, us) in &of_token {
+            let owner = self.tokens.get(t);
+            if owner.is_none() && !self.bad_tokens.contains(t) {
+                for u in us {
+                    found.push((CrossRule::Unit40, unit_key(u), "reverse record without its token record"));
+                }
+            }
+            for (i, u) in us.iter().enumerate() {
+                let extra = match owner {
+                    Some(o) => o != u,
+                    None => i > 0,
+                };
+                if extra {
+                    found.push((CrossRule::Unit43, unit_key(u), "a token shared with another unit"));
+                }
+                // A pair is reported once, on its token record.
+                if owner != Some(u) && !exists(self, u) {
+                    found.push((CrossRule::Unit41, unit_key(u), "reverse record names a unit that does not exist"));
+                }
+            }
+        }
+        for (rule, key, detail) in found {
+            self.cross(rule, key, detail.into());
+        }
     }
 
     /// UNIT-38: `IDX_TYPE` mirrors `IDX_PRIMARY` entry for entry. A unit

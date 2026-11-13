@@ -313,7 +313,7 @@ fn format_errors<E: TxnEngine>() {
     }
     // Another format version is an incompatibility, not a corruption.
     let mut other = body(&good);
-    other[8..12].copy_from_slice(&1u32.to_be_bytes());
+    other[8..12].copy_from_slice(&2u32.to_be_bytes());
     let err = import(&fresh(), &seal(other)).unwrap_err();
     assert!(matches!(err, UnitError::Storage(CoreError::Incompatible(_))), "{err:?}");
     // Bytes after the last section.
@@ -352,8 +352,8 @@ fn format_errors_kerno_db() {
 }
 
 /// Layout of the export of one `doc` unit with one revision and no policy:
-/// header 16, default 1, policy count 4, unit count 4, id 16, type 4 + 3.
-const CREATED_SEQ_AT: usize = 16 + 1 + 4 + 4 + 16 + 4 + 3;
+/// header 16, default 1, policy count 4, token count 4, unit count 4, id 16, type 4 + 3.
+const CREATED_SEQ_AT: usize = 16 + 1 + 4 + 4 + 4 + 16 + 4 + 3;
 /// After `created_seq`, `created_at`, `oldest`, `head`, `r`, `rev`, `kind`
 /// and an absent `parent`.
 const COMMIT_SEQ_AT: usize = CREATED_SEQ_AT + 8 + 8 + 8 + 8 + 4 + 8 + 1 + 1;
@@ -459,7 +459,8 @@ fn order_errors<E: TxnEngine>() {
     import(&open::<E>(), &seal(good.clone())).unwrap();
 
     let (policies, unit, relation) = (16 + 1 + 4, 140, 68);
-    let units = policies + 2 * 7 + 4;
+    // Policy records, the token count (no tokens here), then the unit count.
+    let units = policies + 2 * 7 + 4 + 4;
     let rels = units + 2 * unit + 4;
     assert_eq!(good.len(), rels + 2 * relation);
     let swapped = |start: usize, len: usize| {

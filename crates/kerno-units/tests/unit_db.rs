@@ -799,8 +799,8 @@ fn open_and_mark<E: TxnEngine>() {
 
     // A newer layer, a damaged mark.
     let disk = SimVfs::new(12);
-    raw_commit::<E>(&disk, &[(&mark_key, &[1, 0, 0, 0, 0, 3, 2])]);
-    assert!(matches!(open::<E>(&disk, &cfg()), Err(UnitError::IncompatibleLayer { found: 3, supported: 2 })));
+    raw_commit::<E>(&disk, &[(&mark_key, &[1, 0, 0, 0, 0, 4, 2])]);
+    assert!(matches!(open::<E>(&disk, &cfg()), Err(UnitError::IncompatibleLayer { found: 4, supported: 3 })));
     let disk = SimVfs::new(13);
     raw_commit::<E>(&disk, &[(&mark_key, &[0, 0, 0, 0, 0, 1, 2])]);
     let e = open::<E>(&disk, &cfg()).err().expect("damaged mark");
