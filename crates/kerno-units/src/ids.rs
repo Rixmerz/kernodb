@@ -392,9 +392,18 @@ impl<E: Engine> UnitSnapshot<E> {
         Ok(Some(UnitId(decode_value(&raw).map_err(|e| crate::db::context(e, &format!("PUBLIC_ID {token}")))?)))
     }
 
-    /// Whether `unit` exists and is not deleted.
+    /// Whether `unit` has a head that is not deleted: a point read of the
+    /// head record decoded as far as its lifecycle, so the payload is neither
+    /// read nor hashed. A unit with no head is not live, and neither is a
+    /// deleted one: for both, `public_id` and `resolve_public_id` answer as
+    /// for a token never issued, and `verify_units` reports the pair (UNIT-41).
     fn is_live(&self, unit: UnitId) -> Result<bool, UnitError> {
-        Ok(self.get_unit(unit)?.is_some_and(|u| u.lifecycle != crate::types::Lifecycle::Deleted))
+        let Some(raw) = self.snap.get(&crate::db::key(crate::codec::Key::UnitHead { unit })?)? else {
+            return Ok(false);
+        };
+        let lifecycle = crate::codec::UnitHead::decode_lifecycle(&raw)
+            .map_err(|e| crate::db::context(e, &format!("UNIT_HEAD of unit {unit}")))?;
+        Ok(lifecycle != crate::types::Lifecycle::Deleted)
     }
 
     /// The public id issued for `unit`, or `None` for a unit without one. The

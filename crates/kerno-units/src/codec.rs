@@ -632,6 +632,18 @@ impl UnitHead {
         Ok(w.0)
     }
 
+    /// Only the lifecycle of an encoded head: the envelope, `unit_type`,
+    /// `schema_version` and the lifecycle byte are read, the rest is not.
+    /// For a caller that asks nothing else of the head; a full read is
+    /// [`UnitHead::decode`].
+    pub fn decode_lifecycle(value: &[u8]) -> Res<Lifecycle> {
+        let mut r = Reader::new(value, "UNIT_HEAD");
+        r.envelope()?;
+        r.bytes(MAX_UNIT_TYPE_LEN, "unit_type")?;
+        r.u32("schema_version")?;
+        r.enumeration("lifecycle", Lifecycle::from_byte)
+    }
+
     pub fn decode(value: &[u8]) -> Res<Self> {
         let mut r = Reader::new(value, "UNIT_HEAD");
         r.envelope()?;

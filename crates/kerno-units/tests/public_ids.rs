@@ -37,8 +37,8 @@
 //! Counts (`cargo test --release -p kerno-units --test public_ids`, as the
 //! runner lists them): without the `test-support` feature 49 tests (48 run,
 //! 1 ignored: `regenerate_fixture`, a by-hand regenerator of the committed
-//! fixture), with it 77 (76 run, 1 ignored). Of those, 22 run on each engine
-//! without the feature (44) and 36 with it (72); the other 5 are
+//! fixture), with it 79 (78 run, 1 ignored). Of those, 22 run on each engine
+//! without the feature (44) and 37 with it (74); the other 5 are
 //! engine-free: the text, the table of vectors, the fixture manifest, the
 //! regenerator and the single-engine legacy-directory test.
 
@@ -270,6 +270,7 @@ fn same_transaction_a_dropped_change_set_leaves_nothing<E: Target>() {
 /// (not necessarily the commit's own syncs: whichever the engine issues
 /// first) and asserts the invariant on whatever the image holds.
 fn same_transaction_a_failed_sync_leaves_neither_unit_nor_token<E: Target>() {
+    let mut fired = 0;
     for nth in 1..=2u64 {
         let disk = SimVfs::new(5 + nth);
         let db = open::<E>(&disk);
@@ -281,8 +282,12 @@ fn same_transaction_a_failed_sync_leaves_neither_unit_nor_token<E: Target>() {
         if !disk.fault_injected() {
             // The commit needed fewer syncs than `nth`: it is a plain commit.
             assert!(result.is_ok());
+            assert_eq!(db.public_id(unit).unwrap(), Some(token), "nth {nth}");
+            assert_eq!(db.resolve_public_id(&token).unwrap(), Some(unit), "nth {nth}");
+            assert_eq!(token_records(&db), (2, 2), "nth {nth}");
             continue;
         }
+        fired += 1;
         assert!(result.is_err());
         let image = disk.crash_now(CrashKind::PowerLoss);
         let after = open::<E>(&image);
@@ -294,6 +299,8 @@ fn same_transaction_a_failed_sync_leaves_neither_unit_nor_token<E: Target>() {
         assert_eq!(token_records(&after), if unit_there { (2, 2) } else { (1, 1) }, "nth {nth}");
         clean(&after);
     }
+    // Without a fault that fired the loop checked nothing about atomicity.
+    assert!(fired > 0, "the data sync fault fired at neither position: the test proved nothing");
 }
 
 /// The other branch: the commit is acknowledged and durable, then the power
@@ -1132,6 +1139,20 @@ mod stored {
         assert_eq!(got, vec!["UNIT-40", "UNIT-41"]);
     }
 
+    /// A pair whose unit has no head at all answers like a token never issued.
+    pub fn cross_a_pair_on_a_unit_with_no_head_is_not_live<E: Target>() {
+        let (db, _, _, _, _) = one::<E>();
+        let ghost = UnitId([0xee; 16]);
+        let token = other_token(1);
+        put_records(&db, ghost, &token);
+        assert_eq!(rules(&db), vec!["UNIT-41"]);
+        let never = other_token(2);
+        assert_eq!(db.resolve_public_id(&token).unwrap(), db.resolve_public_id(&never).unwrap());
+        assert_eq!(db.resolve_public_id(&token).unwrap(), None);
+        assert_eq!(db.public_id(ghost).unwrap(), None);
+        assert_eq!(db.public_id(UnitId([0xdd; 16])).unwrap(), None);
+    }
+
     /// A pair left on a deleted unit (damage, or an older writer) is its own
     /// UNIT-41 finding, resolves like a token never issued, and is not exported.
     pub fn cross_a_pair_left_on_a_deleted_unit<E: Target>() {
@@ -1140,7 +1161,7 @@ mod stored {
         clean(&db);
         put_records(&db, unit, &token);
         let found = rules(&db);
-        assert!(found.contains(&"UNIT-41".to_string()), "{found:?}");
+        assert_eq!(found, vec!["UNIT-41"], "the pair on a deleted unit is the only finding");
         assert_eq!(db.resolve_public_id(&token).unwrap(), None);
         assert_eq!(db.public_id(unit).unwrap(), None);
         let target = open_from::<E>(&SimVfs::new(30), 100);
@@ -1263,6 +1284,7 @@ macro_rules! engines {
                     cross_a_token_without_its_reverse,
                     cross_a_reverse_without_its_token,
                     cross_a_pair_naming_a_unit_that_does_not_exist,
+                    cross_a_pair_on_a_unit_with_no_head_is_not_live,
                     cross_a_pair_left_on_a_deleted_unit,
                     cross_two_tokens_for_one_unit,
                     cross_one_token_for_two_units,

@@ -119,7 +119,9 @@ fn units<E: Engine>(snap: &UnitSnapshot<E>, ids: &[UnitId], w: &mut Out) -> Resu
 }
 
 /// The public id of each unit that has one, in unit id order: `unit` and
-/// `token`, 16 bytes each. A pair that disagrees fails the export.
+/// `token`, 16 bytes each. A pair that disagrees fails the export. A pair on
+/// a deleted unit (or on none) is left out, as `public_id` answers `None` for
+/// it; `verify_units` reports it.
 fn tokens<E: Engine>(snap: &UnitSnapshot<E>, ids: &[UnitId], w: &mut Out) -> Result<(), UnitError> {
     let mut found = Vec::new();
     for id in ids {
