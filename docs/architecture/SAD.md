@@ -2,9 +2,9 @@
 
 | Campo | Valor |
 |---|---|
-| Versión | 0.4.0 |
-| Fecha | 13 de noviembre de 2026 (0.3.0: 12 de noviembre de 2026; 0.2.0: 29 de octubre de 2026; 0.1.0: 27 de octubre de 2026) |
-| Estado | Baseline 0.1.0 con las actualizaciones de la Fase 1 (0.2.0), de la Etapa 8 (0.3.0) y de la Etapa 9 (0.4.0), que listan «Cambios de la versión 0.2.0», «Cambios de la versión 0.3.0» y «Cambios de la versión 0.4.0»; el resto del texto no se ha reescrito |
+| Versión | 0.4.1 |
+| Fecha | 13 de noviembre de 2026 (0.4.1: 13 de noviembre de 2026; 0.3.0: 12 de noviembre de 2026; 0.2.0: 29 de octubre de 2026; 0.1.0: 27 de octubre de 2026) |
+| Estado | Baseline 0.1.0 con las actualizaciones de la Fase 1 (0.2.0), de la Etapa 8 (0.3.0) de la Etapa 9 (0.4.0) y de las decisiones del 2026-11-13 (0.4.1), que listan «Cambios de la versión 0.2.0», «Cambios de la versión 0.3.0», «Cambios de la versión 0.4.0» y «Cambios de la versión 0.4.1»; el resto del texto no se ha reescrito |
 | Tipo | Documento de arquitectura de software (SAD) |
 | Lenguaje de implementación | Rust |
 | Modelo de entrega inicial | Biblioteca embebida y CLI local |
@@ -12,6 +12,17 @@
 > **Resumen ejecutivo.** Kerno será un motor de datos embebido, persistente y extensible. Su núcleo será un almacén key-value transaccional; sobre él se construirán documentos estructurados, historial de revisiones, índices y, más adelante, recuperación híbrida para IA. La arquitectura prioriza correctitud, recuperación, portabilidad y evolución explícita de los datos. El algoritmo de almacenamiento físico —copy-on-write B+ tree o LSM— permanece pendiente de un ADR basado en una prueba técnica reproducible.
 
 > **Nota de mantenimiento.** La versión 0.1.0 fue la baseline aprobada para revisión. Las decisiones posteriores se registran en [`docs/adr/`](../adr/README.md); cuando un ADR cambia algo de este documento, se publica una nueva versión del SAD en lugar de editar esta silenciosamente. La 0.2.0 (cierre de la Fase 1) enumera abajo cada cambio; todo lo que no figura ahí conserva el texto de la 0.1.0, aunque la Fase 1 lo haya superado en detalle (por ejemplo, el reparto de crates de §14 es el propuesto, no el construido).
+
+## Cambios de la versión 0.4.1
+
+Decisiones del 2026-11-13. El propietario, en persona, pidió al delegado tomar la mejor decisión en cada punto pendiente. D1, D2, D3, D4, D12, D15 y D16, retenidas el 2026-11-12 (ver la versión 0.4.0), quedan **tomadas por delegación expresa del propietario, revocables**. Este cambio no reescribe el cuerpo del documento ni la versión 0.4.0.
+
+| Apartado | Cambio |
+|---|---|
+| §11 | Identificadores públicos: D1 tomada (opción 1 de ADR-0005). E9-02 está liberado y **no fusionado**; I-27 sigue sin verificar hasta que se fusione. Sin cifrado ni claves en 1.0 (D2 y D3) y sin integridad autenticada en 1.0 (D4) |
+| §13 | Sin cambio de formato. La congelación del formato de exportación no se hace: D12 deja 1.0 para después de D13 y de un uso real fuera del equipo |
+| §15 | ADR-0005 aceptado con la opción 1 (D1). ADR-0006 sigue pendiente; su opción 1, AEAD por bloque, es el diseño elegido si se construye cifrado (D2). ADR-0016 figura como aceptado en su archivo y queda pendiente de confirmación del propietario (D16) |
+| §16 | Estado de la Etapa 9: cerrada como trabajo de ingeniería con E9-02 liberado y no fusionado. No se declara 1.0 (D12) |
 
 ## Cambios de la versión 0.4.0
 

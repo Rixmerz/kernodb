@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | Aceptado (2026-11-09) |
+| Estado | Aceptado (2026-11-09); **pendiente de confirmación** del propietario (D16 de la [acta de la Etapa 9](../architecture/etapa9-acta.md), 2026-11-13): G1 a G7 por revisar antes de confirmar |
 | Fecha | 2026-10-28 |
 | Decisores | Propietario del proyecto |
 | Relacionado con | [especificación v0.2.0](../spec/especificacion-arquitectonica-v0.2.0.md) §2, §9, §10, §15; [ejecución adaptativa](../architecture/adaptive-execution.md); ADR-0007, ADR-0012, ADR-0015, ADR-0018; invariantes I-32…I-36 |
