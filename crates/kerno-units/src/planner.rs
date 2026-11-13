@@ -485,13 +485,13 @@ impl<E: Engine> UnitSnapshot<E> {
                 return self.plan_units(filter);
             }
         };
-        let now = Dependencies::current(self.seq(), Some(status));
+        let now = Dependencies::in_force(self.seq(), Some(status));
         let mut discrepancy = None;
         match self.cache.lookup(&fingerprint, &query, &now) {
             Lookup::Hit(result) => {
                 let checked = match &*result {
                     CachedResult::Units(units) => check_units(filter, units).map(|()| units),
-                    // Unreachable by construction (`CacheEntry::new`); not an answer all the same.
+                    // Unreachable by construction (`CacheEntry::build`); not an answer all the same.
                     CachedResult::Relations(_) => Err(Violation::NotMatching),
                 };
                 match checked {
@@ -549,12 +549,12 @@ impl<E: Engine> UnitSnapshot<E> {
         // The execution that produced the answer is the evidence: one
         // observation, no span. The observer is not consulted (G3).
         let evidence = Evidence { observations: 1, window: Duration::ZERO };
-        if let Ok(entry) = CacheEntry::new(fingerprint, query, now, result, evidence)
-            && self.cache.create(entry).is_ok()
+        if let Ok(entry) = CacheEntry::build(fingerprint, query, now, result, evidence)
+            && self.cache.store(entry).is_ok()
         {
-            // Fails only if the cache was switched off since `create`; then
+            // Fails only if the cache was switched off since `ResultCache::store`; then
             // there is nothing to activate.
-            let _ = self.cache.activate(&fingerprint);
+            let _ = self.cache.arm(&fingerprint);
         }
     }
 
@@ -640,7 +640,7 @@ impl<E: Engine> UnitSnapshot<E> {
         let Some(fingerprint) = self.cache.fingerprint_of(&cached_query) else {
             return self.plan_relations(query);
         };
-        let now = Dependencies::current(self.seq(), None);
+        let now = Dependencies::in_force(self.seq(), None);
         let mut discrepancy = None;
         match self.cache.lookup(&fingerprint, &cached_query, &now) {
             Lookup::Hit(result) => {

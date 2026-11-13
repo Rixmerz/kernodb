@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | **Aceptado** (2026-11-13), con la opción 1: token aleatorio opaco con mapeo persistido. Tomada por delegación expresa del propietario, revocable hasta que se construya algo irreversible sobre ella (D1 de la [acta de la Etapa 9](../architecture/etapa9-acta.md)). Su implementación es E9-02, liberado y no fusionado |
+| Estado | **Aceptado** (2026-11-13), con la opción 1: token aleatorio opaco con mapeo persistido. Tomada por delegación expresa del propietario, revocable hasta que se construya algo irreversible sobre ella (D1 de la [acta de la Etapa 9](../architecture/etapa9-acta.md)). Su implementación es E9-02, **hecha en el árbol y no fusionada**; corregida el 2026-11-13 tras una revisión independiente, por delegación expresa del propietario (valor de registro con la cabecera común, marca de capa 3, borrado y exportación; ver [`units-v3.md`](../file-format/units-v3.md)) |
 | Fecha | 2026-10-27 |
 | Relacionado con | SAD §5.2, §11.2, D-05, invariantes I-26, I-27, [threat model](../security/threat-model.md), ADR-0006 |
 
@@ -43,7 +43,7 @@ Estabilidad del token, rechazo de manipulación, soporte de versionado y clarida
 
 ## Consecuencias
 
-- El índice `token → internal_id` es transaccional (ADR-0007) y forma parte de la exportación lógica (I-30).
+- El índice `token → internal_id` es transaccional (ADR-0007) y forma parte de la exportación lógica (I-30). Borrar una unidad quita su mapeo en la misma transacción (D-a del 2026-11-13); la exportación lleva el token de cada unidad y la importación lo restaura (D-b).
 - No hay material criptográfico en el camino crítico por defecto; ADR-0006 puede cerrarse después sin bloquear las fases 1–3.
 - El formato del token lleva versión desde el primer día, de modo que cambiar de codec no rompe tokens existentes.
 

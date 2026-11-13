@@ -11,7 +11,7 @@
 //! # Dependencies (G4)
 //!
 //! An entry is created with every dependency it was computed under, and
-//! there is no way to create one without them: [`CacheEntry::new`] takes a
+//! there is no way to create one without them: `CacheEntry::new` takes a
 //! [`Dependencies`], whose fields are not optional (the index status is
 //! `None` only for a relation query, which has no index status, I-23).
 //!
@@ -157,8 +157,15 @@ pub struct Dependencies {
 impl Dependencies {
     /// The dependencies in force now for a snapshot at `commit_seq` that saw
     /// this `index` status.
-    pub fn current(commit_seq: CommitSeq, index: Option<IndexStatus>) -> Self {
+    pub(crate) fn in_force(commit_seq: CommitSeq, index: Option<IndexStatus>) -> Self {
         Dependencies { commit_seq, index, schema_version: LAYER_VERSION, planner_version: PLANNER_VERSION }
+    }
+
+    /// [`Dependencies::in_force`] for tests: learned state is built only by the
+    /// planner, so this exists only with the `test-support` feature (D23).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn current(commit_seq: CommitSeq, index: Option<IndexStatus>) -> Self {
+        Self::in_force(commit_seq, index)
     }
 
     /// The version number of one dependency; `None` when it does not apply
@@ -293,13 +300,26 @@ pub struct CacheEntry {
 }
 
 impl CacheEntry {
+    /// [`CacheEntry::build`] for tests: only the planner may create learned
+    /// state, so this exists only with the `test-support` feature (D23).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn new(
+        fingerprint: Fingerprint,
+        query: CachedQuery,
+        dependencies: Dependencies,
+        result: CachedResult,
+        evidence: Evidence,
+    ) -> Result<Self, CacheError> {
+        Self::build(fingerprint, query, dependencies, result, evidence)
+    }
+
     /// An entry for `query`, whose shape has `fingerprint`. Refused when it
     /// could not be explained truthfully: the query or the result is of the
     /// other kind of query than the fingerprint's, the
     /// index status does not match the kind (a unit query records one, a
     /// relation query none, as in [`Plan::new`](crate::Plan::new)), or there
     /// is no evidence.
-    pub fn new(
+    pub(crate) fn build(
         fingerprint: Fingerprint,
         query: CachedQuery,
         dependencies: Dependencies,
@@ -694,6 +714,33 @@ impl State {
 
 /// The learned state of the result cache and its transition log; see the
 /// [module documentation](self).
+///
+/// Learned state is created only by the planner (ADR-0016 G1, G5): the
+/// functions that plant an entry exist for an external caller only with the
+/// `test-support` feature. Without it the next block does not compile (the
+/// build of these doctests follows the feature, so the check holds under
+/// `--all-features` too). One block per function, so that making any one of
+/// them public again fails its own block.
+///
+#[cfg_attr(not(feature = "test-support"), doc = "```compile_fail,E0599")]
+#[cfg_attr(feature = "test-support", doc = "```")]
+/// let _ = kerno_units::ResultCache::create;
+/// ```
+///
+#[cfg_attr(not(feature = "test-support"), doc = "```compile_fail,E0599")]
+#[cfg_attr(feature = "test-support", doc = "```")]
+/// let _ = kerno_units::ResultCache::activate;
+/// ```
+///
+#[cfg_attr(not(feature = "test-support"), doc = "```compile_fail,E0599")]
+#[cfg_attr(feature = "test-support", doc = "```")]
+/// let _ = kerno_units::CacheEntry::new;
+/// ```
+///
+#[cfg_attr(not(feature = "test-support"), doc = "```compile_fail,E0599")]
+#[cfg_attr(feature = "test-support", doc = "```")]
+/// let _ = kerno_units::Dependencies::current;
+/// ```
 pub struct ResultCache {
     /// Read without the lock so that a cache that is off costs one load; every
     /// write happens under the lock, and every operation that reads or writes
@@ -803,10 +850,22 @@ impl ResultCache {
         self.lock().clock = clock;
     }
 
+    /// [`ResultCache::store`] for tests (`test-support` only, D23).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn create(&self, entry: CacheEntry) -> Result<(), CacheError> {
+        self.store(entry)
+    }
+
+    /// [`ResultCache::arm`] for tests (`test-support` only, D23).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn activate(&self, fingerprint: &Fingerprint) -> Result<(), CacheError> {
+        self.arm(fingerprint)
+    }
+
     /// Stores `entry`, **not yet active**. Writes nothing and returns
     /// [`CacheError::Disabled`] while the cache is off for this query. An
     /// entry of the same fingerprint is replaced.
-    pub fn create(&self, entry: CacheEntry) -> Result<(), CacheError> {
+    pub(crate) fn store(&self, entry: CacheEntry) -> Result<(), CacheError> {
         if !self.enabled() {
             return Err(CacheError::Disabled);
         }
@@ -833,10 +892,10 @@ impl ResultCache {
     }
 
     /// Makes the entry of `fingerprint` servable. An entry exists only with
-    /// all its dependencies ([`CacheEntry::new`]), so this checks none; it
+    /// all its dependencies (`CacheEntry::new`), so this checks none; it
     /// is the point at which the decision to use it is recorded. Activating
     /// an active entry records nothing.
-    pub fn activate(&self, fingerprint: &Fingerprint) -> Result<(), CacheError> {
+    pub(crate) fn arm(&self, fingerprint: &Fingerprint) -> Result<(), CacheError> {
         if !self.enabled() {
             return Err(CacheError::Disabled);
         }
@@ -912,7 +971,7 @@ impl ResultCache {
 
     /// Whether the answer to `query`, just computed at `now`, is worth the
     /// copy that storing it costs. Advisory, and called by the planner between
-    /// a miss and [`create`](Self::create); it records nothing.
+    /// a miss and `create`; it records nothing.
     ///
     /// One entry fits per query shape, so a query of the same shape but other
     /// literals replaces the entry that is there. That is a bad trade when

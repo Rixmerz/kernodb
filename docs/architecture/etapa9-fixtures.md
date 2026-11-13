@@ -62,3 +62,26 @@ AFTER  {"000003.sst": "1309 bytes crc f49aa96f", "LOCK": "0 bytes crc 00000000",
 ## 4. Estado
 
 F-11 de E8 queda comprobada con la salvedad anterior. R-E9-13 no se produce: el fixture se pudo reconstruir. La errata de la cita de ADR-0020 (`derived-v2/db-with-vector` ya existe, pero con los ficheros de arriba) pasa al cierre E9-CL.
+
+## 5. Fixture de E9-02: directorio con tokens
+
+Paquete E9-02 (corregido el 2026-11-13 tras una revisión independiente, por delegación expresa del propietario). La capa 3 ([units-v3.md](../file-format/units-v3.md)) añade registros `0x70`/`0x71` y eleva la marca a 3; el precedente de §2 (un directorio comprometido, con `MANIFEST`) se repite:
+
+- `crates/kerno-units/tests/vectors/public-ids-v3/db-with-token/`: una base de `kerno_db` cerrada con tres unidades: la 1 con token, la 2 sin él, la 3 con token y borrada (su mapeo ya no existe). Contiene `000003.sst` y `MANIFEST` del motor; marca de capa 3.
+- `crates/kerno-units/tests/vectors/public-ids-v3/MANIFEST`: SHA-256, tamaño y nombre de cada fichero.
+- `crates/kerno-units/tests/vectors/public-ids-v3/TOKEN`: el texto del token de la unidad 1 (sale del sistema operativo, así que cada regeneración da otro).
+
+Como en §2, los bytes no se reproducen entre compilaciones; la integridad la da `MANIFEST`. Para regenerarlo tras un cambio de diseño deliberado:
+
+```text
+cargo test --release -p kerno-units --test public_ids -- --ignored regenerate_fixture
+```
+
+| Prueba (`public_ids.rs`) | Qué comprueba |
+|---|---|
+| `fixture_manifest_lists_the_committed_files` | integridad del directorio comprometido |
+| `fixture_directory_opens_resolves_and_verifies` | abre, el token de `TOKEN` resuelve a la unidad 1, la 2 no tiene token, el mapeo de la 3 no existe, marca 3, `verify_units` limpio, y una unidad nueva encima recibe su propio token. En `emulated_log` construye el mismo contenido en memoria |
+| `fixture_directory_is_refused_by_a_layer2_reader` | un lector de capa 2 rechaza la marca con UNIT-16 y `found_layer_version = 3` |
+| `legacy_directory_written_before_tokens_opens_and_verifies` | el directorio de §2 (sin tokens, marca 2) sigue abriéndose y pasa a marca 3 con el primer token. Solo `kerno_db`: `emulated_log` no abre directorios de ficheros |
+
+La tabla de vectores hexadecimales de los registros está en [units-v3.md](../file-format/units-v3.md) §6 y la fija `vectors_of_the_document_match_the_codec_byte_for_byte`.

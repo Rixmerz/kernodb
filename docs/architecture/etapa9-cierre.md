@@ -4,19 +4,19 @@
 |---|---|
 | Fecha | 2026-11-13 |
 | Paquete | E9-CL de [la acta de la Etapa 9](etapa9-acta.md) (§3) |
-| Estado | **Cierre redactado, pendiente de aprobación del propietario.** La etapa queda cerrada como trabajo de ingeniería **con E9-02 liberado y no fusionado**. Las decisiones D1, D2, D3, D4, D12, D15 y D16, retenidas el 2026-11-12, quedan **tomadas el 2026-11-13 por delegación expresa del propietario**, revocables (§2). Lo que depende de ellas y no está hecho se declara «sin verificar» o «sin hacer» (§3), no hecho |
+| Estado | **Cierre redactado, pendiente de aprobación del propietario.** La etapa queda cerrada como trabajo de ingeniería **con E9-02 hecho en el árbol el 2026-11-13, pendiente de revisión independiente y de fusión**. Las decisiones D1, D2, D3, D4, D12, D15 y D16, retenidas el 2026-11-12, quedan **tomadas el 2026-11-13 por delegación expresa del propietario**, revocables (§2). Lo que depende de ellas y no está hecho se declara «sin verificar» o «sin hacer» (§3), no hecho |
 | Alcance de este documento | Documentación. No cambia código ni pruebas. Compara los documentos de cada paquete con el repositorio y deja escritos los límites que cada uno declara; **no repite** las mediciones ni la revisión de cada paquete |
 | Lo que no se afirma | Que la revisión independiente de cada paquete (acta §4.10) se haya rehecho aquí: sus registros están en cada paquete. Que haya 1.0: no se declara; D12 (tomada el 2026-11-13) lo condiciona a D13 y a un uso real fuera del equipo |
 
 ## 1. Estado de los paquetes, comprobado en el repositorio
 
-Se comprobó con `git log` y con los ficheros. Todos los paquetes están fusionados salvo E9-02.
+Se comprobó con `git log` y con los ficheros. Todos los paquetes están fusionados salvo E9-02, hecho en el árbol y sin fusionar.
 
 | Paquete | Estado | Qué lo muestra en el repositorio |
 |---|---|---|
 | E9-00 Puerta de entrada | Fusionado | ADR-0012 y ADR-0014 alineados; decisiones en el roadmap |
 | E9-01 Fixtures | Fusionado | [etapa9-fixtures.md](etapa9-fixtures.md); `crates/kerno-units/tests/layer_fixtures.rs`; `tests/vectors/derived-v2/` |
-| **E9-02 Identificadores públicos** | **Liberado por D1 (2026-11-13), no hecho. No existe** | `crates/kerno-units/src/ids.rs` y `tests/public_ids.rs` no existen. Es un paquete propio que se hace después; I-27 queda **sin verificar** hasta que se fusione |
+| **E9-02 Identificadores públicos** | **Hecho en el árbol el 2026-11-13 (D1), sin fusionar** | `crates/kerno-units/src/ids.rs` y `crates/kerno-units/tests/public_ids.rs` existen (49 pruebas listadas sin `test-support` y 79 con ella, en los dos motores; fixture `tests/vectors/public-ids-v3/`; [mutaciones](etapa9-mutaciones-e9-02.md)). Falta la revisión independiente y la fusión; I-27 queda **verificada en el árbol** |
 | E9-03 Auditoría minimizada | Fusionado | [etapa9-auditoria.md](etapa9-auditoria.md); `tests/redaction_units.rs` |
 | E9-04 a E9-06 Exportación | Fusionados | `src/export.rs`, `src/import.rs`, `tests/export_import.rs`, `tests/export_physical.rs`; [borrador](../file-format/export-v0-borrador.md) |
 | E9-07 Reclamación pública | Fusionado | trait `Reclaim` en `kerno-core/src/contract.rs`; `src/reclaim.rs`; `tests/reclaim.rs` |
@@ -43,13 +43,13 @@ Se comprobó con `git log` y con los ficheros. Todos los paquetes están fusiona
 
 | Decisión | Opción tomada | Qué queda **sin verificar** o sin hacer |
 |---|---|---|
-| D1 | (a): token aleatorio opaco con mapeo persistido (opción 1 de ADR-0005) | E9-02 liberado, no hecho; I-27 sin verificar hasta que se fusione. ADR-0005 queda **Aceptado** con esa opción |
+| D1 | (a): token aleatorio opaco con mapeo persistido (opción 1 de ADR-0005) | E9-02 hecho en el árbol, sin fusionar. ADR-0005 queda **Aceptado** con esa opción |
 | D2 | (a): AEAD por bloque, como diseño a usar si se construye cifrado | Nada se implementa. ADR-0006 sigue **Pendiente** |
 | D3 | (b): sin cifrado en 1.0; 1.0 no promete confidencialidad en reposo ni gestión de claves, y lo declara | K-1 a K-4 de ADR-0009 sin medir, porque no hay cifrado |
 | D4 | (a): sin integridad autenticada en 1.0; el límite queda en el threat model §6.6 y `verify()` con `deep` es el recurso | H-2 queda cerrado como límite aceptado y documentado (§5 de este documento, §6) |
 | D12 | (b): 1.0 se declara solo después de D13 y de un uso real fuera del equipo | **1.0 no se declara**. No se congela el formato de exportación ni se promete semver |
 | D15 | (b) como dirección: licencia amplia no exclusiva con derecho a relicenciar | El texto legal del CLA **no está escrito** y necesita la aprobación del propietario antes de aceptar cualquier contribución externa. No se acepta ninguna |
-| D16 | (b): ADR-0016 queda **pendiente de confirmación** hasta revisar G1 a G7 | Revisión de G1 a G7 como tarea aparte. Nada de la etapa depende de ADR-0016 |
+| D16 | (b): ADR-0016 queda **pendiente de confirmación** hasta revisar G1 a G7. **Cerrada el 2026-11-13:** revisión hecha, ADR-0016 **aceptado y confirmado** con enmiendas | La revisión se hizo como tarea aparte ([ADR-0016](../adr/0016-adaptacion-e-invalidacion.md), «Revisión de 2026-11-13»). Nada de la etapa depende de ADR-0016. Trabajo abierto que deja: la explicación del plan no lista la caché, la evidencia de creación es constante (H-3) y `set_key` no deja registro |
 
 ## 3. Criterios comunes (acta §4) y umbrales (acta §5)
 
@@ -62,7 +62,7 @@ Las cifras de esta tabla se **citan** de los documentos de cada paquete. Solo se
 | T-FZ1 | Cumplido con salvedades | 15 objetivos, 1 801 s cada uno, sin fallos. Salvedades en §5, punto 7 |
 | T-PR1 | Cumplido según E9-13 | `decoders_robust.rs` |
 | T-ST1 | Cumplido con un límite | Salvedad en §5, punto 4 |
-| T-FR1 | 15 de 15 con disposición | `examples/agent-memory/FRICTION.md`. Sin hacer: punto 6, pendiente de E9-02 (D1 tomada el 2026-11-13); la parte de identidad del punto 3 es un cambio de formato que D12 no decide |
+| T-FR1 | 15 de 15 con disposición | `examples/agent-memory/FRICTION.md`. Punto 6: E9-02 existe en el árbol (`PublicId`), sin fusionar; la parte de identidad del punto 3 es un cambio de formato que D12 no decide |
 | T-EN1 | Cumplido | `grep -rn "pub fn engine" crates/kerno-units/src`: sin resultados |
 | T-MU1 | Cumplido con salvedades | E9-15 (19 de 19 pruebas), E9-03, E9-20. Salvedades en §5, puntos 5, 6, 9 y 10 |
 | T-SQ1, T-NM | Cumplidos para el informe nuevo | Precondición de carga anotada en el informe; sin nombres de terceros distintos de SQLite. La carga de las mediciones de E9-14 y E9-20 no fue la de una máquina libre (§5) |
@@ -89,7 +89,7 @@ redaction_units:     test result: ok. 3 passed; 0 failed
 | **I-43** | **Promovida** (D19): verificada de nuevo con `the_original_stays_readable_through_every_summary_operation` y `reads_of_a_source_are_the_same_with_and_without_summaries` |
 | **I-28** | **No aplica en 1.0** (D19; D3 tomada el 2026-11-13: sin cifrado en 1.0). Lo que se puede decir hoy: `verify()` no encuentra archivos desconocidos en el directorio (`lifecycle_soak.rs`) |
 | **I-30** | Verificada **para el borrador** y para la reimportación. La congelación del formato no se hace: D12 (tomada el 2026-11-13) la deja para después de D13 y de un uso real |
-| **I-27** | **Sin verificar**: E9-02 está liberado por D1 (2026-11-13) pero no fusionado |
+| **I-27** | **Verificada en el árbol** (2026-11-13) por `crates/kerno-units/tests/public_ids.rs` (`tampered_text_is_refused_with_its_own_error`, `tampered_but_well_formed_tokens_name_nothing`); sin revisión independiente ni fusión |
 | **I-31** | Verificada por revisión de dependencias (§1) |
 | I-N1 (reclamación) | Registrada como **I-44** en [invariantes](invariants.md) §2.7 |
 | I-N2 (envoltura) | Registrada como **I-45** en [invariantes](invariants.md) §2.7 |
@@ -138,7 +138,7 @@ Cada punto es un límite o un pendiente. El punto 1 está resuelto; los demás s
 | H-7 | **Verificado con los límites del punto 7** |
 | H-9, H-12 | Cerrados en este paquete |
 | H-13 | Revisado (E9-16); K1, K2, K4 y K5 con el estado del punto 2 |
-| H-14 | I-27: sin verificar hasta fusionar E9-02 (D1). I-28: no aplica. I-30: verificada para el borrador |
+| H-14 | I-27: verificada en el árbol por E9-02 (D1); falta fusionar. I-28: no aplica. I-30: verificada para el borrador |
 | F-02, F-03 | E9-11 |
 | F-04 | E9-10 |
 | F-05 | Abierto: no hay formato en disco para resúmenes (D8) |
@@ -158,4 +158,4 @@ Pre-1.0, sin promesa que romper (D9): `Reclaim` en `kerno-core`; `UnitDb::reclai
 
 ## 10. Qué sigue
 
-E9-02, liberado por D1 y no fusionado (I-27 sin verificar); aprobación del propietario del texto del CLA antes de aceptar cualquier contribución externa (D15); revisión de G1 a G7 de ADR-0016, tarea aparte (D16); declaración de 1.0 solo después de D13 y de un uso real fuera del equipo (D12); investigar la prueba intermitente (punto 11); corrida más larga de fuzzing de `wal`, `manifest` y `open`; K1/K2/K4/K5 abiertos (punto 2). El estado de la Fase 1 en el roadmap ya está resuelto (punto 1).
+revisión independiente y fusión de E9-02, hecho en el árbol (I-27 verificada allí); aprobación del propietario del texto del CLA antes de aceptar cualquier contribución externa (D15); revisión de G1 a G7 de ADR-0016 hecha y D16 cerrada (2026-11-13; su trabajo abierto está en el ADR); declaración de 1.0 solo después de D13 y de un uso real fuera del equipo (D12); investigar la prueba intermitente (punto 11); corrida más larga de fuzzing de `wal`, `manifest` y `open`; K1/K2/K4/K5 abiertos (punto 2). El estado de la Fase 1 en el roadmap ya está resuelto (punto 1).

@@ -14,11 +14,17 @@
 //! correlation, and a relation-only sequence is recorded as `Index`, not
 //! `Relation`. Last, the result is checked with [`verify_snapshot`].
 //!
-//! Format errors are `Storage(Corruption)`; a `format_version` other than 0 is
-//! `Storage(Incompatible)`; a target that is not empty, or whose default
-//! policy is not the exported one, is `InvalidArgument`.
+//! Public id tokens are restored with the unit, in the change set of its first
+//! retained revision, so a token is the same after export and import. A file
+//! that gives one token to two units is refused before the first write with
+//! [`UnitError::PublicIdTaken`].
+//!
+//! Format errors are `Storage(Corruption)`; a `format_version` other than the
+//! one of [`EXPORT_VERSION`] is `Storage(Incompatible)`; a target that is not
+//! empty, or whose default policy is not the exported one, is
+//! `InvalidArgument`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use kerno_core::contract::TxnEngine;
 
@@ -26,6 +32,7 @@ use crate::codec::{Adjacency, Key, RelationRecord, RevisionMeta, UnitHead, valid
 use crate::db::{ChangeMeta, ChangeSet, UnitDb, Write, corruption, key};
 use crate::error::UnitError;
 use crate::export::{DIGEST_LEN, EXPORT_MAGIC, EXPORT_VERSION, FLAG_DRAFT, NO_DEFAULT_POLICY};
+use crate::ids::PublicId;
 use crate::payload::{ContentHash, HashAlg, verify_payload};
 use crate::types::{
     CommitSeq, HistoryPolicy, ProvenanceKind, RelationId, RelationProvenance, RevNo, RevisionKind, Timestamp, UnitId,
@@ -44,6 +51,8 @@ pub struct ImportReport {
     pub revisions: usize,
     pub relations: usize,
     pub policies: usize,
+    /// Public id tokens restored with their units.
+    pub tokens: usize,
 }
 
 struct Rev {
@@ -60,6 +69,7 @@ struct UnitData {
     oldest: RevNo,
     head: RevNo,
     revs: Vec<Rev>,
+    token: Option<PublicId>,
 }
 
 struct Rel {
@@ -97,6 +107,7 @@ pub fn import<E: TxnEngine>(db: &UnitDb<E>, bytes: &[u8]) -> Result<ImportReport
         revisions: parsed.units.iter().map(|u| u.revs.len()).sum(),
         relations: parsed.relations.len(),
         policies: parsed.policies.len(),
+        tokens: parsed.units.iter().filter(|u| u.token.is_some()).count(),
     };
     replay(db, &parsed)?;
     for (unit_type, p) in &parsed.policies {
@@ -146,7 +157,13 @@ fn replay<E: TxnEngine>(db: &UnitDb<E>, p: &Parsed) -> Result<(), UnitError> {
             )));
         }
         for &(ui, ri) in revs {
-            write_revision(&mut cs, &p.units[ui], ri)?;
+            let u = &p.units[ui];
+            if ri == 0
+                && let Some(token) = u.token
+            {
+                cs.restore_public_id(u.id, token)?;
+            }
+            write_revision(&mut cs, u, ri)?;
         }
         for &i in rels {
             write_relation(&mut cs, &p.relations[i])?;
@@ -213,7 +230,7 @@ fn parse(bytes: &[u8]) -> Result<Parsed, UnitError> {
         ))));
     }
     if bytes[12] != FLAG_DRAFT || bytes[13..16] != [0; 3] {
-        return Err(bad("flags or reserved bytes are not those of a v0 draft"));
+        return Err(bad("flags or reserved bytes are not those of a draft"));
     }
     let (body, digest) = bytes.split_at(bytes.len() - DIGEST_LEN);
     if blake3::hash(body).as_bytes() != digest {
@@ -225,7 +242,9 @@ fn parse(bytes: &[u8]) -> Result<Parsed, UnitError> {
         b => Some(HistoryPolicy::from_byte(b).ok_or_else(|| bad(format!("default policy byte {b}")))?),
     };
     let policies = policies(&mut r)?;
-    let units = units(&mut r)?;
+    let token_records = token_records(&mut r)?;
+    let mut units = units(&mut r)?;
+    attach_tokens(token_records, &mut units)?;
     let relations = relations(&mut r)?;
     if !r.b.is_empty() {
         return Err(bad(format!("{} bytes after the last section", r.b.len())));
@@ -301,7 +320,7 @@ fn unit(r: &mut In<'_>) -> Result<UnitData, UnitError> {
     if last.kind != RevisionKind::Delete && last.payload_len > 0 && revs[revs.len() - 1].payload.is_none() {
         return Err(bad(format!("unit {id}: the head revision has no payload")));
     }
-    Ok(UnitData { id, unit_type, created_seq, created_at, oldest, head, revs })
+    Ok(UnitData { id, unit_type, created_seq, created_at, oldest, head, revs, token: None })
 }
 
 fn revision(r: &mut In<'_>, unit: UnitId, no: RevNo) -> Result<Rev, UnitError> {
@@ -393,6 +412,43 @@ fn relations(r: &mut In<'_>) -> Result<Vec<Rel>, UnitError> {
         out.push(Rel { id, from, to, record: RelationRecord { from, to, relation_type, created_seq, provenance } });
     }
     Ok(out)
+}
+
+/// The token section: strictly increasing unit ids, each a unit of the file
+/// that is not deleted (deleting removes the mapping), and no token twice.
+fn token_records(r: &mut In<'_>) -> Result<Vec<(UnitId, [u8; 16])>, UnitError> {
+    let n = r.u32()?;
+    let mut seen: BTreeSet<[u8; 16]> = BTreeSet::new();
+    let mut out: Vec<(UnitId, [u8; 16])> = Vec::new();
+    for _ in 0..n {
+        let unit = UnitId(r.array()?);
+        let bytes: [u8; 16] = r.array()?;
+        if out.last().is_some_and(|(p, _)| *p >= unit) {
+            return Err(bad("token records are not in strictly increasing unit id order"));
+        }
+        if bytes.iter().all(|b| *b == bytes[0]) {
+            return Err(bad("a token record holds a constant token"));
+        }
+        if !seen.insert(bytes) {
+            return Err(UnitError::PublicIdTaken);
+        }
+        out.push((unit, bytes));
+    }
+    Ok(out)
+}
+
+/// Each token record names a unit of the file that is not deleted.
+fn attach_tokens(records: Vec<(UnitId, [u8; 16])>, units: &mut [UnitData]) -> Result<(), UnitError> {
+    for (unit, bytes) in records {
+        let Ok(at) = units.binary_search_by(|u| u.id.cmp(&unit)) else {
+            return Err(bad("a token record names a unit that is not in the file"));
+        };
+        if units[at].revs.last().is_some_and(|rev| rev.meta.kind == RevisionKind::Delete) {
+            return Err(bad("a token record names a deleted unit"));
+        }
+        units[at].token = Some(PublicId::from_bytes(bytes));
+    }
+    Ok(())
 }
 
 /// Both ends of a relation are units of the file.

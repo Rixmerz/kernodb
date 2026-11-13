@@ -75,9 +75,10 @@ use kerno_core::{Durability, MAX_VALUE_LEN};
 
 use crate::clock::{Clock, SystemClock, UnitIdSource, UuidV7Source};
 use crate::codec::{
-    Adjacency, ChangeSetRecord, CsMember, Key, LAYER_MARK_NAME, LAYER_VERSION, LAYER_VERSION_DERIVED, LayerMeta,
-    MAX_CHANGESET_FIELD_LEN, MAX_LAYER_VERSION, MAX_MEMBER_COUNT, MAX_METADATA_LEN, MAX_REV_REF_LEN, MAX_UNIT_TYPE_LEN,
-    RelationRecord, RevisionMeta, TAG_REL_IN, TAG_REL_OUT, UnitHead, valid_relation_type,
+    Adjacency, ChangeSetRecord, CsMember, Key, LAYER_MARK_NAME, LAYER_VERSION, LAYER_VERSION_DERIVED,
+    LAYER_VERSION_PUBLIC_IDS, LayerMeta, MAX_CHANGESET_FIELD_LEN, MAX_LAYER_VERSION, MAX_MEMBER_COUNT,
+    MAX_METADATA_LEN, MAX_REV_REF_LEN, MAX_UNIT_TYPE_LEN, RelationRecord, RevisionMeta, TAG_REL_IN, TAG_REL_OUT,
+    UnitHead, valid_relation_type,
 };
 use crate::error::{DecodeError, UnitError};
 use crate::payload::{ContentHash, MAX_PAYLOAD_LEN, PAYLOAD_CODEC_OPAQUE, verify_payload};
@@ -564,6 +565,7 @@ impl<E: TxnEngine> UnitDb<E> {
             need_mark,
             layer_version,
             derived_ops: 0,
+            token_ops: 0,
             members: Vec::new(),
             relation_ops: 0,
             touched: BTreeSet::new(),
@@ -934,6 +936,9 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     /// Persisted-derived writes so far (ADR-0020): they make the change set
     /// non-empty and decide its purpose when it has no members.
     pub(crate) derived_ops: usize,
+    /// Public id records written so far (ADR-0005): they raise the mark to
+    /// layer version 3 and always travel with a member.
+    pub(crate) token_ops: usize,
     members: Vec<(RevisionId, RevisionKind)>,
     /// Relations created or deleted so far (E4-02): they are not members, but
     /// they count against `max_changeset_ops` and make the change set non-empty.
@@ -1077,7 +1082,12 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         // The persisted derived data of the unit follow the source in this
         // same transaction (ADR-0020 §S3): read before the first write, so a
         // refusal leaves the change set untouched.
-        let derived = self.derived_follow(plan.rev.unit, plan.kind)?;
+        let mut derived = self.derived_follow(plan.rev.unit, plan.kind)?;
+        // A deleted unit takes its public id mapping with it, so its token
+        // then resolves like one never issued (ADR-0005).
+        if plan.kind == RevisionKind::Delete {
+            derived.extend(self.plan_token_removal(plan.rev.unit)?);
+        }
         for w in plan.writes.iter().chain(&derived) {
             self.write(w)?;
         }
@@ -1534,7 +1544,13 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         });
         // The mark goes to version 2 in the transaction of the first derived
         // record, and no writer lowers it (ADR-0020 §S3.4, §S3.5).
-        let wants = if self.derived_ops > 0 { LAYER_VERSION_DERIVED } else { LAYER_VERSION };
+        let wants = if self.token_ops > 0 {
+            LAYER_VERSION_PUBLIC_IDS
+        } else if self.derived_ops > 0 {
+            LAYER_VERSION_DERIVED
+        } else {
+            LAYER_VERSION
+        };
         if self.need_mark {
             let mark = LayerMeta { layer_version: wants, history_policy: self.db.cfg.default_policy };
             let v = mark.encode()?;

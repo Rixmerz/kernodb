@@ -49,8 +49,12 @@ pub const LAYER_VERSION: u32 = 1;
 /// (`DERIVED_VECTORS`, ADR-0020). It is written by the first change set that
 /// persists one, never before and never lowered.
 pub const LAYER_VERSION_DERIVED: u32 = 2;
+/// `layer_version` of a database that holds a public id record (`0x70` or
+/// `0x71`, ADR-0005). It is written by the transaction that writes the first
+/// one, never before and never lowered; it includes everything of version 2.
+pub const LAYER_VERSION_PUBLIC_IDS: u32 = 3;
 /// The newest `layer_version` this build reads and writes.
-pub const MAX_LAYER_VERSION: u32 = LAYER_VERSION_DERIVED;
+pub const MAX_LAYER_VERSION: u32 = LAYER_VERSION_PUBLIC_IDS;
 /// The `LAYER_META` name of the layer mark (design §2.6).
 pub const LAYER_MARK_NAME: &str = "layer";
 /// Length limits of §1.2.
@@ -626,6 +630,18 @@ impl UnitHead {
         w.bytes(&self.metadata, MAX_METADATA_LEN, "UNIT_HEAD.metadata")?;
         Self::decode(&w.0).map_err(|e| refuse("UNIT_HEAD", &e))?;
         Ok(w.0)
+    }
+
+    /// Only the lifecycle of an encoded head: the envelope, `unit_type`,
+    /// `schema_version` and the lifecycle byte are read, the rest is not.
+    /// For a caller that asks nothing else of the head; a full read is
+    /// [`UnitHead::decode`].
+    pub fn decode_lifecycle(value: &[u8]) -> Res<Lifecycle> {
+        let mut r = Reader::new(value, "UNIT_HEAD");
+        r.envelope()?;
+        r.bytes(MAX_UNIT_TYPE_LEN, "unit_type")?;
+        r.u32("schema_version")?;
+        r.enumeration("lifecycle", Lifecycle::from_byte)
     }
 
     pub fn decode(value: &[u8]) -> Res<Self> {

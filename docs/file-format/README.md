@@ -9,6 +9,8 @@ Contenido del directorio:
 | [`v1.md`](v1.md) | Especificación normativa del formato v1 (directorio, cabecera común, WAL, SST, MANIFEST, recuperación, semántica, vectores, compatibilidad, historial del borrador) |
 | [`units-v1.md`](units-v1.md) | Claves y valores de la capa de unidades v1 (`layer_version = 1`) |
 | [`units-v2.md`](units-v2.md) | Capa de unidades v2 (`layer_version = 2`, característica `DERIVED_VECTORS`): vectores persistidos como derivados, [ADR-0020](../adr/0020-persistencia-de-vectores-como-derivados.md). Sus vectores los comprueba byte a byte `crates/kerno-units/tests/derived_vectors.rs` |
+| [`units-v3.md`](units-v3.md) | Capa de unidades v3 (`layer_version = 3`): identificadores públicos, registros `0x70`/`0x71` ([ADR-0005](../adr/0005-identificadores-publicos.md)), con la tabla de vectores que comprueba `crates/kerno-units/tests/public_ids.rs` |
+| [`export-v0-borrador.md`](export-v0-borrador.md) | Exportación lógica, borrador sin congelar (`format_version = 1` desde E9-02) |
 | `crates/kerno-storage/tests/vectors/v1/` | Vectores de estructura y de directorio; una guardia de CI los regenera en memoria y los compara byte a byte ([CONTRIBUTING](../../CONTRIBUTING.md#vectores-del-formato-y-cambios-de-bytes)) |
 
 Los principios siguientes se extrajeron de SAD §13 y de lo aprendido en M0 antes de escribir el formato; `v1.md` los cumple, y siguen siendo los requisitos de cualquier formato futuro de Kerno.

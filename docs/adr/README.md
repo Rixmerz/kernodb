@@ -15,7 +15,7 @@ Reglas:
 | [0002](0002-transacciones-y-durabilidad.md) | Modelo de transacciones y durabilidad | **Aceptado** (2026-10-28) |
 | [0003](0003-formato-fisico-y-versionado.md) | Formato físico y versionado | **Aceptado** (2026-10-28; formato concreto se congela al cerrar Fase 1) |
 | [0004](0004-historial-de-revisiones.md) | Historial de revisiones | **Aceptado** (2026-10-31; [acta E3-00](../architecture/etapa3-acta-e3-00.md)) |
-| [0005](0005-identificadores-publicos.md) | Identificadores públicos | **Aceptado** (2026-11-13, opción 1; D1 de la [acta de la Etapa 9](../architecture/etapa9-acta.md)). Implementación en E9-02, liberado y no fusionado |
+| [0005](0005-identificadores-publicos.md) | Identificadores públicos | **Aceptado** (2026-11-13, opción 1; D1 de la [acta de la Etapa 9](../architecture/etapa9-acta.md)). Implementación en E9-02, hecha en el árbol y no fusionada (corregida tras la revisión independiente) |
 | [0006](0006-cifrado-y-gestion-de-claves.md) | Cifrado y gestión de claves | Pendiente (no aceptado). Diseño elegido si se construye cifrado: opción 1, AEAD por bloque (D2, 2026-11-13). Nada se implementa |
 | [0007](0007-consistencia-de-indices.md) | Consistencia y reconstrucción de índices | Pendiente |
 | [0008](0008-serializacion-documental-y-hashes.md) | Serialización documental y hashes | Aceptado (mínimo: BLAKE3-256 y bytes opacos) |
@@ -26,7 +26,7 @@ Reglas:
 | [0013](0013-formato-v1-y-protocolo-del-motor.md) | Formato v1 y protocolo del motor | **Aceptado** (2026-10-31; el formato v1 se congeló ese día, [v1.md](../file-format/v1.md)). Estado a 2026-11-11: esta fila decía «Propuesto», texto anterior desactualizado |
 | [0014](0014-representacion-fisica-de-relaciones.md) | Representación física de relaciones | Aceptado (2026-11-05, E4-02: opción 2). El cuerpo de la nota de E4-00 se alineó con esta fila el 2026-11-12 (E9-00) |
 | [0015](0015-privacidad-de-la-observabilidad.md) | Privacidad de la observabilidad | Aceptado el 2026-11-06 con la evidencia de E5-04 (spec v0.2.0 §17.11) |
-| [0016](0016-adaptacion-e-invalidacion.md) | Adaptación operacional e invalidación | Aceptado (2026-11-09; garantías G1–G7); **pendiente de confirmación** del propietario (D16, 2026-11-13) |
+| [0016](0016-adaptacion-e-invalidacion.md) | Adaptación operacional e invalidación | Aceptado (2026-11-09; garantías G1–G7); **confirmado el 2026-11-13** con enmiendas (D16, cerrada) |
 | [0017](0017-semantica-de-la-unidad-neuronal.md) | Semántica de la «unidad neuronal» | Propuesto (spec v0.2.0 §17.13; se decide al iniciar la Etapa 3) |
 | [0018](0018-versionado-y-reconstruccion-de-derivados.md) | Versionado y reconstrucción de artefactos derivados | **Aceptado** (2026-11-12, por el propietario: opción 2, registro común de derivados; [acta de la Etapa 8](../architecture/etapa8-acta.md)) |
 | [0019](0019-licencia-y-contribuciones.md) | Licencia y contribuciones | **Aceptado** (2026-11-11, por el propietario del proyecto) |
