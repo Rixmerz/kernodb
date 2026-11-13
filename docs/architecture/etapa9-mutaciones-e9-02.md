@@ -21,9 +21,9 @@ Una sola copia del árbol (sin `target` ni `.git`), con su propio directorio de 
 | M09 import does not restore the token | `crates/kerno-units/src/import.rs:164` | `cs.restore_public_id(u.id, token)?;` → `let _ = (u.id, token);` | `emulated_log::export_carries_tokens_and_import_restores_them` | **falla** (5) |
 | M10 import accepts one token for two units | `crates/kerno-units/src/import.rs:432` | `if !seen.insert(bytes) {` → `if !seen.insert(bytes) && false {` | `emulated_log::import_refuses_one_token_for_two_units` | **falla** (3) |
 | M11 export writes a wrong token | `crates/kerno-units/src/export.rs:133` | `w.0.extend_from_slice(&token.to_bytes());` → `w.0.extend_from_slice(&[7u8; 16]);` | `emulated_log::export_carries_tokens_and_import_restores_them` | **falla** (7) |
-| M12 public_id skips the reverse check | `crates/kerno-units/src/ids.rs:411` | `if self.unit_of(&token)? != Some(unit) {` → `if false {` | `emulated_log::stored::a_reverse_record_without_its_token_is_corruption_in_public_id` | **falla** (7) |
-| M13 public_id serves a deleted unit | `crates/kerno-units/src/ids.rs:408` | `if !self.is_live(unit)? {` → `if false {` | `emulated_log::stored::cross_a_pair_left_on_a_deleted_unit` | **falla** (3) |
-| M14 resolve serves a deleted unit | `crates/kerno-units/src/ids.rs:427` | `if !self.is_live(unit)? {` → `if false {` | `emulated_log::stored::cross_a_pair_left_on_a_deleted_unit` | **falla** (3) |
+| M12 public_id skips the reverse check | `crates/kerno-units/src/ids.rs:420` | `if self.unit_of(&token)? != Some(unit) {` → `if false {` | `emulated_log::stored::a_reverse_record_without_its_token_is_corruption_in_public_id` | **falla** (6) |
+| M13 public_id serves a deleted unit | `crates/kerno-units/src/ids.rs:417` | `if !self.is_live(unit)? {` → `if false {` | `emulated_log::stored::cross_a_pair_left_on_a_deleted_unit` | **falla** (4) |
+| M14 resolve serves a deleted unit | `crates/kerno-units/src/ids.rs:436` | `if !self.is_live(unit)? {` → `if false {` | `emulated_log::stored::cross_a_pair_left_on_a_deleted_unit` | **falla** (4) |
 | M15 constant source accepted | `crates/kerno-units/src/ids.rs:277` | `if bytes.iter().all(|b| *b == bytes[0]) {` → `if false {` | `ids::tests::short_reads_read_errors_and_constant_tokens_are_refused` | **falla** (2) |
 | M16 key length before the value version | `crates/kerno-units/src/ids.rs:261` | `    check_envelope(value)?;` → `    if key.len() != KEY_LEN {` | `emulated_log::stored::verifier_reports_each_malformed_record` | **falla** (4) |
 | M17 reserved flags ignored | `crates/kerno-units/src/ids.rs:237` | `if flags != 0 {` → `if false {` | `emulated_log::stored::verifier_reports_each_malformed_record` | **falla** (4) |
@@ -35,16 +35,16 @@ Una sola copia del árbol (sin `target` ni `.git`), con su propio directorio de 
 | M22 export format_version check | `crates/kerno-units/src/import.rs:227` | `if version != EXPORT_VERSION {` → `if false {` | `emulated_log::import_of_a_version_0_export_is_refused` | **falla** (2) |
 | M23 layer mark not raised by the first token | `crates/kerno-units/src/db.rs:1547` | `let wants = if self.token_ops > 0 {` → `let wants = if self.token_ops > 99 {` | `emulated_log::mark_is_raised_to_3_by_the_first_token_and_never_lowered` | **falla** (51) |
 | M24 layer mark refusal (UNIT-16) | `crates/kerno-units/src/codec.rs:583` | `            v if v <= max => {}` → `            _ => {}` | `emulated_log::layer2_reader_refuses_a_database_with_tokens` | **falla** (5) |
-| M25 a unit with no head is live | `crates/kerno-units/src/ids.rs:401` | en `is_live`, la rama sin cabecera `return Ok(false);` → `return Ok(true);` | `emulated_log::stored::cross_a_pair_on_a_unit_with_no_head_is_not_live` | **falla** (2); ver nota 1 |
+| M25 a unit with no head is live | `crates/kerno-units/src/ids.rs:402` | en `is_live`, la rama sin cabecera `return Ok(false);` → `return Ok(true);` | `emulated_log::stored::cross_a_pair_on_a_unit_with_no_head_is_not_live` | **falla** (2); ver nota 1 |
 | M27 retention drops the mapping of a live unit | `crates/kerno-units/src/retention.rs:652` | tras la escritura de `UnitHead` en `unit_writes`, se añade `writes.push(Write::Delete(<0x71 ‖ unit>))` | `emulated_log::retention_leaves_the_mapping_of_a_live_unit` | **falla** (2) |
 | M28 token write loses its reverse record (failed-sync test) | `crates/kerno-units/src/ids.rs:358` | tras `self.token_ops += 1;` se añade `self.write(&Write::Delete(unit_key(unit)))?;` | `emulated_log::same_transaction_a_failed_sync_leaves_neither_unit_nor_token` | **falla** (63 de 78 en la ejecución completa; 2 con el filtro del nombre); ver nota 2 |
 | M29 fixture (prueba del fixture) | `crates/kerno-units/tests/vectors/public-ids-v3/TOKEN:1` | el texto del token del fixture, `ggext` → `ggaxt` (se muta el fixture, no el código) | `kerno_db::fixture_directory_opens_resolves_and_verifies` | **falla** (1) |
 
-Notas. (1) M25 no tenía prueba que lo detectara: `is_live` pasaba por `get_unit` y ninguna prueba ponía un par sobre una unidad sin cabecera. Se añadió `cross_a_pair_on_a_unit_with_no_head_is_not_live` (en los dos motores) y la mutación se ejecutó con ella. (2) M28 pasaba la prueba de sincronización fallida porque esta solo miraba las ramas con fallo; se le añadieron comprobaciones a la rama en que el fallo no se dispara (`public_id`, `resolve_public_id` y el recuento de registros) y la mutación se ejecutó con ellas. (3) M29 muta un dato de prueba y no una línea de código: la prueba del fixture es la única que abre el directorio comprometido. (4) Los números de línea de M19 a M29 son los del árbol tras esta ronda; los de M01 a M18 son los del árbol de la ronda anterior (`is_live` ya no pasa por `get_unit`, así que M13 y M14 apuntan hoy a las líneas de `ids.rs` desplazadas unas líneas hacia abajo; no se volvieron a ejecutar tras ese cambio).
+Notas. (1) M25 no tenía prueba que lo detectara: `is_live` pasaba por `get_unit` y ninguna prueba ponía un par sobre una unidad sin cabecera. Se añadió `cross_a_pair_on_a_unit_with_no_head_is_not_live` (en los dos motores) y la mutación se ejecutó con ella. (2) M28 pasaba la prueba de sincronización fallida porque esta solo miraba las ramas con fallo; se le añadieron comprobaciones a la rama en que el fallo no se dispara (`public_id`, `resolve_public_id` y el recuento de registros) y la mutación se ejecutó con ellas. (3) M29 muta un dato de prueba y no una línea de código: la prueba del fixture es la única que abre el directorio comprometido. (4) Los números de línea de todas las filas son los del árbol final. M12, M13, M14 y M25 se volvieron a ejecutar en esta ronda tras reescribir `is_live` (ids.rs:420, 417, 436 y 402) y sus bloques son la salida de esa ejecución; M13 y M14 detectan ahora también la prueba de unidad sin cabecera, de ahí 4 fallos en lugar de 2.
 
 «falla (n)» es el número de pruebas fallidas, contando los dos motores. Las 28 mutaciones (M01 a M25, M27 a M29; no hay M26) fueron detectadas; ninguna sobrevivió. Cada una se aplicó sobre su propia copia del árbol, con su propio directorio de compilación, y ambos se borraron al terminar.
 
-**No ejecutado**: nada de lo pedido en esta ronda quedó sin ejecutar. M01 a M18 no se repitieron tras el cambio de `is_live`.
+**Ejecutado en esta ronda**: M12, M13, M14 y M25. **Solo se comprobó el número de línea** (con `grep` sobre el árbol final; todos coinciden, ninguno se desplazó): M01 a M11 y M15 a M24, M27, M28 y M29. Esas filas conservan la salida de su ejecución anterior; ninguna toca código que haya cambiado después, salvo `is_live`, que solo afecta a M12 a M14 y M25.
 
 ## Líneas FAILED (hasta tres por mutación)
 
@@ -147,23 +147,30 @@ test result: FAILED. 70 passed; 6 failed; 1 ignored; 0 measured; 0 filtered out;
 test emulated_log::stored::a_reverse_record_without_its_token_is_corruption_in_public_id ... FAILED
 test emulated_log::stored::disagreeing_records_are_corruption ... FAILED
 test emulated_log::stored::error_texts_never_pair_a_token_with_a_unit_id ... FAILED
-test result: FAILED. 70 passed; 6 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.10s
+test kerno_db::stored::a_reverse_record_without_its_token_is_corruption_in_public_id ... FAILED
+test kerno_db::stored::error_texts_never_pair_a_token_with_a_unit_id ... FAILED
+test kerno_db::stored::disagreeing_records_are_corruption ... FAILED
+test result: FAILED. 72 passed; 6 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.10s
 ```
 
 ### M13 public_id serves a deleted unit
 
 ```
 test emulated_log::stored::cross_a_pair_left_on_a_deleted_unit ... FAILED
+test emulated_log::stored::cross_a_pair_on_a_unit_with_no_head_is_not_live ... FAILED
 test kerno_db::stored::cross_a_pair_left_on_a_deleted_unit ... FAILED
-test result: FAILED. 74 passed; 2 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.10s
+test kerno_db::stored::cross_a_pair_on_a_unit_with_no_head_is_not_live ... FAILED
+test result: FAILED. 74 passed; 4 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.11s
 ```
 
 ### M14 resolve serves a deleted unit
 
 ```
 test emulated_log::stored::cross_a_pair_left_on_a_deleted_unit ... FAILED
+test emulated_log::stored::cross_a_pair_on_a_unit_with_no_head_is_not_live ... FAILED
 test kerno_db::stored::cross_a_pair_left_on_a_deleted_unit ... FAILED
-test result: FAILED. 74 passed; 2 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.09s
+test kerno_db::stored::cross_a_pair_on_a_unit_with_no_head_is_not_live ... FAILED
+test result: FAILED. 74 passed; 4 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.10s
 ```
 
 ### M15 constant source accepted
@@ -256,7 +263,7 @@ test result: FAILED. 73 passed; 5 failed; 1 ignored; 0 measured; 0 filtered out;
 ```
 test emulated_log::stored::cross_a_pair_on_a_unit_with_no_head_is_not_live ... FAILED
 test kerno_db::stored::cross_a_pair_on_a_unit_with_no_head_is_not_live ... FAILED
-test result: FAILED. 76 passed; 2 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.10s
+test result: FAILED. 76 passed; 2 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.09s
 ```
 
 ### M27 retention drops the mapping of a live unit
