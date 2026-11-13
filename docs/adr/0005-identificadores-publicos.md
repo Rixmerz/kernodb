@@ -51,3 +51,11 @@ Estabilidad del token, rechazo de manipulación, soporte de versionado y clarida
 
 - Fase 4: implementar `IdentifierCodec`, pruebas de tokens manipulados (formato, versión, longitud, alfabeto, tokens inexistentes) y de estabilidad tras exportar/importar.
 - Revisar esta propuesta cuando ADR-0006 esté aceptado.
+
+## Notas
+
+### Límite aceptado: fuente de aleatoriedad (2026-11-13)
+
+Decisión tomada el 2026-11-13 por delegación expresa del propietario, revocable. El token de 128 bits se lee de `/dev/urandom` con `std`, sin ninguna dependencia nueva. En una plataforma sin ese fichero (Windows, WASI) crear un identificador público falla con `UnitError::Storage` y `Io`, sin crear nada. Resolver tokens ya emitidos sigue funcionando. Una lectura con error o corta también falla, y un token cuyos 16 bytes son iguales se rechaza. Código: `crates/kerno-units/src/ids.rs`.
+
+Se levanta de una de dos formas: una API de aleatoriedad en la biblioteca estándar para las plataformas que el proyecto soporte, o la decisión de aceptar una dependencia (`getrandom`), que pasa por la regla de dependencias (I-31). Registro completo en [post9-pendientes](../architecture/post9-pendientes.md), sección «Decisión por delegación del 2026-11-13».
