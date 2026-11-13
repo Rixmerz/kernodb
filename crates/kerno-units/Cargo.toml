@@ -41,6 +41,18 @@ name = "assoc_reference"
 required-features = ["test-support"]
 
 [[test]]
+name = "cache"
+required-features = ["test-support"]
+
+[[test]]
+name = "cache_planner"
+required-features = ["test-support"]
+
+[[test]]
+name = "cache_reversibility"
+required-features = ["test-support"]
+
+[[test]]
 name = "cache_sentinels"
 required-features = ["test-support"]
 
