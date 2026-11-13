@@ -22,7 +22,7 @@ Decisiones del 2026-11-13. El propietario, en persona, pidió al delegado tomar 
 | §11 | Identificadores públicos: D1 tomada (opción 1 de ADR-0005). E9-02 está **fusionado** (2026-11-13); I-27 verificada por `crates/kerno-units/tests/public_ids.rs`, con el registro de mutaciones en [etapa9-mutaciones-e9-02.md](etapa9-mutaciones-e9-02.md); la capa de unidades pasa a la marca 3 ([units-v3.md](../file-format/units-v3.md)). Sin cifrado ni claves en 1.0 (D2 y D3) y sin integridad autenticada en 1.0 (D4) |
 | §13 | Sin cambio del formato v1 del motor; la capa de unidades sube a la marca 3 (identificadores públicos) y la exportación lógica borrador a `format_version` 1 (lleva tokens). La congelación del formato de exportación no se hace: D12 deja 1.0 para después de D13 y de un uso real fuera del equipo |
 | §15 | ADR-0005 aceptado con la opción 1 (D1). ADR-0006 sigue pendiente; su opción 1, AEAD por bloque, es el diseño elegido si se construye cifrado (D2). ADR-0016 figura como aceptado en su archivo y queda pendiente de confirmación del propietario (D16) |
-| §16 | Estado de la Etapa 9: cerrada como trabajo de ingeniería, con todos los paquetes fusionados (E9-02 el 2026-11-13); el cierre espera la aprobación del propietario. No se declara 1.0 (D12) |
+| §16 | Estado de la Etapa 9: cerrada como trabajo de ingeniería, con todos los paquetes fusionados (E9-02 el 2026-11-13); el propietario aprobó el cierre en persona el 2026-11-13. No se declara 1.0 (D12) |
 
 ## Cambios de la versión 0.4.0
 
