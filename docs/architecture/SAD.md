@@ -2,9 +2,9 @@
 
 | Campo | Valor |
 |---|---|
-| Versión | 0.3.0 |
-| Fecha | 12 de noviembre de 2026 (0.2.0: 29 de octubre de 2026; 0.1.0: 27 de octubre de 2026) |
-| Estado | Baseline 0.1.0 con las actualizaciones de la Fase 1 (0.2.0) y de la Etapa 8 (0.3.0), que listan «Cambios de la versión 0.2.0» y «Cambios de la versión 0.3.0»; el resto del texto no se ha reescrito |
+| Versión | 0.4.0 |
+| Fecha | 13 de noviembre de 2026 (0.3.0: 12 de noviembre de 2026; 0.2.0: 29 de octubre de 2026; 0.1.0: 27 de octubre de 2026) |
+| Estado | Baseline 0.1.0 con las actualizaciones de la Fase 1 (0.2.0), de la Etapa 8 (0.3.0) y de la Etapa 9 (0.4.0), que listan «Cambios de la versión 0.2.0», «Cambios de la versión 0.3.0» y «Cambios de la versión 0.4.0»; el resto del texto no se ha reescrito |
 | Tipo | Documento de arquitectura de software (SAD) |
 | Lenguaje de implementación | Rust |
 | Modelo de entrega inicial | Biblioteca embebida y CLI local |
@@ -12,6 +12,18 @@
 > **Resumen ejecutivo.** Kerno será un motor de datos embebido, persistente y extensible. Su núcleo será un almacén key-value transaccional; sobre él se construirán documentos estructurados, historial de revisiones, índices y, más adelante, recuperación híbrida para IA. La arquitectura prioriza correctitud, recuperación, portabilidad y evolución explícita de los datos. El algoritmo de almacenamiento físico —copy-on-write B+ tree o LSM— permanece pendiente de un ADR basado en una prueba técnica reproducible.
 
 > **Nota de mantenimiento.** La versión 0.1.0 fue la baseline aprobada para revisión. Las decisiones posteriores se registran en [`docs/adr/`](../adr/README.md); cuando un ADR cambia algo de este documento, se publica una nueva versión del SAD en lugar de editar esta silenciosamente. La 0.2.0 (cierre de la Fase 1) enumera abajo cada cambio; todo lo que no figura ahí conserva el texto de la 0.1.0, aunque la Fase 1 lo haya superado en detalle (por ejemplo, el reparto de crates de §14 es el propuesto, no el construido).
+
+## Cambios de la versión 0.4.0
+
+Cierre de la Etapa 9 ([cierre](etapa9-cierre.md)). Esta versión registra lo que la etapa construyó y lo que dejó **sin decidir**. No reescribe el cuerpo del documento: cada fila remite al apartado afectado y al documento que lo detalla. Las decisiones tomadas por delegación del propietario son revocables; D1, D2, D3, D4, D12, D15 y D16 siguen retenidas.
+
+| Apartado | Cambio |
+|---|---|
+| §9, §10 | La capa de unidades tiene lecturas de derivados (`snapshot`, `query`, `history`, `derived_of`, búsqueda sobre vectores persistidos), sustitución pública de vectores y `UnitError::is_locked`. `UnitDb::engine` ya no es pública: la envoltura no devuelve el motor (I-45) |
+| §11 | Reclamación física pública: trait `Reclaim` en `kerno-core` y `reclaim()` en `UnitDb` y `DerivedDb`, con el texto de ADR-0009 (opción 3): mecanismo, no borrado físico (I-44). Auditoría minimizada extendida a `kerno-units` (I-29). **Sin cifrado, sin claves y sin identificadores públicos con token** en esta versión (D1 a D4 retenidas; I-27 sin verificar; I-28 no aplica) |
+| §13 | Exportación lógica como **borrador sin congelar** (I-30 para el borrador; la congelación es D12) y reimportación en un motor nuevo. El formato en disco v1 no cambia |
+| §15 | ADR-0012 aceptado (D5) y ADR-0014 alineado. ADR-0005 y ADR-0006 siguen sin aceptar; ADR-0016 figura como aceptado en su archivo y queda pendiente de confirmación del propietario (D16) |
+| §16 | Estado de la Etapa 9: cerrada como trabajo de ingeniería con E9-02 retenido; límites y pendientes en el [cierre](etapa9-cierre.md) §5. No se declara 1.0 (D12) |
 
 ## Cambios de la versión 0.3.0
 
