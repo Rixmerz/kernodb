@@ -5,6 +5,9 @@
 //!
 //! Stage 9 variant: the same story generator and protocol, with the seed of the second
 //! frozen set (`derived_eval2::SEED`); the corpus is generated, not frozen. No new threshold.
+//! It does not run on `derived-eval-2`: it uses a generated `Scale::Performance` story with
+//! that seed and without the vectors of `derived_eval2`, so P2 times only 25
+//! vector-neighbourhood queries.
 //!
 //! * **P1**: writing a source together with its derived descriptor and vector
 //!   (one change set: create a unit, persist its vector) against writing the
