@@ -85,3 +85,24 @@ cargo test --release -p kerno-units --test public_ids -- --ignored regenerate_fi
 | `legacy_directory_written_before_tokens_opens_and_verifies` | el directorio de §2 (sin tokens, marca 2) sigue abriéndose y pasa a marca 3 con el primer token. Solo `kerno_db`: `emulated_log` no abre directorios de ficheros |
 
 La tabla de vectores hexadecimales de los registros está en [units-v3.md](../file-format/units-v3.md) §6 y la fija `vectors_of_the_document_match_the_codec_byte_for_byte`.
+
+## 6. Fixture de P1: directorio con relaciones de antes de la capa 4
+
+Paquete P1 posterior a la Etapa 9 (defecto K1). La capa 4 ([units-v4.md](../file-format/units-v4.md)) añade el registro `0x72` y eleva la marca a 4 con el primer conteo. Un directorio escrito **antes** debe seguir abriéndose y funcionando; el precedente de §5 se repite:
+
+- `crates/kerno-units/tests/vectors/rel-counts-v4/db-legacy-relations/`: una base de `kerno_db` cerrada con tres unidades y tres relaciones tal como las dejaba el escritor anterior (`REL` y sus dos entradas de adyacencia, **sin** registro de conteo), marca 1. Contiene `000003.sst` y `MANIFEST` del motor.
+- `crates/kerno-units/tests/vectors/rel-counts-v4/MANIFEST`: SHA-256, tamaño y nombre de cada fichero.
+
+**Cómo se generó, con la salvedad.** No se construyó con una compilación anterior al cambio: se escribieron las tres unidades con la capa y, por cada relación, los tres registros del escritor antiguo con `raw_commit` (el medio de daño que ya usan las pruebas del crate). Los bytes son los que el escritor anterior dejaba para una relación, pero la ruta que los escribió es la de prueba, no la de producción antigua. Como en §2 y §5, los bytes no se reproducen entre compilaciones; la integridad la da `MANIFEST`. Para regenerarlo tras un cambio de diseño deliberado:
+
+```text
+cargo test --release -p kerno-units --all-features --test rel_counts -- --ignored regenerate_fixture
+```
+
+| Prueba (`rel_counts.rs`) | Qué comprueba |
+|---|---|
+| `fixture_manifest_lists_the_committed_files` | integridad del directorio comprometido |
+| `legacy_directory_opens_works_and_upgrades_when_written` | abre con marca 1, sin conteos, `verify_units` limpio, sirve sus relaciones, abrir y leer no escriben; una relación nueva sube la marca a 4 y escribe los dos conteos de sus extremos. En `emulated_log` construye el mismo contenido en memoria |
+| `legacy_relations_work_and_get_a_count_when_next_changed`, `deleting_a_legacy_relation_counts_what_is_left` | el mismo camino, en los dos motores, con el límite de units-v4 §7 punto 1 fijado |
+| `layer3_reader_refuses_a_database_with_counts` | un lector de capa 3 rechaza la marca con UNIT-16 y `found_layer_version = 4` |
+| `vectors_of_the_document_match_the_codec_byte_for_byte` | la tabla de units-v4 §6 |

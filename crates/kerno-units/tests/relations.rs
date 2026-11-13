@@ -556,7 +556,8 @@ fn verifier_reports_index_damage<E: TxnEngine>() {
         let snap = db.snapshot().unwrap();
         match name {
             "REL missing" => assert!(snap.relations_of(u[0], Direction::Out, None).is_err(), "{name}"),
-            "REL_OUT missing" => assert!(snap.relations_of(u[0], Direction::Out, None).unwrap().is_empty()),
+            // P1: the count record of the lost entry makes the read refuse.
+            "REL_OUT missing" => assert!(snap.relations_of(u[0], Direction::Out, None).is_err(), "{name}"),
             _ => {}
         }
         drop(snap);
@@ -600,9 +601,9 @@ fn verifier_reports_index_damage<E: TxnEngine>() {
 /// K1 (E9-22): a relation record with only one of its two adjacency entries.
 /// Seen from the end that kept its entry the adjacency answer is right but the
 /// damage is there: the query must not return it as a clean adjacency answer.
-/// Seen from the end that lost its entry there is nothing to traverse, and
-/// the answer is short, from `relations_of` and from `query_relations`: the
-/// known limit (H-1), pinned here so that a change to it is deliberate;
+/// Seen from the end that lost its entry there is nothing to traverse; P1
+/// (adjacency counts, `rel_counts.rs`) makes `relations_of` refuse and
+/// `query_relations` fall back, so the answer is never short.
 /// `verify_units` reports both.
 fn one_adjacency_entry_missing<E: TxnEngine>(filler: usize) {
     let db = open::<E>();
@@ -642,13 +643,19 @@ fn one_adjacency_entry_missing<E: TxnEngine>(filler: usize) {
         let (unit, dir) = gone;
         let reference = snap.reference_relations_of(unit, dir, Some("cites")).unwrap();
         assert_eq!(reference.len(), 1, "{name}");
-        assert!(snap.relations_of(unit, dir, Some("cites")).unwrap().is_empty(), "{name}: the lost end is short");
+        let e = snap.relations_of(unit, dir, Some("cites")).unwrap_err();
+        assert!(is_corruption(&e), "{name}: the lost end refuses, it is not short: {e}");
         let q = RelationQuery { unit, direction: dir, relation_type: Some("cites".into()) };
         let got = snap.query_relations(&q).unwrap();
-        // Known open limit (K1): the planner's relation probes never compare
-        // the adjacency range with the record range, so the empty answer
-        // stands, on the adjacency path and without a fallback.
-        assert_eq!((got.path, got.relations.len(), got.fallback), (PlanPath::Adjacency, 0, None), "{name}");
+        // P1 closes K1 from the end that lost its entry: the adjacency count
+        // (`adj_count.rs`) makes the read an error, and the planner answers
+        // from the reference path, with a fallback when it had chosen the
+        // adjacency path.
+        assert_eq!((got.path, got.relations), (PlanPath::RelationsReference, reference), "{name}");
+        if filler > 0 {
+            let fallback = got.fallback.expect("a large store reaches the adjacency path and falls back");
+            assert_eq!((fallback.abandoned, fallback.cause), (PlanPath::Adjacency, FallbackCause::Corrupt), "{name}");
+        }
         drop(snap);
         put_all(&db, undo);
         assert_clean(&db, name);

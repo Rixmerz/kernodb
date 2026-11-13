@@ -32,7 +32,7 @@ Se sigue el precedente de [units-v2.md](units-v2.md) §2 (una capa que añade re
 | `0x71` | `PUBLIC_ID_OF` | `unit_id[16]` | 17 |
 
 - `0x70` es el índice `token → unidad`; `0x71` el inverso `unidad → token`, que permite mostrar de nuevo el token de una unidad sin recorrer nada.
-- Tags `0x72`–`0x7F`: reservados. Una capa 3 que los encuentre los rechaza con UNIT-2 (`IncompatibleLayer`). En una capa 2 o anterior, todo el nibble `0x7` cae en UNIT-2.
+- Tags `0x72`–`0x7F`: reservados. Una capa 3 que los encuentre los rechaza con UNIT-2 (`IncompatibleLayer`). (Nota posterior: [units-v4.md](units-v4.md) usa `0x72` para los contadores de adyacencia, con marca 4; `0x73`–`0x7F` siguen reservados.) En una capa 2 o anterior, todo el nibble `0x7` cae en UNIT-2.
 - Las claves quedan fuera de `Key` de `codec.rs`, igual que los derivados persistidos (`0x60`–`0x62`): `verify_units` las lee aparte.
 
 ## 4. Valores
