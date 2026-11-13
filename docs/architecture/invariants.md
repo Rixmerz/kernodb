@@ -170,7 +170,7 @@ Las promociones de esta sección son por delegación del propietario (D19) y **r
 
 | ID | Invariante | Estado | Pruebas |
 |---|---|---|---|
-| **I-27** | Un token manipulado se rechaza y un token válido no autoriza | **Sin verificar.** D1 tomada el 2026-11-13 (opción 1 de ADR-0005); E9-02 liberado, no fusionado | — |
+| **I-27** | Un token manipulado se rechaza y un token válido no autoriza | **Verificada en el árbol** (2026-11-13; opción 1 de ADR-0005, E9-02): `crates/kerno-units/tests/public_ids.rs` (`tampered_text_is_refused_with_its_own_error`, `tampered_but_well_formed_tokens_name_nothing`). Sin revisión independiente ni fusión | `public_ids.rs` |
 | **I-28** | Las claves no están en el directorio de datos | **No aplica en 1.0** si no hay cifrado (D3, tomada el 2026-11-13: sin cifrado en 1.0). Lo que se comprueba hoy es que `verify()` no halla archivos desconocidos | `lifecycle_soak.rs` |
 | **I-30** | La exportación lógica es independiente del formato físico y puede reimportarse | **Verificada para el borrador** de exportación. La congelación del formato no se hace: D12 (tomada el 2026-11-13) la deja para después de D13 y de un uso real fuera del equipo | `export_import.rs`, `export_physical.rs` (`kerno-units`) |
 | **I-44** (antes I-N1, nueva) | La reclamación pública no promete borrado físico y solo retira archivos vivos que ninguna instantánea retiene (ADR-0009, puntos 2 y 3) | **Verificada en pruebas** (E9-07) | `tests/reclaim.rs` |

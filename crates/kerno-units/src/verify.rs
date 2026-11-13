@@ -439,6 +439,12 @@ impl State {
             self.counts.derived_records += 1;
             return;
         }
+        if matches!(k.first(), Some(&(crate::ids::TAG_PUBLIC_ID | crate::ids::TAG_PUBLIC_ID_OF))) {
+            if let Err(e) = crate::ids::check_record(&k, &v) {
+                self.decode_error(k, e);
+            }
+            return;
+        }
         let decoded_key = match Key::decode(&k) {
             Ok(key) => key,
             Err(e) => {

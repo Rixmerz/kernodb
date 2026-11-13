@@ -36,7 +36,7 @@ Los entregables son los del [roadmap](../roadmap/README.md) (Etapa 9), más la r
 
 | Entregable | Qué entrega esta etapa | Paquete |
 |---|---|---|
-| Identificadores públicos (ADR-0005, I-27) | **Liberado** por D1 (tomada el 2026-11-13, opción (a)): el codec y su prueba de tokens manipulados. No está hecho | E9-02 (liberado, no fusionado) |
+| Identificadores públicos (ADR-0005, I-27) | **Hecho en el árbol** (D1, opción (a)): codec `k1_` + base32 de 128 bits aleatorios, mapeo `token -> UnitId` y su inverso escritos en la transacción de la unidad (`ChangeSet::create_public`), y pruebas de tokens manipulados y de estabilidad. Falta la revisión independiente (§4.10) y la fusión | E9-02 (hecho, sin fusionar) |
 | Cifrado y gestión de claves (ADR-0006, I-28) | **Decidido, no implementado** (D2, D3 y D4, tomadas el 2026-11-13): AEAD por bloque como diseño si se construye cifrado; 1.0 sin cifrado, que no promete confidencialidad en reposo ni gestión de claves; 1.0 sin integridad autenticada. I-28 se declara no aplicable (D19) | Ninguno: ningún paquete implementa cifrado |
 | Auditoría minimizada | Verificación de I-29 para `kerno-units` (errores, informes, observaciones) y ampliación de la prueba de redacción de `kerno-storage` a fragmentos. Ningún registro persistido de auditoría (D8) | E9-03 |
 | Exportación e importación (I-30) | Formato de exportación **en borrador**, versionado y sin congelar (D10); exportación de unidades, revisiones, relaciones y políticas; importación en un motor nuevo; independencia del formato físico | E9-04, E9-05, E9-06 |
@@ -107,7 +107,7 @@ El ejemplo de [`examples/agent-memory/FRICTION.md`](../../examples/agent-memory/
 | 3 | El id derivado cambia en cada reconstrucción; la ruta atómica deja basura | La identidad incluye la revisión fuente (I-38, por diseño de ADR-0020). `replace_vector` es `pub(crate)` (`vector_store.rs:1083`) | **Parcial**: E9-10 hace pública la sustitución atómica. Cambiar la identidad es un cambio de formato; D12 no lo decide y no se cambia en esta etapa |
 | 4 | **(promesa)** El olvido es solo lógico; no hay vía pública de compactación | §2.2 y §2.3 a | **En alcance**: E9-07 (`Reclaim` y `reclaim()`), con el texto de ADR-0009 (D14) |
 | 5 | Vectores persistidos y resúmenes no se abren juntos | Los resúmenes son solo en memoria (cierre E8, §5.1) | **Límite declarado** (D8). La aplicación guarda sus definiciones |
-| 6 | Ids de 16 bytes opacos; fuente de ids antes de abrir | `UnitId` opaco (`types.rs:9`). El ADR-0005 es el que decide la forma del identificador | **Liberado** por D1 (2026-11-13): E9-02 pendiente de fusión |
+| 6 | Ids de 16 bytes opacos; fuente de ids antes de abrir | `UnitId` opaco (`types.rs:9`). El ADR-0005 es el que decide la forma del identificador | **Hecho en el árbol** (E9-02, D1 del 2026-11-13): `ids.rs` y `PublicId`; pendiente de revisión independiente y fusión |
 | 7 | `create` devuelve `UnitId`; `put_vector` pide `RevisionId` | `create` devuelve `UnitId` (`db.rs:1133`); unas 97 llamadas en las pruebas de `kerno-units` | **En alcance**: E9-10 añade `RevisionId::first(unit)` (sin cambiar `create`) |
 | 8 | Sustituir un vector obsoleto con uno calculado fuera pasa por «recalcular» | `replace_vector` no es pública (`vector_store.rs:1083`) | **En alcance**: E9-10 |
 | 9 | Dos mundos de vectores: la búsqueda copia todos los vectores en cada llamada | Confirmado en el ejemplo; la búsqueda usa `VectorSet` en memoria | **En alcance**: E9-09 (el conjunto se construye una vez) |
@@ -123,7 +123,7 @@ Además, la regla de envoltura (§2.2, «Envoltura del motor») no aparece en la
 ### 2.5 Fuera de alcance
 
 - **Cifrado en reposo, claves y borrado criptográfico.** Fuera de 1.0 por D2, D3 y D4 (tomadas el 2026-11-13). K-1 a K-4 de ADR-0009 no se miden, porque no hay cifrado que medir.
-- **Identificadores públicos con token.** Liberado por D1 (2026-11-13), pero E9-02 no está fusionado. Sin el codec, I-27 no se verifica.
+- **Identificadores públicos con token.** Hecho en el árbol por E9-02 (D1, 2026-11-13); pendiente de revisión independiente y fusión. La exportación lógica todavía no lleva los tokens (E9-04 los deja fuera): una unidad importada no tiene token.
 - **Función de copia de seguridad.** No la hay y no se crea (D18). El plazo de las copias no se promete.
 - **Índice vectorial aproximado, búsqueda textual, fusión híbrida, resumidor real, relaciones inferidas.** Son de otras etapas o no tienen benchmark que los justifique (ADR-0011; E8 §2.3, D8 y D12 de E8).
 - **Cambios de `Config::default`** de `kerno-storage` y de `Config::limits`.
@@ -140,7 +140,7 @@ Cada paquete con código cumple §4. Cada uno escribe **solo** en los ficheros q
 |---|---|---|---|---|
 | **E9-00** Puerta de entrada | Aprobación de esta acta por delegación; ADR-0012 aceptado en su archivo (D5); cuerpo de ADR-0014 alineado con su encabezado (§2.3 e); decisiones de §8 registradas en el índice | Esta acta | `docs/adr/0012-metodologia-de-benchmarks.md` (solo estado y decisión), `docs/adr/0014-representacion-fisica-de-relaciones.md` (solo la línea 113), `docs/adr/README.md` (filas 0012 y 0014), `docs/roadmap/README.md` (sección de la Etapa 9; único escritor de esa sección hasta E9-CL) | Ninguno: es la puerta |
 | **E9-01** Fixtures de versiones previas (ADR-0020 T1, T5, T6; F-11) | Comprobar que los fixtures v1 de storage y units abren y dan el modelo. Reconstruir `derived-v2/` desde `d01f646` en una copia fuera del árbol y comprobar T5 (`IncompatibleLayer`, UNIT-16, `found_layer_version = 2`); si no se puede construir, declararlo | E9-00 | `crates/kerno-units/tests/layer_fixtures.rs` (nuevo), `crates/kerno-units/tests/vectors/derived-v2/` (nuevo, solo si se reconstruye), `docs/architecture/etapa9-fixtures.md` (nuevo) | E9-03, E9-04, E9-07, E9-08a, E9-10 a E9-13, E9-15 a E9-19 |
-| **E9-02** Identificadores públicos (ADR-0005, I-27) | **Liberado por D1 (tomada el 2026-11-13, opción (a)): no está hecho.** Codec y mapeo, pruebas de tokens manipulados y de estabilidad. Se hace como paquete propio, después de E9-00; cuando se fusione, I-27 pasa a verificarse | E9-00 y D1 (tomada el 2026-11-13) | `crates/kerno-units/src/ids.rs` (nuevo), `crates/kerno-units/src/lib.rs` (una línea, último en la fusión), `crates/kerno-units/tests/public_ids.rs` (nuevo) | — |
+| **E9-02** Identificadores públicos (ADR-0005, I-27) | **Hecho en el árbol el 2026-11-13 (D1, opción (a)); sin revisión independiente ni fusión.** Codec y mapeo, pruebas de tokens manipulados y de estabilidad (`public_ids.rs`, 28 pruebas en los dos motores; `ids.rs`, 2 pruebas internas). Cambios fuera de la fila: `crates/kerno-units/src/verify.rs` (el verificador conoce las etiquetas `0x70` y `0x71` y comprueba su forma; sin él las marcaría como claves desconocidas). Sin fixture nuevo: el directorio previo `derived-v2/db-with-vector` (sin tokens) es el que prueba que se abre | E9-00 y D1 (tomada el 2026-11-13) | `crates/kerno-units/src/ids.rs` (nuevo), `crates/kerno-units/src/lib.rs` (una línea, último en la fusión), `crates/kerno-units/tests/public_ids.rs` (nuevo) | — |
 | **E9-03** Auditoría minimizada (I-29 en units; H-6 de storage; H-8) | Prueba de centinelas de texto para errores, informes e informes de `verify` de `kerno-units`, con la misma forma de detector que storage. Fragmentos de clave y valor en `kerno-storage` (H-6). Corregir el comentario «10^4 commits» de `group_commit.rs:538` (H-8) | E9-00 | `crates/kerno-units/tests/redaction_units.rs` (nuevo), `crates/kerno-storage/tests/redaction.rs` (solo añadir la búsqueda de fragmentos), `crates/kerno-storage/tests/group_commit.rs` (solo el comentario), `docs/architecture/etapa9-auditoria.md` (nuevo) | E9-01, E9-04, E9-07, E9-08a, E9-10 a E9-13 |
 | **E9-04** Exportación lógica, borrador (I-30; D10) | Formato de exportación con cabecera propia (`KRNO_EXP` queda reservado sin uso, lo que se declara en el borrador). Contenido: unidades, revisiones, relaciones y políticas. No incluye derivados (ADR-0018: se reconstruyen) ni tokens (espera E9-02) | E9-00 | `crates/kerno-units/src/export.rs` (nuevo), `crates/kerno-units/src/lib.rs` (una línea, primero en la fusión), `docs/file-format/export-v0-borrador.md` (nuevo) | E9-01, E9-03, E9-07, E9-08a, E9-10 a E9-13, E9-15 a E9-19 |
 | **E9-05** Importación en motor nuevo | Importar el borrador en un directorio nuevo con `emulated_log` y con `kerno_db`; el estado lógico es el mismo. Errores de formato con la clase de `UnitError` | E9-04 | `crates/kerno-units/src/import.rs` (nuevo), `crates/kerno-units/src/lib.rs` (una línea, segundo en la fusión), `crates/kerno-units/tests/export_import.rs` (nuevo) | E9-03, E9-07, E9-10 a E9-13 |
@@ -170,7 +170,7 @@ Cada paquete con código cumple §4. Cada uno escribe **solo** en los ficheros q
 
 ### 3.1 Orden de fusión de las líneas `mod` de `lib.rs`
 
-- **`crates/kerno-units/src/lib.rs`**: E9-04, luego E9-05, luego E9-07, luego E9-09. E9-02 (liberado el 2026-11-13) iría al final. Cada paquete comprueba el conteo de pruebas después de su fusión (§4.2).
+- **`crates/kerno-units/src/lib.rs`**: E9-04, luego E9-05, luego E9-07, luego E9-09. E9-02 (hecho en el árbol el 2026-11-13) va al final. Cada paquete comprueba el conteo de pruebas después de su fusión (§4.2).
 - **`crates/kerno-testkit/src/lib.rs`**: solo E9-19.
 - **`crates/kerno-core/src/contract.rs`**: solo E9-07.
 - **`crates/kerno-units/src/db.rs`**: E9-08a, luego E9-08e, luego E9-08f, luego E9-08g. Además, la integración de E9-07 con E9-08e añadió el accesor interno `inner_engine()`, que usan `reclaim` y `compact`. Ningún otro paquete.
@@ -188,7 +188,7 @@ Cada paquete con código cumple §4. Cada uno escribe **solo** en los ficheros q
 
 **E9-00 → E9-08a → (E9-08b ∥ E9-08c) → E9-08d → E9-08e → E9-09 → E9-21 → E9-CL.** Es la cadena de código más larga. En tiempo de reloj, el cuello es E9-14: 15 objetivos de 30 minutos cada uno (unas 7,5 horas de cómputo exclusivo), que puede empezar en cuanto E9-07 esté fusionado y necesita la máquina libre. E9-20 espera a E9-19 y a E9-08e; E9-CL espera a todos los demás.
 
-E9-02 (liberado el 2026-11-13, no fusionado) no está en el camino crítico: su falta no bloquea el cierre de la etapa, solo deja I-27 sin verificar (§6) y el cierre lo declara.
+E9-02 (hecho en el árbol el 2026-11-13, sin fusionar) no está en el camino crítico: no bloquea el cierre de la etapa. I-27 queda verificada en el árbol (§6), a falta de revisión independiente y fusión.
 
 ## 4. Criterios de aceptación comunes
 
@@ -245,7 +245,7 @@ Sin umbral absoluto de latencia (D7). ADR-0011 dice que un límite incumplido ab
 
 | ID | Estado al abrir la etapa | Lo que hace la Etapa 9 | Paquete que la verifica |
 |---|---|---|---|
-| **I-27** | Fase 4, sin verificar | Un token manipulado se rechaza y un token válido no autoriza. D1 tomada el 2026-11-13 (opción (a)) | E9-02 (liberado, no fusionado). Hasta que se fusione, queda sin verificar y el cierre lo dice |
+| **I-27** | **Verificada en el árbol** (2026-11-13), pendiente de revisión independiente y fusión | Un token manipulado se rechaza y un token válido no autoriza. D1 tomada el 2026-11-13 (opción (a)) | E9-02: `crates/kerno-units/tests/public_ids.rs` (`tampered_text_is_refused_with_its_own_error`, `tampered_but_well_formed_tokens_name_nothing`). «No autoriza»: resolver un token solo devuelve un `UnitId`; la capa de unidades no tiene autorización propia, la decide la capa que la expone |
 | **I-28** | Fase 4, sin verificar | Las claves no están en el directorio de datos. **Sin cifrado en 1.0 (D3) no hay claves**: la invariante no aplica. El cierre comprueba que `verify()` no encuentra archivos desconocidos en el directorio, que es lo que se puede decir hoy | E9-CL (D19); la prueba de archivos desconocidos ya existe en `lifecycle_soak.rs` |
 | **I-29** | Verificada en `kerno-storage` (promovida el 2026-11-12) | Se extiende a `kerno-units` (errores, informes, observaciones) y a fragmentos en storage | E9-03 |
 | **I-30** | Fase 4, sin verificar | La exportación es independiente del formato físico y se puede reimportar en un motor nuevo | E9-04, E9-05, E9-06. La **congelación** del formato no se hace: D12 (tomada el 2026-11-13) la deja para después de D13 y de un uso real fuera del equipo |
@@ -318,7 +318,7 @@ El propietario delegó el 2026-11-12 las decisiones pendientes del roadmap y de 
 
 | # | Estado | Opción registrada | Revocable | Qué queda pendiente |
 |---|---|---|---|---|
-| **D1** | **Tomada el 2026-11-13** por delegación expresa del propietario (retenida el 2026-11-12) | (a): token aleatorio opaco con mapeo persistido (opción 1 de ADR-0005). Libera E9-02, que se hace como paquete propio; E9-02 queda **liberado, no hecho** | Sí, hasta que se construya algo irreversible sobre ella | E9-02 sin fusionar; I-27 sin verificar hasta fusionarlo |
+| **D1** | **Tomada el 2026-11-13** por delegación expresa del propietario (retenida el 2026-11-12) | (a): token aleatorio opaco con mapeo persistido (opción 1 de ADR-0005). Libera E9-02, que se hace como paquete propio; E9-02 queda **hecho en el árbol el 2026-11-13**, sin fusionar | Sí, hasta que se construya algo irreversible sobre ella | E9-02 hecho en el árbol, sin fusionar |
 | **D2** | **Tomada el 2026-11-13** por delegación expresa del propietario (retenida el 2026-11-12) | (a): AEAD por bloque, como diseño a usar si se construye cifrado. **Nada se implementa ahora** | Sí, hasta que se construya algo irreversible sobre ella | Nada: no hay código de claves ni de cifrado; K-1 a K-4 de ADR-0009 sin medir |
 | **D3** | **Tomada el 2026-11-13** por delegación expresa del propietario (retenida el 2026-11-12) | (b): sin cifrado en 1.0. 1.0 no promete confidencialidad en reposo ni gestión de claves, y lo declara | Sí, hasta que se construya algo irreversible sobre ella | Nada |
 | **D4** | **Tomada el 2026-11-13** por delegación expresa del propietario (retenida el 2026-11-12) | (a): sin integridad autenticada en 1.0. El límite queda en el threat model §6.6; `verify()` con `deep` es el recurso. H-2 queda cerrado como límite aceptado y documentado | Sí, hasta que se construya algo irreversible sobre ella | Nada |
@@ -342,7 +342,7 @@ El propietario delegó el 2026-11-12 las decisiones pendientes del roadmap y de 
 | **D22** | Tomada | (a): umbrales de §5 sin cambios antes de congelar | Sí | — |
 | **D23** | Tomada el 2026-11-12 por delegación (E9-08f) | El accesor de escritura crudo de `UnitDb` (`raw_commit`) y sus ganchos de prueba (`hook_flush`, `hook_wait_idle`, `hook_compact_range`) existen solo bajo la característica `test-support` de `kerno-units`, apagada por defecto, y en las compilaciones de las pruebas unitarias del propio crate (`cfg(test)`). Los accesores de lectura (`raw_snapshot`, `raw_get`, `raw_seq`, `storage_stats`) se mantienen sin ella. Detalle en [usos de `engine()`](etapa9-usos-de-engine.md) | Sí | — |
 
-**Estado tras el 2026-11-13.** Ninguna decisión queda retenida. Lo que sigue pendiente, sin ser decisión por delegación: (1) E9-02, liberado por D1 y no fusionado, con I-27 sin verificar; (2) la aprobación del propietario del texto del CLA antes de aceptar cualquier contribución externa (D15); (3) la revisión de G1 a G7 de ADR-0016, tarea aparte (D16); (4) la declaración de 1.0, que solo ocurre después de D13 y de un uso real fuera del equipo (D12). E9-CL declara como «sin verificar» lo que dependa de E9-02.
+**Estado tras el 2026-11-13.** Ninguna decisión queda retenida. Lo que sigue pendiente, sin ser decisión por delegación: (1) la revisión independiente y la fusión de E9-02, hecho en el árbol (I-27 verificada allí); (2) la aprobación del propietario del texto del CLA antes de aceptar cualquier contribución externa (D15); (3) la revisión de G1 a G7 de ADR-0016, tarea aparte (D16); (4) la declaración de 1.0, que solo ocurre después de D13 y de un uso real fuera del equipo (D12). E9-CL declara el estado de E9-02 tal como esté en ese momento.
 
 ## 9. Hallazgos heredados y paquete que los cierra
 
@@ -358,7 +358,7 @@ El propietario delegó el 2026-11-12 las decisiones pendientes del roadmap y de 
 | **H-9** `DESIGN.md`: «borrado tampoco sobrescribe» con `wal_preallocate` | Adelanto | Abierto | E9-CL |
 | **H-12** Cita `sst.rs:332` en el acta del adelanto, en realidad `sst.rs:335` | Adelanto | Abierto | E9-CL |
 | **H-13** K-E3-7 sin revisar | Adelanto | Abierto | E9-16; D20 (iii) |
-| **H-14** I-27, I-28, I-30 sin verificar | Adelanto | Abierto | E9-02 (liberado, no fusionado), E9-04 a E9-06, E9-CL (D19) |
+| **H-14** I-27, I-28, I-30 sin verificar | Adelanto | Abierto | E9-04 a E9-06, E9-CL (D19). E9-02 hecho en el árbol: I-27 verificada, falta fusión |
 | **F-02** Error poco claro al reconstruir un resumen | E8 | Abierto | E9-11 |
 | **F-03** `read_input` omite una fuente sin error | E8 | Abierto, no alcanzado | E9-11 (error explícito) |
 | **F-04** Ninguna prueba cambia solo `profile` | E8 | Abierto | E9-10 |
