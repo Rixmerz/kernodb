@@ -23,6 +23,7 @@
 //! ([`vector_store`], ADR-0020). E8-06 adds summaries as derived data ([`consolidation`]). This crate
 //! stays separate from `kerno-storage`.
 
+pub mod adj_count;
 pub mod assoc;
 pub mod assoc_rank;
 pub mod cache;

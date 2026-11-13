@@ -493,7 +493,10 @@ fn errors_say_what_happened_without_content<E: Target>() {
     assert!(texts.contains("a summarizer parameter uses a reserved name"));
     assert!(texts.contains("the derived datum is not a summary"));
     assert!(texts.contains("the summarizer is not the one that made this summary"));
-    assert!(texts.contains("no source of the derived datum is valid any more"), "a wrapped error keeps its text");
+    assert!(
+        texts.contains(&format!("no source of derived datum {} is valid any more", "03".repeat(32))),
+        "a wrapped error keeps its text and names the datum"
+    );
     let wrapped: ConsolidationError = DerivedStaleError::ComputeFailed(id).into();
     assert!(matches!(wrapped, ConsolidationError::Derived(DerivedStaleError::ComputeFailed(_))));
 }

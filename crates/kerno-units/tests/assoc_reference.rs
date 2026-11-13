@@ -930,7 +930,8 @@ fn the_reference_path_never_reads_the_adjacency_index<E: TxnEngine>() {
     }
     put_all(&g.db, patch);
     let damaged = g.db.snapshot().unwrap();
-    assert!(damaged.relations_of(g.u[0], Direction::Out, None).unwrap().is_empty(), "the index is gone");
+    // P1: the count records still say there are entries, so the index read refuses.
+    assert!(damaged.relations_of(g.u[0], Direction::Out, None).is_err(), "the index is gone");
     assert_eq!(damaged.reference_relations_of(g.u[0], Direction::Out, None).unwrap().len(), 3);
     assert_eq!(run(&damaged, &q), before);
 }

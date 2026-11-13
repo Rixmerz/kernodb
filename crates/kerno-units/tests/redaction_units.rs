@@ -106,7 +106,13 @@ struct Seen {
     texts: Vec<(String, String)>,
     errors: BTreeSet<&'static str>,
     findings: usize,
+    /// Findings of a payload rule, from the damaged payloads: the path of
+    /// `verify.rs` that formats a finding about stored content.
+    payload_findings: usize,
     records: usize,
+    /// Observation records that carry the shape text (`Diagnostic`), the
+    /// text built from the filter: the one observation field made of a query.
+    shape_texts: usize,
 }
 
 fn error_name(e: &UnitError) -> &'static str {
@@ -260,6 +266,7 @@ fn damaged_reads<E: Target>(
             seen.debug(&format!("{label}: report"), &report);
             seen.text(label, format!("{}", report.counts.units));
             for f in &report.findings {
+                seen.payload_findings += usize::from(matches!(f.rule, VerifyRule::Payload(_)));
                 seen.text(&format!("{label}: finding"), f.to_string());
                 seen.debug(&format!("{label}: finding"), f);
                 seen.error(&format!("{label}: finding as error"), &f.to_error());
@@ -351,6 +358,7 @@ fn scenario<E: Target>() -> Seen {
         seen.debug(&format!("stats {level:?}"), &db.observer().stats());
         for r in db.observer().records() {
             seen.records += 1;
+            seen.shape_texts += usize::from(r.fingerprint_text.as_deref().is_some_and(|t| t.starts_with("units[")));
             seen.debug(&format!("record {level:?}"), &r);
         }
         if level >= ObservationLevel::Fingerprint {
@@ -418,6 +426,16 @@ fn check_case<E: Target>() {
     assert!(missing.is_empty(), "{}: errors never produced: {missing:?}; saw {:?}", E::NAME, seen.errors);
     assert!(seen.findings > 0, "{}: verify_units reported no finding, so the report path was not exercised", E::NAME);
     assert!(seen.records > 0, "{}: no observation was recorded", E::NAME);
+    // The report path that formats a finding about stored content ran: the
+    // flipped payload and the cut one are two such findings at least.
+    assert!(
+        seen.payload_findings >= 2,
+        "{}: {} payload findings; the payload path of verify did not run",
+        E::NAME,
+        seen.payload_findings
+    );
+    // The shape text of the filtered query was recorded at `Diagnostic`.
+    assert!(seen.shape_texts >= 1, "{}: no observation carried a shape text", E::NAME);
     let leaks = seen.leaks();
     assert!(
         leaks.is_empty(),

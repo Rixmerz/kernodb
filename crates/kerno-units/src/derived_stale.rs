@@ -119,9 +119,10 @@ impl fmt::Display for DerivedStaleError {
             DerivedStaleError::Persisted(id) => {
                 write!(f, "derived datum {} is persisted; use the vector methods", IdHex(id))
             }
-            // ponytail: no id here; tests/consolidation.rs pins this exact text
-            // through ConsolidationError. Add the id together with that test.
-            DerivedStaleError::NoValidSources(_) => f.write_str("no source of the derived datum is valid any more"),
+            // Names the datum like the other variants; two tests pin this text.
+            DerivedStaleError::NoValidSources(id) => {
+                write!(f, "no source of derived datum {} is valid any more", IdHex(id))
+            }
             DerivedStaleError::ComputeFailed(id) => {
                 write!(f, "the value of derived datum {} could not be computed", IdHex(id))
             }
@@ -376,6 +377,16 @@ impl<E: TxnEngine> DerivedDb<E> {
         Self::finish(&mut inner, id, &desc, &inputs, compute)
     }
 
+    /// Whether some thread holds the registry lock right now (`try_lock`
+    /// would block). Called from the thread that holds it, it tells the guard
+    /// is live: the lock-order test of the guarded commit reads it from inside
+    /// the engine's commit.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn hook_registry_locked(&self) -> bool {
+        matches!(self.inner.try_lock(), Err(std::sync::TryLockError::WouldBlock))
+    }
+
     pub(crate) fn lock(&self) -> MutexGuard<'_, Inner> {
         // A panic in a compute function leaves the datum `building`, which is
         // a state the registry can leave: the data are still consistent.
@@ -551,9 +562,9 @@ impl<E: TxnEngine> DerivedChangeSet<'_, E> {
         // marking is done. Every read of a derived state takes the same lock,
         // so a reader sees the source change and its stale marks together, never
         // the new source with a registry still behind it (I-23). Taking it after
-        // the commit would open that window. This order is not covered by a
-        // test: showing it needs a reader racing the commit, which cannot be
-        // made deterministic.
+        // the commit would open that window. `tests/derived_lock_order.rs`
+        // reads the lock from inside the engine's commit, so the order does
+        // not need a racing reader.
         let mut inner = self.owner.lock();
         let info = self.cs.commit()?;
         // The persisted data changed in the commit itself (ADR-0020 §S3); the
