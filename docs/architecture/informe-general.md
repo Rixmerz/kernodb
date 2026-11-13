@@ -1,21 +1,14 @@
-# Informe general de Kerno: primera versión
+# Informe general de Kerno
 
 | Campo | Valor |
 |---|---|
 | Fecha | 2026-11-13 |
-| Estado del documento | **Primera versión.** Se escribe mientras cuatro paquetes posteriores a la Etapa 9 siguen en curso (P1 a P4, ver el aviso siguiente) |
-| Árbol en que se escribió | commit `86f8a50`, rama de trabajo de esta tarea |
+| Estado del documento | Refleja el árbol después de los cuatro paquetes posteriores a la Etapa 9 (P1 a P4). Fecha 2026-11-13. **No se ejecutó ninguna prueba ni ninguna compilación para escribirlo**: las cifras de cada paquete son las de sus documentos, con su fecha |
+| Árbol de referencia | commit `758b5d4`. Los cuatro paquetes están en la historia de este commit |
 | Qué es | Una síntesis de lo que dicen los documentos del repositorio. No añade medidas ni pruebas nuevas. Donde el repositorio no tiene información, lo dice con esas palabras |
-| Cómo se leyó | Se leyeron completos los cierres de cada etapa, las actas, las mediciones, los informes y el registro de mutaciones de P1, además del [roadmap](../roadmap/README.md), el [índice de ADR](../adr/README.md), los ADR citados, el [README del fuzzing](../../crates/kerno-storage/fuzz/README.md), el [README de los spikes](../../spikes/storage/README.md) y el [CI](../../.github/workflows/ci.yml). Otros documentos de [`docs/architecture/`](.) se leyeron solo en las partes citadas. No se leyeron `docs/research/` ni `experiments/`, que quedan fuera de este encargo |
+| Cómo se leyó | En esta actualización se leyeron completos los documentos de P1 a P4 ([post9-pendientes](post9-pendientes.md), [post9-mutaciones](post9-mutaciones.md), [requisitos-1.0](requisitos-1.0.md), [cla-propuesta](../legal/cla-propuesta.md), [units-v4](../file-format/units-v4.md), [ADR-0016](../adr/0016-adaptacion-e-invalidacion.md), [ADR-0005](../adr/0005-identificadores-publicos.md) y [ADR-0019](../adr/0019-licencia-y-contribuciones.md)). Además se leyeron [ADR-0020](../adr/0020-persistencia-de-vectores-como-derivados.md) en su criterio T5, la [acta de la Etapa 9](etapa9-acta.md) en §2.4 y §8.1, y [etapa9-fixtures](etapa9-fixtures.md) §3. Las afirmaciones sobre el código se comprobaron con búsquedas de texto y lectura de los archivos citados. Del resto de la versión anterior (cierres, actas, mediciones, roadmap, índice de ADR, CI) se conservan las citas, sin releerlas completas. No se leyeron `docs/research/` ni `experiments/`, que quedan fuera de esta actualización |
 
-> **Aviso sobre el estado de los paquetes posteriores a la Etapa 9.** Esta es una primera versión. En el momento de escribirla hay cuatro paquetes en curso. Lo que se dice de ellos viene de la nota que encargó este documento, no del árbol de trabajo. Donde el árbol dice otra cosa, se indica.
->
-> - **P1, contadores de adyacencia (defecto K1; registros de conteo de relaciones; formato de unidades v4) (en curso).** Está en esta rama. Una revisión independiente encontró un defecto: una creación de relación rechazada deja contadores huérfanos que un commit posterior escribe. La corrección se está verificando.
-> - **P2, pruebas que faltaban, un mensaje de error y una prueba intermitente de almacenamiento (en curso).** Está escrito y espera su comprobación completa. La prueba intermitente resultó ser una suposición de temporización de la propia prueba.
-> - **P3, tres carencias de ADR-0016 (en curso).** La nota dice que no ha empezado. Las tres carencias son las que el propio ADR-0016 lista como «trabajo abierto» 1, 2 y 3.
-> - **P4, auditoría de requisitos para 1.0, borrador de propuesta de licencia para contribuyentes y lista completa de puntos abiertos (en curso).** La nota dice que no ha empezado.
->
-> Los cuatro se citan en las secciones 2, 4, 5, 8 y 10 con la marca **(en curso)**.
+> **Estado de los paquetes posteriores a la Etapa 9.** Este informe refleja el árbol después de los cuatro paquetes: P1 (K1 y formato de unidades v4), P2 (pruebas que faltaban, un mensaje de error y una prueba intermitente), P3 (las tres carencias de ADR-0016) y P4 (auditoría de requisitos de 1.0, borrador de CLA sin vigor y registro de la aleatoriedad de los identificadores). Está escrito a 2026-11-13. Las cifras de cada paquete son las que da su documento, con su fecha. **Ninguna prueba se ejecutó para escribir este informe**, porque la tarea prohibía compilar. Las dos inconsistencias documentales que P4 encontró y que nadie corrigió están en la sección 5.9.
 
 ## Convenciones de este documento
 
@@ -36,7 +29,7 @@
 | T1 a T10 | Objetivos de rendimiento de la Fase 1 | [`f1-objetivos-rendimiento.md`](../testing/f1-objetivos-rendimiento.md) |
 | U1 a U6 | Objetivos de rendimiento de la Etapa 3 | [`etapa3-report.md`](../testing/etapa3-report.md) |
 | Q1 a Q6, P1 a P4 de la Etapa 8 | Criterios de calidad (Q) y de tiempo (P) de la Etapa 8. **P1 y P2 aquí son cocientes de tiempo de la Etapa 8, no los paquetes posteriores** | [acta de la Etapa 8](etapa8-acta.md) |
-| P1 a P4 posteriores | Paquetes posteriores a la Etapa 9. Ver el aviso de arriba | Este documento |
+| P1 a P4 posteriores | Paquetes posteriores a la Etapa 9, ya en el árbol. Ver la sección 2 | Este documento |
 
 **Términos del motor.** El motor de almacenamiento es un árbol de fusión por niveles, llamado LSM. Su registro de escritura anticipada es el WAL. Su registro de archivos vivos es el MANIFEST. Sus tablas ordenadas en disco son las SST. Un commit tiene dos modos de durabilidad: `Sync` (sincroniza en cada commit) y `Buffered` (no sincroniza en cada commit). Las definiciones están en [ADR-0002](../adr/0002-transacciones-y-durabilidad.md) y en [v1.md](../file-format/v1.md).
 
@@ -55,22 +48,24 @@
 - **No hay versión 1.0.** El README lo dice en su primera sección de estado. No hay promesa de estabilidad del formato ni de la API. Fuente: [README](../../README.md).
 - **El formato en disco v1 está congelado** desde el 2026-10-31, con [ADR-0013](../adr/0013-formato-v1-y-protocolo-del-motor.md). Eso no es una promesa de compatibilidad para usuarios.
 - **Las etapas 3 a 9 están cerradas**, con matices. La Etapa 8 está cerrada «como trabajo de ingeniería». Su criterio Q4, calidad de recuperación con y sin señal vectorial, **no está demostrado**. La Etapa 9 tiene su cierre aprobado por el propietario el 2026-11-13. Fuentes: [roadmap](../roadmap/README.md), [cierre de la Etapa 8](etapa8-cierre.md), [cierre de la Etapa 9](etapa9-cierre.md).
+- **Los paquetes posteriores a la Etapa 9 están en el árbol.** P1 cierra K1 para las relaciones con registro de conteo. P2 añade pruebas y corrige un mensaje y una prueba intermitente. P3 cierra las tres carencias de ADR-0016. P4 escribe la auditoría de requisitos de 1.0, un borrador de CLA sin vigor y el registro de la aleatoriedad de los identificadores. Detalle en la sección 2. Fuentes: [post9-pendientes](post9-pendientes.md), [post9-mutaciones](post9-mutaciones.md), [requisitos-1.0](requisitos-1.0.md).
 - **No se ha declarado 1.0.** Eso depende de D13 y de un uso real fuera del equipo (D12). Fuente: [acta de la Etapa 9 §8.1](etapa9-acta.md).
 
 **Lo que más importa, en cuatro puntos.**
 
-1. **Lo que se ha probado es mucho, pero se ha probado en un solo tipo de máquina.** Hay pruebas de caídas en cada punto de E/S, de corrupción, de `kill -9` real, un barrido de 1 000 semillas, quince objetivos de fuzzing y 856 pruebas en `kerno-units` y `kerno-testkit` (cifra del 2026-11-12). Todo sale de una VM de cuatro núcleos con Linux y ext4. Ninguna medición se hizo en la máquina objetivo, que el repositorio no nombra (C-09). Fuentes: [informe de la Fase 1 §4](../testing/f1-report.md), [cierre de la Etapa 9 §5](etapa9-cierre.md).
+1. **Lo que se ha probado es mucho, pero se ha probado en un solo tipo de máquina.** Hay pruebas de caídas en cada punto de E/S, de corrupción, de `kill -9` real, un barrido de 1 000 semillas, quince objetivos de fuzzing y 856 pruebas en `kerno-units` y `kerno-testkit` (cifra del 2026-11-12). Tras P3, la lista de pruebas de `kerno-units` tiene 870 (2026-11-13; es un conteo de la lista, no una ejecución completa). Todo sale de una VM de cuatro núcleos con Linux y ext4. Ninguna medición se hizo en la máquina objetivo, que el repositorio no nombra (C-09). Fuentes: [informe de la Fase 1 §4](../testing/f1-report.md), [cierre de la Etapa 9 §5](etapa9-cierre.md).
 2. **Varios objetivos de rendimiento no se cumplen, y eso está aceptado y escrito.** En la Fase 1, T1 (escritura de `agent_memory`, 2,78 veces la referencia LSM frente a un máximo de 2,0) y T7 (amplificación de escritura, 4,29 frente a 1,20) no se cumplen. En la Etapa 3, U2 y U6 no se cumplen; el propietario lo aceptó como riesgo abierto, sin rebajar umbrales. Fuentes: [informe de la Fase 1 §5.3](../testing/f1-report.md), [cierre de la Etapa 3 §4](etapa3-cierre.md).
 3. **Hay límites de integridad y de seguridad que no están construidos.** No hay cifrado en reposo (D3) ni integridad autenticada (D4). Un filtro de una SST reescrito con un CRC válido puede pasar la apertura y responder «no existe» sin error para claves que sí están. La apertura rechaza el caso grueso, pero solo `verify()` con `deep` informa el caso de claves interiores. No hay borrado físico garantizado: el borrado es lógico y la reclamación pública es un mecanismo, no un borrado seguro. Fuentes: [threat model §3 y §6](../security/threat-model.md), [ADR-0009](../adr/0009-supresion-retencion-y-backups.md).
-4. **Algunas capacidades quedan apagadas o sin demostrar a propósito.** El ranking de resultados asociativos está desactivado por defecto y es experimental. La caché de resultados está desactivada por defecto, y su mejora neta no se afirma. La calidad de recuperación con vectores no está demostrada, y los vectores de las pruebas son deterministas con semilla. Fuentes: [cierre de la Etapa 7 §8](etapa7-cierre.md), [cierre de la Etapa 6 §0](etapa6-cierre.md), [cierre de la Etapa 8 §0.3](etapa8-cierre.md).
+4. **Algunas capacidades quedan apagadas o sin demostrar a propósito.** El ranking de resultados asociativos está desactivado por defecto y es experimental. La caché de resultados está desactivada por defecto, y su mejora neta no se afirma. Con la caché encendida, no guarda nada mientras el observador esté por debajo de `Fingerprint` (P3, sección 4.9). La calidad de recuperación con vectores no está demostrada, y los vectores de las pruebas son deterministas con semilla. Fuentes: [cierre de la Etapa 7 §8](etapa7-cierre.md), [cierre de la Etapa 6 §0](etapa6-cierre.md), [cierre de la Etapa 8 §0.3](etapa8-cierre.md).
 
 **Lo que conviene hacer primero, en este orden.**
 
-1. **Recomendación: no fusionar P1 sin verificar la corrección del defecto que encontró la revisión independiente (en curso).** Según la nota, ese defecto deja contadores huérfanos en una creación de relación rechazada. Es el punto más reciente y el que toca el formato de disco.
+1. **Revisar P1 antes de darlo por cerrado.** El defecto que halló la revisión independiente (contadores huérfanos en una creación de relación rechazada) está corregido y cubierto por la mutación M20 (sección 4.7). Pero [post9-pendientes](post9-pendientes.md) sigue dando la revisión independiente de P1 como pendiente, y P1 toca el formato de disco.
 2. **Clonar el repositorio en una máquina propia y ejecutar la batería de la sección 9** (formato, clippy, pruebas de los dos crates, guardas de dependencias). Los documentos no dan duraciones completas. La sección 9 dice qué se sabe.
-3. **Repetir las mediciones de la Etapa 8 (P1 y P2) con la máquina en reposo**, y la corrida de `wal`, `manifest` y `open` del fuzzing con más tiempo. Ambas cosas están pendientes en los documentos. La sección 9 da los comandos.
-4. **Decidir el texto del contrato de contribución (CLA) antes de aceptar cualquier contribución externa.** Su texto no está escrito (D15). Fuente: [ADR-0019](../adr/0019-licencia-y-contribuciones.md).
+3. **Repetir en reposo las mediciones de tiempo de la Etapa 8 (P1 y P2, cocientes)**, y la corrida de `wal`, `manifest` y `open` del fuzzing con más tiempo. Ambas cosas se dejaron a propósito para la máquina del propietario, porque el disco de la máquina de compilación estaba casi lleno y es compartido. La sección 9 da los comandos.
+4. **Decidir el texto del contrato de contribución (CLA) antes de aceptar cualquier contribución externa.** Hay un borrador sin vigor ([cla-propuesta](../legal/cla-propuesta.md)), que necesita la revisión de un abogado y la aprobación del propietario (D15). Fuente: [ADR-0019](../adr/0019-licencia-y-contribuciones.md).
 5. **No declarar 1.0** hasta cumplir D13 y tener un uso real fuera del equipo (D12). La lista de requisitos y su estado están en la sección 8.
+6. **Corregir o decidir las dos inconsistencias de la sección 5.9.** Una está en el acta de la Etapa 9, cerrada, y la otra en ADR-0020, aceptado.
 
 ---
 
@@ -91,14 +86,14 @@ La tabla resume cada etapa. Las fechas son las de cada cierre. Cuando un cierre 
 | **8** Consolidación y embeddings | 2026-11-12, cerrada como trabajo de ingeniería | Registro común de derivados con estados `ready`, `building`, `stale`, `failed` y `superseded` (ADR-0018). Obsolescencia y reconstrucción en el mismo commit que el cambio de fuente. Vectores persistidos como derivados (ADR-0020). Supresión de fuentes y derivados (ADR-0009). Consolidación con resúmenes de procedencia obligatoria y un resumidor de prueba determinista. **Q4 no demostrada.** Un paquete de seguimiento (E8-10) es necesario antes de 1.0 | [cierre](etapa8-cierre.md), [acta](etapa8-acta.md), [conjunto](etapa8-conjunto-evaluacion.md), [medición](etapa8-medicion.md), [ADR-0018](../adr/0018-versionado-y-reconstruccion-de-derivados.md), [ADR-0020](../adr/0020-persistencia-de-vectores-como-derivados.md), [ADR-0009](../adr/0009-supresion-retencion-y-backups.md) |
 | **9** Endurecimiento | 2026-11-13; cierre aprobado por el propietario en persona | Identificadores públicos con token opaco (E9-02, ADR-0005, fusionado el 2026-11-13). Auditoría minimizada (E9-03). Exportación e importación con formato borrador sin congelar (E9-04 a E9-06). Reclamación pública `Reclaim` (E9-07). Retirada de `UnitDb::engine()` (E9-08). Lectura de derivados, estrés, decodificadores robustos, fuzzing de quince objetivos, mutaciones de la Etapa 8, revisión de K-E3-7, informe SQLite nuevo, conjunto y medición de E8-10, ejemplo de uso real `agent-memory` con quince puntos de fricción | [cierre](etapa9-cierre.md), [acta](etapa9-acta.md), [adelanto](etapa9-adelanto-cierre.md), [auditoría](etapa9-auditoria.md), [fixtures](etapa9-fixtures.md), [revisión K-E3-7](etapa9-k-e3-7.md), [usos de engine()](etapa9-usos-de-engine.md), [informe SQLite E9](../testing/sqlite-report-e9.md), [medición E9](etapa9-medicion.md), [FRICTION](../../examples/agent-memory/FRICTION.md), [ADR-0005](../adr/0005-identificadores-publicos.md), [ADR-0006](../adr/0006-cifrado-y-gestion-de-claves.md), [ADR-0012](../adr/0012-metodologia-de-benchmarks.md) |
 
-**Paquetes posteriores a la Etapa 9** (estado según la nota de encargo, salvo P1, que consta en el repositorio):
+**Paquetes posteriores a la Etapa 9** (estado según el árbol y los documentos de cada paquete; los commits están en la historia de `758b5d4`):
 
-| Paquete | Marca | Qué es | Dónde está documentado |
+| Paquete | Estado | Qué es | Dónde está documentado |
 |---|---|---|---|
-| **P1** | **(en curso)** | Cierra K1 para las relaciones con registro de conteo (capa 4 de units, formato v4): un registro por `(unidad, dirección, tipo)` que el lector compara con las entradas de adyacencia. 19 mutaciones, todas detectadas. Una revisión independiente encontró un defecto (ver sección 4) | [etapa9-k-e3-7 §9](etapa9-k-e3-7.md), [units-v4](../file-format/units-v4.md), [post9-mutaciones](post9-mutaciones.md), [post9-pendientes](post9-pendientes.md) |
-| **P2** | **(en curso)** | Pruebas que faltaban, un mensaje de error corregido y una prueba intermitente de almacenamiento, que resultó ser una suposición de temporización de la propia prueba. Espera su comprobación completa | Solo la nota de encargo. No hay documento en el repositorio |
-| **P3** | **(en curso)** | Tres carencias de ADR-0016: la explicación del plan no lista la caché; la evidencia de creación es constante (H-3); `set_key` no deja registro | [ADR-0016, «Revisión de 2026-11-13»](../adr/0016-adaptacion-e-invalidacion.md) |
-| **P4** | **(en curso)** | Auditoría de requisitos para 1.0, borrador de propuesta del contrato de contribución y lista completa de puntos abiertos | Este documento (secciones 5 a 8) y [post9-pendientes](post9-pendientes.md) |
+| **P1** | **Entregado** (`0c2c3d5`, con la corrección `4b65c51` y `0310bb3`) | Cierra K1 para las relaciones con registro de conteo: formato de unidades v4, con un registro por `(unidad, dirección, tipo)` que el lector compara con las entradas de adyacencia y que `verify_units` comprueba (UNIT-45 y UNIT-46). Una revisión independiente halló un defecto de la creación rechazada, corregido y cubierto por la mutación M20 (sección 4.7). 20 mutaciones (M1 a M20), todas en rojo | [units-v4](../file-format/units-v4.md), [post9-mutaciones](post9-mutaciones.md), [post9-pendientes](post9-pendientes.md) |
+| **P2** | **Entregado** (`2356ff3`) | Pruebas que faltaban (cierre de la Etapa 9, puntos 4, 5, 6 y 10), el mensaje de `NoValidSources`, y la prueba intermitente `space_is_reclaimed_after_range_deletes`, cuya causa fue una suposición de temporización de la propia prueba (sección 4.8). 18 registros de mutación: Q1 a Q16, más Q13b (candidato descartado, en verde) y Q13c | [post9-mutaciones](post9-mutaciones.md) (registro P2), [post9-pendientes](post9-pendientes.md) (puntos 3 a 6, 10 y 11) |
+| **P3** | **Entregado** (`fc7e233`) | Las tres carencias de ADR-0016 («trabajo abierto» 1 a 3): la explicación del plan dice si se consultó la caché, la evidencia de creación es la del observador y la entrada lleva un coste medido, y `set_key` deja un registro. Cambio de comportamiento: con el observador por debajo de `Fingerprint`, la caché no guarda nada (sección 4.9). 17 mutaciones (M1 a M17), todas en rojo | [ADR-0016, «Revisión de 2026-11-13»](../adr/0016-adaptacion-e-invalidacion.md), [post9-mutaciones](post9-mutaciones.md) (registro P3) |
+| **P4** | **Entregado** (`f2aa157`, solo documentos) | Auditoría de los siete requisitos de D13: seis con límites declarados y uno cumplido; 1.0 no se declara. Borrador de CLA en español e inglés, **sin vigor**. Registro de la aleatoriedad de los identificadores públicos (`/dev/urandom`, sin dependencia nueva). Dos inconsistencias documentales que no se corrigieron (sección 5.9) | [requisitos-1.0](requisitos-1.0.md), [cla-propuesta](../legal/cla-propuesta.md), [ADR-0005, «Notas»](../adr/0005-identificadores-publicos.md), [post9-pendientes](post9-pendientes.md) |
 
 ---
 
@@ -117,6 +112,8 @@ Esta sección separa cada tipo de evidencia. Para cada uno dice qué cubre y qu�
 | Workspace sin `kerno-storage`, release | 615 aprobadas, 8 ignoradas | 2026-11-06 | [cierre E5 §4](etapa5-cierre.md) |
 | Workspace completo | 1 212 antes de E4-05 y 1 214 después | 2026-11-05 | [cierre E4 §2](etapa4-cierre.md) |
 | `kerno-units`, lista de pruebas (`--list`) | 822 antes de P1 y 853 después (+31 en `rel_counts.rs`) | 2026-11-13 | [post9-mutaciones](post9-mutaciones.md) |
+| `kerno-core`, `kerno-storage`, `kerno-testkit` y `kerno-units`, lista de pruebas | 1 798 en el árbol base de P2 y 1 804 con P2 (+6: `reclaim.rs`, `db.rs` y `derived_lock_order.rs`) | 2026-11-13 | [post9-mutaciones](post9-mutaciones.md), registro P2 |
+| `kerno-units`, lista de pruebas (`--list`) | 859 antes de P3 y 870 después (+3 en `cache.rs`, +8 en `cache_planner.rs`) | 2026-11-13 | [post9-mutaciones](post9-mutaciones.md), registro P3 |
 | `kerno-units`, E9-02 | 49 pruebas sin `test-support` y 79 con ella, en los dos motores | 2026-11-13 | [cierre E9 §1](etapa9-cierre.md) |
 | Storage de M0, prototipo B+ tree | 32 pruebas unitarias propias | 2026-10-27 | [m0-report §2.1](../testing/m0-report.md) |
 | Storage de M0, prototipo LSM | 24 unitarias y 7 de integración | 2026-10-27 | [m0-report §2.1](../testing/m0-report.md) |
@@ -126,15 +123,15 @@ Las cifras no son comparables entre sí. Cada una cuenta un ámbito distinto. Un
 ### 3.2 Pruebas unitarias e integración de los dos motores
 
 - **Qué son.** Pruebas en `crates/kerno-storage/tests/` (42 entradas, con subcarpetas), `crates/kerno-units/tests/` (54 entradas, con subcarpetas) y `crates/kerno-testkit/tests/` (5 ficheros). Cada prueba de `kerno-units` que habla de datos corre en `emulated_log` y en `kerno`.
-- **Qué cubren.** Las reglas `UNIT-n`, los códigos de cada registro, la lectura y la escritura de unidades, revisiones, relaciones, índices, la caché, el planificador, los derivados, la exportación y la importación, la reclamación pública y los decodificadores. Los vectores de bytes (`tests/vectors/`) fijan la codificación de cada versión del formato.
-- **Qué no cubren.** Pruebas de un solo motor sobre entradas con relaciones de más de 64 relaciones y una entrada ausente en ambos extremos (H-1 de la Etapa 7, sección 5). Ninguna prueba de concurrencia entre lectores de la caché (H-1 de la Etapa 6, sección 3.4 de su cierre). Ninguna prueba en plataformas distintas de Linux con ext4 (ver sección 6).
+- **Qué cubren.** Las reglas `UNIT-n`, los códigos de cada registro, la lectura y la escritura de unidades, revisiones, relaciones y sus registros de conteo (P1, `rel_counts.rs`), índices, la caché, el planificador, los derivados, la exportación y la importación, la reclamación pública y los decodificadores. Los vectores de bytes (`tests/vectors/`) fijan la codificación de cada versión del formato.
+- **Qué no cubren.** Bases sin registro de conteo (de antes de la capa 4) con más de 64 relaciones y una entrada ausente en ambos extremos (H-1 de la Etapa 7, sección 5). Para las relaciones con registro de conteo, P1 añade pruebas en los dos motores (`rel_counts.rs`). Ninguna prueba de concurrencia entre lectores de la caché (H-1 de la Etapa 6, sección 3.4 de su cierre). Ninguna prueba en plataformas distintas de Linux con ext4 (ver sección 6).
 
 ### 3.3 Prueba diferencial contra el motor de referencia
 
 - **Qué es.** Se ejecuta la misma historia de operaciones sobre el motor real y sobre el motor de referencia en memoria (`emulated_log`), o sobre la ruta de referencia sin índices, y se comparan las respuestas. Ejemplos: `differential_seeded` en `tests/index.rs` (seis semillas, dos motores, cuarenta pasos; desde E4-05 incluye `restore` y `run_retention`, [cierre E4 §2](etapa4-cierre.md)), `differential_across_scan_pages`, y las pruebas `differential_*` de `tests/relations.rs`.
 - **Qué prueba la de planificador.** `cache_on_off_and_invalidated_give_identical_results` compara la respuesta con la caché encendida, apagada e invalidada, con escrituras entre rondas ([cierre E6 §2](etapa6-cierre.md)).
 - **Corpus congelado.** Las 64 consultas del conjunto de la Etapa 7 dan la misma respuesta por la referencia, por el índice y por el planificador: 64 de 64, sin caídas ([cierre E7 §4.1](etapa7-cierre.md)). El conjunto tiene un `MANIFEST` con SHA-256 que se comprueba antes de medir.
-- **Qué no cubre.** Que la ruta de índice sea completa en tiendas de 64 relaciones o más con una entrada ausente en ambos extremos. Eso no se detecta en consulta, solo con `verify_units` (cierre E7, R-2). Tampoco cubre las tiendas dañadas, salvo en las pruebas que las dañan a propósito.
+- **Qué no cubre.** Que la ruta de índice sea completa en tiendas de 64 relaciones o más con una entrada ausente en ambos extremos, en bases sin registro de conteo. Para las relaciones con registro de conteo, P1 hace que sí se detecte en consulta (`Fallback` `Corrupt`, [units-v4 §5](../file-format/units-v4.md)). Sin conteo, solo lo ve `verify_units` (cierre E7, R-2). Tampoco cubre las tiendas dañadas, salvo en las pruebas que las dañan a propósito.
 
 ### 3.4 Caídas e inyección de fallos
 
@@ -178,7 +175,7 @@ Resultados de la tanda E9-14, con la carga de la máquina alrededor de 4 en 4 CP
 
 Fuente: [`fuzz/README.md`](../../crates/kerno-storage/fuzz/README.md), sección «Stage 9 run on the final code». La primera tanda de treinta minutos (E9A-04) dio cifras del mismo orden para `wal` (5 698 047), `manifest` (7 420 267) y `open` (4 959 653). Los objetivos `wal`, `manifest` y `open` hacen trabajo de archivos por entrada. Su número de ejecuciones es de dos órdenes de magnitud menos que el de los decodificadores puros. El cierre dice que treinta minutos es poco para ellos. **El fuzzing de `kerno-units` no existe**: D21 decidió usar solo pruebas de propiedades con la biblioteca que ya es dependencia.
 
-Lo que no cubre: corridas largas de `wal`, `manifest` y `open` en máquina libre (pendiente), y cualquier entrada que no sea un archivo de base. El fuzzing de la CI no existe: el threat model dice que T-10 sigue abierta porque la CI no ejecuta fuzzing ni auditoría de dependencias ([threat-model §3](../security/threat-model.md)).
+Lo que no cubre: corridas largas de `wal`, `manifest` y `open` en máquina libre (pendiente, dejada para la máquina del propietario; sección 9.3), y cualquier entrada que no sea un archivo de base. El fuzzing de la CI no existe: el threat model dice que T-10 sigue abierta porque la CI no ejecuta fuzzing ni auditoría de dependencias ([threat-model §3](../security/threat-model.md)).
 
 ### 3.6 Mutaciones
 
@@ -201,7 +198,9 @@ Una mutación cambia una línea de producción o de prueba, y se comprueba que a
 | E9-15 (mutaciones de la Etapa 8) | M1 a M15 sobre `consolidation.rs` y D1 a D4 sobre `derived_measure.rs` | Las 19 pruebas tienen mutación. Dos mutaciones (D3 y D4) hacen fallar una sola prueba | [etapa9-mutaciones-e8](etapa9-mutaciones-e8.md) |
 | E9-20 (medición E8-10) | 7 mutaciones sobre `derived_measure2.rs` | Todas detectadas | [etapa9-medicion §4](etapa9-medicion.md) |
 | E9-22 (K1 y K2) | 1 mutación por hallazgo | Detectadas en los dos motores | [etapa9-k-e3-7 §8](etapa9-k-e3-7.md) |
-| P1 (K1, formato v4) | 19 mutaciones (M1 a M19), todas en rojo (`exit=101`) | Ninguna sobrevivió. M15 muta una prueba, no `src/` | [post9-mutaciones](post9-mutaciones.md) |
+| P1 (K1, formato v4) | 20 mutaciones (M1 a M20), todas en rojo (`exit=101`). M20 es la corrección de la revisión independiente | Ninguna sobrevivió. M15 muta una prueba, no `src/` | [post9-mutaciones](post9-mutaciones.md) |
+| P2 (pruebas y texto) | 18 registros: Q1 a Q16, Q13b y Q13c. Todas las de pruebas nuevas o cambiadas, en rojo. **Q13b**, en verde, es un candidato descartado | Q13 muta la prueba, no `src/`. Q5 mueve la toma del bloqueo, y el bloqueo durante el marcado no tiene mutación que lo muestre | [post9-mutaciones](post9-mutaciones.md) (registro P2) |
+| P3 (ADR-0016) | 17 mutaciones (M1 a M17), todas en rojo | Ninguna sobrevivió. M9 se repitió después de endurecer su prueba | [post9-mutaciones](post9-mutaciones.md) (registro P3) |
 
 **Límites de las mutaciones.** Muchas se hicieron sobre una copia del árbol, una a una, y se restauraron. Varias son «amplias»: una mutación que rompe todo también hace fallar la prueba objetivo, y eso prueba poco (lo dice el propio documento de E9-15). El cierre de la Etapa 7 encontró que una mutación de `sum` no la veía la medición (R-3). La mutación de cada prueba nueva de E8-06 y E8-07 no tenía registro hasta E9-15 (F-10 de la Etapa 8).
 
@@ -221,6 +220,8 @@ Todas las cifras salen de los documentos citados. **Ninguna se midió en la máq
 | **Derivados, E8-07** (2026-11-12) | Conjunto nuevo de 100 consultas; 25 con vector de consulta, todas de una misma clase. P1 y P2 en doce corridas | Q1 = 1,000; Q2 = Q3 = 1,000 en el brazo con señal y sin ella (efecto techo). Q5 = 1,1 %. P1 (escritura con descriptor entre sin descriptor) = 1,165 a 1,238. P2 (búsqueda persistida entre en memoria) = 0,921 a 1,007. P3 y P4 se cumplen (286 de 286) | Q4 sin demostrar: tres clases sin vector. P2 no mide la lectura de los vectores persistidos (F-08) | [cierre E8 §0](etapa8-cierre.md), [medición E8](etapa8-medicion.md) |
 | **Derivados, E8-10 en E9-20** (2026-11-13) | Una sola medición, con otra carga activa. Cuatro corridas de 12 rondas de 64 pares para P1 y P2. Un solo conjunto sintético de 2 000 unidades | Calidad: nDCG@10 con señal 0,9738; sin señal 0,4216; S1 +0,5522; Q5 1,6 %. P1 1,140 a 1,173; P2 0,997 a 1,001 | P1 y P2 **no** en reposo. Umbrales impresos, no afirmados (sección 5) | [medición E9](etapa9-medicion.md), [salida cruda](etapa9-medicion-salida.txt) |
 | **SQLite, E9-17** (2026-11-12) | Escala tiny, 5 000 registros. 12 cargas, 5 repeticiones, durabilidades en pareja. 240 ejecuciones. Carga de 1 minuto entre 1,3 y 1,9 | Sin umbrales. Kerno es más lento en apertura, recuperación y cierre. Kerno es más rápido en lecturas puntuales, escaneos y escrituras, con la advertencia de que el modo `Buffered` no tiene garantías equivalentes | No se extrapola a otras máquinas ni a otras escalas | [informe SQLite E9](../testing/sqlite-report-e9.md) |
+
+Los documentos de P1 a P3 no registran medición de rendimiento nueva. Un cambio de P3 sí afecta a una medida existente: el brazo con caché del banco `index_bench` (`crates/kerno-units/examples/index_bench.rs:335`) sube el observador a `Fingerprint`, así que su cifra incluye el coste de observar y no es comparable con la de la Etapa 6 ([post9-mutaciones](post9-mutaciones.md), P3).
 
 ---
 
@@ -305,15 +306,34 @@ Fuente: [f1-adversarial-review §7](../testing/f1-adversarial-review.md). Todos 
 
 Los hallazgos F-02, F-03 y F-04 de la Etapa 8 no aparecen aquí como corregidos. El cierre de la Etapa 9 solo los asigna a E9-10 y E9-11 y no dice si se resolvieron. Están en la sección 5.4.
 
-### 4.7 Posteriores a la Etapa 9 (en curso)
+### 4.7 Posteriores a la Etapa 9: P1, K1 y la revisión independiente
 
-| Paquete | Marca | Defecto | Estado |
+| Hallazgo | Cómo se encontró | Corrección | Qué lo guarda |
 |---|---|---|---|
-| **P1** (K1) | **(en curso)** | K1 quedaba abierto para relaciones con conteo: una entrada perdida junto con su conteo, o una base antigua sin conteo | P1 cierra la invisibilidad desde el extremo que pierde su entrada, para relaciones de la capa 4, con un registro de conteo (19 mutaciones, todas detectadas). Persisten dos límites: bases de antes de la capa 4 y doble daño ([units-v4 §7](../file-format/units-v4.md)) |
-| **P1**, revisión independiente | **(en curso)** | **Según la nota de encargo:** una creación de relación rechazada deja contadores huérfanos que un commit posterior escribe | **Corrección en verificación.** No consta en el repositorio. Esta nota no lo da por corregido |
-| **P2** | **(en curso)** | Según la nota: prueba intermitente de almacenamiento que resultó ser una suposición de temporización de la propia prueba | Espera su comprobación completa. En el repositorio, la prueba está en la lista de «posiblemente intermitente, sin investigar» ([post9-pendientes #11](post9-pendientes.md)), porque P2 no está integrado |
+| **K1**, relaciones con registro de conteo. Una entrada de adyacencia perdida no dejaba huella: desde su extremo, `relations_of` devolvía una respuesta corta sin error, y `query_relations` no daba `Fallback` (sección 5.1) | Revisión de K-E3-7, en la Etapa 9 ([etapa9-k-e3-7](etapa9-k-e3-7.md) §9) | Formato de unidades v4 (`0c2c3d5`): un registro de conteo por `(unidad, dirección, tipo)`. El escritor lo suma y lo resta. El lector lo compara con lo que recorre. `verify_units` lo comprueba con UNIT-45 y UNIT-46 ([units-v4](../file-format/units-v4.md)) | `rel_counts.rs`, en los dos motores: 30 pruebas que corren y 1 `#[ignore]` que regenera el fixture. 19 mutaciones de P1, todas detectadas. Límites: bases de antes de la capa 4 y doble daño (sección 5.1) |
+| **Defecto de la revisión independiente de P1.** Una creación de relación rechazada dejaba un contador huérfano. `create_relation` ajustaba los dos contadores antes de que `record.encode()` validara la procedencia. Si el `encode` rechazaba la relación, el contador quedaba en el change set abierto y un `commit` posterior lo escribía. Entonces `relations_of` daba `Corruption` y `verify_units` UNIT-45, sobre un almacén sin daño | Revisión independiente de P1 (registro de mutaciones, «Corrección posterior de K1») | Construir y codificar todas las escrituras antes de tocar los contadores (`crates/kerno-units/src/db.rs:1473-1487`). `delete_relation` hace lo mismo con sus claves (`db.rs:1503-1509`). La importación se reordenó igual (`import.rs:213`, commit `0310bb3`). Commit de la creación: `4b65c51` | `a_refused_create_leaves_no_count` en `rel_counts.rs`, en los dos motores. Antes de la corrección daba `Corruption` en `relations_of` en ambos motores. Mutación **M20** (los dos `adjust_count` movidos antes de la codificación): roja en los dos motores (`exit=101`). El caso de la importación no admite prueba, porque su change set es privado y se abandona sin `commit` ante un error |
 
-**Prueba intermitente anterior.** En la Etapa 4, `kerno::retention_every_point_paced_power_loss_sync` falló una vez en seis ejecuciones (M-11). No se corrigió. No se reprodujo en E5-05 ([cierre E5 §5](etapa5-cierre.md)).
+La revisión independiente de P1 sigue dada como pendiente en [post9-pendientes](post9-pendientes.md) (punto 2, desglose). Este informe registra el defecto que halló y su corrección, según [post9-mutaciones](post9-mutaciones.md).
+
+### 4.8 Posteriores a la Etapa 9: P2, pruebas, mensaje y prueba intermitente
+
+| Hallazgo | Corrección | Qué lo guarda |
+|---|---|---|
+| **Pruebas que faltaban** (cierre de la Etapa 9, puntos 4, 5, 6 y 10). Faltaban: el orden «bloqueo del registro, commit» de los derivados (F-09); la prueba de que los errores y las observaciones no llevan contenido; la prueba de que `compact()` rechaza un handle envenenado y no amplía su rango (E9-08g); y el registro de mutaciones de la Etapa 8 (E9-15) | Pruebas nuevas en `derived_lock_order.rs` (dos motores, con el gancho `hook_registry_locked`, solo con `test-support`), en `reclaim.rs` y `db.rs` para `compact()`, y aserciones de cobertura en `redaction_units.rs` | Registros Q1 a Q13 de [post9-mutaciones](post9-mutaciones.md) (registro P2). Límites: no se prueba que el bloqueo siga tomado durante el marcado; los fragmentos de menos de 8 bytes siguen sin buscarse (cierre E9, punto 5) |
+| **Mensaje de `NoValidSources`** (punto 3). El texto no decía qué dato faltaba | Ahora dice: «no source of derived datum <id> is valid any more» (`crates/kerno-units/src/derived_stale.rs:124`). Cambiaron las dos pruebas que fijaban el texto (`consolidation.rs`, `derived_stale.rs`) | Mutación Q7. Commit `2356ff3` |
+| **Prueba intermitente** `m0_profile::shared_range::space_is_reclaimed_after_range_deletes` (punto 11). Su causa fue una suposición de temporización de la propia prueba, no un defecto del motor. Medía el tamaño del directorio justo después de la última escritura de cada recarga, sin esperar a que la compactación de fondo alcanzara al escritor. Con la máquina cargada, el único hilo de compactación podía quedar un ciclo atrás. Los cuatro fallos fueron de la aserción de tamaño tras recargar, nunca de la de claves | Función `settled_size` (`crates/kerno-testkit/src/harness/mod.rs:72`): si el tamaño supera la cota, vuelve a medir cada 5 ms, hasta 30 s. La cota, el número de ciclos y las comprobaciones no cambian. Con carga, 4 fallos en 600 ejecuciones antes del cambio y 0 después. Sola, 0 en 200 antes y después. La prueba hermana `functional::space_is_reclaimed` tenía la misma suposición: 1 fallo en 300 antes y 0 después, y se corrigió en el mismo sitio | Mutaciones Q14 a Q16. Límites: el primer llenado no espera; un motor que no reclama falla 30 s más tarde; 600 ejecuciones sin fallo no prueban que la prueba no pueda fallar |
+
+### 4.9 Posteriores a la Etapa 9: P3, ADR-0016 y la revisión de D16
+
+| Carencia | Estado antes | Corrección | Qué lo guarda |
+|---|---|---|---|
+| **Trabajo abierto 1.** La explicación del plan no decía si se consultó la caché, ni si respondía estado aprendido | `explain_*` no lo decía | `Plan::cache()` (`crates/kerno-units/src/plan.rs:328`) devuelve un `CacheView`: `Off`, `Miss`, `Invalidated`, `Discrepancy`, `Hit { evidence, cost_ns }` o `NotApplicable`. Lo calcula `ResultCache::peek`, que no deja registro, no cuenta y no elimina nada. `Plan::answering_path()` (`plan.rs:335`) dice si responde el estado aprendido | `the_plan_says_whether_the_cache_was_consulted_and_whether_learned_state_answers` y `the_plan_does_not_announce_an_entry_that_fails_its_check` (`cache_planner.rs`, dos motores). Mutaciones M9, M13 a M16 |
+| **Trabajo abierto 2 (H-3 de la Etapa 6).** La evidencia de creación era constante: `Evidence { observations: 1, window: Duration::ZERO }` | Evidencia fija | La evidencia es la del observador (`Observer::evidence_of`, `crates/kerno-units/src/observation.rs:424`). `CacheEntry::build` rechaza una entrada sin observaciones (`NoEvidence`) o sin coste (`NoCost`) (`cache.rs:351-354`). **Cambio de comportamiento:** el observador está apagado por defecto. Por debajo de `Fingerprint` no guarda registros por ejecución, así que con la caché encendida el planificador no crea entradas y ninguna lectura se sirve de la caché. Para usarla hay que subir el observador a `Fingerprint` o más | `relation_evidence_comes_from_the_observer` y `observations_never_act_as_authority` (`cache_planner.rs`). Mutaciones M1 a M6 y M17 |
+| **Trabajo abierto 2, coste.** Las entradas no llevaban coste | Sin coste | `CacheEntry::cost_ns` (`cache.rs:376`): nanosegundos de la ejecución que la entrada sustituye. `Transition::Created { evidence, cost_ns }` y `CacheView::Hit { cost_ns }`. Límite: una sola medida por entrada, no un modelo de coste | `the_created_record_carries_the_evidence_and_the_measured_cost` (`cache.rs`). Mutaciones M6 y M8 |
+| **Trabajo abierto 3.** `set_key` borraba entradas, registro y contadores sin dejar huella | Sin registro | `Transition::KeyReplaced { entries }` en el registro nuevo (`cache.rs:559`). `clear` sigue dejando `Cleared` | `replacing_the_key_leaves_a_record_of_the_wipe` (`cache_planner.rs`, dos motores) y `set_key_leaves_one_record_of_the_wipe_in_the_new_log` (`cache.rs`). Mutaciones M11 y M12 |
+| **Revisión de D16, punto 1 (G1 y G5), antes de P3.** `ResultCache::create` y `activate` eran públicas, y `CacheEntry::new` y `Dependencies::current` también: un llamador podía plantar filas que luego se servían | El planificador usa versiones `pub(crate)` (`store`, `arm`, `build`, `in_force`). `create` y `activate` tienen `cfg(any(test, feature = "test-support"))` (`cache.rs:907-914`), y ADR-0016 dice lo mismo de las otras dos | Cuatro doctests `compile_fail`, uno por función, según ADR-0016, punto 1 | La descripción está en [ADR-0016, «Revisión de 2026-11-13», punto 1](../adr/0016-adaptacion-e-invalidacion.md) |
+
+**Fuera de los paquetes.** En la Etapa 4, `kerno::retention_every_point_paced_power_loss_sync` falló una vez en seis ejecuciones (M-11). No se corrigió. No se reprodujo en E5-05 ([cierre E5 §5](etapa5-cierre.md)).
 
 ---
 
@@ -325,12 +345,12 @@ Esta sección recoge cada defecto o límite abierto que los documentos registran
 
 | Id | Qué pasa | Impacto | Cómo reproducir u observar | Soluciones investigadas (compromisos) | Recomendada |
 |---|---|---|---|---|---|
-| **K1** (restante, en P1) | Una relación de una base **de antes de la capa 4** (sin conteo) tiene una entrada de adyacencia perdida: desde ese extremo `relations_of` devuelve una respuesta corta, sin `Fallback`. Solo `verify_units` (UNIT-36) lo ve | Respuesta incompleta sin error en bases antiguas | Prueba `one_adjacency_entry_missing_{small,large}_store` en `relations.rs`: borra a mano `REL_IN` o `REL_OUT` y compara. Base antigua: fixture de [etapa9-fixtures §6](etapa9-fixtures.md) | (a) Recorrer todas las relaciones en una migración: costoso, y abrir no escribe (I-18). (b) Un registro de conteo que se mantiene al escribir (lo que hace P1): sin migración; las bases antiguas no tienen conteo hasta que se toca cada `(unidad, dirección, tipo)`. (c) Recorrer `REL` en cada consulta: más de una lectura por relación devuelta | **Ninguna migración recomendada.** P1 queda como límite declarado |
-| **K1**, doble daño (en P1) | Una entrada perdida **junto con** su registro de conteo deja una lectura coherente consigo misma | Igual que K1, sin detección en consulta | Descrito en [units-v4 §7](../file-format/units-v4.md). `verify_units` lo reporta vía UNIT-36 | Ninguna investigada | No aplica |
+| **K1**, límite que queda (cerrado para relaciones con registro de conteo en P1; el defecto se da por corregido en la sección 4.7) | Una relación de una base **de antes de la capa 4** (sin conteo) tiene una entrada de adyacencia perdida: desde ese extremo `relations_of` devuelve una respuesta corta, sin `Fallback`. Solo `verify_units` (UNIT-36) lo ve | Respuesta incompleta sin error en bases antiguas | Prueba `one_adjacency_entry_missing_{small,large}_store` en `relations.rs`: borra a mano `REL_IN` o `REL_OUT` y compara. Base antigua: fixture `db-legacy-relations` ([units-v4 §8](../file-format/units-v4.md)) | (a) Recorrer todas las relaciones en una migración: costoso, y abrir no escribe (I-18). (b) Un registro de conteo que se mantiene al escribir, que es lo que hace P1: sin migración; las bases antiguas no tienen conteo hasta que se toca cada `(unidad, dirección, tipo)`. (c) Recorrer `REL` en cada consulta: más de una lectura por relación devuelta | **Ninguna migración recomendada.** P1 queda como límite declarado ([units-v4 §7](../file-format/units-v4.md)) |
+| **K1**, doble daño (límite de P1) | Una entrada perdida **junto con** su registro de conteo deja una lectura coherente consigo misma | Igual que K1, sin detección en consulta | Descrito en [units-v4 §7](../file-format/units-v4.md). `verify_units` lo reporta vía UNIT-36 | Ninguna investigada | No aplica |
 | **K2** (restante) | Con el conteo de `IDX_META` rebajado para coincidir con la entrada perdida, la ruta de índice responde menos sin error. La ruta `IDX_TYPE` no tiene conteo por tipo, así que una entrada `IDX_TYPE` perdida da respuesta corta | Respuesta incompleta sin error | Prueba `index_path_with_a_missing_entry` en `index.rs`. Lo que no ve: conteo rebajado | No investigada en los documentos. P1 aplica a relaciones el mismo principio de registro de conteo | No hay recomendación |
 | **K4** | `change_set_info` no cruza los miembros de un `ChangeSet` con su `REV_META` | Menor: un historial dañado puede no verse en esa lectura | Inferencial: se lee del código. Prueba: UNIT-33 en `verify_units` | Comprobar cada miembro: leer el `REV_META` de cada uno | No hay recomendación. El cierre de la Etapa 9 lo deja abierto y sin cambio |
 | **K5** | `get_relation` no comprueba `created_seq` ni los extremos | Menor | Inferencial. UNIT-36 lo reporta | Leer las dos cabeceras de los extremos y las dos entradas (dos lecturas más por consulta) | No hay recomendación |
-| **H-1 de la Etapa 7** (R-2) | Con 64 relaciones o más y una relación sin entrada en ninguno de sus extremos, la respuesta por índice difiere de la referencia, sin fallback. P1 lo cubre solo si la relación tiene conteo | Respuesta incompleta sin error para bases sin conteo | `tests/assoc_indexed.rs` (prueba que fija el límite, antes `completeness_is_not_a_query_time_check`) | Conteo por `(unidad, dirección, tipo)`: P1 lo implementa para relaciones con conteo. Chequeo en consulta: caro | Conteo (ya implementado en P1 para lo nuevo) |
+| **H-1 de la Etapa 7** (R-2) | Con 64 relaciones o más y una relación sin entrada en ninguno de sus extremos, la respuesta por índice difiere de la referencia, sin fallback. P1 lo cubre solo si la relación tiene conteo | Respuesta incompleta sin error para bases sin conteo | `tests/assoc_indexed.rs` (prueba que fija el límite, antes `completeness_is_not_a_query_time_check`) | Conteo por `(unidad, dirección, tipo)`: P1 lo implementa para relaciones con conteo. Chequeo en consulta: caro | Conteo: implementado en P1 para relaciones con registro de conteo. Las bases sin conteo siguen abiertas |
 | **H-1 de la Etapa 5** (completitud) | `check_units` y `check_relations` comprueban que la respuesta de un camino de índice sea subconjunto correcto, no que sea completa | Una respuesta incompleta de índice no se ve en consulta | Lectura de `planner.rs`. Lo ven la prueba diferencial y `verify_units` (UNIT-37) | Ninguna investigada | Aceptada como limitación |
 | **H-2 de la Etapa 5** | El fallback con índice `Building` no se ejerce a través de `query`, porque una instantánea no ve ese estado | Cobertura parcial de un estado transitorio | `candidates_carry_the_usability_the_state_gives` cubre el plan, no la consulta | No investigada | Aceptada como salvedad |
 | **M-10 de la Etapa 4** | Una reconstrucción concurrente que falla puede escribir `Failed` sobre un `Ready` que acaba de escribir otra | Conservador: el índice se declara no utilizable cuando lo era | Inferencial | Ninguna. Una reconstrucción lo repara | Aceptada |
@@ -355,7 +375,7 @@ Esta sección recoge cada defecto o límite abierto que los documentos registran
 
 | Id | Qué pasa | Impacto | Cómo observar | Soluciones investigadas (compromisos) | Recomendada |
 |---|---|---|---|---|---|
-| **Q4 (Etapa 8)** | Solo una de las cuatro clases de consulta tiene vectores de consulta (25 de 25). Las otras tres tienen 0 | El criterio de calidad con y sin señal no se puede calcular en tres clases | [cierre E8 §3](etapa8-cierre.md) | Un segundo conjunto de evaluación (E8-10), con vectores en cada clase, congelado antes de medir y medido una vez. Es trabajo previo a 1.0 | **Sí:** el cierre lo recomienda como paquete de seguimiento |
+| **Q4 (Etapa 8)** | Solo una de las cuatro clases de consulta tiene vectores de consulta en el conjunto de E8-07 (25 de 25). Las otras tres tienen 0 | El criterio de calidad con y sin señal no se pudo calcular en tres clases | [cierre E8 §3](etapa8-cierre.md) | Un segundo conjunto de evaluación (E8-10), con vectores en cada clase, congelado antes de medir. Se midió una vez en E9-19 y E9-20, con carga. Q4 la sustituyen S1 y S2 ([acta §5](etapa9-acta.md)) | **Hecho con límites:** S1 y S2 sustituyen a Q4 ([requisitos-1.0](requisitos-1.0.md), punto 3). Los umbrales de calidad se imprimen y no se afirman |
 | **Efecto techo (Q2, Q3, Q4)** | 1,000 en ambos brazos en las 25 consultas con vector | Las 25 consultas no distinguen los brazos | [cierre E8 §3](etapa8-cierre.md) | El mismo conjunto de E8-10 | Igual que Q4 |
 | **T4 (Etapa 7)** | Exige 1,036 con un orden simple de 0,942. Un nDCG no pasa de 1 | Un criterio inalcanzable tal como está escrito | [cierre E7 §3.2 R-7](etapa7-cierre.md) | (a) Reescribir T4 antes de medir de nuevo. (b) No tocarlo. El propietario decidió no reescribirlo ahora | Decisión del propietario: no reescribir (2026-11-12) |
 | **Ranking (R-5, R-6)** | Las unidades sin nombrar valen 0, lo que penaliza al ranking. El resultado por clase cambia con el desempate del orden simple | Conclusiones por clase frágiles | [cierre E7 §3.4](etapa7-cierre.md), controles exploratorios | Medir con otro conjunto | No aplica |
@@ -381,15 +401,13 @@ Esta sección recoge cada defecto o límite abierto que los documentos registran
 | **F-13** | Quince puntos de fricción en la API pública; uno toca una promesa (`forget` es solo lógico) | Bloquea 1.0 como trabajo previo | [FRICTION](../../examples/agent-memory/FRICTION.md). La prueba `forgotten_text_stays_in_the_files_after_retention` encuentra el texto en `000003.sst` | Orden propuesto: primero el grupo F (la promesa), luego B y A, C y D después, E al final | Orden del cierre E8 §6 |
 | **Compactación inalcanzable** | `UnitDb::compact` necesita `TestHooks`, y `KernoDb::compact_range` es un método de prueba: la envoltura pública no los expone | El borrado físico no es alcanzable desde la API pública | [cierre E8 §5, punto 9](etapa8-cierre.md), grupo F | Exponer la compactación en la API pública | No decidido |
 | **Limitación de E9-21, `set_policy`** | `set_policy` no acepta `KeepLast(1)`. El ejemplo poda de forma explícita | El ejemplo no usa la política que pide su acta | [cierre E9, punto 8](etapa9-cierre.md) | Ninguna investigada | No aplica |
-| **E9-08g** | Ninguna prueba falla si `compact()` pierde su comprobación de envenenamiento o amplía su rango | Un cambio de `compact()` puede pasar en verde | [cierre E9, punto 6](etapa9-cierre.md) | Ninguna investigada | No aplica |
-| **E9-12 y F-09 parcial** | El bloqueo tardío posterior al commit no tiene prueba determinista | Igual que F-09 | [cierre E9, punto 4](etapa9-cierre.md) | Ninguna | No aplica |
+| **E9-12 y F-09, parcial** | P2 prueba el orden «bloqueo del registro, commit» (`derived_lock_order.rs`, dos motores). No prueba que el bloqueo siga tomado durante el marcado: ninguna observación externa lo ve sin un lector que compita | Igual que F-09 | [cierre E9, punto 4](etapa9-cierre.md), [post9-pendientes](post9-pendientes.md) (punto 4) | Ninguna | No aplica |
 | **Vectores deterministas** | Los vectores son deterministas con semilla. No dicen nada de la calidad de un modelo real. No se decidió un modelo (D5 (b) de la Etapa 8) | La calidad semántica no se ha medido | [cierre E8 §5, punto 4](etapa8-cierre.md) | Un conjunto con vectores de un modelo real. Ninguno existe | No hay recomendación |
 
 ### 5.5 Caché, planificador y observabilidad
 
 | Id | Qué pasa | Impacto | Cómo observar | Soluciones investigadas (compromisos) | Recomendada |
 |---|---|---|---|---|---|
-| **H-3 de la Etapa 6 (P3)** | La evidencia de creación de una entrada es constante: `Evidence { observations: 1, window: Duration::ZERO }`. No sale de `ExecutionObservation`, y spec §9 pide evidencia observada | La evidencia no describe ninguna observación | `planner.rs`, `store()` | (a) Que la evidencia venga del observador (compatible con G3). (b) Documentar que es la ejecución que produjo la respuesta. ADR-0016 lo lista como trabajo abierto 2 | No hay recomendación en el documento. Es P3, en curso |
 | **H-5 de la Etapa 6** | Una entrada más vieja que `max_age` no se sirve nunca, pero sigue en memoria mientras la caché no cree una entrada nueva | La cota por edad no se cumple en reposo. La memoria sí está acotada por tamaño | `grep -n prune_entries crates/kerno-units/src/cache.rs` | Llamar a `prune_entries` también en `stats()` y `records()`: una línea por función, con una prueba | No hay recomendación |
 | **H-6 de la Etapa 6** | Las causas de la caché (`precondition_failed`, `invalidated`, `disabled`, `discrepancy`) no llegan a `ExecutionObservation` | Un fallback de la caché no aparece en la observación | `observation.rs` y `planner.rs` | Llevar la causa a `ExecutionObservation` (cambio de `FallbackCause`), o dejarla en el registro de transiciones | Aceptada por delegación como riesgo registrado (cierre E6 §7) |
 | **H-7 de la Etapa 6** | La mutación «con la caché apagada, sigue el camino de la caché» sobrevive a toda la suite de caché | I-36 está verificada en resultados y contadores, no en coste | Mutación de `if !self.cache.enabled()` (el cierre E6 la cita en `planner.rs:354`; en el árbol actual está en las líneas 470 y 636 de `planner.rs`; sección 3.3 del cierre E6) | Un punto de inyección para observar la lectura del índice | Aceptada por delegación como riesgo |
@@ -406,10 +424,8 @@ Esta sección recoge cada defecto o límite abierto que los documentos registran
 | **G2 (parcial)** | El cierre con subcompactaciones paralelas (valor por defecto) no tiene barrido de caídas | Una caída durante un cierre con subcompactaciones no se prueba | Matriz de fallos, fila SC | Añadir un barrido con `Background::Threads` | Abierto, no bloqueante |
 | **G3 (parcial)** | El `kill -9` no cubre `begin_write` ni `compact_range` | Dos caminos sin muerte real de proceso | [f1-adversarial-review §7](../testing/f1-adversarial-review.md) | Añadir las pruebas | Abierto |
 | **Hallazgos de rendimiento de M0 no verificados** | Contención de contadores globales en lecturas concurrentes (LSM); `fdatasync` de un WAL que crece sin preasignación (LSM); copias de páginas en lotes muy grandes (árbol B+). No se verificaron por falta de cuota de agentes | Riesgo de rendimiento sin medir | [m0-report §2.2](../testing/m0-report.md) | Medir | No hay recomendación |
-| **Nombre de `NoValidSources`** | El mensaje «no source of the derived datum is valid any more» no se cambió | Mensaje poco claro | Lo fija `tests/consolidation.rs:496` | Cambiar esa prueba, que es de otro paquete | No aplica |
 | **C-4 de ADR-0009 (H-4 del adelanto)** | La cláusula de conteo de C-4 no se sostiene: `pinned_files = 3` mientras solo `000007.sst` contiene el valor y la clave | La cláusula del ADR no coincide con la medición | Salida de §2.1 de [etapa9-adelanto-cierre](etapa9-adelanto-cierre.md) | Ninguna. El ADR es aceptado y no se edita. D17 lo dejó registrado | Contradicción registrada (D17) |
 | **H-5 del adelanto de la Etapa 9 (no medido)** | Bloques liberados del medio (C-5), memoria, cachés, lápidas de punto, borrado por hilo de fondo y handle de larga vida no se miden | El borrado y la memoria no están verificados | [suppression_survival.rs](../../crates/kerno-storage/tests/suppression_survival.rs), cabecera «Not exercised» | Medir cada uno | No aplica |
-| **Prueba intermitente (P2)** | `space_is_reclaimed_after_range_deletes` falló una vez y pasó al repetirla. Según la nota de encargo, la intermitencia es una suposición de temporización de la propia prueba | Una suite roja sin causa en la CI | Repetir la suite de `kerno-storage` | Corregir la suposición (P2, en curso) | En curso |
 | **Prueba intermitente de la Etapa 4 (M-11)** | `retention_every_point_paced_power_loss_sync` falló 1 vez en 6 ejecuciones | Igual que la anterior | [cierre E4 §4](etapa4-cierre.md) | Ninguna. El cierre dice que no hay una corrección pequeña y clara | Aceptada como registrada |
 
 ### 5.7 Seguridad y privacidad
@@ -435,6 +451,15 @@ Esta sección recoge cada defecto o límite abierto que los documentos registran
 | El índice de ADR marca ADR-0007 como «Pendiente»; su cuerpo dice «Aceptado» y no tiene fecha | [índice de ADR](../adr/README.md), [ADR-0007](../adr/0007-consistencia-de-indices.md) | Contradicción sin corregir |
 | Algunos commits de `main` llevan trailers de autoría que las reglas del proyecto prohíben | [cierre E9 §5, punto 12](etapa9-cierre.md) | Mancha conocida y aceptada. No se reescribe la historia |
 
+### 5.9 Inconsistencias de documentos que P4 encontró y nadie corrigió
+
+P4 las encontró al auditar los requisitos de 1.0 ([requisitos-1.0](requisitos-1.0.md), filas 2 y 4). Este informe las comprobó contra los archivos citados el 2026-11-13. Ninguna está corregida: los textos afectados son de un acta cerrada y de un ADR aceptado.
+
+| Id | Qué dice el documento | Qué dicen los archivos | Dónde está el texto | Por qué no se corrige sola |
+|---|---|---|---|---|
+| **(a)** Fila 15 de la acta, §2.4 | Que `set_policy` fija `KeepLast(1)` por tipo: «Resuelto por la API existente: la aplicación fija `KeepLast(1)` en su tipo». Cita `UnitDb::set_policy` en `db.rs:619` | `set_policy` está en `crates/kerno-units/src/db.rs:625` y recibe un `HistoryPolicy`. `HistoryPolicy` solo tiene `None`, `Audit` y `Versioned` (`crates/kerno-units/src/types.rs:144`). `KeepLast` es una variante de `RetentionRule` (`crates/kerno-units/src/retention.rs:67-72`), que recibe `run_retention`. El ejemplo poda con `prune_history` (`examples/agent-memory/src/lib.rs:576`) | [etapa9-acta.md](etapa9-acta.md), línea 119 | El acta está cerrada. El cierre de la Etapa 9 (§5, punto 8) ya anota la diferencia, y el acta no se corrige |
+| **(b)** Criterio T5 de ADR-0020 | Que una build sin la característica rechaza al abrir una base con derivados, y que «el árbol de archivos (nombres y hash de cada uno) es idéntico antes y después» | Un binario de `d01f646` devuelve `IncompatibleLayer { found: 2, supported: 1 }`, pero el árbol no queda idéntico: `LOCK` se crea (0 bytes) y `MANIFEST` cambia su crc, con el mismo tamaño (254 bytes). `000003.sst` sí queda idéntico. La apertura del motor crea `LOCK` (`crates/kerno-core/src/vfs/std_fs.rs:136`, `create(true)`) y añade un registro de sesión a `MANIFEST`, antes de que la capa lea la marca ([etapa9-fixtures §3](etapa9-fixtures.md)) | [ADR-0020](../adr/0020-persistencia-de-vectores-como-derivados.md), línea 301 | ADR-0020 está aceptado. La regla del índice de ADR (sección 7) es no editar un ADR aceptado para cambiar una decisión, y el repositorio no dice cómo se corrige un criterio. Hay precedente de erratas registradas en otro documento (cierre E9 §7). El fixture registra la diferencia como salvedad, pero el criterio no se corrigió |
+
 ---
 
 ## 6. Riesgos y zonas sin información
@@ -447,8 +472,9 @@ Todo lo que sigue no se ha probado ni medido, o no hay información. Cada punto 
 | **Dispositivo real con pérdida de páginas** | LazyFS pendiente, sin ejecuciones registradas | Ejecutar `lazyfs.yml` con FUSE, o el escenario A en un montaje propio |
 | **Tamaños** | Calidad asociativa: 2 000 unidades. Rendimiento asociativo: 20 000 unidades. Derivados: 2 000 unidades (calidad) y 20 000 (rendimiento). Fase 1, escala `large` (1 000 000 de registros): solo `bulk_load` y `point_reads`; `range_scans` y `small_commits` no se ejecutaron | Ejecutar `derived_bench2`, `index_bench` y `run-benchmarks.sh` con `LARGE=1` a 100 000 y 1 000 000 unidades |
 | **Concurrencia entre lectores** | Sin medir con varios lectores en la caché (cierre de la Etapa 6, §3.4 y §4.2: «sin concurrencia») | Un banco con varios lectores y escritores simultáneos |
+| **Relaciones de bases anteriores a la capa 4** | Sin registro de conteo, una entrada de adyacencia perdida sigue siendo invisible desde su extremo, y no hay migración en bloque (I-18). Vale también para el doble daño | Escribir una migración que cuente las relaciones, o aceptar el límite. Ninguna está decidida ([units-v4 §7](../file-format/units-v4.md)) |
 | **Multiescritor** | Fuera de alcance del motor (K-E3-2: la ranura de escritura es única). El group commit tiene pruebas con cuatro escritores | Un banco y una prueba de carga con más de un escritor, si se quiere soportar |
-| **Ejecuciones largas** | Fuzzing de 30 minutos por objetivo. `kill -9` de 200 iteraciones en la CI semanal. `space_is_reclaimed_after_range_deletes` intermitente | Corridas largas de `wal`, `manifest` y `open` (sección 9). Un soak de días. Repetir la suite en varias semanas |
+| **Ejecuciones largas** | Fuzzing de 30 minutos por objetivo. `kill -9` de 200 iteraciones en la CI semanal. Corridas largas de `wal`, `manifest` y `open` pendientes, dejadas para la máquina del propietario (sección 9.3). La prueba intermitente de espacio tenía una causa de temporización, corregida en P2 (sección 4.8) | Corridas largas de `wal`, `manifest` y `open` (sección 9.3). Un soak de días. Repetir la suite en varias semanas |
 | **Uso real fuera del equipo** | Ningún documento registra uso fuera del equipo. El ejemplo `agent-memory` lo usa solo el equipo, con la API pública | Un usuario externo que construya algo con la API pública. D12 lo pide para 1.0 |
 | **Cifrado y claves** | No hay cifrado, ni gestión de claves, ni la ranura está usada. K-1 a K-4 de ADR-0009 sin medir | Construir el diseño de ADR-0006 y medir K-1 a K-4 |
 | **Integridad autenticada** | No hay. H-2 queda como límite aceptado | Construir un código de autenticación o AEAD, o aceptar el límite en 1.0 (D4, ya tomada) |
@@ -457,13 +483,15 @@ Todo lo que sigue no se ha probado ni medido, o no hay información. Cada punto 
 | **Modelo de embeddings** | No se decidió un modelo (D5 (b) de la Etapa 8). No hay adaptador a un modelo real en el núcleo | Decidir el modelo y medir con vectores reales |
 | **Memoria y cachés** | Sin medir (H-5 de la Etapa 9). Los resúmenes viven en memoria y no hay medición de su uso | Medir memoria por carga, con el tamaño de caché de la configuración |
 | **Historial largo** | K-E3-4: las instantáneas largas impiden reclamar espacio. Sin medición con historial de años | Un banco de retención con instantáneas antiguas durante horas |
-| **Compatibilidad de formatos entre versiones** | Formato v1 congelado; las pruebas de vectores fallan si un byte cambia. No hay una prueba de migración entre versiones, porque no hay migraciones (D11 deja un registro de migración sin escritor) | Escribir la migración y sus fixtures antes de 1.0 |
+| **Compatibilidad de formatos entre versiones** | Formato v1 congelado; las pruebas de vectores fallan si un byte cambia. Formato de unidades v4 (P1): una base con una relación creada por esta build no abre con lectores de capa 1 a 3 ([units-v4 §2](../file-format/units-v4.md)). No hay una prueba de migración entre versiones, porque no hay migraciones (D11 deja un registro de migración sin escritor) | Escribir la migración y sus fixtures antes de 1.0 |
 | **Exportación** | Formato borrador sin congelar (D10). I-30 verificada solo para el borrador | Congelar el formato solo después de D12 |
 | **Backups** | Sin función de copia. Sin plazo declarado | Decidir una función de copia (D18) y medir su ventana |
 | **Coste de la caché y del planificador en máquina en reposo** | Medido con carga. Pendiente la repetición | Repetir los banco de E5 y E6 sin carga |
 | **Estabilidad de vectores entre plataformas** | Garantizada por diseño, no probada en otra plataforma (R-12 de la Etapa 7) | Ejecutar la prueba de vectores en otra plataforma |
 | **Resultados frente a SQLite con umbrales** | No hay umbrales (D6). El informe es descriptivo | Fijar umbrales antes de medir, en calma |
-| **Carga de la máquina en las mediciones** | Casi todas las mediciones se hicieron con otros procesos activos. P1 y P2 de la Etapa 8 no se midieron en reposo | Repetir sin carga, con `uptime` anotado en cada corrida |
+| **Carga de la máquina en las mediciones** | Casi todas las mediciones se hicieron con otros procesos activos. P1 y P2 de la Etapa 8 no se midieron en reposo, y esa corrida está pendiente (sección 9.4) | Repetir sin carga, con `uptime` anotado en cada corrida |
+| **Revisión independiente** | Pendiente para E9-16 y para P1, según [post9-pendientes](post9-pendientes.md) (punto 2 y su desglose). El registro de mutaciones de P1 cita una revisión independiente que halló un defecto, ya corregido (sección 4.7) | Una revisión hecha por alguien distinto del autor de P1 (acta §4.10) |
+| **Verificación de este informe** | Ninguna prueba se ejecutó ni se compiló para escribirlo. Las cifras de P1 a P3 son las de sus documentos, con su fecha | Ejecutar la batería de la sección 9 en la máquina propia |
 | **Documentos de investigación** | `docs/research/` y `experiments/` no se leyeron para esta nota | Una nota propia |
 
 ---
@@ -494,8 +522,8 @@ Tomadas el 2026-11-13 por delegación expresa del propietario, revocables por é
 | **D12** | 1.0 se declara solo después de D13 y de un uso real fuera del equipo. **1.0 no se declara ahora** | Revocarla significaría declarar 1.0 antes de cumplir D13. Lo que cambia es la promesa de formato y de API |
 | **D13** | La lista de requisitos de §8 como criterio de 1.0 | Cambiar la lista |
 | **D14** | `Reclaim` público, con el texto de ADR-0009 | Cambiar el texto de la API (cualquier texto que diga «borrado seguro» o «borrado físico» sería una promesa falsa) |
-| **D15** | Dirección: licencia amplia no exclusiva con derecho a relicenciar. **El texto legal no está escrito** | Cambiar la dirección exige otro texto legal. Ninguna contribución externa se acepta hasta que el propietario apruebe el texto |
-| **D16** | ADR-0016 aceptado y confirmado con enmiendas tras revisar G1 a G7 | Revocarla es un ADR nuevo. Las tres carencias quedan como trabajo abierto (P3) |
+| **D15** | Dirección: licencia amplia no exclusiva con derecho a relicenciar. **El texto no está en vigor**: hay un borrador sin vigor ([cla-propuesta](../legal/cla-propuesta.md), P4) | Cambiar la dirección exige otro texto legal. Ninguna contribución externa se acepta hasta que el propietario apruebe el texto |
+| **D16** | ADR-0016 aceptado y confirmado con enmiendas tras revisar G1 a G7 | Revocarla es un ADR nuevo. Las tres carencias están cerradas en P3 (sección 4.9). Con el observador por debajo de `Fingerprint`, la caché no guarda nada |
 | **D17** | Cláusula de C-4 de ADR-0009 sin reescribir; contradicción registrada | Reescribir la cláusula con un ADR nuevo |
 | **D18** | Todas las clases de borrado en la opción 1; sin función de copia | Una función de copia y su ventana (B-1) |
 | **D19** | I-28 no aplica en 1.0; I-42 e I-43 promovidas; I-29 para `kerno-units` | Revisar las promociones si las pruebas no se mantienen |
@@ -522,6 +550,8 @@ Tomadas el 2026-11-13 por delegación expresa del propietario, revocables por é
 | Umbral frente a SQLite: solo informe | El propietario, 2026-11-11 | Fijar umbrales antes de medir |
 | Comparación con SQLite, adelantada antes de la Etapa 8 | El propietario, 2026-11-11 | Igual que la anterior |
 | Caso de uso real antes de 1.0 (memoria para un agente) | El propietario, 2026-11-11 | Hecho en E8-09 y E9-21; el uso fuera del equipo no existe (sección 6) |
+| Aleatoriedad de los identificadores públicos: el token de 128 bits se lee de `/dev/urandom` con `std`, sin dependencia nueva. En una plataforma sin ese origen, `create_public` falla con un error tipado y no crea nada (`crates/kerno-units/src/ids.rs:283`) | Por delegación expresa del propietario, 2026-11-13 (P4) | Una API de aleatoriedad en la biblioteca estándar para las plataformas que el proyecto soporta, o aceptar una dependencia, lo que pasa por I-31 ([ADR-0005, «Notas»](../adr/0005-identificadores-publicos.md)) |
+| Formato de unidades v4 (conteos de adyacencia), decisión de diseño | Tomada por delegación, 2026-11-13 (P1; [units-v4](../file-format/units-v4.md), «Estado») | Cambiarla es un cambio de formato, con su marca de capa 4 ([units-v4 §2 y §7](../file-format/units-v4.md)) |
 
 ---
 
@@ -531,23 +561,23 @@ Estas decisiones no se han delegado, o los documentos las reservan al propietari
 
 ### 8.1 Decisiones reservadas
 
-1. **Aprobar el texto del contrato de contribución (CLA) antes de aceptar cualquier contribución externa.** ADR-0019 lo exige, y D15 fija la dirección. **El texto no está escrito.** Mientras tanto, la única regla sobre contribuciones es la sección «Licencia» del README. Fuentes: [ADR-0019](../adr/0019-licencia-y-contribuciones.md), [acta §8.1, D15](etapa9-acta.md). El paquete P4 (en curso) tiene un borrador de propuesta.
+1. **Aprobar el texto del contrato de contribución (CLA) antes de aceptar cualquier contribución externa.** ADR-0019 lo exige, y D15 fija la dirección. **Hay un borrador, sin vigor** ([cla-propuesta](../legal/cla-propuesta.md), P4), que necesita la revisión de un abogado. No es asesoramiento jurídico. Mientras tanto, la única regla sobre contribuciones es la sección «Licencia» del README. Fuentes: [ADR-0019](../adr/0019-licencia-y-contribuciones.md), [acta §8.1, D15](etapa9-acta.md).
 
 2. **Declarar 1.0.** Solo después de cumplir D13 y de tener un uso real fuera del equipo (D12). La lista de D13 tiene siete puntos. Estado de cada uno según los documentos:
 
    | Punto de D13 | Estado según los documentos |
    |---|---|
-   | (1) Etapa 9 cerrada, con §4 y §5 cumplidos o declarados | **Hecho.** Cierre aprobado el 2026-11-13; los puntos abiertos están declarados |
-   | (2) Los 15 puntos de fricción con disposición | **Hecho en cuanto a disposición** (T-FR1). Un punto toca una promesa y bloquea 1.0 como trabajo previo |
-   | (3) E8-10 cerrada con sus umbrales | **No hecho.** Es el paquete de seguimiento de la Etapa 8, y debe fijar sus umbrales antes de medir |
-   | (4) Fixtures de v1 y el de ADR-0020 probados o declarados | **Parcial.** El fixture de ADR-0020 está reconstruido y declarado con su errata. Su comprobación T5 no se ejecutó (F-11) |
+   | (1) Etapa 9 cerrada, con §4 y §5 cumplidos o declarados | **Cumplido con límites declarados** ([requisitos-1.0](requisitos-1.0.md), punto 1). Cierre aprobado el 2026-11-13. Quedan pendientes la revisión independiente de E9-16 y de P1, y el conteo de pruebas (T-CNT), que no se reejecutó. La medición de E9-20 y el fuzzing de E9-14 corrieron con carga alta |
+   | (2) Los 15 puntos de fricción con disposición | **Cumplido con límites declarados** (requisitos-1.0, punto 2). La fila 15 no coincide con la acta (sección 5.9, a) |
+   | (3) E8-10 cerrada con sus umbrales | **Cumplido con límites declarados** (requisitos-1.0, punto 3). E8-10 se midió una vez, con carga (E9-20). Los umbrales de calidad se imprimen y no se afirman. P1 y P2 no se midieron en reposo |
+   | (4) Fixtures de v1 y el de ADR-0020 probados o declarados | **Cumplido con límites declarados** (requisitos-1.0, punto 4). El fixture de ADR-0020 está reconstruido. Su criterio T5 no se cumple como está escrito (sección 5.9, b) |
    | (5) I-30 verificada para el borrador y la reimportación | **Hecho para el borrador.** La congelación no se hace (D12) |
-   | (6) Reclamación pública con el texto de ADR-0009 y su prueba | **Hecho** (E9-07, I-44) |
-   | (7) Límites declarados en el threat model | **Parcial.** T-03, T-04 y T-09 siguen abiertas en el threat model; T-10 sigue abierta |
+   | (6) Reclamación pública con el texto de ADR-0009 y su prueba | **Cumplido con límites declarados** (requisitos-1.0, punto 6). E9-07 e I-44. Sin borrado físico ni criptográfico, y sin plazo de copias |
+   | (7) Límites declarados en el threat model | **Cumplido** (requisitos-1.0, punto 7). T-03, T-04, T-09 y T-10 siguen abiertas, y así está declarado |
 
    Además, D12 pide un uso real fuera del equipo, que no existe en los documentos. La declaración de 1.0 la hace el propietario.
 
-3. **Aprobar la auditoría de requisitos para 1.0, el borrador de la licencia y la lista de puntos abiertos (P4, en curso).** La nota de encargo dice que P4 no ha empezado.
+3. **Revisar y aprobar la auditoría de requisitos para 1.0** ([requisitos-1.0](requisitos-1.0.md)), **el borrador del CLA**, que no tiene vigor, y **la decisión sobre la aleatoriedad de los identificadores** (sección 7.2). La auditoría no declara 1.0.
 
 4. **Decidir sobre la revisión de contingencia de ADR-0001**, por el incumplimiento de T1 en la Fase 1. El informe lo deja como decisión abierta del propietario ([f1-report §8](../testing/f1-report.md)).
 
@@ -557,25 +587,28 @@ Estas decisiones no se han delegado, o los documentos las reservan al propietari
 
 7. **Decidir si los índices se mantienen dentro de cada `ChangeSet`** (ADR-0007). Hoy son derivados que solo `rebuild_index` escribe. El cierre de la Etapa 4 dice que la decisión requiere una carga mixta de lectura y escritura, que no existe ([cierre E4 §6](etapa4-cierre.md)).
 
-8. **Decidir sobre H-3, H-5, H-6 y H-7 de la Etapa 6** y sobre la mejora del p99 de W1. El cierre de la Etapa 6 aceptó H-5, H-6 y H-7 como riesgos registrados ([cierre E6 §7](etapa6-cierre.md)). Sigue abierta la decisión sobre H-3 (ver la sección 5.5).
+8. **Decidir sobre H-5, H-6 y H-7 de la Etapa 6** y sobre la mejora del p99 de W1. El cierre de la Etapa 6 aceptó H-5, H-6 y H-7 como riesgos registrados ([cierre E6 §7](etapa6-cierre.md)). H-3 se cerró en P3 (sección 4.9), así que no queda decisión sobre ella.
 
 9. **Decidir sobre K-E3-8 (U2).** Juzgar U2 sobre `history_page` sigue siendo decisión del propietario y cambia la definición de la decisión 12 de la Etapa 3. Abaratar la materialización de `Revision` es trabajo de ingeniería ([cierre E3 §3 y §5](etapa3-cierre.md)).
 
 10. **Decidir sobre ADR-0006, ADR-0017 y ADR-0007 en su estado.** ADR-0006 está pendiente, aunque el diseño elegido ya está decidido (D2). ADR-0017 está «Propuesto», aunque su texto dice que se decide al iniciar la Etapa 3, que ya está cerrada. ADR-0007 dice «Aceptado» en su cuerpo, pero el índice de ADR lo marca «Pendiente».
 
-11. **Repetir las mediciones de la Etapa 8 (P1 y P2) con la máquina en reposo**, si se quiere cerrar que son fiables. El cierre de la Etapa 9 lo deja como pendiente, y no lo decide por el propietario.
+11. **Repetir en reposo las mediciones de tiempo de la Etapa 8 (P1 y P2, cocientes)**, si se quiere cerrar que son fiables. El cierre de la Etapa 9 lo deja como pendiente. Se deja para la máquina del propietario (sección 9.4).
+12. **Decidir cómo se corrigen las dos inconsistencias de la sección 5.9.** Una está en el acta de la Etapa 9, cerrada, y la otra en ADR-0020, aceptado. El repositorio no dice cómo se corrige un criterio de un ADR aceptado. Hay precedente de erratas registradas en otro documento (cierre E9 §7).
+13. **Decidir quién hace la revisión independiente de P1 y la de E9-16.** [post9-pendientes](post9-pendientes.md) las da como pendientes, y el autor de P1 no puede ser su revisor (acta §4.10).
+14. **Ejecutar en su máquina lo que se dejó para ella:** la corrida larga de `wal`, `manifest` y `open` (sección 9.3) y la re-medición en reposo de P1 y P2 de la Etapa 8 (sección 9.4). Ninguna de las dos se ha ejecutado.
 
 ### 8.2 Trabajo que los documentos mandan hacer antes de 1.0 (no es decisión del propietario, pero sí su responsabilidad de seguimiento)
 
-- E8-10, un segundo conjunto de evaluación congelado por separado, con vectores de consulta en cada clase ([cierre E8 §8, (c)](etapa8-cierre.md)).
-- Los quince puntos de fricción de `agent-memory`, en el orden propuesto ([cierre E8 §6](etapa8-cierre.md)).
+- E8-10, medido una vez en E9-20 con vectores de consulta en cada clase. Sus umbrales de calidad se imprimen y no se afirman ([requisitos-1.0](requisitos-1.0.md), punto 3; [cierre E8 §8, (c)](etapa8-cierre.md)).
+- Los quince puntos de fricción de `agent-memory` tienen disposición ([requisitos-1.0](requisitos-1.0.md), punto 2). El orden de trabajo propuesto está en el [cierre E8 §6](etapa8-cierre.md). La fila 15 no coincide con la acta (sección 5.9, a).
 - Un uso real de la API fuera del equipo (D12).
 
 ---
 
 ## 9. Cómo continuar en una máquina propia
 
-**Advertencia previa sobre el disco.** Un build de release completo necesita **varios GB de disco libre por copia** del repositorio. Ningún documento mide cuánto ocupa `target/`: esta cifra es una advertencia de planificación, no un dato medido. El informe de la Etapa 3 describe el disco de la VM de referencia con el 90 % ocupado ([etapa3-report](../testing/etapa3-report.md)), y la medición E9 de SQLite anota 7,1 GiB libres antes de medir ([sqlite-report-e9 §2](../testing/sqlite-report-e9.md)). Antes de compilar, comprobar el espacio libre con `df -h`.
+**Advertencia previa sobre el disco.** Un build de release completo necesita **varios GB de disco libre por copia** del repositorio. Ningún documento mide cuánto ocupa `target/`: esta cifra es una advertencia de planificación, no un dato medido. El informe de la Etapa 3 describe el disco de la VM de referencia con el 90 % ocupado ([etapa3-report](../testing/etapa3-report.md)), y la medición E9 de SQLite anota 7,1 GiB libres antes de medir ([sqlite-report-e9 §2](../testing/sqlite-report-e9.md)). Antes de compilar, comprobar el espacio libre con `df -h`. El disco de la máquina donde se escribió este informe estaba casi lleno y es compartido con otros procesos. Por eso la corrida larga de fuzzing y la re-medición en reposo se dejaron para la máquina del propietario (secciones 9.3 y 9.4).
 
 **Requisitos.** Linux. Rust 1.89 o posterior, que es el `rust-version` del workspace. Las pruebas se hicieron con Rust 1.97. Un compilador de C, porque los crates de benchmark compilan SQLite. Fuente: [README](../../README.md), sección «Development». Para el fuzzing, un toolchain nightly y `cargo-fuzz` (ver más abajo).
 
@@ -669,7 +702,7 @@ cargo +nightly fuzz run open <directorio-de-trabajo>/open fuzz/corpus/open -- -m
 
 Duración por objetivo: 60 segundos en la prueba corta. Los documentos usan `-max_total_time=1800` para la corrida de treinta minutos, y las corridas registradas duraron 1 801 segundos cada una.
 
-**Corrida larga pendiente de `wal`, `manifest` y `open`.** Los documentos no dan una duración para ella. Lo que dicen es que treinta minutos es poco y que una corrida más larga de esos tres es el paso natural ([cierre E9 §5, punto 7](etapa9-cierre.md)). El comando es el mismo de treinta minutos, con el tiempo que el owner decida:
+**Dejada para la máquina del propietario, a propósito.** Los documentos no dan una duración para esta corrida. Lo que dicen es que treinta minutos es poco y que una corrida más larga de esos tres es el paso natural ([cierre E9 §5, punto 7](etapa9-cierre.md)). No se hizo aquí porque el disco de la máquina de compilación estaba casi lleno y es compartido. El comando es el de la corrida de treinta minutos, desde `crates/kerno-storage`, como la orden de 60 segundos de [`fuzz/README.md`](../../crates/kerno-storage/fuzz/README.md) («Run»). Ese README escribe `corpus/<target>` en su orden de 1 800 segundos, que solo resuelve desde `fuzz/`; aquí se usa `fuzz/corpus/<target>`. El tiempo lo elige el propietario. Aquí figura `1800`, el valor de la última corrida registrada:
 
 ```bash
 cd crates/kerno-storage
@@ -685,11 +718,12 @@ Para una corrida más larga, sustituir `1800` por el número de segundos que se 
 
 **Reproducir un fallo ya guardado.** Ver el README, sección «Reproduce an artifact».
 
-### 9.4 Re-medición en reposo, pendiente
+### 9.4 Re-medición en reposo, pendiente, dejada para la máquina del propietario
 
-Los cocientes P1 y P2 de la Etapa 8 se volvieron a medir en E9-20, sobre el conjunto de E8-10, con otro proceso activo en la máquina. El cierre de la Etapa 9 pide repetirlos con la máquina en reposo. El comando está en la salida cruda ([etapa9-medicion-salida.txt](etapa9-medicion-salida.txt)):
+Los cocientes P1 y P2 de la Etapa 8 se volvieron a medir en E9-20, sobre el conjunto de E8-10, con otro proceso activo en la máquina. El cierre de la Etapa 9 pide repetirlos con la máquina en reposo. Esa corrida no se hizo aquí, por la misma razón que la de la sección 9.3. Los comandos son los de la salida cruda ([etapa9-medicion-salida.txt](etapa9-medicion-salida.txt)), líneas 4 y 180:
 
 ```bash
+uptime
 # calidad del conjunto E8-10 (prueba; comprueba el MANIFEST y las cifras)
 cargo test -p kerno-units --release --test derived_measure2 -- --nocapture --exact quality_over_the_second_frozen_set
 
@@ -707,7 +741,7 @@ Otras mediciones pendientes:
 
 ### 9.5 Prueba intermitente
 
-Repetir la suite de `kerno-storage` cuando la prueba falle. La de P2 (en curso) explica la causa como una suposición de temporización de la propia prueba. Hasta que P2 se integre, el repositorio solo la marca como «posiblemente intermitente, sin investigar» ([post9-pendientes #11](post9-pendientes.md)).
+`space_is_reclaimed_after_range_deletes` tenía una suposición de temporización en la propia prueba, corregida en P2 (sección 4.8). Si vuelve a fallar, repetir la suite de `kerno-storage` y comprobar que `settled_size` sigue esperando a que el tamaño baje de la cota. La intermitencia de la Etapa 4 (M-11) no tiene corrección (sección 5.6).
 
 ### 9.6 Reglas al medir
 
@@ -719,7 +753,7 @@ Repetir la suite de `kerno-storage` cuando la prueba falle. La de P2 (en curso) 
 
 ## 10. Mapa de documentos
 
-Una línea por documento. Los que están en curso se marcan.
+Una línea por documento.
 
 | Documento | Pregunta que responde |
 |---|---|
@@ -732,7 +766,7 @@ Una línea por documento. Los que están en curso se marcan.
 | [ADR-0001](../adr/0001-motor-de-almacenamiento.md) | ¿Por qué el motor es un LSM nivelado? |
 | [ADR-0002](../adr/0002-transacciones-y-durabilidad.md) | ¿Qué significa «commit» y qué garantiza cada modo de durabilidad? |
 | [ADR-0003](../adr/0003-formato-fisico-y-versionado.md) | ¿Qué reglas de versionado e integridad tiene el formato? |
-| [ADR-0005](../adr/0005-identificadores-publicos.md) | ¿Cómo son los identificadores públicos? (token opaco, D1) |
+| [ADR-0005](../adr/0005-identificadores-publicos.md) | ¿Cómo son los identificadores públicos? (token opaco, D1; límite de aleatoriedad del 2026-11-13) |
 | [ADR-0006](../adr/0006-cifrado-y-gestion-de-claves.md) | ¿Qué diseño de cifrado se eligió y por qué no se implementa? (pendiente) |
 | [ADR-0009](../adr/0009-supresion-retencion-y-backups.md) | ¿Qué significa «borrar» en Kerno? (sin borrado físico garantizado) |
 | [ADR-0011](../adr/0011-vectores-y-recuperacion-hibrida.md) | ¿Qué búsqueda vectorial hay? (exacta, sin índice aproximado) |
@@ -740,9 +774,9 @@ Una línea por documento. Los que están en curso se marcan.
 | [ADR-0013](../adr/0013-formato-v1-y-protocolo-del-motor.md) | ¿Qué formato v1 está congelado? |
 | [ADR-0014](../adr/0014-representacion-fisica-de-relaciones.md) | ¿Cómo se guardan las relaciones? |
 | [ADR-0015](../adr/0015-privacidad-de-la-observabilidad.md) | ¿Qué puede contener una observación? (nada de contenido fuera de `diagnostic`) |
-| [ADR-0016](../adr/0016-adaptacion-e-invalidacion.md) | ¿Qué puede aprender el motor y cómo se invalida? Trabajo abierto 1 a 3 (**P3, en curso**) |
+| [ADR-0016](../adr/0016-adaptacion-e-invalidacion.md) | ¿Qué puede aprender el motor y cómo se invalida? Confirmado el 2026-11-13; el trabajo abierto 1 a 3 está cerrado en P3 |
 | [ADR-0018](../adr/0018-versionado-y-reconstruccion-de-derivados.md) | ¿Cómo se registran los derivados y cuándo se reconstruyen? |
-| [ADR-0019](../adr/0019-licencia-y-contribuciones.md) | ¿Bajo qué licencia y con qué contrato se acepta código externo? (el CLA no está escrito) |
+| [ADR-0019](../adr/0019-licencia-y-contribuciones.md) | ¿Bajo qué licencia y con qué contrato se acepta código externo? (hay un borrador de CLA sin vigor) |
 | [ADR-0020](../adr/0020-persistencia-de-vectores-como-derivados.md) | ¿Cómo se persisten los vectores como derivados? |
 | [Invariantes](invariants.md) | ¿Qué no puede romper ningún cambio, y qué prueba lo verifica? (I-01 a I-45) |
 | [Matriz de fallos](failure-matrix.md) | ¿Qué queda tras reabrir en cada punto de una caída? |
@@ -756,8 +790,10 @@ Una línea por documento. Los que están en curso se marcan.
 | [Acta de la Etapa 9](etapa9-acta.md) | ¿Qué paquetes y decisiones tenía la última etapa, y qué exige 1.0 (D13)? |
 | [Revisión de K-E3-7](etapa9-k-e3-7.md) | ¿Qué lecturas comprueban menos que `verify_units`, y cuáles son K1 a K5? |
 | [Pendientes posteriores a la Etapa 9](post9-pendientes.md) | ¿Qué punto del cierre sigue abierto y cuál cambió? |
-| [Mutaciones posteriores](post9-mutaciones.md) | ¿Qué mutaciones de P1 se hicieron y cuáles detectaron? (**P1, en curso**) |
-| [Formato de unidades v4](../file-format/units-v4.md) | ¿Qué añade el formato v4 (conteos de adyacencia) y qué límites tiene? (**P1, en curso**) |
+| [Mutaciones posteriores](post9-mutaciones.md) | ¿Qué mutaciones hicieron P1 (M1 a M20), P2 (Q1 a Q16) y P3 (M1 a M17), y cuáles detectaron? |
+| [Requisitos de 1.0](requisitos-1.0.md) | ¿Qué requisitos de D13 cumple el repositorio, y con qué límites? (auditoría de P4) |
+| [Borrador del CLA](../legal/cla-propuesta.md) | ¿Qué contrato de contribución se propone? (borrador sin vigor, no aprobado) |
+| [Formato de unidades v4](../file-format/units-v4.md) | ¿Qué añade el formato v4 (conteos de adyacencia) y qué límites tiene? (P1) |
 | [Formato v1 del motor](../file-format/v1.md) | ¿Cómo se leen los bytes del motor? (congelado) |
 | [Formato de unidades v1](../file-format/units-v1.md) | ¿Cómo se codifican las unidades, revisiones y relaciones? |
 | [Formatos de unidades v2 y v3](../file-format/units-v2.md) | ¿Qué cambió en las versiones 2 y 3 de la capa? (v2: vectores persistidos; v3: identificadores públicos) |
@@ -779,32 +815,48 @@ Una línea por documento. Los que están en curso se marcan.
 
 ## Cómo se comprobó esta nota
 
-**Lo que se hizo.** Se leyeron los documentos del encargo. Las afirmaciones sobre el repositorio se comprobaron con búsquedas de texto, que se ejecutaron en esta tarea:
+**Lo que se hizo.** Se leyeron los documentos de P1 a P4 y los citados en la cabecera. Las afirmaciones sobre el código se comprobaron con búsquedas de texto, sin compilar, con los comandos siguientes. Las salidas son las de esta actualización:
 
 ```text
 $ git rev-parse --short HEAD
-86f8a50
+758b5d4
 
-$ grep -rn "pub fn engine" crates/kerno-units/src; echo "exit=$?"
-exit=1                                   (sin resultados: T-EN1 se cumple)
+$ git cat-file -t 0c2c3d5; git cat-file -t 2356ff3; git cat-file -t fc7e233; git cat-file -t f2aa157
+commit
+commit
+commit
+commit
 
-$ grep -rn 'std::fs' crates/kerno-storage/src; echo "grep exit=$?"
-grep exit=1                              (sin resultados: la guarda de acceso a archivos pasa)
+$ grep -n 'HistoryPolicy {' crates/kerno-units/src/types.rs
+144:    HistoryPolicy { None = 0, Audit = 1, Versioned = 2 }
 
-$ ls crates/kerno-storage/fuzz/fuzz_targets | wc -l
-15
+$ grep -rn 'KeepLast' crates/kerno-units/src/types.rs; echo "exit=$?"
+exit=1
 
-$ ls crates/kerno-storage/fuzz/corpus
-commit data_block filter_block footer frame header index_block manifest open props_block rangedel_block record sst varint wal
+$ grep -n 'adjust_count' crates/kerno-units/src/db.rs
+1486:        self.adjust_count(from, Direction::Out, relation_type, 1)?;
+1487:        self.adjust_count(to, Direction::In, relation_type, 1)?;
+1508:        self.adjust_count(r.from, Direction::Out, &r.relation_type, -1)?;
+1509:        self.adjust_count(r.to, Direction::In, &r.relation_type, -1)?;
 
-$ grep -rn "fn space_is_reclaimed_after_range_deletes" crates
-crates/kerno-testkit/src/harness/range.rs:557:pub fn space_is_reclaimed_after_range_deletes<E: RangeDeleteEngine>() {
-crates/kerno-testkit/src/harness/range.rs:664:            fn space_is_reclaimed_after_range_deletes() {
+$ grep -n 'create(true)' crates/kerno-core/src/vfs/std_fs.rs
+136:        let f = match fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path) {
 
-$ sed -n 165,190p crates/kerno-storage/src/sst.rs   (B1: el error de wait_writeback se propaga)
-  ... match self.file.wait_writeback(offset, len) { Ok(()) => {} ... }
+$ grep -rn 'no source of derived datum' crates/kerno-units/src
+crates/kerno-units/src/derived_stale.rs:124:                write!(f, "no source of derived datum {} is valid any more", IdHex(id))
+
+$ grep -n 'T5 |' docs/adr/0020-persistencia-de-vectores-como-derivados.md | cut -c1-120
+301:| T5 | **Una build sin la característica rechaza al abrir una base con derivados.** Un binario construido desde `d0
+
+$ for n in a_refused_create_leaves_no_count the_created_record_carries_the_evidence_and_the_measured_cost replacing_the_key_leaves_a_record_of_the_wipe space_is_reclaimed_after_range_deletes; do grep -rl "$n" crates examples; done
+crates/kerno-units/tests/rel_counts.rs
+crates/kerno-units/src/cache.rs
+crates/kerno-units/tests/cache_planner.rs
+crates/kerno-testkit/src/harness/range.rs
+crates/kerno-testkit/src/harness/mod.rs
+
 ```
 
-Los nombres de prueba citados en las secciones 3 a 5 se buscaron con `grep -rl` en `crates/` y `examples/`. Existen todos los que se buscaron, salvo `completeness_is_not_a_query_time_check`, que se renombró en P1 y se cita como antiguo. De las líneas de código citadas solo se comprobaron `sst.rs:182` y la ausencia de `pub fn engine`; las demás líneas se toman del documento de origen.
+Los nombres de prueba citados en esta actualización existen en el árbol (salida anterior y las demás comprobadas con el mismo método). Se buscaron en el informe nombres de modelos, de asistentes y de sus fabricantes, y no aparece ninguno. `completeness_is_not_a_query_time_check` ya no existe: se renombró en P1. Las líneas de código citadas en esta actualización se comprobaron con búsquedas de texto; las de las secciones 3 a 5 que no aparecen en el bloque se toman del documento de origen.
 
-**Lo que no se hizo.** No se compiló ni se ejecutó ninguna prueba, porque el encargo prohíbe compilar y el disco está casi lleno. Por eso los comandos de la sección 9 no se han ejecutado: están copiados de la CI y de los READMEs. Las cifras de las secciones 3 y 5 son las que dicen los documentos, con su fecha. No se han repetido. Los paquetes P1 a P4 se describen según la nota de encargo; el árbol solo confirma P1 en lo que dice `post9-pendientes.md`.
+**Lo que no se hizo.** No se compiló ni se ejecutó ninguna prueba: la tarea lo prohíbe, y el disco de la máquina de compilación estaba casi lleno y es compartido. Por eso los comandos de la sección 9 no se han ejecutado: están copiados de la CI, de los READMEs y de la salida cruda de E9-20. Las cifras de las secciones 3 y 5 son las que dicen los documentos, con su fecha, y no se han repetido. Los paquetes P1 a P4 se describen según sus documentos y según el código que citan. El único archivo modificado es este informe. `experiments/narrative-threads/.venv` ya estaba sin seguimiento y no se tocó.
