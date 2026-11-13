@@ -98,7 +98,7 @@ La promoción de I-29, I-42, I-43, I-44 e I-45 es una elección **por delegació
 
 ## 5. Límites conocidos y puntos abiertos
 
-Cada punto es un límite o un pendiente. Ninguno está cerrado.
+Cada punto es un límite o un pendiente. El punto 1 está resuelto; los demás siguen abiertos.
 
 1. **Roadmap, estado de la Fase 1. Resuelto el 2026-11-13** por delegación expresa del propietario: la tabla de fases y la tabla de tareas de SAD §20 de `docs/roadmap/README.md` dicen «Cerrada» para la Fase 1 con la fecha 2026-11-11, que es la que da el texto de la sección «Fase 1: plan de trabajo». El informe de la Fase 1 (`docs/testing/f1-report.md`) es de 2026-10-29 y describe el estado de entonces, anterior al cierre.
 2. **K-E3-7 (E9-16 y E9-22).** *K1*: corregido desde el extremo que conserva su entrada de adyacencia; **sigue abierto** desde el extremo que la perdió, donde `relations_of` y `query_relations` devuelven una respuesta corta sin `Fallback`; `verify_units` (UNIT-36) la reporta. *K2*: corregido para `IDX_PRIMARY` con el conteo intacto; abierto con el conteo rebajado y para `IDX_TYPE`. *K3*: no se reproduce. *K4* (`change_set_info` no cruza los miembros con su `REV_META`) y *K5* (`get_relation` no comprueba `created_seq` ni los extremos): **siguen abiertos, menores y sin cambio**. La revisión independiente de E9-16 figura como pendiente en su registro.

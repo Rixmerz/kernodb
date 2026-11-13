@@ -12,13 +12,13 @@ The example was rewritten with the API that packages E9-07 to E9-11 added, and
 each of the fifteen points got a disposition in section 2.4 of
 `docs/architecture/etapa9-acta.md`: **in scope** (a package resolved it and
 this example uses it), **declared limit** (documented, the API does not change
-in this stage) or **held** (waits for an owner decision).
+in this stage) or **held** (waits for an owner decision; none is held since 2026-11-13, see acta §8.1).
 
 | # | Disposition | What the example does now |
 |---|---|---|
 | 1 | In scope (E9-09) | `DerivedDb::query` lists the memories and `snapshot().history` reads the revisions (`AgentMemory::all`, `history`). The catalog no longer lists memories. |
 | 2 | In scope (E9-09) | `DerivedDb::derived_of(unit)` finds the vector of a memory. The catalog no longer stores derived ids. |
-| 3 | Partly (E9-10) | `DerivedChangeSet::replace_vector` replaces a stale vector in the same commit as anything else (`attach_vector`). `rebuild_vector` still returns a new id, but nothing records it. The id still changes with the source revision (held with D12). |
+| 3 | Partly (E9-10) | `DerivedChangeSet::replace_vector` replaces a stale vector in the same commit as anything else (`attach_vector`). `rebuild_vector` still returns a new id, but nothing records it. The id still changes with the source revision: that is a format change, which D12 does not decide, so it is not changed in this stage. |
 | 4 | In scope (E9-07) | `AgentMemory::reclaim` calls `DerivedDb::reclaim`. It compacts the live files; the removal stays logical and no physical erasure is promised (ADR-0009, option 3). Test: `reclaim_rewrites_the_live_files_and_leaves_the_logical_state`. |
 | 5 | Declared limit (D8) | Summaries are memory-only; their definitions stay in the catalog (`sum` lines). |
 | 6 | Pending E9-02 (D1 taken 2026-11-13, option 1 of ADR-0005; not merged) | The example keeps its own `UnitIdSource` for short numbers. |
