@@ -2,7 +2,7 @@
 
 > **BORRADOR, NO CONGELADO.** Este formato está versionado y sin congelar
 > (acta de la Etapa 9, D10 y R-E9-2). Ningún byte es una promesa: puede
-> cambiar sin migración hasta que el propietario decida congelarlo (D12). Una
+> cambiar sin migración hasta que se congele. D12 (tomada el 2026-11-13) deja la congelación para después de D13 y de un uso real fuera del equipo. Una
 > exportación v0 solo sirve para verificar I-30 (independencia del formato
 > físico y reimportación en un motor nuevo), no para conservar datos.
 
@@ -19,7 +19,7 @@ historial.
 
 - **Derivados** (vectores, resúmenes, descriptores, índices): se reconstruyen
   (ADR-0018).
-- **Tokens ni identificadores públicos**: esperan a la decisión D1 (ADR-0005).
+- **Tokens ni identificadores públicos**: esperan a E9-02 (liberado por D1 el 2026-11-13, opción 1 de ADR-0005; no fusionado).
   Los ids son los internos de 16 bytes.
 - **Conjuntos de cambios** (`CHANGESET`, `CS_MEMBER`): la exportación guarda,
   en cada revisión, su `commit_seq`, actor y fuente; no guarda la razón ni la
