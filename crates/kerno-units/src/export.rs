@@ -1,4 +1,4 @@
-//! Logical export of the layer, draft format v0 (E9-04, I-30, D10).
+//! Logical export of the layer, draft format (E9-04, I-30, D10).
 //!
 //! The format is specified in `docs/file-format/export-v0-borrador.md`. It is
 //! a **draft**: versioned and not frozen, so no byte of it is a promise
@@ -6,9 +6,11 @@
 //! own header and does not use `KRNO_EXP`, which stays reserved and unused.
 //!
 //! An export holds units, their retained revisions, relations and history
-//! policies, as the public reads of the layer answer them at one snapshot. It
-//! holds no derived data (ADR-0018: derived data is rebuilt) and no public
-//! identifier tokens (they wait for D1). It is a function of the logical
+//! policies, as the public reads of the layer answer them at one snapshot,
+//! and the public identifier token of each unit that has one (ADR-0005: the
+//! mapping is part of the logical export, so a token is stable across export
+//! and import). It holds no derived data (ADR-0018: derived data is
+//! rebuilt). It is a function of the logical
 //! state only: no sequence of the snapshot, no file, level, offset or
 //! compaction state, so the same state gives the same bytes (I-30).
 //!
@@ -26,8 +28,8 @@ use crate::types::{HistoryPolicy, RelationId, RelationProvenance, RevNo, UnitId}
 
 /// First bytes of an export: "Kerno UNIt EXport Draft". Not `KRNO_EXP`.
 pub const EXPORT_MAGIC: [u8; 8] = *b"KUNITEXD";
-/// The draft format version.
-pub const EXPORT_VERSION: u32 = 0;
+/// The draft format version. 1 added the token section.
+pub const EXPORT_VERSION: u32 = 1;
 /// Header flag: the format is not frozen (R-E9-2).
 pub const FLAG_DRAFT: u8 = 1;
 /// Length of the closing BLAKE3 digest.
@@ -57,7 +59,9 @@ pub fn export_snapshot<E: Engine>(snap: &UnitSnapshot<E>) -> Result<Vec<u8>, Uni
     w.0.extend_from_slice(&[0; 3]);
 
     policies(snap, &mut w)?;
-    units(snap, &mut w)?;
+    let ids = unit_ids(snap)?;
+    tokens(snap, &ids, &mut w)?;
+    units(snap, &ids, &mut w)?;
     relations(snap, &mut w)?;
 
     let digest = blake3::hash(&w.0);
@@ -93,7 +97,7 @@ fn policies<E: Engine>(snap: &UnitSnapshot<E>, w: &mut Out) -> Result<(), UnitEr
     Ok(())
 }
 
-fn units<E: Engine>(snap: &UnitSnapshot<E>, w: &mut Out) -> Result<(), UnitError> {
+fn unit_ids<E: Engine>(snap: &UnitSnapshot<E>) -> Result<Vec<UnitId>, UnitError> {
     let mut ids = Vec::new();
     let (start, end) = Key::tag_range(TAG_UNIT_HEAD);
     scan_all(&snap.snap, start, end, |k, _| {
@@ -103,9 +107,30 @@ fn units<E: Engine>(snap: &UnitSnapshot<E>, w: &mut Out) -> Result<(), UnitError
         ids.push(unit);
         Ok(())
     })?;
+    Ok(ids)
+}
+
+fn units<E: Engine>(snap: &UnitSnapshot<E>, ids: &[UnitId], w: &mut Out) -> Result<(), UnitError> {
     w.u32(ids.len() as u32);
     for id in ids {
-        unit(snap, id, w)?;
+        unit(snap, *id, w)?;
+    }
+    Ok(())
+}
+
+/// The public id of each unit that has one, in unit id order: `unit` and
+/// `token`, 16 bytes each. A pair that disagrees fails the export.
+fn tokens<E: Engine>(snap: &UnitSnapshot<E>, ids: &[UnitId], w: &mut Out) -> Result<(), UnitError> {
+    let mut found = Vec::new();
+    for id in ids {
+        if let Some(token) = snap.public_id(*id)? {
+            found.push((*id, token));
+        }
+    }
+    w.u32(found.len() as u32);
+    for (id, token) in found {
+        w.0.extend_from_slice(id.as_bytes());
+        w.0.extend_from_slice(&token.to_bytes());
     }
     Ok(())
 }
@@ -279,7 +304,8 @@ mod tests {
         assert_ne!(&empty[..8], b"KRNO_EXP");
         assert_eq!(u32::from_be_bytes(empty[8..12].try_into().unwrap()), EXPORT_VERSION);
         assert_eq!(empty[12], FLAG_DRAFT);
-        assert_eq!(empty.len(), 16 + 1 + 4 + 4 + 4 + DIGEST_LEN);
+        // header, default policy, then the counts of policies, units, relations and tokens.
+        assert_eq!(empty.len(), 16 + 1 + 4 + 4 + 4 + 4 + DIGEST_LEN);
         assert_eq!(empty[16], NO_DEFAULT_POLICY);
 
         populate(&db);
@@ -289,7 +315,7 @@ mod tests {
         // The closing digest covers everything before it.
         let (body, digest) = a.split_at(a.len() - DIGEST_LEN);
         assert_eq!(blake3::hash(body).as_bytes(), digest);
-        // The content is there; derived data and tokens are not part of it.
+        // The content is there; derived data is not part of it.
         let has = |needle: &[u8]| a.windows(needle.len()).any(|w| w == needle);
         assert!(has(b"doc-v1") && has(b"doc-v2") && has(b"new-note") && has(b"cites") && has(b"note") && has(b"ann"));
         // Audit keeps no content for the old revision of a `note`.

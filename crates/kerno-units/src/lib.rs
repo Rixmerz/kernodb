@@ -79,7 +79,7 @@ pub use history::{
     AsOf, ChangeSetInfo, ChangeSetMember, Comparison, HistoryPage, HistoryQuery, Order, Provenance, Revision,
     RevisionView, UnitAt, UnitStates,
 };
-pub use ids::{PUBLIC_ID_VERSION, PublicId, PublicIdError};
+pub use ids::{PUBLIC_ID_RECORD_VERSION, PUBLIC_ID_TEXT_VERSION, PublicId, PublicIdError};
 pub use index::{IndexPath, IndexState, IndexStatus, QueryOutcome, QuerySource, UnitFilter};
 pub use model::{ModelChange, ModelChangeSet, ModelError, ModelRevision, ModelUnitAt, UnitModel};
 pub use observation::{

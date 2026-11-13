@@ -49,8 +49,12 @@ pub const LAYER_VERSION: u32 = 1;
 /// (`DERIVED_VECTORS`, ADR-0020). It is written by the first change set that
 /// persists one, never before and never lowered.
 pub const LAYER_VERSION_DERIVED: u32 = 2;
+/// `layer_version` of a database that holds a public id record (`0x70` or
+/// `0x71`, ADR-0005). It is written by the transaction that writes the first
+/// one, never before and never lowered; it includes everything of version 2.
+pub const LAYER_VERSION_PUBLIC_IDS: u32 = 3;
 /// The newest `layer_version` this build reads and writes.
-pub const MAX_LAYER_VERSION: u32 = LAYER_VERSION_DERIVED;
+pub const MAX_LAYER_VERSION: u32 = LAYER_VERSION_PUBLIC_IDS;
 /// The `LAYER_META` name of the layer mark (design §2.6).
 pub const LAYER_MARK_NAME: &str = "layer";
 /// Length limits of §1.2.

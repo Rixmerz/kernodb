@@ -25,7 +25,8 @@ use kerno_testkit::emulated::Emulated;
 use kerno_testkit::reference::LogEngine;
 use kerno_testkit::vfs::{CrashKind, OpKind, SimVfs, assert_dir_unchanged};
 use kerno_units::codec::{
-    Key, LAYER_VERSION, LayerMeta, MAX_LAYER_VERSION, Record, TAG_DERIVED_DESC, TAG_DERIVED_SRC, TAG_DERIVED_VEC,
+    Key, LAYER_VERSION, LAYER_VERSION_DERIVED, LayerMeta, MAX_LAYER_VERSION, Record, TAG_DERIVED_DESC, TAG_DERIVED_SRC,
+    TAG_DERIVED_VEC,
 };
 use kerno_units::vector_store::{
     DerivedDecodeError, DerivedKey, DerivedRule, VectorDescriptor, VectorState, decode_src_entry, decode_vector,
@@ -235,7 +236,8 @@ fn decode_row(kind: &str, bytes: &[u8]) -> Result<(), DerivedRule> {
         "desc" => VectorDescriptor::decode(bytes).map(drop).map_err(rule),
         "vec" => decode_vector(bytes).map(drop).map_err(rule),
         "src" => decode_src_entry(bytes).map_err(rule),
-        "mark" => LayerMeta::decode_upto(bytes, MAX_LAYER_VERSION).map(drop).map_err(|e| DerivedRule::Unit(e.rule)),
+        // The layer-2 reader of units-v2.md; layer 3 (units-v3.md) raises the build's maximum.
+        "mark" => LayerMeta::decode_upto(bytes, LAYER_VERSION_DERIVED).map(drop).map_err(|e| DerivedRule::Unit(e.rule)),
         "mark1" => LayerMeta::decode(bytes).map(drop).map_err(|e| DerivedRule::Unit(e.rule)),
         "changeset" => {
             ChangeSetRecord::decode_upto(bytes, MAX_LAYER_VERSION).map(drop).map_err(|e| DerivedRule::Unit(e.rule))
@@ -393,7 +395,7 @@ fn rows() -> Vec<Row> {
     out.push(row("src_unit8_flags", "src", vec![1, 1]));
     out.push(row("src_unit9_empty", "src", Vec::new()));
 
-    out.push(row("mark_unit16_v3", "mark", vec![1, 0, 0, 0, 0, 3, 2]));
+    out.push(row("mark_unit16_v4", "mark", vec![1, 0, 0, 0, 0, 4, 2]));
     out.push(row("mark_v1_reader_unit16", "mark1", vec![1, 0, 0, 0, 0, 2, 2]));
     out.push(row("mark_unit15_v0", "mark", vec![1, 0, 0, 0, 0, 0, 2]));
     out.push(row("changeset_v1_reader_unit13", "changeset1", changeset_derived()));

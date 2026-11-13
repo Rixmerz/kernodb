@@ -3,7 +3,7 @@
 | Campo | Valor |
 |---|---|
 | Estado | Normativo desde E8-04. Copia las secciones A–D de [ADR-0020](../adr/0020-persistencia-de-vectores-como-derivados.md), que manda si hay una discrepancia |
-| Versión de la capa | `layer_version = 2` (característica `DERIVED_VECTORS`), `envelope_version = 1` |
+| Versión de la capa | `layer_version = 2` (característica `DERIVED_VECTORS`), `envelope_version = 1`. La [versión 3](units-v3.md) (identificadores públicos) la incluye y eleva el máximo conocido |
 | Relacionado con | [capa de unidades v1](units-v1.md) (no se edita; este documento solo añade), [ADR-0020](../adr/0020-persistencia-de-vectores-como-derivados.md), [ADR-0018](../adr/0018-versionado-y-reconstruccion-de-derivados.md), [ADR-0008](../adr/0008-serializacion-documental-y-hashes.md) (BLAKE3-256), [ADR-0013](../adr/0013-formato-v1-y-protocolo-del-motor.md) (formato v1 del motor, congelado), [formato v1 del motor](v1.md) |
 
 Este documento especifica, byte a byte, lo que la capa de unidades añade en la versión 2: los derivados persistidos (hoy, vectores). Como en la versión 1, son **claves y valores ordinarios** del motor: no cambia ningún byte del formato v1 del motor ([v1.md](v1.md)), ni su lista de bits de característica (`KNOWN_INCOMPAT` no cambia). La frontera de compatibilidad es la marca de la capa, no el motor. Una implementación y el decodificador independiente `spec_decoder_agrees_derived_v2` (`crates/kerno-units/tests/derived_vectors.rs`) se escriben **solo** desde este texto y el de la versión 1. Las palabras «debe» y «no debe» son normativas.
@@ -16,7 +16,7 @@ Las de [units-v1.md](units-v1.md) §1, sin cambios: enteros **big-endian**, `str
 
 - La marca `LAYER_META "layer"` (units-v1 §3.1) lleva `layer_version = 2` **si y solo si** la base tiene o tuvo un derivado persistido. Una base sin ninguno sigue en `layer_version = 1` y la abre cualquier build de capa 1 o 2.
 - La versión 2 se escribe **en la misma transacción** que la primera clave `0x60`–`0x62`. **Nunca se baja**: ni `set_policy`, ni ningún `ChangeSet` posterior, ni el borrado de todos los derivados. Quien reescribe la marca conserva su `history_policy`.
-- Un lector de capa 1 lee la marca antes que ninguna otra clave y la rechaza: `IncompatibleLayer` con la regla UNIT-16 y `found_layer_version = 2`. No escribe nada. Un lector de esta versión rechaza `layer_version > 2` con la misma regla.
+- Un lector de capa 1 lee la marca antes que ninguna otra clave y la rechaza: `IncompatibleLayer` con la regla UNIT-16 y `found_layer_version = 2`. No escribe nada. Un lector de esta versión rechaza `layer_version > 2` con la misma regla. (Desde E9-02, la [versión 3](units-v3.md) eleva el máximo a 3: la fila `mark_unit16_v3` de §8 pasó a `mark_unit16_v4`, y los lectores de capa 2 rechazan una marca 3.)
 - Una marca con `layer_version = 1` y claves `0x60`–`0x62` es corrupción (DV-11).
 
 ## 3. Claves
@@ -213,7 +213,7 @@ Se listan como `` `derived_id` ``, `` `input_hash` ``, `` `output_hash` `` y `` 
 | `src_unit10_trailing` | src | `010000` | UNIT-10 |
 | `src_unit8_flags` | src | `0101` | UNIT-8 |
 | `src_unit9_empty` | src | `` | UNIT-9 |
-| `mark_unit16_v3` | mark | `01000000000302` | UNIT-16 |
+| `mark_unit16_v4` | mark | `01000000000402` | UNIT-16 |
 | `mark_v1_reader_unit16` | mark1 | `01000000000202` | UNIT-16 |
 | `mark_unit15_v0` | mark | `01000000000002` | UNIT-15 |
 | `changeset_v1_reader_unit13` | changeset1 | `010000060a24181e4000000000000500000000000000000000000000000000` | UNIT-13 |
