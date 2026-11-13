@@ -129,9 +129,9 @@ Sections A and B are the first version's text, as found.
    catalog (line 244). The default `UuidV7Source` would avoid it, at the cost
    of ids no one can type.
 
-   *Now available (E9-02, in the tree, not merged):* `create_public`,
-   `public_id` and `resolve_public_id` on `ChangeSet`, `UnitDb` and `DerivedDb`
-   give each unit an opaque public token (`k1_` plus 26 characters) that is
+   *Now available (E9-02, in the tree, not merged):* `create_public`
+   on `ChangeSet` and `DerivedChangeSet`, and `public_id` and
+   `resolve_public_id` on `UnitDb` and `DerivedDb`, give each unit an opaque public token (`k1_` plus 26 characters) that is
    stable across reopen, export and import and is removed when the unit is
    deleted. It is a name for the outside world, not a short handle: the
    catalog counter this point describes is unchanged, and the example was not

@@ -43,8 +43,8 @@ sigue sin escritor).
 | Campo | Tipo | Valor |
 |---|---|---|
 | `magic` | 8 bytes | `KUNITEXD` |
-| `format_version` | u32 | `0` |
-| `flags` | u8 | bit 0 = borrador (siempre `1` en v0) |
+| `format_version` | u32 | `1` (la `0` no llevaba tokens y se rechaza) |
+| `flags` | u8 | bit 0 = borrador (siempre `1` mientras sea borrador) |
 | `reserved` | 3 bytes | ceros |
 
 ## 3. Codificación

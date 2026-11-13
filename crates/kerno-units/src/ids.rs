@@ -392,6 +392,11 @@ impl<E: Engine> UnitSnapshot<E> {
         Ok(Some(UnitId(decode_value(&raw).map_err(|e| crate::db::context(e, &format!("PUBLIC_ID {token}")))?)))
     }
 
+    /// Whether `unit` exists and is not deleted.
+    fn is_live(&self, unit: UnitId) -> Result<bool, UnitError> {
+        Ok(self.get_unit(unit)?.is_some_and(|u| u.lifecycle != crate::types::Lifecycle::Deleted))
+    }
+
     /// The public id issued for `unit`, or `None` for a unit without one. The
     /// token is returned only if its own record names `unit`: a reverse record
     /// without its pair is `Corruption`, as in
@@ -400,6 +405,9 @@ impl<E: Engine> UnitSnapshot<E> {
         let Some(token) = self.token_of(unit)? else {
             return Ok(None);
         };
+        if !self.is_live(unit)? {
+            return Ok(None);
+        }
         if self.unit_of(&token)? != Some(unit) {
             return Err(corruption("a unit's public id record is not matched by the token's own record".into()));
         }
@@ -414,6 +422,11 @@ impl<E: Engine> UnitSnapshot<E> {
         let Some(unit) = self.unit_of(token)? else {
             return Ok(None);
         };
+        // A pair left on a deleted unit (damage, or an older writer) answers
+        // as a token that was never issued; `verify_units` reports it.
+        if !self.is_live(unit)? {
+            return Ok(None);
+        }
         // The two records are written together; one without the other is damage.
         if self.token_of(unit)? != Some(*token) {
             return Err(corruption("a public id record names a unit whose own record disagrees".into()));

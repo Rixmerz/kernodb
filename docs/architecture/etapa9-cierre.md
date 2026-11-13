@@ -16,7 +16,7 @@ Se comprobó con `git log` y con los ficheros. Todos los paquetes están fusiona
 |---|---|---|
 | E9-00 Puerta de entrada | Fusionado | ADR-0012 y ADR-0014 alineados; decisiones en el roadmap |
 | E9-01 Fixtures | Fusionado | [etapa9-fixtures.md](etapa9-fixtures.md); `crates/kerno-units/tests/layer_fixtures.rs`; `tests/vectors/derived-v2/` |
-| **E9-02 Identificadores públicos** | **Hecho en el árbol el 2026-11-13 (D1), sin fusionar** | `crates/kerno-units/src/ids.rs` y `crates/kerno-units/tests/public_ids.rs` existen (28 pruebas en los dos motores y 2 internas). Falta la revisión independiente y la fusión; I-27 queda **verificada en el árbol** |
+| **E9-02 Identificadores públicos** | **Hecho en el árbol el 2026-11-13 (D1), sin fusionar** | `crates/kerno-units/src/ids.rs` y `crates/kerno-units/tests/public_ids.rs` existen (49 pruebas listadas sin `test-support` y 77 con ella, en los dos motores; fixture `tests/vectors/public-ids-v3/`; [mutaciones](etapa9-mutaciones-e9-02.md)). Falta la revisión independiente y la fusión; I-27 queda **verificada en el árbol** |
 | E9-03 Auditoría minimizada | Fusionado | [etapa9-auditoria.md](etapa9-auditoria.md); `tests/redaction_units.rs` |
 | E9-04 a E9-06 Exportación | Fusionados | `src/export.rs`, `src/import.rs`, `tests/export_import.rs`, `tests/export_physical.rs`; [borrador](../file-format/export-v0-borrador.md) |
 | E9-07 Reclamación pública | Fusionado | trait `Reclaim` en `kerno-core/src/contract.rs`; `src/reclaim.rs`; `tests/reclaim.rs` |
