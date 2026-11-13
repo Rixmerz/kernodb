@@ -1788,6 +1788,38 @@ mod accessor_tests {
         db.close().unwrap();
     }
 
+    /// `compact` covers exactly `[TAG_REV_META, TAG_REV_PAYLOAD + 1)`: the
+    /// tombstones under those two tags are dropped, those under the tag just
+    /// below or just above are not. Each neighbour is tried alone, in a table
+    /// of its own that stays below the L0 trigger, so that only the call
+    /// under test compacts.
+    #[test]
+    fn compact_covers_exactly_the_revision_tags_kerno_db() {
+        use crate::codec::{TAG_REV_META, TAG_REV_PAYLOAD};
+        let keys = |tag: u8| (0..4u8).map(move |j| vec![tag, 0xee, j]);
+        // (the tags that get tombstones, the tombstones compact must drop)
+        let cases: [(&[u8], u64); 4] =
+            [(&[TAG_REV_META], 4), (&[TAG_REV_PAYLOAD], 4), (&[TAG_REV_META - 1], 0), (&[TAG_REV_PAYLOAD + 1], 0)];
+        for (tags, want) in cases {
+            let disk = SimVfs::new(0);
+            let db = open::<kerno_storage::KernoDb>(&disk);
+            let puts: Vec<_> = tags.iter().flat_map(|t| keys(*t)).map(|k| (k, Some(vec![7u8; 64]))).collect();
+            db.raw_commit(puts).unwrap();
+            // Push the values to the last level so that tombstones can be dropped.
+            db.hook_compact_range(Bound::Unbounded, Bound::Unbounded).unwrap();
+            db.hook_wait_idle().unwrap();
+            db.raw_commit(tags.iter().flat_map(|t| keys(*t)).map(|k| (k, None)).collect()).unwrap();
+            db.hook_flush().unwrap();
+            db.hook_wait_idle().unwrap();
+            let dropped = stat(&db, "tombstones_dropped");
+            db.compact().unwrap();
+            db.hook_wait_idle().unwrap();
+            let got = stat(&db, "tombstones_dropped") - dropped;
+            assert_eq!(got, want, "tombstones dropped by compact under tags {tags:x?}");
+            db.close().unwrap();
+        }
+    }
+
     /// Each hook leaves an effect on the engine's counters that only the
     /// real call produces; a hook that answered `Ok(())` fails here.
     #[test]

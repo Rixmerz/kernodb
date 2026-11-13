@@ -22,7 +22,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use harness::units::{Dump, Target, dump, open_units};
-use kerno_core::contract::{Engine, Options, Reclaim, Snapshot, TxnEngine};
+use kerno_core::WriteBatch;
+use kerno_core::contract::{Engine, Options, Reclaim, Snapshot, Txn, TxnEngine};
 use kerno_core::vfs::Vfs;
 use kerno_storage::KernoDb;
 use kerno_testkit::emulated::Emulated;
@@ -329,4 +330,126 @@ fn the_default_compact_range_is_unsupported() {
     impl Reclaim for Bare {}
     let err = Bare.compact_range(Bound::Unbounded, Bound::Unbounded).unwrap_err();
     assert!(matches!(&err, kerno_core::Error::InvalidArgument(m) if m == "unsupported"), "{err:?}");
+}
+
+// ---------------------------------------------------------------- compact
+
+/// An engine whose transactions report a read sequence one too high, so the
+/// layer's prediction misses the engine's real commit sequence and the first
+/// change set poisons the handle. Everything else, `Reclaim` included, is the
+/// wrapped engine's.
+struct Skew<B>(B);
+struct SkewTxn<T>(T);
+
+impl<B: TxnEngine> Engine for Skew<B> {
+    type Snapshot = B::Snapshot;
+
+    fn name() -> &'static str {
+        "skew"
+    }
+
+    fn open(vfs: Arc<dyn Vfs>, dir: &Path, opts: &Options) -> kerno_core::Result<Self> {
+        Ok(Skew(B::open(vfs, dir, opts)?))
+    }
+
+    fn commit(&self, batch: &WriteBatch) -> kerno_core::Result<u64> {
+        self.0.commit(batch)
+    }
+
+    fn snapshot(&self) -> kerno_core::Result<Self::Snapshot> {
+        self.0.snapshot()
+    }
+
+    fn close(self) -> kerno_core::Result<()> {
+        self.0.close()
+    }
+
+    fn stats(&self) -> Vec<(String, u64)> {
+        self.0.stats()
+    }
+}
+
+impl<B: TxnEngine> TxnEngine for Skew<B> {
+    type Txn<'a>
+        = SkewTxn<B::Txn<'a>>
+    where
+        Self: 'a;
+
+    fn begin_write(&self) -> kerno_core::Result<Self::Txn<'_>> {
+        Ok(SkewTxn(self.0.begin_write()?))
+    }
+}
+
+impl<B: Reclaim> Reclaim for Skew<B> {
+    fn compact_range(&self, start: Bound<&[u8]>, end: Bound<&[u8]>) -> kerno_core::Result<()> {
+        self.0.compact_range(start, end)
+    }
+}
+
+impl<B: Target> Target for Skew<B> {
+    const NAME: &'static str = "skew";
+    fn open_engine(vfs: Arc<dyn Vfs>, opts: &Options) -> kerno_core::Result<Self> {
+        Ok(Skew(B::open_engine(vfs, opts)?))
+    }
+}
+
+impl<T: Txn> Txn for SkewTxn<T> {
+    fn read_seq(&self) -> u64 {
+        self.0.read_seq() + 1
+    }
+    fn get(&self, key: &[u8]) -> kerno_core::Result<Option<Vec<u8>>> {
+        self.0.get(key)
+    }
+    fn scan(&self, s: Bound<&[u8]>, e: Bound<&[u8]>, limit: usize) -> kerno_core::Result<Dump> {
+        self.0.scan(s, e, limit)
+    }
+    fn put(&mut self, key: &[u8], value: &[u8]) -> kerno_core::Result<()> {
+        self.0.put(key, value)
+    }
+    fn delete(&mut self, key: &[u8]) -> kerno_core::Result<()> {
+        self.0.delete(key)
+    }
+    fn delete_range(&mut self, s: &[u8], e: &[u8]) -> kerno_core::Result<()> {
+        self.0.delete_range(s, e)
+    }
+    fn commit(self) -> kerno_core::Result<u64> {
+        self.0.commit()
+    }
+}
+
+/// `compact` asks the engine for the revision ranges only: from `REV_META`
+/// (included) to just past `REV_PAYLOAD` (excluded), design §5.1.
+#[test]
+fn compact_asks_for_the_revision_ranges() {
+    let disk = SimVfs::new(97);
+    let db = open_db::<Probe>(&disk);
+    db.compact().unwrap();
+    assert_eq!(CALLS.take(), vec![(Bound::Included(vec![0x20]), Bound::Excluded(vec![0x22]))]);
+    db.close().unwrap();
+}
+
+/// A poisoned handle refuses `compact` before the engine is asked for
+/// anything, on both engines.
+fn compact_refuses_a_poisoned_handle<E: Target + Reclaim>() {
+    let disk = SimVfs::new(98);
+    let db = open_db::<Skew<E>>(&disk);
+    let first = db.create_unit(
+        NewUnit { unit_type: "doc".into(), schema_version: 1, metadata: vec![], payload: b"x".to_vec() },
+        ChangeMeta::default(),
+    );
+    assert!(matches!(first, Err(UnitError::Storage(kerno_core::Error::Poisoned(_)))), "setup: {first:?}");
+    CALLS.take();
+    let r = db.compact();
+    assert!(matches!(r, Err(UnitError::Storage(kerno_core::Error::Poisoned(_)))), "got {r:?}");
+    assert!(CALLS.take().is_empty(), "a refused compact reached the engine");
+}
+
+#[test]
+fn compact_refuses_a_poisoned_handle_emulated_log() {
+    compact_refuses_a_poisoned_handle::<Probe>();
+}
+
+#[test]
+fn compact_refuses_a_poisoned_handle_kerno_db() {
+    compact_refuses_a_poisoned_handle::<KernoDb>();
 }

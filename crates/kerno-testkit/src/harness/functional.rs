@@ -11,6 +11,7 @@ use kerno_core::{Durability, Error, MAX_KEY_LEN, MAX_VALUE_LEN, WriteBatch};
 
 use super::{
     Model, SuiteConfig, Workload, apply, assert_snapshot_matches, db_dir, for_each_seed, open, read_all, seeds,
+    settled_size,
 };
 use crate::rng::Rng;
 use crate::vfs::{SimVfs, Vfs, dir_size};
@@ -378,10 +379,13 @@ pub fn space_is_reclaimed<E: Engine>() {
             }
             db.commit(&b).unwrap();
         }
-        let size = dir_size(&*vfs, &dir).unwrap();
+        // The first fill sets the bound and is sampled once; every later
+        // refill may wait for the engine's background work (see
+        // `settled_size`).
         if cycle == 0 {
-            peak_first = size;
+            peak_first = dir_size(&*vfs, &dir).unwrap();
         } else {
+            let size = settled_size(&db, &*vfs, &dir, 4 * peak_first + (1 << 20));
             assert!(
                 size <= 4 * peak_first + (1 << 20),
                 "cycle {cycle}: {size} bytes on disk after refill, first fill used {peak_first}"

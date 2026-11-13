@@ -51,6 +51,40 @@ pub fn open<E: Engine>(vfs: &Arc<dyn Vfs>, opts: &Options) -> Result<E> {
     E::open(vfs.clone(), Path::new(DB_DIR), opts)
 }
 
+/// Longest [`settled_size`] waits for the engine's background work.
+const RECLAIM_SETTLE: std::time::Duration = std::time::Duration::from_secs(30);
+/// Pause between two samples of [`settled_size`]: it leaves the CPU to the
+/// background threads it is waiting for.
+const RECLAIM_POLL: std::time::Duration = std::time::Duration::from_millis(5);
+
+/// The size of `dir` after a refill of the space checks
+/// (`functional::space_is_reclaimed`, `range::space_is_reclaimed_after_range_deletes`),
+/// sampled again while it is above `bound`, for at most [`RECLAIM_SETTLE`].
+///
+/// An engine with background flushes and compactions reclaims after the
+/// commit has returned: on a loaded machine those threads can lag a whole
+/// cycle behind the writer, and a single sample then sees garbage that is
+/// already queued to go (`docs/architecture/post9-pendientes.md`, point 11).
+/// An engine that never reclaims stays above `bound` for the whole wait and
+/// fails with the size it still has. An engine that reports no statistics
+/// (the reference engine, and the leaky engines of the harness's own tests)
+/// does no background work to wait for, so it is sampled once, as before.
+pub(crate) fn settled_size<E: Engine>(db: &E, vfs: &dyn Vfs, dir: &Path, bound: u64) -> u64 {
+    let size = crate::vfs::dir_size(vfs, dir).unwrap();
+    if size <= bound || db.stats().is_empty() {
+        return size;
+    }
+    let deadline = std::time::Instant::now() + RECLAIM_SETTLE;
+    loop {
+        // Polling a condition: the contract has no wait for reclamation.
+        std::thread::sleep(RECLAIM_POLL);
+        let size = crate::vfs::dir_size(vfs, dir).unwrap();
+        if size <= bound || std::time::Instant::now() >= deadline {
+            return size;
+        }
+    }
+}
+
 /// Applies `batch` to `model` operation by operation (the contract's
 /// semantics: later operations win, a range deletion removes `[start, end)`
 /// as it stands at that point of the batch).

@@ -603,7 +603,7 @@ fn every_error_says_what_it_is_without_naming_content() {
             DerivedStaleError::MissingSource(UnitId([1; 16])),
             "source unit 01010101010101010101010101010101 does not exist or is deleted".into(),
         ),
-        (DerivedStaleError::NoValidSources(id), "no source of the derived datum is valid any more".into()),
+        (DerivedStaleError::NoValidSources(id), format!("no source of derived datum {hex} is valid any more")),
         (DerivedStaleError::ComputeFailed(id), format!("the value of derived datum {hex} could not be computed")),
         (DerivedStaleError::Persisted(id), format!("derived datum {hex} is persisted; use the vector methods")),
     ];

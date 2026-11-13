@@ -27,7 +27,7 @@ use kerno_core::{Durability, Error, MAX_KEY_LEN, WriteBatch};
 use super::functional::randomized_model_check_with_config;
 use super::{
     Model, SuiteConfig, Workload, WorkloadCfg, apply, assert_snapshot_matches, db_dir, diff, for_each_seed, open,
-    read_all, seeds, show,
+    read_all, seeds, settled_size, show,
 };
 use crate::rng::Rng;
 use crate::vfs::{CrashKind, SimVfs, Vfs, dir_size};
@@ -580,7 +580,10 @@ pub fn space_is_reclaimed_after_range_deletes<E: RangeDeleteEngine>() {
             }
             db.commit(&b).unwrap();
         }
-        let size = dir_size(&*vfs, &dir).unwrap();
+        // The first fill sets the bound and is sampled once; every later
+        // refill may wait for the engine's background work (see
+        // `settled_size`).
+        let size = if cycle == 0 { dir_size(&*vfs, &dir).unwrap() } else { settled_size(&db, &*vfs, &dir, bound) };
         if cycle == 0 {
             peak_first = size;
             bound = 4 * peak_first + (1 << 20);
