@@ -54,3 +54,4 @@ El núcleo se distribuye bajo «MIT OR Apache-2.0», tal como declaran `Cargo.to
 - **Texto del CLA:** no está escrito. Es un seguimiento de este ADR. Debe decidir si el contribuidor cede sus derechos o concede una licencia amplia, y debe existir antes de aceptar la primera contribución externa.
 - **README y `CONTRIBUTING.md`:** cuando exista el CLA, la sección «Licencia» del README y `CONTRIBUTING.md` deben remitir a él. Esos archivos están fuera de `docs/` y no se modifican en esta tarea.
 - **Cobro:** reabrir este ADR cuando se cumplan las condiciones de un 1.0 con formato estable, migraciones y usuarios reales en producción.
+- **Borrador (2026-11-13):** existe la propuesta [cla-propuesta.md](../legal/cla-propuesta.md), en borrador y sin vigor. Espera la revisión de un abogado y la aprobación del propietario. El punto «Texto del CLA» de arriba sigue valiendo: el texto no está aprobado.

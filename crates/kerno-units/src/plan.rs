@@ -14,6 +14,12 @@
 //! | [`QueryKind::Relations`] | [`PlanPath::RelationsReference`], [`PlanPath::Adjacency`] |
 //! | [`QueryKind::Associative`] | [`PlanPath::AssocReference`], [`PlanPath::AssocAdjacency`] |
 //!
+//! A plan also says what the result cache does for the query ([`CacheView`]):
+//! whether it was consulted, whether learned state answers, and for an entry
+//! that answers, the evidence it was created on and the cost it replaces. The
+//! cache is not a candidate (it is chosen by an exact match of dependencies,
+//! not by cost), so it is reported next to the candidates, not among them.
+//!
 //! A plan holds the query's [`Fingerprint`], never the query: it carries no
 //! literal and no shape text, so it can leave the process wherever a
 //! fingerprint can. Filling candidates and costs is the planner's job
@@ -42,8 +48,10 @@
 //!   on a tie, and the reason is derived from it, not given: `Fallback` when
 //!   the index was not `Ready`, `LowestCost` otherwise.
 
+use crate::cache::{Dependency, Evidence, MissCause};
 use crate::fingerprint::{Fingerprint, QueryKind};
 use crate::index::{IndexState, IndexStatus};
+use crate::planner::Violation;
 
 /// A path a query can be answered through.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -68,7 +76,8 @@ pub enum PlanPath {
     /// the first thing `query` considers, before the candidates above, and it
     /// is chosen by an exact match of every dependency, not by cost, so it is
     /// not in [`candidates_of`](PlanPath::candidates_of) and a [`Plan`] never
-    /// lists it: the answer's `path` is what says it was used (G7).
+    /// lists it among its candidates: [`Plan::cache`] says whether it was
+    /// consulted and used, and the answer's `path` and `source` say it was (G7).
     ResultCache,
 }
 
@@ -230,11 +239,69 @@ impl Decision {
     }
 }
 
+/// What the result cache did, or would do, for a query: whether it was
+/// consulted and whether learned state answers (G7). It is read without
+/// changing the cache, so it is what the cache holds **now**: running the
+/// query on the same snapshot afterwards gives the `path` and `source` that
+/// [`answering_path`](Plan::answering_path) and
+/// [`learned_state_used`](CacheView::learned_state_used) announce. It holds
+/// counters and versions only, never a literal or a row (ADR-0015).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CacheView {
+    /// This kind of query never consults the cache (associative queries), or
+    /// the plan was built by [`Plan::new`], which knows nothing of a cache.
+    NotApplicable,
+    /// The cache is off, globally or for this query: it is not consulted.
+    Off,
+    /// Consulted; no entry answers, for this cause.
+    Miss(MissCause),
+    /// Consulted; a dependency of the entry changed, so it would be dropped
+    /// and the planned path would answer.
+    Invalidated(Dependency),
+    /// Consulted; the entry's rows fail the checks of the planned path, so
+    /// the entry would be dropped and the reference path would answer.
+    Discrepancy(Violation),
+    /// Consulted; an active entry whose dependencies all match answers. It
+    /// was created on this `evidence` and replaces an execution that cost
+    /// `cost_ns` nanoseconds.
+    Hit { evidence: Evidence, cost_ns: u64 },
+}
+
+impl CacheView {
+    /// Whether the cache was looked at.
+    pub fn consulted(&self) -> bool {
+        !matches!(self, CacheView::NotApplicable | CacheView::Off)
+    }
+
+    /// Whether learned state (a cached result) answers the query.
+    pub fn learned_state_used(&self) -> bool {
+        matches!(self, CacheView::Hit { .. })
+    }
+
+    /// The measured cost of the execution the answering entry replaces;
+    /// `Some` only when the entry answers.
+    pub fn cost_ns(&self) -> Option<u64> {
+        match self {
+            CacheView::Hit { cost_ns, .. } => Some(*cost_ns),
+            _ => None,
+        }
+    }
+
+    /// The evidence the answering entry was created on; `Some` only when it answers.
+    pub fn evidence(&self) -> Option<Evidence> {
+        match self {
+            CacheView::Hit { evidence, .. } => Some(*evidence),
+            _ => None,
+        }
+    }
+}
+
 /// How a query will be answered and why; see the [module documentation](self).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Plan {
     fingerprint: Fingerprint,
     decision: Decision,
+    cache: CacheView,
 }
 
 impl Plan {
@@ -246,11 +313,27 @@ impl Plan {
         index: Option<IndexStatus>,
         candidates: Vec<Candidate>,
     ) -> Result<Self, PlanError> {
-        Ok(Plan { fingerprint, decision: Decision::new(fingerprint.kind(), index, candidates)? })
+        Ok(Plan {
+            fingerprint,
+            decision: Decision::new(fingerprint.kind(), index, candidates)?,
+            cache: CacheView::NotApplicable,
+        })
     }
 
-    pub(crate) fn of(fingerprint: Fingerprint, decision: Decision) -> Self {
-        Plan { fingerprint, decision }
+    pub(crate) fn of(fingerprint: Fingerprint, decision: Decision, cache: CacheView) -> Self {
+        Plan { fingerprint, decision, cache }
+    }
+
+    /// Whether the result cache was consulted and whether learned state answers.
+    pub fn cache(&self) -> &CacheView {
+        &self.cache
+    }
+
+    /// The path that answers: [`PlanPath::ResultCache`] when the cache does,
+    /// else the [chosen](Plan::chosen) candidate (the reference path answers
+    /// instead if the chosen one fails its check, which only running shows).
+    pub fn answering_path(&self) -> PlanPath {
+        if self.cache.learned_state_used() { PlanPath::ResultCache } else { self.decision.chosen().path }
     }
 
     pub fn fingerprint(&self) -> &Fingerprint {

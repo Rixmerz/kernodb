@@ -92,6 +92,7 @@ fn read_twice<E: Target>(db: &UnitDb<E>, ids: &[UnitId]) {
 }
 
 fn warm<E: Target>(db: &UnitDb<E>, ids: &[UnitId]) {
+    db.observer().set_level(ObservationLevel::Fingerprint).unwrap(); // evidence for an entry
     db.result_cache().set_enabled(true);
     read_twice(db, ids);
     let stats = db.result_cache().stats();
@@ -200,7 +201,9 @@ fn invalidating_by_each_dependency_leaves_the_data_as_it_was<E: Target>() {
         let deps = Dependencies::current(snap.seq(), Some(status));
         let rows = snap.query(&queries()[1]).unwrap().units;
         let evidence = Evidence { observations: 1, window: Duration::ZERO };
-        cache.create(CacheEntry::new(fp, query.clone(), deps, CachedResult::Units(rows), evidence).unwrap()).unwrap();
+        cache
+            .create(CacheEntry::new(fp, query.clone(), deps, CachedResult::Units(rows), evidence, 1_000).unwrap())
+            .unwrap();
         cache.activate(&fp).unwrap();
 
         // The versions in force now differ from the entry's in this one.
@@ -230,6 +233,7 @@ fn a_cache_in_use_never_changes_what_a_commit_writes<E: Target>() {
     let (plain, with_cache) = (open::<E>(), open::<E>());
     let ids = seed(&plain);
     assert_eq!(seed(&with_cache), ids, "identical databases");
+    with_cache.observer().set_level(ObservationLevel::Fingerprint).unwrap(); // evidence for an entry
     with_cache.result_cache().set_enabled(true);
 
     let mut invalidated = false;

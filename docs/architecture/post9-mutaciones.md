@@ -818,3 +818,308 @@ thread 'harness::range::tests::space_check_fails_for_an_engine_that_reclaims_not
 thread 'harness::range::tests::space_check_fails_for_an_engine_that_keeps_range_deleted_points' (12218) panicked at crates/kerno-testkit/src/harness/range.rs:906:14:
 test result: FAILED. 2 passed; 2 failed; 0 ignored; 0 measured; 86 filtered out; finished in 0.16s
 ```
+
+## P3: explicación del plan, evidencia, coste y registro de `set_key`
+
+**Método.** Cada mutación se aplicó a una copia del árbol (sin `target`, `.git` ni `experiments`) con su propio directorio de compilación (`CARGO_TARGET_DIR` dentro de la copia), solo en modo release, una cada vez; el fichero se restauraba al terminar cada una. Orden: cambiar el fichero, ejecutar `cargo test --release -p kerno-units --all-features --no-fail-fast --lib --test cache --test cache_planner --test cache_admission --test cache_forget --test cache_reversibility --test cache_sentinels --test observation --test plan`, anotar las líneas `test … FAILED` tal como se imprimieron. La copia y su directorio de compilación se borraron al terminar. Las líneas son las del árbol (la copia era idéntica en `src/`). Las 17 mutaciones salieron en rojo (`exit=101`); ninguna sobrevivió. M9 se repitió después de endurecer `the_plan_says_…`: la primera vez solo la ponía en rojo una prueba de `cache.rs`, porque la prueba del plan miraba otra consulta que la dueña de la entrada; el registro es el de la repetición.
+
+**Conteo de pruebas de `kerno-units`** (`cargo test -p kerno-units --all-features --release -- --list`, líneas `: test`): **859 antes** (árbol base, medido al empezar) y **870 después**: +3 de `cache.rs` (`the_created_record_carries_the_evidence_and_the_measured_cost`, `peek_says_what_lookup_would_and_changes_nothing`, `set_key_leaves_one_record_of_the_wipe_in_the_new_log`) y +8 de `cache_planner.rs` (cuatro pruebas por motor: `relation_evidence_comes_from_the_observer`, `the_plan_says_whether_the_cache_was_consulted_and_whether_learned_state_answers`, `the_plan_does_not_announce_an_entry_that_fails_its_check`, `replacing_the_key_leaves_a_record_of_the_wipe`). Cambian sin cambiar de número: `observations_never_act_as_authority`, `an_entry_exists_only_with_its_dependencies` y las que ahora suben el observador antes de encender la caché (`cache_admission`, `cache_forget`, `cache_reversibility`, `cache_sentinels`).
+
+**Qué prueba cubre cada mutación.**
+
+| Prueba (dos motores si toca base de datos) | Mutaciones |
+|---|---|
+| `the_plan_says_whether_the_cache_was_consulted_and_whether_learned_state_answers` | M9, M14, M15, M16 |
+| `the_plan_does_not_announce_an_entry_that_fails_its_check` | M13 |
+| `observations_never_act_as_authority` (cambiada) | M1, M2, M3, M4, M6, M8, M17 |
+| `relation_evidence_comes_from_the_observer` | M1, M2, M5, M8, M17 |
+| `replacing_the_key_leaves_a_record_of_the_wipe` | M11, M12 |
+| `an_entry_exists_only_with_its_dependencies` (cambiada, `cache.rs`) | M7 |
+| `the_created_record_carries_the_evidence_and_the_measured_cost` | M8 |
+| `peek_says_what_lookup_would_and_changes_nothing` | M9, M10 |
+| `set_key_leaves_one_record_of_the_wipe_in_the_new_log` | M11, M12 |
+| `no_literal_in_anything_the_cache_path_reports` (cambiada, `cache_sentinels.rs`) | M1, M3, M17 |
+| `a_query_that_comes_twice_is_stored_and_then_served`, `a_deleted_unit_is_not_served_from_the_cache`, `a_cache_in_use_never_changes_what_a_commit_writes` (cambiadas: suben el observador) | M17 |
+
+**Salvedades.** (1) M17 hace que el observador no dé nunca evidencia y por eso pone en rojo todas las pruebas que encienden la caché: es lo que muestra que el cambio de preparación de esas pruebas hace falta, no que cada una pruebe la evidencia. (2) M6 y M8 usan la cifra 1 ns como «marcador»: las pruebas exigen un coste mayor que 100 ns, que una lectura real supera de sobra en release, pero es un umbral de la prueba, no una garantía de la medida. (3) No se probó por mutación que `peek` deje de ser puro (por ejemplo, que cuente una lectura): lo afirma la comparación de registros y contadores antes y después (`peek_says_…`, `the_plan_says_…`), sin mutación que la ponga en rojo. (4) El coste es una sola medida con el reloj monotónico del sistema: no hay prueba que fije su valor, solo que es medido (mayor que 100 ns) y que el plan y el registro dicen lo mismo.
+
+## Registro P3
+
+### M1: `crates/kerno-units/src/planner.rs:603`
+
+- Qué mide: S2: el planificador crea la entrada aunque el observador no dé evidencia (constante `{1, 0}` como antes)
+- Cambio: `let Some(evidence) = self.observer.evidence_of(&query.normalized()) else { ⏎             return; ⏎         };` → `let evidence = self.observer.evidence_of(&query.normalized()).unwrap_or(crate::cache::Evidence { observations: 1, window: std::time::Duration::ZERO });`
+- `exit=101`
+- Pruebas rojas (6), líneas tal como se imprimieron:
+
+```text
+test emulated_log::observations_never_act_as_authority ... FAILED
+test emulated_log::relation_evidence_comes_from_the_observer ... FAILED
+test kerno_db::observations_never_act_as_authority ... FAILED
+test kerno_db::relation_evidence_comes_from_the_observer ... FAILED
+test emulated_log::no_literal_in_anything_the_cache_path_reports ... FAILED
+test kerno_db::no_literal_in_anything_the_cache_path_reports ... FAILED
+```
+
+### M2: `crates/kerno-units/src/observation.rs:441`
+
+- Qué mide: S2: la cuenta de evidencia no incluye la ejecución que concluye
+- Cambio: `let observations = 1 + u64::from(first.is_some())` → `let observations = 0 + u64::from(first.is_some())`
+- `exit=101`
+- Pruebas rojas (26), líneas tal como se imprimieron:
+
+```text
+test emulated_log::a_slot_that_served_is_replaced_at_once ... FAILED
+test emulated_log::a_query_that_comes_twice_is_stored_and_then_served ... FAILED
+test kerno_db::a_query_that_comes_twice_is_stored_and_then_served ... FAILED
+test emulated_log::a_stream_of_queries_that_never_repeat_copies_nothing ... FAILED
+test kerno_db::a_slot_that_served_is_replaced_at_once ... FAILED
+test kerno_db::a_stream_of_queries_that_never_repeat_copies_nothing ... FAILED
+test emulated_log::a_deleted_unit_is_not_served_from_the_cache ... FAILED
+test emulated_log::a_retention_purge_is_not_served_from_the_cache ... FAILED
+test kerno_db::a_deleted_unit_is_not_served_from_the_cache ... FAILED
+test kerno_db::a_retention_purge_is_not_served_from_the_cache ... FAILED
+test emulated_log::every_use_of_the_cache_is_a_transition ... FAILED
+test emulated_log::a_failed_check_discards_the_entry_and_the_reference_path_answers ... FAILED
+test emulated_log::observations_never_act_as_authority ... FAILED
+test emulated_log::relation_evidence_comes_from_the_observer ... FAILED
+test emulated_log::replacing_the_key_leaves_a_record_of_the_wipe ... FAILED
+test emulated_log::the_plan_says_whether_the_cache_was_consulted_and_whether_learned_state_answers ... FAILED
+test kerno_db::a_failed_check_discards_the_entry_and_the_reference_path_answers ... FAILED
+test kerno_db::every_use_of_the_cache_is_a_transition ... FAILED
+test emulated_log::turning_the_cache_off_restores_the_reference_behaviour ... FAILED
+test kerno_db::observations_never_act_as_authority ... FAILED
+test kerno_db::replacing_the_key_leaves_a_record_of_the_wipe ... FAILED
+test kerno_db::relation_evidence_comes_from_the_observer ... FAILED
+test kerno_db::the_plan_says_whether_the_cache_was_consulted_and_whether_learned_state_answers ... FAILED
+test kerno_db::turning_the_cache_off_restores_the_reference_behaviour ... FAILED
+test kerno_db::no_literal_in_anything_the_cache_path_reports ... FAILED
+test emulated_log::no_literal_in_anything_the_cache_path_reports ... FAILED
+```
+
+### M3: `crates/kerno-units/src/observation.rs:425`
+
+- Qué mide: S2: `evidence_of` da evidencia también a nivel `Aggregate`
+- Cambio: `if self.level() < ObservationLevel::Fingerprint { ⏎             return None;` → `if self.level() < ObservationLevel::Aggregate { ⏎             return None;`
+- `exit=101`
+- Pruebas rojas (4), líneas tal como se imprimieron:
+
+```text
+test emulated_log::observations_never_act_as_authority ... FAILED
+test kerno_db::observations_never_act_as_authority ... FAILED
+test emulated_log::no_literal_in_anything_the_cache_path_reports ... FAILED
+test kerno_db::no_literal_in_anything_the_cache_path_reports ... FAILED
+```
+
+### M4: `crates/kerno-units/src/observation.rs:443`
+
+- Qué mide: S2: la ventana de la evidencia es siempre cero
+- Cambio: `Duration::from_micros(u64::try_from(now.0.saturating_sub(at)).unwrap_or(0))` → `Duration::from_micros(u64::try_from(now.0.saturating_sub(at)).unwrap_or(0) * 0)`
+- `exit=101`
+- Pruebas rojas (4), líneas tal como se imprimieron:
+
+```text
+test emulated_log::observations_never_act_as_authority ... FAILED
+test emulated_log::relation_evidence_comes_from_the_observer ... FAILED
+test kerno_db::observations_never_act_as_authority ... FAILED
+test kerno_db::relation_evidence_comes_from_the_observer ... FAILED
+```
+
+### M5: `crates/kerno-units/src/observation.rs:439`
+
+- Qué mide: S2: la evidencia cuenta ejecuciones de cualquier forma de consulta
+- Cambio: `.filter(|r| r.fingerprint == fingerprint && r.outcome` → `.filter(|r| r.outcome`
+- `exit=101`
+- Pruebas rojas (2), líneas tal como se imprimieron:
+
+```text
+test emulated_log::relation_evidence_comes_from_the_observer ... FAILED
+test kerno_db::relation_evidence_comes_from_the_observer ... FAILED
+```
+
+### M6: `crates/kerno-units/src/planner.rs:320`
+
+- Qué mide: S3: el coste medido es siempre 1 ns
+- Cambio: `.unwrap_or(u64::MAX).max(1)` → `.unwrap_or(u64::MAX).min(1)`
+- `exit=101`
+- Pruebas rojas (4), líneas tal como se imprimieron:
+
+```text
+test emulated_log::observations_never_act_as_authority ... FAILED
+test emulated_log::relation_evidence_comes_from_the_observer ... FAILED
+test kerno_db::observations_never_act_as_authority ... FAILED
+test kerno_db::relation_evidence_comes_from_the_observer ... FAILED
+```
+
+### M7: `crates/kerno-units/src/cache.rs:353`
+
+- Qué mide: S3: `CacheEntry::build` acepta una entrada sin coste
+- Cambio: `if cost_ns == 0 { ⏎             return Err(CacheError::NoCost); ⏎         }` → `(texto eliminado)`
+- `exit=101`
+- Pruebas rojas (1), líneas tal como se imprimieron:
+
+```text
+test cache::tests::an_entry_exists_only_with_its_dependencies ... FAILED
+```
+
+### M8: `crates/kerno-units/src/cache.rs:938`
+
+- Qué mide: S3: el registro `Created` guarda coste 1 en vez del medido
+- Cambio: `Transition::Created { evidence: entry.evidence, cost_ns: entry.cost_ns }` → `Transition::Created { evidence: entry.evidence, cost_ns: 1 }`
+- `exit=101`
+- Pruebas rojas (10), líneas tal como se imprimieron:
+
+```text
+test cache::tests::every_transition_leaves_a_record ... FAILED
+test cache::tests::the_created_record_carries_the_evidence_and_the_measured_cost ... FAILED
+test emulated_log::observations_never_act_as_authority ... FAILED
+test emulated_log::relation_evidence_comes_from_the_observer ... FAILED
+test emulated_log::the_plan_says_whether_the_cache_was_consulted_and_whether_learned_state_answers ... FAILED
+test kerno_db::observations_never_act_as_authority ... FAILED
+test kerno_db::relation_evidence_comes_from_the_observer ... FAILED
+test kerno_db::the_plan_says_whether_the_cache_was_consulted_and_whether_learned_state_answers ... FAILED
+test emulated_log::every_g7_transition_leaves_its_record ... FAILED
+test kerno_db::every_g7_transition_leaves_its_record ... FAILED
+```
+
+### M9: `crates/kerno-units/src/cache.rs:1055`
+
+- Qué mide: S1: `peek` no compara dependencias (anuncia un acierto con la entrada obsoleta)
+- Cambio: `if let Some(dependency) = slot.entry.dependencies.first_change(now) { ⏎             return Peek::Invalidated(dependency); ⏎         }` → `(texto eliminado)`
+- `exit=101`
+- Pruebas rojas (3), líneas tal como se imprimieron:
+
+```text
+test cache::tests::peek_says_what_lookup_would_and_changes_nothing ... FAILED
+test emulated_log::the_plan_says_whether_the_cache_was_consulted_and_whether_learned_state_answers ... FAILED
+test kerno_db::the_plan_says_whether_the_cache_was_consulted_and_whether_learned_state_answers ... FAILED
+```
+
+### M10: `crates/kerno-units/src/cache.rs:1052`
+
+- Qué mide: S1: `peek` anuncia un acierto con la entrada sin activar
+- Cambio: `if !slot.active { ⏎             return Peek::Miss(MissCause::NotActive); ⏎         }` → `(texto eliminado)`
+- `exit=101`
+- Pruebas rojas (1), líneas tal como se imprimieron:
+
+```text
+test cache::tests::peek_says_what_lookup_would_and_changes_nothing ... FAILED
+```
+
+### M11: `crates/kerno-units/src/cache.rs:1133`
+
+- Qué mide: S4: `set_key` no deja el registro del borrado
+- Cambio: `st.record(None, Transition::KeyReplaced { entries }, None, now);` → `let _ = (entries, now);`
+- `exit=101`
+- Pruebas rojas (3), líneas tal como se imprimieron:
+
+```text
+test cache::tests::set_key_leaves_one_record_of_the_wipe_in_the_new_log ... FAILED
+test emulated_log::replacing_the_key_leaves_a_record_of_the_wipe ... FAILED
+test kerno_db::replacing_the_key_leaves_a_record_of_the_wipe ... FAILED
+```
+
+### M12: `crates/kerno-units/src/cache.rs:1133`
+
+- Qué mide: S4: el registro de `set_key` dice 0 entradas
+- Cambio: `st.record(None, Transition::KeyReplaced { entries }, None, now);` → `st.record(None, Transition::KeyReplaced { entries: 0 }, None, now);`
+- `exit=101`
+- Pruebas rojas (3), líneas tal como se imprimieron:
+
+```text
+test cache::tests::set_key_leaves_one_record_of_the_wipe_in_the_new_log ... FAILED
+test emulated_log::replacing_the_key_leaves_a_record_of_the_wipe ... FAILED
+test kerno_db::replacing_the_key_leaves_a_record_of_the_wipe ... FAILED
+```
+
+### M13: `crates/kerno-units/src/planner.rs:464`
+
+- Qué mide: S1: la explicación anuncia un acierto aunque las filas fallen su comprobación
+- Cambio: `Ok(()) => CacheView::Hit { evidence: hit.evidence, cost_ns: hit.cost_ns }, ⏎                 Err(violation) => CacheView::Discrepancy(violation),` → `Ok(()) => CacheView::Hit { evidence: hit.evidence, cost_ns: hit.cost_ns }, ⏎                 Err(_) => CacheView::Hit { evidence: hit.evidence, cost_ns: hit.cost_ns },`
+- `exit=101`
+- Pruebas rojas (2), líneas tal como se imprimieron:
+
+```text
+test emulated_log::the_plan_does_not_announce_an_entry_that_fails_its_check ... FAILED
+test kerno_db::the_plan_does_not_announce_an_entry_that_fails_its_check ... FAILED
+```
+
+### M14: `crates/kerno-units/src/plan.rs:273`
+
+- Qué mide: S1: `consulted()` es verdadero con la caché apagada
+- Cambio: `!matches!(self, CacheView::NotApplicable | CacheView::Off)` → `!matches!(self, CacheView::NotApplicable)`
+- `exit=101`
+- Pruebas rojas (2), líneas tal como se imprimieron:
+
+```text
+test emulated_log::the_plan_says_whether_the_cache_was_consulted_and_whether_learned_state_answers ... FAILED
+test kerno_db::the_plan_says_whether_the_cache_was_consulted_and_whether_learned_state_answers ... FAILED
+```
+
+### M15: `crates/kerno-units/src/plan.rs:336`
+
+- Qué mide: S1: `answering_path()` ignora la caché
+- Cambio: `if self.cache.learned_state_used() { PlanPath::ResultCache } else { self.decision.chosen().path }` → `self.decision.chosen().path`
+- `exit=101`
+- Pruebas rojas (2), líneas tal como se imprimieron:
+
+```text
+test emulated_log::the_plan_says_whether_the_cache_was_consulted_and_whether_learned_state_answers ... FAILED
+test kerno_db::the_plan_says_whether_the_cache_was_consulted_and_whether_learned_state_answers ... FAILED
+```
+
+### M16: `crates/kerno-units/src/planner.rs:461`
+
+- Qué mide: S1: la causa del fallo de caché se pierde en la explicación
+- Cambio: `Peek::Miss(cause) => CacheView::Miss(cause),` → `Peek::Miss(_) => CacheView::Miss(crate::cache::MissCause::NoEntry),`
+- `exit=101`
+- Pruebas rojas (2), líneas tal como se imprimieron:
+
+```text
+test emulated_log::the_plan_says_whether_the_cache_was_consulted_and_whether_learned_state_answers ... FAILED
+test kerno_db::the_plan_says_whether_the_cache_was_consulted_and_whether_learned_state_answers ... FAILED
+```
+
+### M17: `crates/kerno-units/src/observation.rs:425`
+
+- Qué mide: S2: `evidence_of` no da nunca evidencia
+- Cambio: `if self.level() < ObservationLevel::Fingerprint { ⏎             return None; ⏎         } ⏎         let st = match` → `if self.level() < ObservationLevel::Fingerprint { ⏎             return None; ⏎         } ⏎         return None; ⏎         #[allow(unreachable_code)] ⏎         let st = match`
+- `exit=101`
+- Pruebas rojas (34), líneas tal como se imprimieron:
+
+```text
+test emulated_log::a_slot_that_served_is_replaced_at_once ... FAILED
+test emulated_log::a_query_that_comes_twice_is_stored_and_then_served ... FAILED
+test emulated_log::a_stream_of_queries_that_never_repeat_copies_nothing ... FAILED
+test kerno_db::a_query_that_comes_twice_is_stored_and_then_served ... FAILED
+test kerno_db::a_slot_that_served_is_replaced_at_once ... FAILED
+test kerno_db::a_stream_of_queries_that_never_repeat_copies_nothing ... FAILED
+test emulated_log::a_deleted_unit_is_not_served_from_the_cache ... FAILED
+test emulated_log::a_retention_purge_is_not_served_from_the_cache ... FAILED
+test kerno_db::a_deleted_unit_is_not_served_from_the_cache ... FAILED
+test kerno_db::a_retention_purge_is_not_served_from_the_cache ... FAILED
+test emulated_log::every_use_of_the_cache_is_a_transition ... FAILED
+test emulated_log::a_failed_check_discards_the_entry_and_the_reference_path_answers ... FAILED
+test emulated_log::observations_never_act_as_authority ... FAILED
+test emulated_log::cache_on_off_and_invalidated_give_identical_results ... FAILED
+test emulated_log::relation_evidence_comes_from_the_observer ... FAILED
+test emulated_log::replacing_the_key_leaves_a_record_of_the_wipe ... FAILED
+test emulated_log::the_plan_says_whether_the_cache_was_consulted_and_whether_learned_state_answers ... FAILED
+test emulated_log::turning_the_cache_off_restores_the_reference_behaviour ... FAILED
+test kerno_db::every_use_of_the_cache_is_a_transition ... FAILED
+test kerno_db::a_failed_check_discards_the_entry_and_the_reference_path_answers ... FAILED
+test kerno_db::relation_evidence_comes_from_the_observer ... FAILED
+test kerno_db::observations_never_act_as_authority ... FAILED
+test kerno_db::replacing_the_key_leaves_a_record_of_the_wipe ... FAILED
+test kerno_db::the_plan_says_whether_the_cache_was_consulted_and_whether_learned_state_answers ... FAILED
+test kerno_db::turning_the_cache_off_restores_the_reference_behaviour ... FAILED
+test kerno_db::cache_on_off_and_invalidated_give_identical_results ... FAILED
+test emulated_log::a_cache_switched_off_after_use_stops_taking_part ... FAILED
+test emulated_log::every_operation_on_the_cache_leaves_the_data_as_it_was ... FAILED
+test emulated_log::a_cache_in_use_never_changes_what_a_commit_writes ... FAILED
+test kerno_db::a_cache_in_use_never_changes_what_a_commit_writes ... FAILED
+test kerno_db::a_cache_switched_off_after_use_stops_taking_part ... FAILED
+test kerno_db::every_operation_on_the_cache_leaves_the_data_as_it_was ... FAILED
+test emulated_log::no_literal_in_anything_the_cache_path_reports ... FAILED
+test kerno_db::no_literal_in_anything_the_cache_path_reports ... FAILED
+```

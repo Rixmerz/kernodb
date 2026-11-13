@@ -330,6 +330,9 @@ fn run_stream(db: &Units, load: &Load, on: bool) -> Res<Run> {
     cache.set_enabled(false);
     cache.clear();
     cache.set_enabled(on);
+    // An entry is created only on the observer's evidence (spec §9), so the
+    // arm with the cache on runs with the observer at `Fingerprint`.
+    db.observer().set_level(if on { ObservationLevel::Fingerprint } else { ObservationLevel::Off })?;
     let total: usize = load.blocks.iter().map(|b| b.reads.len()).sum();
     let warm = (total / 10).max(1);
     let (mut seen, mut hits) = (0, 0);
@@ -369,6 +372,7 @@ fn run_stream(db: &Units, load: &Load, on: bool) -> Res<Run> {
         return Err("the cache is off but took part".into());
     }
     cache.set_enabled(false);
+    db.observer().set_level(ObservationLevel::Off)?;
     let timed = samples.len();
     Ok(Run {
         samples: samples.clone(),

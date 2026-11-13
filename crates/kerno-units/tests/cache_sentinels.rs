@@ -177,7 +177,7 @@ fn deps_of<E: Target>(snap: &UnitSnapshot<E>, with_index: bool) -> Dependencies 
 /// dependency.
 fn entry_for<E: Target>(snap: &UnitSnapshot<E>, fp: Fingerprint, query: CachedQuery, rows: CachedResult) -> CacheEntry {
     let with_index = matches!(query, CachedQuery::Units(_));
-    CacheEntry::new(fp, query, deps_of(snap, with_index), rows, evidence()).unwrap()
+    CacheEntry::new(fp, query, deps_of(snap, with_index), rows, evidence(), 1_000).unwrap()
 }
 
 // ---------------------------------------------------------------------------
@@ -257,7 +257,12 @@ fn pass<E: Target>(db: &UnitDb<E>, ids: [UnitId; 2], damaged: bool) -> Vec<(Obse
             let second = out.units(&snap, &f);
             if !damaged {
                 assert_ne!(first, Some(PlanPath::ResultCache), "the first read has nothing to serve");
-                assert_eq!(second, Some(PlanPath::ResultCache), "the second read at one sequence is served");
+                // An entry needs the observer's evidence: below `Fingerprint` there is none.
+                assert_eq!(
+                    second == Some(PlanPath::ResultCache),
+                    level >= ObservationLevel::Fingerprint,
+                    "{level:?}: the second read at one sequence is served only with evidence"
+                );
             }
         }
         let rq = relation_query(ids[0]);
@@ -265,7 +270,11 @@ fn pass<E: Target>(db: &UnitDb<E>, ids: [UnitId; 2], damaged: bool) -> Vec<(Obse
         let second = out.relations(&snap, &rq);
         if !damaged {
             assert_ne!(first, Some(PlanPath::ResultCache));
-            assert_eq!(second, Some(PlanPath::ResultCache), "relations are served from the cache too");
+            assert_eq!(
+                second == Some(PlanPath::ResultCache),
+                level >= ObservationLevel::Fingerprint,
+                "{level:?}: relations are served from the cache too, with evidence"
+            );
         }
 
         if !damaged {
@@ -305,9 +314,9 @@ fn pass<E: Target>(db: &UnitDb<E>, ids: [UnitId; 2], damaged: bool) -> Vec<(Obse
             let empty = || CachedResult::Units(Vec::new());
             let now = deps_of(&later, true);
             let refused = [
-                CacheEntry::new(fp, any(), deps_of(&later, false), empty(), evidence()),
-                CacheEntry::new(fp, any(), now, CachedResult::Relations(Vec::new()), evidence()),
-                CacheEntry::new(fp, any(), now, empty(), Evidence { observations: 0, window: Duration::ZERO }),
+                CacheEntry::new(fp, any(), deps_of(&later, false), empty(), evidence(), 1_000),
+                CacheEntry::new(fp, any(), now, CachedResult::Relations(Vec::new()), evidence(), 1_000),
+                CacheEntry::new(fp, any(), now, empty(), Evidence { observations: 0, window: Duration::ZERO }, 1_000),
             ];
             for r in refused {
                 let e = r.unwrap_err();
@@ -352,16 +361,20 @@ fn pass<E: Target>(db: &UnitDb<E>, ids: [UnitId; 2], damaged: bool) -> Vec<(Obse
                 "Created",
                 "Activated",
                 "Used",
-                "Missed/OtherQuery",
                 "Fallback/Discrepancy",
                 "Deleted/Discrepancy",
                 "Fallback/Disabled",
                 "Disabled/Query",
                 "Enabled/Query",
-                "Invalidated/IndexState",
-                "Fallback/Invalidated",
             ] {
                 assert!(kinds.contains(wanted), "level {level:?}: no {wanted} record in {kinds:?}");
+            }
+            // These come from entries the planner created itself, which needs the
+            // observer's evidence: below `Fingerprint` it creates none.
+            if level >= ObservationLevel::Fingerprint {
+                for wanted in ["Missed/OtherQuery", "Invalidated/IndexState", "Fallback/Invalidated"] {
+                    assert!(kinds.contains(wanted), "level {level:?}: no {wanted} record in {kinds:?}");
+                }
             }
             if matches!(level, ObservationLevel::Fingerprint | ObservationLevel::Diagnostic) {
                 assert!(
@@ -449,6 +462,7 @@ fn label(t: &Transition) -> String {
             }
         ),
         Transition::Cleared { .. } => "Cleared".into(),
+        Transition::KeyReplaced { .. } => "KeyReplaced".into(),
     }
 }
 
@@ -632,7 +646,7 @@ fn cases() -> Vec<Case> {
             r.fill();
             r.cache.set_config(CacheConfig { max_entries: 1, ..CacheConfig::default() }).unwrap();
             let (fp, query, rows) = r.second.clone();
-            let entry = CacheEntry::new(fp, query, r.deps, rows, evidence()).unwrap();
+            let entry = CacheEntry::new(fp, query, r.deps, rows, evidence(), 1_000).unwrap();
             r.cache.create(entry).unwrap();
         }),
         ("Deleted/EvictedByAge", None, |r| {
@@ -712,7 +726,10 @@ fn every_g7_transition_leaves_its_record<E: Target>() {
             assert_eq!(rec.commit_seq, Some(r.deps.commit_seq), "{wanted}: the sequence of the entry");
         }
         if wanted == "Created" {
-            assert_eq!(rec.transition, Transition::Created { evidence: r.entry.evidence() });
+            assert_eq!(
+                rec.transition,
+                Transition::Created { evidence: r.entry.evidence(), cost_ns: r.entry.cost_ns() }
+            );
         }
         if wanted == "Cleared" {
             assert_eq!(rec.transition, Transition::Cleared { entries: 1 });
