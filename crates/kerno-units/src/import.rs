@@ -202,13 +202,20 @@ fn write_revision<E: TxnEngine>(cs: &mut ChangeSet<'_, E>, u: &UnitData, ri: usi
 
 fn write_relation<E: TxnEngine>(cs: &mut ChangeSet<'_, E>, r: &Rel) -> Result<(), UnitError> {
     let (edge, ty) = (r.id, &r.record.relation_type);
+    // Everything that can refuse the relation runs before a count is touched.
+    let out = Key::RelationOut { unit: r.from, relation_type: ty.clone(), edge };
+    let inn = Key::RelationIn { unit: r.to, relation_type: ty.clone(), edge };
+    let writes = [
+        Write::Put(key(Key::Relation { edge })?, r.record.encode()?),
+        Write::Put(key(out)?, Adjacency { other: r.to }.encode()),
+        Write::Put(key(inn)?, Adjacency { other: r.from }.encode()),
+    ];
     cs.adjust_count(r.from, crate::types::Direction::Out, ty, 1)?;
     cs.adjust_count(r.to, crate::types::Direction::In, ty, 1)?;
-    cs.write(&Write::Put(key(Key::Relation { edge })?, r.record.encode()?))?;
-    let out = Key::RelationOut { unit: r.from, relation_type: ty.clone(), edge };
-    cs.write(&Write::Put(key(out)?, Adjacency { other: r.to }.encode()))?;
-    let inn = Key::RelationIn { unit: r.to, relation_type: ty.clone(), edge };
-    cs.write(&Write::Put(key(inn)?, Adjacency { other: r.from }.encode()))
+    for w in &writes {
+        cs.write(w)?;
+    }
+    Ok(())
 }
 
 // ------------------------------------------------------------------ decoding

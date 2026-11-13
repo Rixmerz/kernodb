@@ -19,6 +19,7 @@
 | `record_layout_is_pinned` | M2, M12 |
 | `counts_follow_create_and_delete` | M2, M3, M14 |
 | `an_aborted_change_set_leaves_no_count` | M15 (mutación de la propia prueba) |
+| `a_refused_create_leaves_no_count` | M20 (corrección posterior de K1, ver más abajo) |
 | `a_count_lost_with_its_entry_is_the_known_limit` | M13 |
 | `verifier_rules_of_the_count_records` | M5, M9, M10 |
 | `legacy_relations_work_and_get_a_count_when_next_changed`, `deleting_a_legacy_relation_counts_what_is_left` | M3, M7 |
@@ -63,7 +64,7 @@ test kerno::one_adjacency_entry_missing_small_store ... FAILED
 test kerno::verifier_reports_index_damage ... FAILED
 ```
 
-### M2: `crates/kerno-units/src/db.rs:1473`
+### M2: `crates/kerno-units/src/db.rs:1487`
 
 - Cambio: `'        self.adjust_count(to, Direction::In, relation_type, 1)?;\n'` → `''`
 - `exit=101`
@@ -94,7 +95,7 @@ test kerno::one_adjacency_entry_missing_small_store ... FAILED
 test kerno::one_adjacency_entry_missing_large_store ... FAILED
 ```
 
-### M3: `crates/kerno-units/src/db.rs:1500`
+### M3: `crates/kerno-units/src/db.rs:1508`
 
 - Cambio: `'        self.adjust_count(r.from, Direction::Out, &r.relation_type, -1)?;\n'` → `''`
 - `exit=101`
@@ -157,7 +158,7 @@ test kerno::one_of_several_entries_lost ... FAILED
 test kerno::one_entry_lost_large_store ... FAILED
 ```
 
-### M6: `crates/kerno-units/src/db.rs:1569`
+### M6: `crates/kerno-units/src/db.rs:1572`
 
 - Cambio: `'        let wants = if self.count_ops > 0 {'` → `'        let wants = if false && self.count_ops > 0 {'`
 - `exit=101`
@@ -231,7 +232,7 @@ test kerno::deleting_a_legacy_relation_counts_what_is_left ... FAILED
 test kerno::legacy_relations_work_and_get_a_count_when_next_changed ... FAILED
 ```
 
-### M8: `crates/kerno-units/src/import.rs:205`
+### M8: `crates/kerno-units/src/import.rs:213`
 
 - Cambio: `'    cs.adjust_count(r.from, crate::types::Direction::Out, ty, 1)?;\n    cs.adjust_count(r.to, crate::types::Direction::In, ty, 1)?;\n'` → `''`
 - `exit=101`
@@ -465,3 +466,22 @@ test kerno::verify_writes_nothing ... FAILED
 test kerno::damage_detected ... FAILED
 test kerno_read_only_verify_untouched ... FAILED
 ```
+
+## Corrección posterior de K1: el rechazo del `encode` no deja contadores
+
+Una revisión independiente halló que `create_relation` ajustaba los dos contadores antes de que `record.encode()` validara la procedencia: si el `encode` rechazaba la relación, el contador ajustado quedaba en el change set abierto y un `commit` posterior lo escribía, y `relations_of` daba `Corruption` y `verify_units` UNIT-45 sobre un almacén sin daño. La corrección construye y codifica todas las escrituras antes de tocar los contadores (`db.rs:1473-1487`); `delete_relation` hace lo mismo con las claves (`db.rs:1503-1509`). La prueba `a_refused_create_leaves_no_count` (rel_counts.rs, dos motores: `Imported` con fuente vacía rechazada, luego una relación válida y `commit`) se vio roja antes de la corrección en los dos motores (`Corruption` en `relations_of`).
+
+Método como arriba (copia del árbol, `CARGO_TARGET_DIR` propio, release, una mutación), con `rel_counts`.
+
+### M20: `crates/kerno-units/src/db.rs:1486`
+
+- Cambio: las dos líneas `adjust_count(from, …, 1)` y `adjust_count(to, …, 1)` se mueven antes del bloque que codifica las escrituras (el orden anterior a la corrección).
+- `exit=101`
+- Pruebas rojas (2), líneas tal como se imprimieron:
+
+```text
+test emulated_log::a_refused_create_leaves_no_count ... FAILED
+test kerno::a_refused_create_leaves_no_count ... FAILED
+```
+
+Los demás caminos que ajustan contadores se auditaron: `delete_relation` (tras la corrección sus únicos errores previos a la escritura son lecturas y claves; los de `adjust_count` solo se dan con un registro de contador dañado o con un fallo del motor, que deja el change set roto), importación (`import.rs:213`: tenía la misma forma —codificaba el registro tras ajustar los contadores—, pero el change set es privado de `replay` y se abandona sin `commit` ante cualquier error, así que el daño no era alcanzable y no admite prueba; se reordenó igualmente para que construya y codifique antes de tocar los contadores), borrado y olvido de unidades (no ajustan contadores: `ensure_no_relations` exige que no haya relaciones), y los lotes (`DerivedChangeSet::create_relation` delega en `create_relation`).

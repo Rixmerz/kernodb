@@ -1467,10 +1467,9 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         let record =
             RelationRecord { from, to, relation_type: relation_type.to_owned(), created_seq: self.seq, provenance };
         let t = || relation_type.to_owned();
-        // Counts first: a missing record is built from the entries that
-        // exist, and the new ones are not written yet.
-        self.adjust_count(from, Direction::Out, relation_type, 1)?;
-        self.adjust_count(to, Direction::In, relation_type, 1)?;
+        // Everything that can refuse the relation (the record's encode, the
+        // keys) runs before a count is touched: an error after the counts
+        // would leave them in the open change set without their entries.
         let writes = [
             Write::Put(key(Key::Relation { edge })?, record.encode()?),
             Write::Put(
@@ -1482,6 +1481,10 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
                 Adjacency { other: from }.encode(),
             ),
         ];
+        // Counts before the entries: a missing record is built from the
+        // entries that exist, and the new ones are not written yet.
+        self.adjust_count(from, Direction::Out, relation_type, 1)?;
+        self.adjust_count(to, Direction::In, relation_type, 1)?;
         self.apply_relation_writes(&writes)?;
         Ok(edge)
     }
@@ -1497,13 +1500,13 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         };
         let r = RelationRecord::decode(&raw).map_err(|e| context(e, &format!("REL {edge}")))?;
         let t = || r.relation_type.clone();
-        self.adjust_count(r.from, Direction::Out, &r.relation_type, -1)?;
-        self.adjust_count(r.to, Direction::In, &r.relation_type, -1)?;
         let writes = [
             Write::Delete(key(Key::Relation { edge })?),
             Write::Delete(key(Key::RelationOut { unit: r.from, relation_type: t(), edge })?),
             Write::Delete(key(Key::RelationIn { unit: r.to, relation_type: t(), edge })?),
         ];
+        self.adjust_count(r.from, Direction::Out, &r.relation_type, -1)?;
+        self.adjust_count(r.to, Direction::In, &r.relation_type, -1)?;
         self.apply_relation_writes(&writes)
     }
 
