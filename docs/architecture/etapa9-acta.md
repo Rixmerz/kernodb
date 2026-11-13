@@ -98,7 +98,7 @@ h. **Estado de la capa de unidades.** El [cierre del adelanto](etapa9-adelanto-c
 
 ### 2.4 Fricción de E8-09: disposición de los quince puntos
 
-El ejemplo de [`examples/agent-memory/FRICTION.md`](../../examples/agent-memory/FRICTION.md) es el caso de uso real que pide el roadmap antes de 1.0. Cada punto recibe una disposición: **en alcance** (un paquete lo resuelve y E9-21 lo vuelve a probar), **límite declarado** (se documenta y no cambia la API en esta etapa) o **retenido** (depende de una decisión de §8 que el propietario toma en persona).
+El ejemplo de [`examples/agent-memory/FRICTION.md`](../../examples/agent-memory/FRICTION.md) es el caso de uso real que pide el roadmap antes de 1.0. Cada punto recibe una disposición: **en alcance** (un paquete lo resuelve y E9-21 lo vuelve a probar), **límite declarado** (se documenta y no cambia la API en esta etapa) o **retenido** (depende de una decisión de §8 que el propietario toma en persona; ninguna queda así desde el 2026-11-13, §8.1).
 
 | # | Qué dice la lista | Qué muestra el código | Disposición |
 |---|---|---|---|
@@ -265,7 +265,7 @@ Las nuevas (I-N1 e I-N2) se numeran al cerrar la etapa, en [invariantes](invaria
 
 | ID | Riesgo | Tratamiento |
 |---|---|---|
-| **R-E9-1** | Una decisión que cambia formato o una promesa (D1 a D4, D12, D15, D16) se toma por inercia en un paquete, y cambia el formato o una promesa sin que el propietario lo haya decidido | §8.1 la marca como retenida; ningún paquete que dependa de ella escribe antes de la decisión; la revisión de cada paquete comprueba que no toca formato |
+| **R-E9-1** | Una decisión que cambia formato o una promesa (D1 a D4, D12, D15, D16) se toma por inercia en un paquete, y cambia el formato o una promesa sin que el propietario lo haya decidido | §8.1 la registró como retenida el 2026-11-12 y como tomada el 2026-11-13 por delegación expresa, revocable; ningún paquete cambia formato ni promesa fuera de la opción registrada; la revisión de cada paquete comprueba que no toca formato |
 | **R-E9-2** | Una exportación en borrador se convierte en una promesa de hecho, porque alguien la usa | El borrador va marcado como no congelado en su cabecera y en la documentación (E9-04); la congelación es D12 |
 | **R-E9-3** | La reclamación pública se lee como borrado seguro | El texto de la API y de la documentación repite el de ADR-0009 y el threat model §6.5; la prueba de E9-07 mide solo lo que mide ADR-0009 |
 | **R-E9-4** | El cambio de `engine()` rompe muchas pruebas y las arregla con parches que ocultan la regla | §3 divide la migración en cinco paquetes; E9-08e solo retira la función cuando el grep da cero; cada migración la revisa alguien distinto de su autor |
