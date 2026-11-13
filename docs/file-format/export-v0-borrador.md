@@ -7,7 +7,7 @@
 > físico y reimportación en un motor nuevo), no para conservar datos.
 
 Implementación: `crates/kerno-units/src/export.rs` (`export`, `export_snapshot`).
-La importación es E9-05; la prueba de independencia física es E9-06. Desde E9-02 (hecho en el árbol, sin fusionar) el borrador lleva los tokens de los identificadores públicos y su `format_version` es **1** (la versión 0 no los llevaba; ver §4). El nombre del fichero conserva el «v0» de su primera versión.
+La importación es E9-05; la prueba de independencia física es E9-06. Desde E9-02 (fusionado el 2026-11-13) el borrador lleva los tokens de los identificadores públicos y su `format_version` es **1** (la versión 0 no los llevaba; ver §4). El nombre del fichero conserva el «v0» de su primera versión.
 
 ## 1. Qué contiene y qué no
 
