@@ -662,7 +662,9 @@ impl State {
     fn check_public_ids(&mut self) {
         let token_key = |t: &[u8; 16]| [&[crate::ids::TAG_PUBLIC_ID][..], &t[..]].concat();
         let unit_key = |u: &UnitId| [&[crate::ids::TAG_PUBLIC_ID_OF][..], &u.0[..]].concat();
-        let exists = |s: &Self, u: &UnitId| s.heads.contains_key(u) || s.bad_heads.contains(u);
+        let exists = |s: &Self, u: &UnitId| {
+            s.heads.get(u).is_some_and(|h| h.lifecycle != Lifecycle::Deleted) || s.bad_heads.contains(u)
+        };
         let mut found: Vec<(CrossRule, Vec<u8>, &str)> = Vec::new();
         if let (Some(first), Some(mark)) = (&self.first_public_key, &self.mark)
             && mark.layer_version < crate::codec::LAYER_VERSION_PUBLIC_IDS

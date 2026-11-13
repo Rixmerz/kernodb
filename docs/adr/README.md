@@ -15,7 +15,7 @@ Reglas:
 | [0002](0002-transacciones-y-durabilidad.md) | Modelo de transacciones y durabilidad | **Aceptado** (2026-10-28) |
 | [0003](0003-formato-fisico-y-versionado.md) | Formato físico y versionado | **Aceptado** (2026-10-28; formato concreto se congela al cerrar Fase 1) |
 | [0004](0004-historial-de-revisiones.md) | Historial de revisiones | **Aceptado** (2026-10-31; [acta E3-00](../architecture/etapa3-acta-e3-00.md)) |
-| [0005](0005-identificadores-publicos.md) | Identificadores públicos | **Aceptado** (2026-11-13, opción 1; D1 de la [acta de la Etapa 9](../architecture/etapa9-acta.md)). Implementación en E9-02, liberado y no fusionado |
+| [0005](0005-identificadores-publicos.md) | Identificadores públicos | **Aceptado** (2026-11-13, opción 1; D1 de la [acta de la Etapa 9](../architecture/etapa9-acta.md)). Implementación en E9-02, hecha en el árbol y no fusionada (corregida tras la revisión independiente) |
 | [0006](0006-cifrado-y-gestion-de-claves.md) | Cifrado y gestión de claves | Pendiente (no aceptado). Diseño elegido si se construye cifrado: opción 1, AEAD por bloque (D2, 2026-11-13). Nada se implementa |
 | [0007](0007-consistencia-de-indices.md) | Consistencia y reconstrucción de índices | Pendiente |
 | [0008](0008-serializacion-documental-y-hashes.md) | Serialización documental y hashes | Aceptado (mínimo: BLAKE3-256 y bytes opacos) |

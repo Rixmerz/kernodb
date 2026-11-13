@@ -491,7 +491,7 @@ impl<E: Engine> UnitSnapshot<E> {
             Lookup::Hit(result) => {
                 let checked = match &*result {
                     CachedResult::Units(units) => check_units(filter, units).map(|()| units),
-                    // Unreachable by construction (`CacheEntry::new`); not an answer all the same.
+                    // Unreachable by construction (`CacheEntry::build`); not an answer all the same.
                     CachedResult::Relations(_) => Err(Violation::NotMatching),
                 };
                 match checked {
@@ -552,7 +552,7 @@ impl<E: Engine> UnitSnapshot<E> {
         if let Ok(entry) = CacheEntry::build(fingerprint, query, now, result, evidence)
             && self.cache.store(entry).is_ok()
         {
-            // Fails only if the cache was switched off since `create`; then
+            // Fails only if the cache was switched off since `ResultCache::store`; then
             // there is nothing to activate.
             let _ = self.cache.arm(&fingerprint);
         }

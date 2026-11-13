@@ -34,11 +34,13 @@
 //! (`kerno_db`); `emulated_log` has no directory to open, and its legacy case
 //! is `legacy_units_without_a_token_stay_readable`.
 //!
-//! Counts (`cargo test --release -p kerno-units --test public_ids`): without
-//! the `test-support` feature 52 tests, with it 80. Of those, 50 run on both
-//! engines in pairs (25 + 25) without the feature and 78 with it (39 + 39);
-//! the other 2 are the engine-free tests of the text and of the document's
-//! table of vectors, plus the single-engine legacy-directory test.
+//! Counts (`cargo test --release -p kerno-units --test public_ids`, as the
+//! runner lists them): without the `test-support` feature 49 tests (48 run,
+//! 1 ignored: `regenerate_fixture`, a by-hand regenerator of the committed
+//! fixture), with it 77 (76 run, 1 ignored). Of those, 22 run on each engine
+//! without the feature (44) and 36 with it (72); the other 5 are
+//! engine-free: the text, the table of vectors, the fixture manifest, the
+//! regenerator and the single-engine legacy-directory test.
 
 mod harness;
 
@@ -263,9 +265,10 @@ fn same_transaction_a_dropped_change_set_leaves_nothing<E: Target>() {
 /// The commit's data sync fails and the power goes: the unit and its two
 /// records are all there or none are. Which of the two happens is the
 /// engine's to decide (an `emulated_log` commit that wrote nothing durable
-/// leaves nothing; `kerno_db` may have the frame on disk), so the test runs
-/// the fault at the first and at the second data sync and asserts the
-/// invariant at each.
+/// leaves nothing; `kerno_db` may have the frame on disk), so the test fails
+/// the 1st and then the 2nd data sync counted from the arming of the fault
+/// (not necessarily the commit's own syncs: whichever the engine issues
+/// first) and asserts the invariant on whatever the image holds.
 fn same_transaction_a_failed_sync_leaves_neither_unit_nor_token<E: Target>() {
     for nth in 1..=2u64 {
         let disk = SimVfs::new(5 + nth);
@@ -697,7 +700,7 @@ fn import_refuses_token_records_that_no_writer_produces<E: Target>() {
     let src = open::<E>(&SimVfs::new(28));
     issue(&src, b"a");
     issue(&src, b"b");
-    let c = plain(&src, b"c");
+    plain(&src, b"c");
     let d = plain(&src, b"d");
     delete(&src, d);
     let bytes = export(&src).unwrap();
@@ -747,7 +750,6 @@ fn import_refuses_token_records_that_no_writer_produces<E: Target>() {
             }),
         ),
     ];
-    let _ = c;
     for (what, file) in cases {
         let target = open::<E>(&SimVfs::new(29));
         let e = import(&target, &file).unwrap_err();
@@ -912,7 +914,7 @@ fn fixture_directory_opens_resolves_and_verifies<E: Target>() {
     assert_eq!(token_records(&db), (1, 1));
     assert_eq!(layer_version(&db), 3);
     clean(&db);
-    // Opening wrote nothing, and a unit made on top gets its own token.
+    // A unit made on top of the opened directory gets its own token.
     let (_, fresh) = issue(&db, b"on top");
     assert_ne!(fresh, token);
     assert_eq!(db.resolve_public_id(&token).unwrap(), Some(first));
@@ -1130,6 +1132,23 @@ mod stored {
         assert_eq!(got, vec!["UNIT-40", "UNIT-41"]);
     }
 
+    /// A pair left on a deleted unit (damage, or an older writer) is its own
+    /// UNIT-41 finding, resolves like a token never issued, and is not exported.
+    pub fn cross_a_pair_left_on_a_deleted_unit<E: Target>() {
+        let (db, unit, token, _, _) = one::<E>();
+        delete(&db, unit);
+        clean(&db);
+        put_records(&db, unit, &token);
+        let found = rules(&db);
+        assert!(found.contains(&"UNIT-41".to_string()), "{found:?}");
+        assert_eq!(db.resolve_public_id(&token).unwrap(), None);
+        assert_eq!(db.public_id(unit).unwrap(), None);
+        let target = open_from::<E>(&SimVfs::new(30), 100);
+        let report = import(&target, &export(&db).unwrap()).unwrap();
+        assert_eq!(report.tokens, 0);
+        assert_eq!(target.resolve_public_id(&token).unwrap(), None);
+    }
+
     /// UNIT-42: two tokens for one unit.
     pub fn cross_two_tokens_for_one_unit<E: Target>() {
         let (db, unit, _, _, _) = one::<E>();
@@ -1170,11 +1189,10 @@ mod stored {
     /// A record that does not decode is one finding: its pair is not
     /// reported again as missing.
     pub fn cross_a_damaged_record_is_not_reported_twice<E: Target>() {
-        let (db, _, _, tk, uk) = one::<E>();
+        let (db, _, _, _, uk) = one::<E>();
         put(&db, &uk, vec![1, 0, 1]);
         assert_eq!(rules(&db), vec!["UNIT-9"]);
         let (db, _, _, tk2, _) = one::<E>();
-        let _ = (&tk, &uk);
         put(&db, &tk2, vec![]);
         assert_eq!(rules(&db), vec!["UNIT-9"]);
     }
@@ -1245,6 +1263,7 @@ macro_rules! engines {
                     cross_a_token_without_its_reverse,
                     cross_a_reverse_without_its_token,
                     cross_a_pair_naming_a_unit_that_does_not_exist,
+                    cross_a_pair_left_on_a_deleted_unit,
                     cross_two_tokens_for_one_unit,
                     cross_one_token_for_two_units,
                     cross_tokens_under_a_mark_below_layer_3,

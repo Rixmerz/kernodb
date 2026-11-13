@@ -4,7 +4,7 @@
 |---|---|
 | Estado | Normativo desde E9-02, **hecho en el árbol y no fusionado**. Copia las decisiones de [ADR-0005](../adr/0005-identificadores-publicos.md) (opción 1), que manda si hay una discrepancia. Decisiones D-a a D-f del 2026-11-13, tomadas por delegación expresa del propietario |
 | Versión de la capa | `layer_version = 3`, `envelope_version = 1` |
-| Relacionado con | [capa de unidades v1](units-v1.md) y [v2](units-v2.md) (no se editan; este documento solo añade), [ADR-0005](../adr/0005-identificadores-publicos.md), [exportación lógica](export-v0-borrador.md), [formato v1 del motor](v1.md) (congelado, sin cambios) |
+| Relacionado con | [capa de unidades v1](units-v1.md) (no se edita) y [v2](units-v2.md) (editada solo en el encabezado y en una fila de §8, por la nueva marca máxima; este documento solo añade), [ADR-0005](../adr/0005-identificadores-publicos.md), [exportación lógica](export-v0-borrador.md), [formato v1 del motor](v1.md) (congelado, sin cambios) |
 
 Este documento especifica, byte a byte, lo que la capa de unidades añade en la versión 3: el mapeo entre un identificador público (un token opaco de 128 bits) y la unidad que nombra. Como en las versiones 1 y 2, son **claves y valores ordinarios** del motor: no cambia ningún byte del formato v1 del motor ni su lista de bits de característica. La frontera de compatibilidad es la marca de la capa. La implementación (`crates/kerno-units/src/ids.rs`) y la prueba `vectors_of_the_document_match_the_codec_byte_for_byte` (`crates/kerno-units/tests/public_ids.rs`) se escriben solo desde este texto y los de las versiones anteriores. «Debe» y «no debe» son normativos.
 
@@ -18,7 +18,7 @@ Las de [units-v1.md](units-v1.md) §1: enteros **big-endian**, la cabecera comú
 
 Se sigue el precedente de [units-v2.md](units-v2.md) §2 (una capa que añade registros eleva la marca):
 
-- La marca `LAYER_META "layer"` (units-v1 §3.1) lleva `layer_version = 3` **si y solo si** la base tiene o tuvo un registro `0x70`/`0x71`. Una base sin ninguno conserva la marca que tenía (1 o 2) y la abre cualquier build de capa 1, 2 o 3.
+- La marca `LAYER_META "layer"` (units-v1 §3.1) lleva `layer_version = 3` **si y solo si** la base tiene o tuvo un registro `0x70`/`0x71`. Una base sin ninguno conserva la marca que tenía (1 o 2): una de marca 1 la abre cualquier build de capa 1, 2 o 3; una de marca 2 la abre cualquier build de capa 2 o 3 (una de capa 1 la rechaza por su marca, units-v2 §2).
 - La versión 3 se escribe **en la misma transacción** que el primer registro `0x70`/`0x71`. **Nunca se baja**: ni `set_policy`, ni borrar la unidad con token, ni ningún `ChangeSet` posterior. Quien reescribe la marca conserva su `history_policy`. La versión 3 incluye todo lo de la 2: un lector de capa 3 lee derivados persistidos.
 - **Consecuencia para las builds anteriores.** Un lector de capa 1 o 2 lee la marca antes que ninguna otra clave y rechaza la base completa: `IncompatibleLayer` con la regla UNIT-16 y `found_layer_version = 3`. No escribe nada. No hay lectura parcial: una base con un solo token deja de abrirse con una build sin esta versión. Un lector de esta versión rechaza `layer_version > 3` con la misma regla.
 - Una marca con `layer_version < 3` y claves `0x70`/`0x71` es corrupción (UNIT-44).
