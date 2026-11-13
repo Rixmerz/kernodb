@@ -8,6 +8,11 @@
 //! * `a_retention_purge_is_not_served_from_the_cache` — the same for the
 //!   change set of a retention run.
 //!
+//! The deleted-unit test shows the behaviour (not served, forgotten unit absent);
+//! other dependencies, such as the index watermark, also invalidate there. The
+//! retention test is the one that isolates the commit sequence: it goes red
+//! when the entry's commit sequence is forced constant.
+//!
 //! A snapshot taken *before* the forget still sees the unit, as every
 //! snapshot does; it is served the entry of its own sequence, which is its
 //! own state and not the forgotten one.

@@ -971,7 +971,7 @@ impl ResultCache {
 
     /// Whether the answer to `query`, just computed at `now`, is worth the
     /// copy that storing it costs. Advisory, and called by the planner between
-    /// a miss and [`create`](Self::create); it records nothing.
+    /// a miss and `create`; it records nothing.
     ///
     /// One entry fits per query shape, so a query of the same shape but other
     /// literals replaces the entry that is there. That is a bad trade when
