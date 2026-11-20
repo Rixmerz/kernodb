@@ -185,8 +185,17 @@ impl Vfs for StdVfs {
         Ok(out)
     }
 
+    #[cfg(not(windows))]
     fn sync_dir(&self, dir: &Path) -> io::Result<()> {
         fs::File::open(dir)?.sync_all()
+    }
+
+    // Windows cannot open a directory as a plain file (`Access is denied`),
+    // and NTFS journals directory entries itself: there is nothing to flush.
+    // Durability on Windows stays unverified (`allow_unverified_platform`).
+    #[cfg(windows)]
+    fn sync_dir(&self, _dir: &Path) -> io::Result<()> {
+        Ok(())
     }
 
     fn lock(&self, path: &Path) -> io::Result<Box<dyn Any + Send + Sync>> {

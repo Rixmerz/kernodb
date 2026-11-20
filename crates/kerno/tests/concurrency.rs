@@ -64,7 +64,7 @@ fn number(bytes: Option<&[u8]>) -> u64 {
 }
 
 fn read_only() -> Config {
-    Config { access: AccessMode::ReadOnly, ..Config::default() }
+    Config { access: AccessMode::ReadOnly, allow_unverified_platform: true, ..Config::default() }
 }
 
 // ---------------------------------------------------------------- threads
