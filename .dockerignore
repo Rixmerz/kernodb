@@ -1,0 +1,17 @@
+# The build context is the repository; keep out what the image never reads.
+.git
+.github
+/target
+**/target
+/bench-data
+/.claude
+# Never let a local secret into a layer.
+deploy/tokens
+deploy/tls
+deploy/.env
+*.pem
+*.key
+# The server tests read tests/tls, but the image does not run tests.
+docs
+results.jsonl
+experiments

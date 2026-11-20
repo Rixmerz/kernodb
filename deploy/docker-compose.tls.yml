@@ -1,0 +1,25 @@
+# Adds TLS to docker-compose.yml and publishes the ports on every interface:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d
+#
+# Needs ./tls/fullchain.pem (the certificate chain, leaf first) and ./tls/key.pem, both
+# readable by uid 10001. A Compose file replaces a `command` and a `ports` list instead of adding
+# to it, so both are written out in full here.
+services:
+  kerno:
+    ports: !override
+      - "8443:8443"
+      - "50051:50051"
+    command: !override
+      - --data-dir=/data
+      - --tokens=/etc/kerno/tokens
+      - --listen=0.0.0.0:8443
+      - --grpc-listen=0.0.0.0:50051
+      - --backup=file:///backups
+      - --tls-cert=/etc/kerno/tls/fullchain.pem
+      - --tls-key=/etc/kerno/tls/key.pem
+    environment:
+      # The health check probes this port.
+      KERNO_HEALTH_PORT: "8443"
+    volumes:
+      - ./tls:/etc/kerno/tls:ro

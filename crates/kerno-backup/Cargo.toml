@@ -1,0 +1,30 @@
+[package]
+name = "kerno-backup"
+description = "Hot backup, point-in-time restore and WAL shipping of a Kerno database to object storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+kerno-core.workspace = true
+kerno-storage.workspace = true
+kerno-units.workspace = true
+blake3.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# S3 and R2: SigV4 and TLS with the provider the server already uses.
+ring = "0.17"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
+
+[dev-dependencies]
+kerno.workspace = true
+
+# A backup tool never panics: every failure is an error the caller reports.
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

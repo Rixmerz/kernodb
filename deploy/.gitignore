@@ -1,0 +1,4 @@
+# Secrets of a local deployment (docs/deployment.md): never commit them.
+/tokens
+/tls/
+/.env

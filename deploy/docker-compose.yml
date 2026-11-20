@@ -1,0 +1,39 @@
+# kerno-server in tenant mode with a data volume and a backup volume.
+# Walk-through, TLS and what to change for production: docs/deployment.md.
+#
+#   cd deploy
+#   docker compose up -d --build
+#
+# Needs ./tokens first (one `<sha256 hex> <tenant>` per line): see "API tokens" in the docs.
+services:
+  kerno:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: kerno-server:local
+    restart: unless-stopped
+    # Published on the host's loopback only: without TLS a token crosses the network in clear
+    # text. Reach it from other machines through TLS (docker-compose.tls.yml) or a reverse proxy.
+    ports:
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:50051:50051"
+    command:
+      - --data-dir=/data
+      - --tokens=/etc/kerno/tokens
+      - --listen=0.0.0.0:8080
+      - --grpc-listen=0.0.0.0:50051
+      # A base backup at start, then the write-ahead log every 5 seconds. A volume on the same
+      # disk is a copy, not a safeguard: point this at s3://bucket/prefix (or a mounted remote
+      # disk) in production.
+      - --backup=file:///backups
+    volumes:
+      - kerno-data:/data
+      - kerno-backups:/backups
+      # Owned by uid 10001, the image's user, and not writable: `chown 10001 tokens && chmod 400 tokens`.
+      - ./tokens:/etc/kerno/tokens:ro
+    # Lets the server finish requests and close the databases before Compose kills it.
+    stop_grace_period: 30s
+
+volumes:
+  kerno-data:
+  kerno-backups:
