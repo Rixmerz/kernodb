@@ -10,7 +10,7 @@ over the storage engine.
 > crate, which re-exports this one as `kerno::units`.
 
 ```sh
-cargo add kerno-units@1.0.0-alpha.1
+cargo add kernodb-units@1.0.0-alpha.1
 ```
 
 Optional features: `test-support` (test hooks and the raw write accessor; off by default) and `embed-openai`

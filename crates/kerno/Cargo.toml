@@ -1,5 +1,5 @@
 [package]
-name = "kerno"
+name = "kernodb"
 description = "Kerno: an embedded database of units, revisions and relations, behind one entry point"
 version.workspace = true
 edition.workspace = true
@@ -14,6 +14,9 @@ categories = ["database-implementations"]
 # this one and its three dependencies are publishable. A lib only: `kerno-cli` already
 # builds a binary called `kerno`, and the two never share a package.
 publish = true
+
+[lib]
+name = "kerno"
 
 [dependencies]
 kerno-core.workspace = true

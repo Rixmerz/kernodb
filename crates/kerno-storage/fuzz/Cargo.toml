@@ -13,8 +13,8 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-kerno-core = { path = "../../kerno-core" }
-kerno-storage = { path = ".." }
+kerno-core = { package = "kernodb-core", path = "../../kerno-core" }
+kerno-storage = { package = "kernodb-storage", path = ".." }
 kerno-testkit = { path = "../../kerno-testkit" }
 
 [profile.release]

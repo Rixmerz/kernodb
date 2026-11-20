@@ -32,11 +32,11 @@ repository = "https://github.com/Rixmerz/kernodb"
 homepage = "https://github.com/Rixmerz/kernodb"
 
 [workspace.dependencies]
-kerno-core = { path = "crates/kerno-core", version = "1.0.0-alpha.1" }
+kerno-core = { package = "kernodb-core", path = "crates/kerno-core", version = "1.0.0-alpha.1" }
 kerno-testkit = { path = "crates/kerno-testkit" }
-kerno-storage = { path = "crates/kerno-storage", version = "1.0.0-alpha.1" }
-kerno-units = { path = "crates/kerno-units", version = "1.0.0-alpha.1" }
-kerno = { path = "crates/kerno", version = "1.0.0-alpha.1" }
+kerno-storage = { package = "kernodb-storage", path = "crates/kerno-storage", version = "1.0.0-alpha.1" }
+kerno-units = { package = "kernodb-units", path = "crates/kerno-units", version = "1.0.0-alpha.1" }
+kerno = { package = "kernodb", path = "crates/kerno", version = "1.0.0-alpha.1" }
 kerno-backup = { path = "crates/kerno-backup" }
 spike-core = { path = "spikes/storage/spike-core" }
 spike-btree = { path = "spikes/storage/spike-btree" }

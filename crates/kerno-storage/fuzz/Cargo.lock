@@ -131,27 +131,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "kerno-core"
-version = "1.0.0-alpha.1"
-
-[[package]]
-name = "kerno-storage"
-version = "1.0.0-alpha.1"
-dependencies = [
- "crc32c",
- "crossbeam-skiplist",
- "kerno-core",
- "parking_lot",
- "quick_cache",
-]
-
-[[package]]
 name = "kerno-storage-fuzz"
 version = "0.0.0"
 dependencies = [
- "kerno-core",
- "kerno-storage",
  "kerno-testkit",
+ "kernodb-core",
+ "kernodb-storage",
  "libfuzzer-sys",
 ]
 
@@ -160,8 +145,23 @@ name = "kerno-testkit"
 version = "1.0.0-alpha.1"
 dependencies = [
  "crc32c",
- "kerno-core",
+ "kernodb-core",
  "parking_lot",
+]
+
+[[package]]
+name = "kernodb-core"
+version = "1.0.0-alpha.1"
+
+[[package]]
+name = "kernodb-storage"
+version = "1.0.0-alpha.1"
+dependencies = [
+ "crc32c",
+ "crossbeam-skiplist",
+ "kernodb-core",
+ "parking_lot",
+ "quick_cache",
 ]
 
 [[package]]

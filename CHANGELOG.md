@@ -10,7 +10,7 @@ First public alpha. The on-disk format v1 is frozen (ADR-0013); the API and the 
 
 ### Added
 
-- **Rust crates** (crates.io): `kerno-core`, `kerno-storage`, `kerno-units` and the `kerno` entry-point crate.
+- **Rust crates** (crates.io): `kernodb-core`, `kernodb-storage`, `kernodb-units` and the `kernodb` entry-point crate. The library names stay `kerno_core`, `kerno_storage`, `kerno_units` and `kerno`, so code imports `kerno::...` (the plain `kerno` name on crates.io belongs to an unrelated project).
 - **Storage engine**: crash-safe embedded engine with deterministic format-v1 vectors, checksums, backups and verification.
 - **Units, revisions and relations**: history, retention, schemas, indexes, hybrid search (vectors and BM25) and a query language.
 - **Bindings** (npm and PyPI): Node.js (`kernodb`) and Python (`kernodb`).

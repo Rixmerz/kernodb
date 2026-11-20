@@ -19,7 +19,7 @@ The alpha is published with the pre-release version `1.0.0-alpha.1`. Each regist
 
 | Package | Registry | Install |
 |---|---|---|
-| `kerno` (with `kerno-core`, `kerno-storage`, `kerno-units`) | crates.io | `cargo add kerno@1.0.0-alpha.1` |
+| `kernodb` (with `kernodb-core`, `kernodb-storage`, `kernodb-units`) | crates.io | `cargo add kernodb@1.0.0-alpha.1` (imported as `kerno`) |
 | `kernodb` (Node.js bindings) | npm | `npm install kernodb@alpha` |
 | `kernodb` (Python bindings, imported as `kerno`) | PyPI | `pip install --pre kernodb` |
 
@@ -87,22 +87,22 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 # checks job: dependency and file-access guards (each must exit with code 0)
-test "$(cargo tree -p kerno-core -e normal --prefix none | wc -l)" -eq 1
-tree=$(cargo tree -p kerno-storage -e normal --prefix none) && grep -q '^kerno-storage ' <<<"$tree" && ! grep -E '^(spike-|kerno-testkit|proptest|loom)' <<<"$tree"
+test "$(cargo tree -p kernodb-core -e normal --prefix none | wc -l)" -eq 1
+tree=$(cargo tree -p kernodb-storage -e normal --prefix none) && grep -q '^kernodb-storage ' <<<"$tree" && ! grep -E '^(spike-|kerno-testkit|proptest|loom)' <<<"$tree"
 if grep -rn 'std::fs' crates/kerno-storage/src; then false; else test $? -eq 1; fi
 
 # test-spikes job: all workspace crates except kerno-storage
 cargo test --workspace --exclude kerno-storage --all-features --release -- --nocapture
 
 # test-kerno job: the kerno-storage suites in all profiles
-cargo test -p kerno-storage --all-features --release -- --nocapture
+cargo test -p kernodb-storage --all-features --release -- --nocapture
 
 # bench-smoke job: tiny-scale benchmark run from the repository root
 cargo build --release -p spike-bench --features candidates,kerno
 target/release/spike-bench suite --engines btree,lsm,kerno,redb,fjall,sqlite --workloads all --scales tiny --reps 1 --dir bench-data --out smoke.jsonl
 target/release/spike-bench report --input smoke.jsonl
 ! grep -q '"error"' smoke.jsonl
-cargo run --release -p kerno-units --features test-support --example unit_bench -- --quick
+cargo run --release -p kernodb-units --features test-support --example unit_bench -- --quick
 ```
 
 The weekly scheduled run sets `SPIKE_SEEDS=1000` and `KERNO_KILL_ITERS=200` for the randomized and `kill -9` tests. Two further jobs run only weekly or on demand: `loom` (the commit-queue models, built with `RUSTFLAGS=--cfg kerno_loom`) and the LazyFS scenario, which needs FUSE (`.github/workflows/lazyfs.yml`). The M0 benchmarks are described in [spikes/storage/README.md](spikes/storage/README.md).

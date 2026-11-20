@@ -1,5 +1,5 @@
 [package]
-name = "kerno-core"
+name = "kernodb-core"
 description = "Contract, error model, write batches and VFS of the Kerno storage engine"
 version.workspace = true
 edition.workspace = true
@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-# Published because `kerno` depends on it; the alpha notice is in its own README.
+# Published (as `kernodb-*`) because `kernodb` depends on it; the alpha notice is in its own README.
 publish = true
 readme = "README.md"
 keywords = ["database", "storage", "embedded", "vfs", "kerno"]

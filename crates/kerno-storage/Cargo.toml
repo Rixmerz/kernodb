@@ -1,5 +1,5 @@
 [package]
-name = "kerno-storage"
+name = "kernodb-storage"
 description = "Kerno storage engine: leveled LSM tree on the frozen on-disk format v1"
 version.workspace = true
 edition.workspace = true
@@ -7,11 +7,14 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-# Published because `kerno` depends on it; the alpha notice is in its own README.
+# Published (as `kernodb-*`) because `kernodb` depends on it; the alpha notice is in its own README.
 publish = true
 readme = "README.md"
 keywords = ["database", "storage", "embedded", "lsm", "kerno"]
 categories = ["database-implementations"]
+
+[lib]
+name = "kerno_storage"
 
 [dependencies]
 kerno-core.workspace = true

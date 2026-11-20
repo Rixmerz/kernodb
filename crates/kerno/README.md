@@ -11,7 +11,7 @@ between them, and queries over both. This crate is the one entry point: `kerno::
 ## Install
 
 ```sh
-cargo add kerno@1.0.0-alpha.1
+cargo add kernodb@1.0.0-alpha.1
 ```
 
 ## Quick start

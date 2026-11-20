@@ -142,44 +142,45 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
-name = "kerno"
-version = "1.0.0-alpha.1"
-dependencies = [
- "kerno-core",
- "kerno-storage",
- "kerno-units",
-]
-
-[[package]]
-name = "kerno-core"
-version = "1.0.0-alpha.1"
-
-[[package]]
 name = "kerno-python"
 version = "1.0.0-alpha.1"
 dependencies = [
- "kerno",
+ "kernodb",
  "pyo3",
 ]
 
 [[package]]
-name = "kerno-storage"
+name = "kernodb"
+version = "1.0.0-alpha.1"
+dependencies = [
+ "kernodb-core",
+ "kernodb-storage",
+ "kernodb-units",
+]
+
+[[package]]
+name = "kernodb-core"
+version = "1.0.0-alpha.1"
+
+[[package]]
+name = "kernodb-storage"
 version = "1.0.0-alpha.1"
 dependencies = [
  "crc32c",
  "crossbeam-skiplist",
- "kerno-core",
+ "kernodb-core",
  "parking_lot",
  "quick_cache",
 ]
 
 [[package]]
-name = "kerno-units"
+name = "kernodb-units"
 version = "1.0.0-alpha.1"
 dependencies = [
  "blake3",
  "crc32c",
- "kerno-core",
+ "getrandom",
+ "kernodb-core",
 ]
 
 [[package]]

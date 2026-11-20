@@ -11,6 +11,6 @@ license = "MIT OR Apache-2.0"
 [workspace]
 
 [dependencies]
-kerno-core = { path = "../../crates/kerno-core" }
-kerno-storage = { path = "../../crates/kerno-storage" }
-kerno-units = { path = "../../crates/kerno-units" }
+kerno-core = { package = "kernodb-core", path = "../../crates/kerno-core" }
+kerno-storage = { package = "kernodb-storage", path = "../../crates/kerno-storage" }
+kerno-units = { package = "kernodb-units", path = "../../crates/kerno-units" }

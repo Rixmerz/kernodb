@@ -6,9 +6,9 @@ version = 4
 name = "agent-memory"
 version = "0.0.0"
 dependencies = [
- "kerno-core",
- "kerno-storage",
- "kerno-units",
+ "kernodb-core",
+ "kernodb-storage",
+ "kernodb-units",
 ]
 
 [[package]]
@@ -145,27 +145,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 
 [[package]]
-name = "kerno-core"
-version = "0.0.0"
+name = "kernodb-core"
+version = "1.0.0-alpha.1"
 
 [[package]]
-name = "kerno-storage"
-version = "0.0.0"
+name = "kernodb-storage"
+version = "1.0.0-alpha.1"
 dependencies = [
  "crc32c",
  "crossbeam-skiplist",
- "kerno-core",
+ "kernodb-core",
  "parking_lot",
  "quick_cache",
 ]
 
 [[package]]
-name = "kerno-units"
-version = "0.0.0"
+name = "kernodb-units"
+version = "1.0.0-alpha.1"
 dependencies = [
  "blake3",
  "crc32c",
- "kerno-core",
+ "getrandom",
+ "kernodb-core",
 ]
 
 [[package]]

@@ -25,13 +25,13 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: kerno-core has no dependencies
-        run: test "$(cargo tree -p kerno-core -e normal --prefix none | wc -l)" -eq 1
+        run: test "$(cargo tree -p kernodb-core -e normal --prefix none | wc -l)" -eq 1
       # Both guards fail closed: an error of cargo tree or grep (renamed
       # crate, missing directory) fails the step instead of passing it.
       - name: kerno-storage does not depend on spikes or test crates at run time
         shell: bash
         run: |
-          tree=$(cargo tree -p kerno-storage -e normal --prefix none) && grep -q '^kerno-storage ' <<<"$tree" && ! grep -E '^(spike-|kerno-testkit|proptest|loom)' <<<"$tree"
+          tree=$(cargo tree -p kernodb-storage -e normal --prefix none) && grep -q '^kernodb-storage ' <<<"$tree" && ! grep -E '^(spike-|kerno-testkit|proptest|loom)' <<<"$tree"
       - name: kerno-storage never uses std::fs (all file access goes through Vfs)
         shell: bash
         run: |
@@ -72,7 +72,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p kerno-storage --all-features --release -- --nocapture 2>&1 | tee test.log
+      - run: cargo test -p kernodb-storage --all-features --release -- --nocapture 2>&1 | tee test.log
         shell: bash
       - name: Corruption outcomes
         if: always()
@@ -90,7 +90,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p kerno-storage --release --lib commit_queue
+      - run: cargo test -p kernodb-storage --release --lib commit_queue
 
   # The four crates of the public API package for crates.io (ENG-02): the
   # dry run builds each one from its packaged sources, against the others as
@@ -103,7 +103,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo publish --dry-run -p kerno-core -p kerno-storage -p kerno-units -p kerno
+      - run: cargo publish --dry-run -p kernodb-core -p kernodb-storage -p kernodb-units -p kernodb
 
   # Windows build (ENG-03): the release workflow keeps its Windows entry
   # best effort until this job is green and the owner keeps Windows in the
@@ -116,7 +116,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked -p kerno-cli -p kerno-mcp
-      - run: cargo test --locked -p kerno-core -p kerno-storage
+      - run: cargo test --locked -p kernodb-core -p kernodb-storage
 
   # Dependency audit (threat T-10): advisories, licences, bans and sources
   # as set in deny.toml.
@@ -180,7 +180,7 @@ jobs:
         shell: bash
       # Stage 3 U metrics (E3-09), quick mode: a few seconds, reports only;
       # a threshold miss prints FAIL but does not fail the job.
-      - run: cargo run --release -p kerno-units --features test-support --example unit_bench -- --quick | tee -a "$GITHUB_STEP_SUMMARY"
+      - run: cargo run --release -p kernodb-units --features test-support --example unit_bench -- --quick | tee -a "$GITHUB_STEP_SUMMARY"
         shell: bash
 
   # The Dockerfile builds and the image works (docs/deployment.md). Nothing is pushed: the image
