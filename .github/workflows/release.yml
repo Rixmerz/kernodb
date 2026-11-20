@@ -1,0 +1,107 @@
+name: Release
+
+# Pushing a tag `v*` builds `kerno` and `kerno-mcp` for every target below,
+# packages each target as one archive with its SHA-256, and attaches them all
+# (plus SHA256SUMS) to a GitHub release. Steps: docs/release.md.
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    # ponytail: Windows is a best-effort entry (continue-on-error) until the
+    # owner keeps it in the 1.0 set (row ENG-03) and the CI `windows` job is
+    # green; then drop the flag (docs/release.md).
+    continue-on-error: ${{ matrix.experimental == true }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm }
+          - { target: x86_64-apple-darwin, os: macos-15-intel }
+          - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest, experimental: true }
+    # Every runner is native for its target: no cross linker to maintain.
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --locked --target "${{ matrix.target }}" -p kerno-cli -p kerno-mcp
+      - name: Package
+        env:
+          TARGET: ${{ matrix.target }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          name="kerno-${TAG}-${TARGET}"
+          ext=""
+          case "$TARGET" in *windows*) ext=".exe" ;; esac
+          mkdir "$name"
+          cp "target/${TARGET}/release/kerno${ext}" "target/${TARGET}/release/kerno-mcp${ext}" \
+            LICENSE-APACHE LICENSE-MIT README.md "$name/"
+          if [ -n "$ext" ]; then
+            archive="${name}.zip"
+            7z a -tzip "$archive" "$name" > /dev/null
+          else
+            archive="${name}.tar.gz"
+            tar -czf "$archive" "$name"
+          fi
+          if command -v sha256sum > /dev/null; then
+            sha256sum "$archive" > "${archive}.sha256"
+          else
+            shasum -a 256 "$archive" > "${archive}.sha256"
+          fi
+          cat "${archive}.sha256"
+          echo "ARCHIVE=${archive}" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: |
+            ${{ env.ARCHIVE }}
+            ${{ env.ARCHIVE }}.sha256
+          if-no-files-found: error
+
+  release:
+    name: GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # No .zip when the best-effort Windows build failed.
+          shopt -s nullglob
+          cd dist
+          cat ./*.sha256 > SHA256SUMS
+          # A tag with a hyphen (v0.1.0-rc1) is a pre-release.
+          flags=()
+          case "$TAG" in *-*) flags+=(--prerelease) ;; esac
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes \
+            "${flags[@]}" ./*.tar.gz ./*.zip SHA256SUMS

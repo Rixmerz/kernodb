@@ -1,0 +1,107 @@
+name: npm package
+
+# Builds the `kernodb` Node.js native module (bindings/node) for every target
+# in its package.json `napi.targets`, and runs the tests on each runner. A `v*`
+# tag also publishes the per-platform packages and `kernodb` to npm, with
+# provenance, once the owner approves the `npm` environment. Steps:
+# docs/release.md.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    # Windows stays best effort until the owner keeps it in the 1.0 set
+    # (decision 6, row ENG-03), as in release.yml.
+    continue-on-error: ${{ matrix.experimental == true }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm }
+          - { target: x86_64-apple-darwin, os: macos-15-intel }
+          - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest, experimental: true }
+    defaults:
+      run:
+        shell: bash
+        working-directory: bindings/node
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: bindings/node/package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: bindings/node/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bindings/node
+          key: ${{ matrix.target }}
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build --target "${{ matrix.target }}"
+      - run: pnpm test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bindings-${{ matrix.target }}
+          path: bindings/node/*.node
+          if-no-files-found: error
+
+  publish:
+    name: publish to npm
+    needs: build
+    # Only a tag publishes; workflow_dispatch only builds and tests.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    # The environment requires the owner's approval before this job starts.
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        shell: bash
+        working-directory: bindings/node
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: bindings/node/package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: bindings/node/pnpm-lock.yaml
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bindings-*
+          path: bindings/node/artifacts
+      - name: Move each module into its platform package
+        run: |
+          set -euo pipefail
+          pnpm exec napi create-npm-dirs
+          pnpm artifacts
+      # `npm publish` runs the `prepublishOnly` script (`napi prepublish -t npm`),
+      # which publishes the per-platform packages first; NPM_CONFIG_PROVENANCE
+      # gives them provenance as well.
+      - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: "true"

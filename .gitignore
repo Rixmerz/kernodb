@@ -1,0 +1,4 @@
+/target
+*.kerno-tmp
+/bench-data
+/.claude/worktrees/

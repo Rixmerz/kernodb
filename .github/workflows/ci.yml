@@ -1,0 +1,227 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Weekly long run with many more seeds for the randomized suites.
+    - cron: "17 3 * * 1"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  checks:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: kerno-core has no dependencies
+        run: test "$(cargo tree -p kerno-core -e normal --prefix none | wc -l)" -eq 1
+      # Both guards fail closed: an error of cargo tree or grep (renamed
+      # crate, missing directory) fails the step instead of passing it.
+      - name: kerno-storage does not depend on spikes or test crates at run time
+        shell: bash
+        run: |
+          tree=$(cargo tree -p kerno-storage -e normal --prefix none) && grep -q '^kerno-storage ' <<<"$tree" && ! grep -E '^(spike-|kerno-testkit|proptest|loom)' <<<"$tree"
+      - name: kerno-storage never uses std::fs (all file access goes through Vfs)
+        shell: bash
+        run: |
+          if grep -rn 'std::fs' crates/kerno-storage/src; then false; else test $? -eq 1; fi
+
+  # The tests run as two parallel jobs (phase1-design.md §6.7): everything
+  # but the engine (spikes, kerno-core, kerno-testkit and its reference
+  # engine, the differential test, and kerno-units with its crash sweeps and
+  # kill -9 test), and the engine with all its profiles.
+  test-spikes:
+    name: spikes, testkit, reference engine and differential test
+    runs-on: ubuntu-latest
+    env:
+      # Empty means "each suite's default"; the weekly run uses 1000 seeds.
+      SPIKE_SEEDS: ${{ github.event_name == 'schedule' && '1000' || '' }}
+      # Iterations of the kill -9 test of kerno-units
+      # (crates/kerno-units/tests/process_kill.rs); empty means 20.
+      KERNO_KILL_ITERS: ${{ github.event_name == 'schedule' && '200' || '' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --exclude kerno-storage --all-features --release -- --nocapture 2>&1 | tee test.log
+        shell: bash
+      - name: Corruption outcomes
+        if: always()
+        run: grep -h "Outcomes" test.log >> "$GITHUB_STEP_SUMMARY" || true
+
+  test-kerno:
+    name: kerno-storage suites (all profiles), regressions and model test
+    runs-on: ubuntu-latest
+    env:
+      # Empty means "each suite's default"; the weekly run uses 1000 seeds.
+      SPIKE_SEEDS: ${{ github.event_name == 'schedule' && '1000' || '' }}
+      # Iterations of the kill -9 tests (tests/process_kill.rs); empty means 20.
+      KERNO_KILL_ITERS: ${{ github.event_name == 'schedule' && '200' || '' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p kerno-storage --all-features --release -- --nocapture 2>&1 | tee test.log
+        shell: bash
+      - name: Corruption outcomes
+        if: always()
+        run: grep -h "Outcomes" test.log >> "$GITHUB_STEP_SUMMARY" || true
+
+  # The loom models explore every interleaving of the commit queue's protocol
+  # (phase1-design.md §5.6, §6.7); slow, so weekly (and on demand) only.
+  loom:
+    name: loom models of the commit queue
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: --cfg kerno_loom
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p kerno-storage --release --lib commit_queue
+
+  # The four crates of the public API package for crates.io (ENG-02): the
+  # dry run builds each one from its packaged sources, against the others as
+  # they would be published. The owner runs the same command without
+  # --dry-run; docs/release.md.
+  publish-dry-run:
+    name: cargo publish --dry-run (kerno and its dependencies)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo publish --dry-run -p kerno-core -p kerno-storage -p kerno-units -p kerno
+
+  # Windows build (ENG-03): the release workflow keeps its Windows entry
+  # best effort until this job is green and the owner keeps Windows in the
+  # binary set (docs/release.md).
+  windows:
+    name: windows build and engine tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked -p kerno-cli -p kerno-mcp
+      - run: cargo test --locked -p kerno-core -p kerno-storage
+
+  # Dependency audit (threat T-10): advisories, licences, bans and sources
+  # as set in deny.toml.
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
+  # Coverage-guided fuzzing of the kerno-storage readers (threat T-10), one
+  # target at a time for 60 s each, as crates/kerno-storage/fuzz/README.md
+  # says: the committed corpus is only read, new inputs go to a scratch
+  # directory. Weekly (and on demand) only; needs nightly.
+  fuzz:
+    name: fuzz kerno-storage targets
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/kerno-storage
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/kerno-storage/fuzz
+      - run: cargo install cargo-fuzz --locked
+      - name: Run every target for 60 seconds
+        shell: bash
+        run: |
+          # -max_len=65536 for every target, as the README loop does; wal,
+          # manifest and open need it. A crash fails the step.
+          for t in $(cargo +nightly fuzz list); do
+            mkdir -p "$RUNNER_TEMP/fuzz-work/$t"
+            cargo +nightly fuzz run "$t" "$RUNNER_TEMP/fuzz-work/$t" "fuzz/corpus/$t" -- -max_total_time=60 -max_len=65536 -timeout=1 || exit 1
+          done
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: crates/kerno-storage/fuzz/artifacts
+          if-no-files-found: ignore
+
+  bench-smoke:
+    name: benchmark smoke run (tiny scale)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p spike-bench --features candidates,kerno
+      - run: |
+          target/release/spike-bench suite --engines btree,lsm,kerno,redb,fjall,sqlite --workloads all \
+            --scales tiny --reps 1 --dir bench-data --out smoke.jsonl
+          target/release/spike-bench report --input smoke.jsonl | tee -a "$GITHUB_STEP_SUMMARY"
+          ! grep -q '"error"' smoke.jsonl
+        shell: bash
+      # Stage 3 U metrics (E3-09), quick mode: a few seconds, reports only;
+      # a threshold miss prints FAIL but does not fail the job.
+      - run: cargo run --release -p kerno-units --features test-support --example unit_bench -- --quick | tee -a "$GITHUB_STEP_SUMMARY"
+        shell: bash
+
+  # The Dockerfile builds and the image works (docs/deployment.md). Nothing is pushed: the image
+  # is loaded into the runner's Docker, started with a throwaway token and asked to be healthy.
+  docker:
+    name: docker image (build only, never pushed)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: kerno-server:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: The image starts, is not root and turns healthy
+        shell: bash
+        run: |
+          set -euo pipefail
+          token=$(openssl rand -hex 32)
+          # The tokens file is read by uid 10001, the image's user.
+          echo "$(echo "$token" | docker run --rm -i kerno-server:ci hash-token) acme" > "$RUNNER_TEMP/tokens"
+          chmod 0444 "$RUNNER_TEMP/tokens"
+          docker run -d --name kerno -p 127.0.0.1:8080:8080 \
+            -v "$RUNNER_TEMP/tokens:/etc/kerno/tokens:ro" kerno-server:ci
+          test "$(docker exec kerno id -u)" = 10001
+          for _ in $(seq 60); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' kerno)
+            [ "$status" = healthy ] && break
+            sleep 2
+          done
+          docker logs kerno
+          test "$status" = healthy
+          # A token is required; the probe and the metrics are not.
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/v1/health)" = 401
+          curl -fsS -H "Authorization: Bearer $token" http://127.0.0.1:8080/v1/health
+          metrics=$(curl -fsS http://127.0.0.1:8080/metrics)
+          grep -q '^kerno_databases_open 1' <<<"$metrics"
+          # SIGTERM is a clean stop: exit code 0.
+          docker stop kerno
+          test "$(docker inspect --format '{{.State.ExitCode}}' kerno)" = 0
