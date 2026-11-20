@@ -145,7 +145,7 @@ fn record_layout_is_pinned<E: Target>() {
             (long_key, value(1)),
         ])
     );
-    assert_eq!(layer_version(&db), 5);
+    assert_eq!(layer_version(&db), 7);
     clean(&db, "layout");
 }
 
@@ -194,7 +194,7 @@ fn counts_follow_every_lifecycle_change<E: Target>() {
         cs.delete(u[0], None).unwrap();
     });
     assert_eq!(counts(&db), want(&[("a", 0), ("b", 1)]), "zero is stored, not removed");
-    assert_eq!(layer_version(&db), 5);
+    assert_eq!(layer_version(&db), 7);
     clean(&db, "all of a gone");
     // A type back from zero keeps counting from the record, with no scan to rebuild it.
     create_units(&db, &[("a", 1)]);
@@ -281,7 +281,7 @@ fn export_import_keeps_the_counts<E: Target>() {
     kerno_units::import::import(&target, &bytes).unwrap();
     // `c` has no active unit to import, so the target never counts it: no record, not a zero.
     assert_eq!(counts(&target), want(&[("a", 1), ("b", 1)]));
-    assert_eq!(layer_version(&target), 5);
+    assert_eq!(layer_version(&target), 7);
     clean(&target, "imported");
     assert_eq!(kerno_units::export::export(&target).unwrap(), bytes);
 }
@@ -336,12 +336,12 @@ fn the_mark_rises_with_the_first_count<E: Target>() {
     let db = open::<E>();
     assert!(raw(&db).is_empty(), "opening writes nothing");
     let u = create_units(&db, &[("a", 1), ("a", 1)]);
-    assert_eq!(layer_version(&db), 5);
+    assert_eq!(layer_version(&db), 7);
     change(&db, |cs| {
         cs.delete(u[0], None).unwrap();
     });
     db.set_policy("a", HistoryPolicy::Audit, ChangeMeta::default()).unwrap();
-    assert_eq!(layer_version(&db), 5, "nothing lowers it");
+    assert_eq!(layer_version(&db), 7, "nothing lowers it");
 
     let old = open::<E>();
     let v = create_units(&old, &[("a", 1), ("a", 1)]);
@@ -357,7 +357,7 @@ fn the_mark_rises_with_the_first_count<E: Target>() {
     change(&old, |cs| {
         cs.create(new_unit("b", 1, b"x")).unwrap();
     });
-    assert_eq!(layer_version(&old), 5);
+    assert_eq!(layer_version(&old), 7);
     assert_eq!(counts(&old), want(&[("b", 1)]), "only the type the write touched has a record");
     clean(&old, "legacy then a write");
 }
@@ -741,7 +741,7 @@ fn fixture_disk<E: Target>() -> SimVfs {
 fn legacy_store_opens_reads_unchanged_and_gets_a_count_when_written<E: Target>() {
     let disk = fixture_disk::<E>();
     let db = open_units::<E>(disk.as_vfs(), &cfg(100)).unwrap();
-    assert_eq!(layer_version(&db), 1);
+    assert_eq!(layer_version(&db), 7);
     assert!(counts(&db).is_empty());
     clean(&db, "fixture");
     let before = raw(&db);
@@ -786,7 +786,7 @@ fn legacy_store_opens_reads_unchanged_and_gets_a_count_when_written<E: Target>()
         cs.create(new_unit("b", 1, b"new")).unwrap();
     });
     assert_eq!(counts(&db), want(&[("b", 2)]));
-    assert_eq!(layer_version(&db), 5);
+    assert_eq!(layer_version(&db), 7);
     // Archiving an active unit of a counts the active heads that exist (a/1 and a/2) minus it; the archived one is not counted.
     change(&db, |cs| {
         cs.archive(u0, None).unwrap();

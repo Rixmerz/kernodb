@@ -167,7 +167,7 @@ fn a_unit_changed_earlier_in_the_batch_cannot_take_a_relation() {
     assert!(db.verify().unwrap().is_clean());
 }
 
-// ---- layer 7: per-type keyword-index opt-out (ADR-0022) -------------------
+// ---- the format cut (ADR-0023): keyword index opt-in per type -------------
 
 fn layer_version(dir: &std::path::Path) -> u32 {
     let db = Db::open(dir).unwrap();
@@ -177,63 +177,75 @@ fn layer_version(dir: &std::path::Path) -> u32 {
     kerno::units::LayerMeta::decode_upto(&raw, kerno::units::codec::MAX_LAYER_VERSION).unwrap().layer_version
 }
 
+fn search(db: &Db, q: &str) -> Vec<kerno::UnitId> {
+    db.unit_db().snapshot().unwrap().search_text(q, 10).unwrap().iter().map(|h| h.unit).collect()
+}
+
 #[test]
-fn a_type_without_fulltext_is_not_indexed_and_verifies() {
+fn keyword_index_is_off_by_default_and_on_per_type() {
     let dir = TempDir::new();
     let db = Db::open(&dir.0).unwrap();
-    db.set_fulltext("sym", false).unwrap();
-    db.set_fulltext("sym", false).unwrap(); // same state: nothing written
-    let a = db.store("sym", "alpha beta gamma").unwrap();
-    let n = db.store("note", "alpha beta gamma").unwrap();
-    let hits: Vec<_> = db.unit_db().snapshot().unwrap().search_text("alpha", 10).unwrap();
-    let ids: Vec<_> = hits.iter().map(|h| h.unit).collect();
-    assert_eq!(ids, vec![n], "only the indexed type is found");
+    let a = db.store("sym", "alpha beta").unwrap();
+    assert!(search(&db, "alpha").is_empty(), "no type is indexed by default");
+    db.set_fulltext("note", true).unwrap();
+    db.set_fulltext("note", true).unwrap(); // same state: nothing written
+    let n = db.store("note", "alpha beta").unwrap();
+    assert_eq!(search(&db, "alpha"), vec![n]);
     db.update(a, "delta").unwrap();
     assert!(db.verify().unwrap().is_clean(), "{:?}", db.verify().unwrap().findings);
     db.close().unwrap();
-    assert_eq!(layer_version(&dir.0), 7);
-    // The setting survives a reopen.
-    let db = Db::open(&dir.0).unwrap();
-    let b = db.store("sym", "epsilon").unwrap();
-    assert!(db.unit_db().snapshot().unwrap().search_text("epsilon", 10).unwrap().is_empty());
+    assert_eq!(layer_version(&dir.0), 7, "a new database starts at the cut version");
+    let db = Db::open(&dir.0).unwrap(); // the setting survives a reopen
+    let m = db.store("note", "epsilon").unwrap();
+    assert_eq!(search(&db, "epsilon"), vec![m]);
     assert!(db.verify().unwrap().is_clean());
-    let _ = b;
 }
 
 #[test]
-fn the_setting_changes_only_while_the_type_is_empty() {
+fn switching_a_type_with_units_reindexes_them_in_one_commit() {
     let dir = TempDir::new();
     let db = Db::open(&dir.0).unwrap();
-    let a = db.store("sym", "alpha").unwrap();
-    assert!(matches!(db.set_fulltext("sym", false), Err(kerno::Error::InvalidArgument(_))));
-    db.delete(a).unwrap();
-    db.set_fulltext("sym", false).unwrap();
-    let b = db.store("sym", "beta").unwrap();
-    assert!(db.set_fulltext("sym", true).is_err(), "an active unit blocks turning it back on");
-    db.commit(Batch::new().archive(b)).unwrap();
-    db.set_fulltext("sym", true).unwrap(); // archived units are not indexed either way
-    db.commit(Batch::new().unarchive(b)).unwrap();
-    let found: Vec<_> = db.unit_db().snapshot().unwrap().search_text("beta", 10).unwrap();
-    assert_eq!(found.len(), 1, "unarchived under the index is indexed");
+    let a = db.store("note", "rust ownership").unwrap();
+    let b = db.store("note", "rust borrow").unwrap();
+    let c = db.store("note", "archived rust").unwrap();
+    db.commit(Batch::new().archive(c)).unwrap();
+    db.set_fulltext("note", true).unwrap();
+    let mut hits = search(&db, "rust");
+    hits.sort();
+    let mut want = vec![a, b];
+    want.sort();
+    assert_eq!(hits, want, "active units indexed, the archived one not");
+    assert!(db.verify().unwrap().is_clean(), "{:?}", db.verify().unwrap().findings);
+    db.commit(Batch::new().unarchive(c)).unwrap();
+    assert_eq!(search(&db, "archived"), vec![c]);
+    db.set_fulltext("note", false).unwrap();
+    assert!(search(&db, "rust").is_empty(), "turning it off removes the entries");
     assert!(db.verify().unwrap().is_clean(), "{:?}", db.verify().unwrap().findings);
 }
 
 #[test]
-fn a_layer_6_reader_refuses_a_layer_7_database() {
+fn a_database_from_before_the_cut_is_refused() {
     let dir = TempDir::new();
     let db = Db::open(&dir.0).unwrap();
-    db.set_fulltext("sym", false).unwrap();
-    let raw = db.unit_db().raw_get(b"\x01layer").unwrap().unwrap();
-    let err = kerno::units::LayerMeta::decode_upto(&raw, 6).unwrap_err();
-    assert_eq!(err.rule, kerno::units::UnitRule::Unit16);
+    db.store("n", "a").unwrap();
+    // Rewrite the mark to layer 6, as a 1.0.0-alpha.1 build left it.
+    let mut mark = db.unit_db().raw_get(b"\x01layer").unwrap().unwrap();
+    mark[5] = 6;
+    db.unit_db().raw_commit(vec![(b"\x01layer".to_vec(), Some(mark))]).unwrap();
+    db.close().unwrap();
+    match Db::open(&dir.0) {
+        Err(kerno::Error::LayerTooOld { found: 6, minimum: 7 }) => {}
+        Err(e) => panic!("wrong error: {e}"),
+        Ok(_) => panic!("an alpha.1 database must be refused"),
+    }
 }
 
 #[test]
 fn record_layout_is_pinned() {
-    let (t, o) = kerno::units::type_options::check_shape(b"\x77\x03sym", &[1, 0, 1]).unwrap();
-    assert_eq!((t.as_str(), o), ("sym", 1));
-    assert!(kerno::units::type_options::check_shape(b"\x77\x03sym", &[1, 0, 0]).is_err(), "no empty options");
-    assert!(kerno::units::type_options::check_shape(b"\x77\x03sym", &[1, 0, 2]).is_err(), "unknown bit");
-    assert!(kerno::units::type_options::check_shape(b"\x77\x03sym", &[2, 0, 1]).is_err(), "newer envelope");
-    assert!(kerno::units::type_options::check_shape(b"\x77\x04sym", &[1, 0, 1]).is_err(), "bad length");
+    let (t, o) = kerno::units::type_options::check_shape(b"\x77\x04note", &[1, 0, 1]).unwrap();
+    assert_eq!((t.as_str(), o), ("note", kerno::units::type_options::FULLTEXT));
+    assert!(kerno::units::type_options::check_shape(b"\x77\x04note", &[1, 0, 0]).is_err(), "no empty options");
+    assert!(kerno::units::type_options::check_shape(b"\x77\x04note", &[1, 0, 2]).is_err(), "unknown bit");
+    assert!(kerno::units::type_options::check_shape(b"\x77\x04note", &[2, 0, 1]).is_err(), "newer envelope");
+    assert!(kerno::units::type_options::check_shape(b"\x77\x05note", &[1, 0, 1]).is_err(), "bad length");
 }

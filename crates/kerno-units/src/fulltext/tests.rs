@@ -25,10 +25,18 @@ fn cfg(first_id: u64) -> UnitConfig {
     c
 }
 
-fn open_at(disk: &SimVfs, first_id: u64) -> UnitDb<E> {
+/// The layer, with the keyword index of no type turned on (the default).
+fn open_plain(disk: &SimVfs, first_id: u64) -> UnitDb<E> {
     let c = cfg(first_id);
     let engine = E::open(disk.as_vfs(), Path::new("db"), &c.engine).expect("open engine");
     UnitDb::from_engine(engine, &c).expect("open layer")
+}
+
+fn open_at(disk: &SimVfs, first_id: u64) -> UnitDb<E> {
+    let db = open_plain(disk, first_id);
+    // The keyword index is opt-in per type (ADR-0023).
+    db.set_fulltext("note", true, crate::ChangeMeta::default()).expect("index notes");
+    db
 }
 
 fn open(disk: &SimVfs) -> UnitDb<E> {
@@ -363,9 +371,12 @@ fn export_and_import_rebuild_the_index() {
     let bytes = crate::export::export(&db).unwrap();
 
     let other = SimVfs::new(11);
-    let copy = open(&other);
-    // The import ends with `verify_snapshot`, which includes UNIT-49.
+    let copy = open_plain(&other, 1);
+    // The import ends with `verify_snapshot`, which includes UNIT-49. The
+    // export carries no type option (export-v1 §1, like schemas), so the
+    // index is turned on after the import and indexes the imported units.
     crate::import::import(&copy, &bytes).unwrap();
+    copy.set_fulltext("note", true, crate::ChangeMeta::default()).unwrap();
     assert_eq!(snapshot_of(&copy), want);
     assert_clean(&copy);
 }

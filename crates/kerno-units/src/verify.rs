@@ -416,8 +416,8 @@ struct State {
     fulltext: crate::fulltext::Check,
     /// Schemas and their index entries (UNIT-50 and UNIT-51).
     schema: crate::schema::Check,
-    /// Types with `NO_FULLTEXT` (`0x77` records, ADR-0022).
-    no_fulltext: BTreeSet<String>,
+    /// Types with `FULLTEXT` (`0x77` records, ADR-0022/0023).
+    fulltext_types: BTreeSet<String>,
     first_type_options_key: Option<Vec<u8>>,
 }
 
@@ -564,8 +564,8 @@ impl State {
             self.first_type_options_key.get_or_insert_with(|| k.clone());
             match crate::type_options::check_shape(&k, &v) {
                 Ok((unit_type, options)) => {
-                    if options & crate::type_options::NO_FULLTEXT != 0 {
-                        self.no_fulltext.insert(unit_type);
+                    if options & crate::type_options::FULLTEXT != 0 {
+                        self.fulltext_types.insert(unit_type);
                     }
                 }
                 Err(e) => self.decode_error(k, e),
@@ -1080,11 +1080,11 @@ impl State {
         if !self.bad_heads.is_empty() {
             return;
         }
-        if !self.no_fulltext.is_empty() {
-            let opted_out: Vec<UnitId> =
-                self.heads.iter().filter(|(_, h)| self.no_fulltext.contains(&h.unit_type)).map(|(u, _)| *u).collect();
-            self.fulltext.exclude(opted_out);
-        }
+        // The index is opt-in (ADR-0023): only the units of `FULLTEXT` types
+        // are expected in it.
+        let not_indexed: Vec<UnitId> =
+            self.heads.iter().filter(|(_, h)| !self.fulltext_types.contains(&h.unit_type)).map(|(u, _)| *u).collect();
+        self.fulltext.exclude(not_indexed);
         for (key, detail) in self.fulltext.findings() {
             self.cross(CrossRule::Unit49, key, detail);
         }

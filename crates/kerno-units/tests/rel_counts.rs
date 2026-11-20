@@ -45,9 +45,8 @@ fn open<E: Target>() -> UnitDb<E> {
     open_units::<E>(SimVfs::new(5).as_vfs(), &cfg(1)).expect("open")
 }
 
-/// `n` units of one type, left as a build before layer 5 left them (no
-/// live-unit counts, mark 1): these tests are about the adjacency counts of
-/// layer 4 and read the mark that a relation raises.
+/// `n` units of one type. Every database starts at the cut layer version
+/// (ADR-0023), so the mark is 7 before and after a relation.
 fn units<E: Target>(db: &UnitDb<E>, n: usize) -> Vec<UnitId> {
     let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
     let ids = (0..n)
@@ -57,7 +56,6 @@ fn units<E: Target>(db: &UnitDb<E>, n: usize) -> Vec<UnitId> {
         })
         .collect();
     cs.commit().unwrap();
-    to_legacy(db, 1);
     ids
 }
 
@@ -134,7 +132,7 @@ fn record_layout_is_pinned<E: Target>() {
     in_key.extend_from_slice(&[1, b'c', b'i', b't', b'e', b's', 0]);
     let value = vec![1, 0, 0, 0, 0, 0, 0, 0, 0, 2];
     assert_eq!(got, BTreeMap::from([(out_key, value.clone()), (in_key, value)]));
-    assert_eq!(layer_version(&db), 4);
+    assert_eq!(layer_version(&db), 7);
     clean(&db, "two relations");
 }
 
@@ -144,7 +142,7 @@ fn record_layout_is_pinned<E: Target>() {
 fn counts_follow_create_and_delete<E: Target>() {
     let db = open::<E>();
     let u = units(&db, 3);
-    assert_eq!(layer_version(&db), 1);
+    assert_eq!(layer_version(&db), 7);
     assert!(count_records(&db).is_empty());
     let a = relate(&db, u[0], u[1], "cites");
     let b = relate(&db, u[0], u[2], "cites");
@@ -168,7 +166,7 @@ fn counts_follow_create_and_delete<E: Target>() {
         clean(&db, "after a delete");
     }
     assert_eq!(count_records(&db).len(), 2, "only the one left in the last change set");
-    assert_eq!(layer_version(&db), 4, "nothing lowers the mark");
+    assert_eq!(layer_version(&db), 7, "nothing lowers the mark");
 }
 
 /// An aborted change set leaves no count record behind and no mark change.
@@ -179,7 +177,7 @@ fn an_aborted_change_set_leaves_no_count<E: Target>() {
     cs.create_relation(u[0], u[1], "cites", RelationProvenance::Declared).unwrap();
     drop(cs);
     assert!(count_records(&db).is_empty());
-    assert_eq!(layer_version(&db), 1);
+    assert_eq!(layer_version(&db), 7);
     clean(&db, "after abort");
 }
 
@@ -296,15 +294,15 @@ fn a_refused_delete_keeps_the_only_count<E: Target>() {
 fn the_mark_rises_only_for_a_record_that_stays<E: Target>() {
     let db = open::<E>();
     let u = units(&db, 2);
-    assert_eq!(layer_version(&db), 1);
+    assert_eq!(layer_version(&db), 7);
     let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
     let edge = cs.create_relation(u[0], u[1], "cites", RelationProvenance::Declared).unwrap();
     cs.delete_relation(edge).unwrap();
     cs.commit().unwrap();
     assert!(count_records(&db).is_empty());
-    assert_eq!(layer_version(&db), 1, "no 0x72 record committed, mark unchanged");
+    assert_eq!(layer_version(&db), 7, "no 0x72 record committed, mark unchanged");
     relate(&db, u[0], u[1], "cites");
-    assert_eq!(layer_version(&db), 4);
+    assert_eq!(layer_version(&db), 7);
 }
 
 // ---------------------------------------------------------------- K1
@@ -511,14 +509,14 @@ fn build_legacy<E: Target>(db: &UnitDb<E>) -> Vec<UnitId> {
 fn legacy_relations_work_and_get_a_count_when_next_changed<E: Target>() {
     let db = open::<E>();
     let u = build_legacy(&db);
-    assert_eq!(layer_version(&db), 1);
+    assert_eq!(layer_version(&db), 7);
     assert!(count_records(&db).is_empty());
     clean(&db, "legacy");
     assert_eq!(never_short(&db, u[0], Direction::Out, &["cites", "refines"], "legacy"), 0);
     assert_eq!(db.snapshot().unwrap().relations_of(u[0], Direction::Out, None).unwrap().len(), 2);
 
     let third = relate(&db, u[0], u[1], "cites");
-    assert_eq!(layer_version(&db), 4);
+    assert_eq!(layer_version(&db), 7);
     let counts = count_records(&db);
     assert_eq!(counts[&record(u[0], Direction::Out, "cites", 0).0], record(u[0], Direction::Out, "cites", 3).1);
     assert_eq!(counts[&record(u[1], Direction::In, "cites", 0).0], record(u[1], Direction::In, "cites", 2).1);
@@ -538,7 +536,7 @@ fn deleting_a_legacy_relation_counts_what_is_left<E: Target>() {
     let db = open::<E>();
     let u = build_legacy(&db);
     unrelate(&db, RelationId([0xA1; 16]));
-    assert_eq!(layer_version(&db), 4);
+    assert_eq!(layer_version(&db), 7);
     assert_eq!(
         count_records(&db)[&record(u[0], Direction::Out, "cites", 0).0],
         record(u[0], Direction::Out, "cites", 1).1
@@ -562,7 +560,7 @@ fn export_import_keeps_the_counts<E: Target>() {
     kerno_units::import::import(&target, &bytes).unwrap();
     assert_eq!(count_records(&target), count_records(&src));
     // The import writes the live counts of its units too: layer 5, where the source stayed at 4.
-    assert_eq!(layer_version(&target), 5);
+    assert_eq!(layer_version(&target), 7);
     clean(&target, "imported");
     assert_eq!(kerno_units::export::export(&target).unwrap(), bytes);
 }
@@ -718,7 +716,7 @@ fn legacy_directory_opens_works_and_upgrades_when_written<E: Target>() {
     let first = UnitId(id);
     id[8..].copy_from_slice(&2u64.to_be_bytes());
     let second = UnitId(id);
-    assert_eq!(layer_version(&db), 1);
+    assert_eq!(layer_version(&db), 7);
     assert!(count_records(&db).is_empty());
     clean(&db, "fixture");
     let snap = db.snapshot().unwrap();
@@ -728,7 +726,7 @@ fn legacy_directory_opens_works_and_upgrades_when_written<E: Target>() {
     drop(snap);
     assert!(count_records(&db).is_empty(), "opening and reading write nothing");
     relate(&db, second, first, "cites");
-    assert_eq!(layer_version(&db), 4);
+    assert_eq!(layer_version(&db), 7);
     assert_eq!(count_records(&db).len(), 2);
     clean(&db, "fixture then a new relation");
     never_short(&db, first, Direction::In, &["cites"], "fixture then a new relation");

@@ -171,15 +171,15 @@ fn mark_is_raised_to_3_by_the_first_token_and_never_lowered<E: Target>() {
     let disk = SimVfs::new(16);
     let db = open::<E>(&disk);
     let unit = plain(&db, b"before");
-    assert_eq!(layer_version(&db), 5, "the first unit raised the mark to the layer of the live counts");
+    assert_eq!(layer_version(&db), 7, "the first unit raised the mark to the layer of the live counts");
     let (with_token, _) = issue(&db, b"token");
-    assert_eq!(layer_version(&db), 5, "a token needs layer 3, which layer 5 includes");
+    assert_eq!(layer_version(&db), 7, "a token needs layer 3, which layer 5 includes");
     // Neither deleting the only token nor a policy change lowers it.
     delete(&db, with_token);
     assert_eq!(token_records(&db), (0, 0));
     db.set_policy("doc", HistoryPolicy::Versioned, ChangeMeta::default()).unwrap();
     plain(&db, b"after");
-    assert_eq!(layer_version(&db), 5);
+    assert_eq!(layer_version(&db), 7);
     assert!(db.get_unit(unit).unwrap().is_some());
     clean(&db);
 }
@@ -429,7 +429,7 @@ fn legacy_units_without_a_token_stay_readable<E: Target>() {
     let report = import(&target, &export(&src).unwrap()).unwrap();
     assert_eq!(report.tokens, 0);
     assert_eq!(target.public_id(carried).unwrap(), None);
-    assert_eq!(layer_version(&target), 5, "no token, but units: the layer of the live counts");
+    assert_eq!(layer_version(&target), 7, "no token, but units: the layer of the live counts");
     clean(&target);
     db.close().unwrap();
     // Reopened, mixed with a unit that has one.
@@ -471,13 +471,13 @@ fn legacy_directory_written_before_tokens_opens_and_verifies() {
     let unit = UnitId(id);
     assert!(db.get_unit(unit).unwrap().is_some());
     assert_eq!(db.public_id(unit).unwrap(), None);
-    assert_eq!(layer_version(&db), 2);
+    assert_eq!(layer_version(&db), 7);
     clean(&db);
     // New units on top of it get tokens (the mark goes 2 to 5: a token needs 3, the live count of its type 5); the old one still has none.
     let (fresh, token) = issue(&db, b"after");
     assert_eq!(db.resolve_public_id(&token).unwrap(), Some(fresh));
     assert_eq!(db.public_id(unit).unwrap(), None);
-    assert_eq!(layer_version(&db), 5);
+    assert_eq!(layer_version(&db), 7);
     clean(&db);
 }
 
@@ -632,7 +632,7 @@ fn export_carries_tokens_and_import_restores_them<E: Target>() {
     assert_eq!(target.public_id(untokened).unwrap(), None);
     assert_eq!(target.resolve_public_id(&tgone).unwrap(), None);
     assert_eq!(token_records(&target), (2, 2));
-    assert_eq!(layer_version(&target), 5);
+    assert_eq!(layer_version(&target), 7);
     clean(&target);
     // The exported bytes are the same again, and a unit made afterwards gets
     // a token that collides with none of them.
@@ -923,7 +923,7 @@ fn fixture_directory_opens_resolves_and_verifies<E: Target>() {
     assert_eq!(db.public_id(second).unwrap(), None);
     assert_eq!(db.public_id(third).unwrap(), None, "the deleted unit's mapping was removed");
     assert_eq!(token_records(&db), (1, 1));
-    assert_eq!(layer_version(&db), 3);
+    assert_eq!(layer_version(&db), 7);
     clean(&db);
     // A unit made on top of the opened directory gets its own token.
     let (_, fresh) = issue(&db, b"on top");

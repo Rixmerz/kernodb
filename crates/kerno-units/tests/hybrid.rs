@@ -57,6 +57,8 @@ fn new_unit(payload: &str) -> NewUnit {
 fn fixture<E: Target>() -> Fixture<E> {
     let disk = SimVfs::new(5);
     let db = open_units::<E>(disk.as_vfs(), &config()).expect("open the units");
+    // The keyword index is opt-in per type (ADR-0023).
+    db.set_fulltext("note", true, ChangeMeta::default()).expect("index notes");
     let mut cs = db.begin_changeset(ChangeMeta::default()).expect("begin");
     let a = cs.create(new_unit("rust borrow checker")).expect("a");
     let b = cs.create(new_unit("garbage collector")).expect("b");

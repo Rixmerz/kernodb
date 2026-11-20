@@ -337,7 +337,7 @@ fn a_definition_backfills_or_refuses<E: Target>() {
     assert!(stored(&db, 0x78).is_empty());
     // It fits now.
     define(&db);
-    assert_eq!(layer_version(&db), 6, "the first schema raises the layer mark to 6");
+    assert_eq!(layer_version(&db), 7, "the first schema raises the layer mark to 6");
     assert_eq!(layer, 5);
     assert_eq!(found(&db, "age", &FieldValue::Int(1)), vec![a]);
     assert!(found(&db, "age", &FieldValue::Int(2)).is_empty(), "the archived unit has no entry");
@@ -396,9 +396,9 @@ fn without_a_schema_nothing_changes<E: Target>() {
     cs.define_schema(ACCT, acct_fields()).unwrap();
     drop(cs);
     assert_eq!(raw(&db), before, "an aborted definition leaves the database as it was");
-    assert_eq!(layer_version(&db), 5);
+    assert_eq!(layer_version(&db), 7);
     define(&db);
-    assert_eq!(layer_version(&db), 6);
+    assert_eq!(layer_version(&db), 7);
     clean(&db, "layer 6");
     // A schema change set with no unit is an `Index` change set.
     let cs = db.snapshot().unwrap().change_set(db.snapshot().unwrap().seq()).unwrap();

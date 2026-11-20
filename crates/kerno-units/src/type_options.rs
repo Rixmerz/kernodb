@@ -5,24 +5,25 @@
 //! * key `0x77 ‖ type_len: u8 ‖ unit_type` (the shape of a `SCHEMA` key);
 //! * value `envelope_version ‖ reserved_flags ‖ options: u8`, version 1.
 //!
-//! The one option is bit 0, `NO_FULLTEXT`: the payloads of the type are not
-//! put in the keyword index ([`crate::fulltext`]). Every other bit is
-//! reserved and must be 0. A type without a record has every option off.
+//! The one option is bit 0, `FULLTEXT`: the payloads of the type are put in
+//! the keyword index ([`crate::fulltext`]). The index is **opt-in** (the
+//! format cut of ADR-0023): a type without the bit is not indexed. Every
+//! other bit is reserved and must be 0. A type without a record has every
+//! option off.
 //! An all-zero `options` byte is not written; turning an option back off
 //! deletes the record.
 //!
 //! # Why the index stays exact
 //!
-//! An option changes only while the type has **no `Active` unit**, as the
-//! change set sees it (its live count, [`crate::type_count`]). Only `Active`
-//! units are in the keyword index, so at that moment the type has no index
-//! entry, and from then on every write follows the option in force. The index
-//! therefore holds exactly the `Active` units of the types without
-//! `NO_FULLTEXT`, and `verify_units` (UNIT-49) expects exactly those.
+//! Changing the option re-plans the keyword index of every `Active` unit of
+//! the type in the same change set (indexing them, or removing their
+//! entries), and from then on every write follows the option in force. Only
+//! `Active` units are ever indexed. The index therefore holds exactly the
+//! `Active` units of the types with `FULLTEXT`, and `verify_units` (UNIT-49)
+//! expects exactly those.
 //!
-//! The first record raises the layer mark to 7 in its own transaction. A
-//! build of layer 6 or older then refuses the database (UNIT-16), so no older
-//! writer can index a type that opted out, or the other way round.
+//! Every database this build opens is at layer 7 or above (ADR-0023), so no
+//! reader with the old "index everything" rule can open one.
 
 use kerno_core::contract::{Txn, TxnEngine};
 
@@ -33,9 +34,9 @@ use crate::error::{DecodeError, UnitError, UnitRule};
 pub const TAG_TYPE_OPTIONS: u8 = 0x77;
 /// `envelope_version` of the value.
 const RECORD_VERSION: u8 = 1;
-/// Bit 0 of `options`: the type is not keyword-indexed.
-pub const NO_FULLTEXT: u8 = 0b0000_0001;
-const KNOWN_OPTIONS: u8 = NO_FULLTEXT;
+/// Bit 0 of `options`: the type is keyword-indexed.
+pub const FULLTEXT: u8 = 0b0000_0001;
+const KNOWN_OPTIONS: u8 = FULLTEXT;
 const MAX_TYPE_LEN: usize = 64;
 
 /// The key of the options record of `unit_type`.
@@ -100,25 +101,24 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
     /// Whether the payloads of `unit_type` go in the keyword index, as this
     /// change set sees it.
     pub(crate) fn fulltext_enabled(&self, unit_type: &str) -> Result<bool, UnitError> {
-        if self.layer_version < crate::codec::LAYER_VERSION_TYPE_OPTIONS && self.type_option_ops == 0 {
-            // No layer-7 mark and no record written here: no type has options.
-            return Ok(true);
-        }
         let raw = self.txn()?.get(&options_key(unit_type))?;
         Ok(match raw {
-            Some(v) => decode_value(&v).map_err(|e| crate::db::context(e, "TYPE_OPTIONS"))? & NO_FULLTEXT == 0,
-            None => true,
+            Some(v) => decode_value(&v).map_err(|e| crate::db::context(e, "TYPE_OPTIONS"))? & FULLTEXT != 0,
+            None => false,
         })
     }
 
-    /// Turns the keyword index of `unit_type` off (`enabled = false`) or back
-    /// on. Allowed only while the type has no `Active` unit, as this change
-    /// set sees it, so the index never holds a unit it should not, nor misses
-    /// one it should. Setting the state the type already has writes nothing.
+    /// Turns the keyword index of `unit_type` on (`enabled = true`) or back
+    /// off (the default). The type's `Active` units follow in the same change
+    /// set: turning it on indexes each of them, turning it off removes their
+    /// entries, so the index never disagrees with the units (and a type can
+    /// be switched after an import, like a schema). Setting the state the type
+    /// already has writes nothing.
     ///
     /// # Errors
     ///
-    /// `InvalidArgument` for an invalid type or a type with `Active` units.
+    /// `InvalidArgument` for an invalid type; `ChangeSetTooLarge` when the
+    /// type's units do not fit the engine's write limits (nothing is written).
     pub fn set_fulltext(&mut self, unit_type: &str, enabled: bool) -> Result<(), UnitError> {
         if unit_type.is_empty() || unit_type.len() > MAX_TYPE_LEN {
             return Err(UnitError::InvalidArgument(format!(
@@ -129,21 +129,65 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         if self.fulltext_enabled(unit_type)? == enabled {
             return Ok(());
         }
-        let (_, active) = self.plan_live(unit_type, 0)?;
-        if active > 0 {
-            return Err(UnitError::InvalidArgument(format!(
-                "unit type {unit_type:?} has {active} active units; the keyword index of a type can change only \
-                 while it has none"
-            )));
-        }
+        let units = self.active_heads_of(unit_type)?;
         let k = options_key(unit_type);
         if enabled {
-            self.write(&Write::Delete(k))?;
+            self.write(&Write::Put(k, encode_value(FULLTEXT)))?;
         } else {
-            self.write(&Write::Put(k, encode_value(NO_FULLTEXT)))?;
+            self.write(&Write::Delete(k))?;
         }
         self.type_option_ops += 1;
+        // Re-plan the index of each active unit under the new option: the
+        // writer sees the option record written above.
+        for (unit, head_key, head_raw, payload_key) in units {
+            let payload = self.txn()?.get(&payload_key)?.unwrap_or_default();
+            let writes = [Write::Put(head_key, head_raw), Write::Put(payload_key, payload)];
+            for w in self.plan_fulltext(unit, &writes)? {
+                self.write(&w)?;
+            }
+        }
         Ok(())
+    }
+
+    /// `(unit, head key, head bytes, head payload key)` of every `Active` unit
+    /// of `unit_type`, as this change set sees them (a scan of the heads).
+    fn active_heads_of(
+        &self,
+        unit_type: &str,
+    ) -> Result<Vec<(crate::types::UnitId, Vec<u8>, Vec<u8>, Vec<u8>)>, UnitError> {
+        use crate::codec::{Key, TAG_UNIT_HEAD, UnitHead};
+        use std::ops::Bound;
+        const PAGE: usize = 512;
+        let txn = self.txn()?;
+        let (_, end) = Key::tag_range(TAG_UNIT_HEAD);
+        let mut cursor = vec![TAG_UNIT_HEAD];
+        let mut inclusive = true;
+        let mut out = Vec::new();
+        loop {
+            let lo = if inclusive { Bound::Included(cursor.as_slice()) } else { Bound::Excluded(cursor.as_slice()) };
+            let page = txn.scan(lo, Bound::Excluded(end.as_slice()), PAGE)?;
+            let n = page.len();
+            for (k, v) in &page {
+                let Key::UnitHead { unit } = Key::decode(k)? else {
+                    return Err(UnitError::Storage(kerno_core::Error::Corruption(
+                        "a key in the UNIT_HEAD range is not a UNIT_HEAD".into(),
+                    )));
+                };
+                let head =
+                    UnitHead::decode(v).map_err(|e| crate::db::context(e, &format!("UNIT_HEAD of unit {unit}")))?;
+                if head.lifecycle == crate::types::Lifecycle::Active && head.unit_type == unit_type {
+                    let payload_key = Key::RevPayload { unit, rev: head.head_rev }.encode()?;
+                    out.push((unit, k.clone(), v.clone(), payload_key));
+                }
+            }
+            match page.into_iter().last() {
+                Some((k, _)) if n == PAGE => {
+                    cursor = k;
+                    inclusive = false;
+                }
+                _ => return Ok(out),
+            }
+        }
     }
 }
 

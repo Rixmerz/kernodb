@@ -395,6 +395,12 @@ fn read_mark(get: &GetFn<'_>, any_key: &dyn Fn() -> kerno_core::Result<bool>) ->
     match get(&layer_mark_key())? {
         Some(v) => {
             let mark = LayerMeta::decode_upto(&v, MAX_LAYER_VERSION).map_err(|e| context(e, "LAYER_META \"layer\""))?;
+            if mark.layer_version < crate::codec::MIN_LAYER_VERSION {
+                return Err(UnitError::LayerTooOld {
+                    found: mark.layer_version,
+                    minimum: crate::codec::MIN_LAYER_VERSION,
+                });
+            }
             Ok(MarkState::Present(mark.layer_version))
         }
         None if any_key()? => Err(UnitError::NotAUnitDatabase),
@@ -550,7 +556,7 @@ impl<E: TxnEngine> UnitDb<E> {
             Ok(!txn.scan(Bound::Unbounded, Bound::Unbounded, 1)?.is_empty())
         })? {
             MarkState::Present(v) => (false, v),
-            MarkState::Empty if self.cfg.create_if_missing => (true, LAYER_VERSION),
+            MarkState::Empty if self.cfg.create_if_missing => (true, crate::codec::MIN_LAYER_VERSION),
             MarkState::Empty => {
                 return Err(UnitError::InvalidArgument("the database is empty and create_if_missing is false".into()));
             }
@@ -1725,7 +1731,9 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         // record, and no writer lowers it (ADR-0020 §S3.4, §S3.5).
         // A schema definition writes the first `0x78` record: layer 6, which
         // includes everything below it (`schema_ops` counts definitions only).
-        let wants = if self.type_option_ops > 0 {
+        // A new database starts at the cut version (ADR-0023), whatever its
+        // first change set writes.
+        let wants = if self.need_mark || self.type_option_ops > 0 {
             crate::codec::LAYER_VERSION_TYPE_OPTIONS
         } else if self.schema_ops > 0 {
             LAYER_VERSION_SCHEMAS
