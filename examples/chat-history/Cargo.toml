@@ -1,0 +1,12 @@
+[package]
+name = "chat-history"
+description = "Example: per-session chat history on the public API of the kerno crate"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+kerno.workspace = true

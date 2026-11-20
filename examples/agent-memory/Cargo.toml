@@ -1,0 +1,16 @@
+[package]
+name = "agent-memory"
+description = "Example: memory for an agent, built on the public API of kerno-units only"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+license = "MIT OR Apache-2.0"
+
+# Standalone: not a member of the repository workspace, with its own lock file.
+[workspace]
+
+[dependencies]
+kerno-core = { path = "../../crates/kerno-core" }
+kerno-storage = { path = "../../crates/kerno-storage" }
+kerno-units = { path = "../../crates/kerno-units" }

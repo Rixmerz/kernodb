@@ -1,0 +1,29 @@
+[package]
+name = "kernodb-node"
+description = "Node.js bindings for Kerno, built with napi-rs over the `kerno` facade crate"
+version = "1.0.0-alpha.1"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Rixmerz/kernodb"
+publish = false
+
+# Outside the cargo workspace on purpose: an empty `[workspace]` makes this package its own
+# root, so the root `cargo test --workspace` never builds a Node addon. It has its own
+# Cargo.lock; build it with `pnpm build` (or `cargo build` in this directory).
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+kerno = { path = "../../crates/kerno", version = "1.0.0-alpha.1" }
+napi = { version = "3", default-features = false, features = ["napi4"] }
+napi-derive = "3"
+
+[build-dependencies]
+napi-build = "2"
+
+[profile.release]
+lto = true
+strip = "symbols"

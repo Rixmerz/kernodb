@@ -1,0 +1,41 @@
+{
+  "name": "kerno-ai-sdk",
+  "version": "1.0.0-alpha.1",
+  "private": true,
+  "description": "Vercel AI SDK memory tools backed by a Kerno database server",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Rixmerz/kernodb.git",
+    "directory": "integrations/vercel-ai"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">= 22.18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "pretest": "npm ci --prefix ../../clients/typescript && npm run build --prefix ../../clients/typescript",
+    "test": "tsc --noEmit && node --test \"test/*.test.ts\"",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "kerno-client": "file:../../clients/typescript"
+  },
+  "peerDependencies": {
+    "ai": "^7.0.0",
+    "zod": "^3.25.76 || ^4.1.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "ai": "^7.0.176",
+    "typescript": "^5.9.0",
+    "zod": "^4.6.7"
+  }
+}
