@@ -1,0 +1,890 @@
+//! Retention and GC (`stage3-design.md` §5, §6.5, E3-06): [`RetentionPolicy`],
+//! [`UnitDb::run_retention`], [`UnitDb::compact`] and their reports.
+//!
+//! # Contracts
+//!
+//! * **Logical retention only removes a prefix.** For each unit retention
+//!   picks a new `oldest_rev = k` (never above the head) and, in one change
+//!   set with purpose `Retention`, writes `delete_range(REV_META[oldest, k))`,
+//!   `delete_range(REV_PAYLOAD[oldest, k))`, the head with `oldest_rev = k`
+//!   and one `CS_MEMBER` naming `(unit, k, kind of k)`, the first retained
+//!   revision. Head and ranges change in the same engine commit (I-21): a
+//!   crash leaves every unit pruned whole or not at all (IU-7).
+//! * **What is always kept.** The head revision; when the head is a `Delete`
+//!   tombstone, also the revision before it (design §5.2) — except under
+//!   history policy `None`, whose rule already keeps only the head.
+//! * **History policies are enforced on what is stored.** Under `None` every
+//!   revision below the head is pruned (`k = head`); under `Audit` every
+//!   retained revision below the head that still has its `REV_PAYLOAD` (left
+//!   over from an earlier `Versioned` period, "Note of E3-05") loses it: its
+//!   `REV_META` is rewritten with `payload_present = 0`, keeping hash and
+//!   length, exactly as `Audit` does to a superseded head.
+//! * **Rules** ([`RetentionRule`]) only decide `k`; they read `commit_seq`
+//!   (`KeepSince`) or the descriptive `created_at` (`KeepFor`) of the
+//!   retained revisions and keep, besides the revisions they name, the
+//!   revision in force at their cut-off point, so that as-of reads from the
+//!   cut-off on keep answering.
+//! * **Bounded, paced and resumable.** One call is bounded by
+//!   [`RetentionBudget`] and writes it in one or more change sets of at most
+//!   [`RetentionPacing::units_per_change_set`] units, pausing between them
+//!   (E3-09b; before, one call was exactly one change set). A call plans on a snapshot without the write
+//!   slot, then, under the slot, checks that each planned unit's head (and
+//!   the policy of its type) is unchanged, plans again in the transaction
+//!   the units that changed, and writes. An incomplete pass resumes at the
+//!   first unfinished unit (an in-memory cursor, kept only for the same
+//!   policy, no `KeepFor` rule and no policy change in between; a pass that
+//!   completes, an error or a reopen starts again from the first unit). A
+//!   call reads at most 4 096 heads with nothing to do, so `complete` can be
+//!   `false` with no change set. Units written behind the cursor during a
+//!   pass are left for the next pass, as if written after it. Repeating a
+//!   call is idempotent and a crash leaves nothing to recover.
+//! * **Deferred durability (decision 12c).** Retention change sets do not
+//!   `fsync` on their own: they become durable with the next durable commit,
+//!   [`UnitDb::sync`], a log rotation or `close`. The engine recovers a
+//!   prefix of its commits, so a crash can only lose a tail of retention
+//!   change sets, which a new pass redoes; it never loses a change set that
+//!   was durable when it returned.
+//! * **Snapshots keep reading (IU-8).** Pruning is a commit like any other:
+//!   a [`crate::UnitSnapshot`] taken before it keeps its whole history.
+//!   Logical deletion is not physical deletion (§5.3): the bytes stay until
+//!   the engine compacts them and no snapshot needs them.
+//! * **Damage is never "nothing to do".** A missing or out-of-order
+//!   `REV_META` inside `[oldest_rev, head_rev]` is `Storage(Corruption)`.
+
+use std::collections::BTreeMap;
+use std::ops::Bound;
+use std::time::Duration;
+
+use kerno_core::contract::{Reclaim, Txn, TxnEngine};
+
+use crate::codec::{Key, LAYER_MARK_NAME, RevisionMeta, TAG_LAYER_META, TAG_REV_META, TAG_REV_PAYLOAD, UnitHead};
+use crate::db::{ChangeSet, CommitInfo, UnitDb, Write, context, corruption, key};
+use crate::error::UnitError;
+use crate::types::{CommitSeq, HistoryPolicy, RevNo, RevisionKind, Timestamp, UnitId};
+
+/// How much history of a unit type retention keeps (design §5.2).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RetentionRule {
+    /// Keep every revision (the default).
+    #[default]
+    KeepAll,
+    /// Keep the newest `n >= 1` revisions.
+    KeepLast(u64),
+    /// Keep the revisions created in the last `d` (by the injected clock;
+    /// `created_at` is descriptive, so this only cuts a prefix) and the one
+    /// in force at the cut-off.
+    KeepFor(Duration),
+    /// Keep what answers every as-of read at `s` and later: the revision in
+    /// force at `s` and every later one.
+    KeepSince(CommitSeq),
+}
+
+/// The [`RetentionRule`] of each unit type (design §5.2).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RetentionPolicy {
+    /// The rule of every type not in `by_type`.
+    pub default: RetentionRule,
+    pub by_type: BTreeMap<String, RetentionRule>,
+}
+
+impl RetentionPolicy {
+    /// One rule for every type.
+    pub fn all(rule: RetentionRule) -> Self {
+        RetentionPolicy { default: rule, by_type: BTreeMap::new() }
+    }
+
+    /// The same policy with `rule` for `unit_type`.
+    pub fn with_type(mut self, unit_type: &str, rule: RetentionRule) -> Self {
+        self.by_type.insert(unit_type.to_owned(), rule);
+        self
+    }
+
+    /// The rule of `unit_type`.
+    pub fn rule(&self, unit_type: &str) -> RetentionRule {
+        self.by_type.get(unit_type).copied().unwrap_or(self.default)
+    }
+
+    fn validate(&self) -> Result<(), UnitError> {
+        for r in std::iter::once(&self.default).chain(self.by_type.values()) {
+            if *r == RetentionRule::KeepLast(0) {
+                return Err(UnitError::InvalidArgument("KeepLast(0) would drop the head".into()));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Bounds of one [`UnitDb::run_retention`] call (design §5.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RetentionBudget {
+    /// Most units the change set touches (its members), `>= 1`.
+    pub max_units: usize,
+    /// Most engine writes for the units (range deletions, head and
+    /// `REV_META` rewrites, payload deletions, members), `>= 4`: one unit's
+    /// prune needs 4. The change set record is not counted.
+    pub max_ops: usize,
+}
+
+impl Default for RetentionBudget {
+    /// 1 000 units, 10 000 writes.
+    fn default() -> Self {
+        RetentionBudget { max_units: 1_000, max_ops: 10_000 }
+    }
+}
+
+/// How [`UnitDb::run_retention`] shares the write slot with other writers
+/// (E3-09b, design decision 12b): a call writes its budget in change sets of
+/// at most `units_per_change_set` units, and after each one pauses
+/// `pause_ratio` times as long as the work since the previous pause took
+/// (planning on the snapshot and time under the slot). Each unit is still
+/// pruned whole in one change set (I-21, IU-7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RetentionPacing {
+    /// Most units in one `Retention` change set, `>= 1`.
+    pub units_per_change_set: usize,
+    /// Pause after each change set, as a multiple of the work time since the
+    /// previous pause (0: none).
+    pub pause_ratio: u32,
+}
+
+impl Default for RetentionPacing {
+    /// 16 units per change set, pause 9× the work time (retention busy
+    /// ~10 % of the time; values measured with `unit_bench` U6, E3-09b).
+    fn default() -> Self {
+        RetentionPacing { units_per_change_set: 16, pause_ratio: 9 }
+    }
+}
+
+/// What [`UnitDb::run_retention`] did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RetentionReport {
+    /// The last `Retention` change set of the call, `None` when there was
+    /// nothing to do.
+    pub change_set: Option<CommitInfo>,
+    /// Every `Retention` change set of the call, in commit order (several
+    /// when the budget covers more than [`RetentionPacing::units_per_change_set`]
+    /// units).
+    pub change_sets: Vec<CommitInfo>,
+    /// Units whose head was read.
+    pub units_examined: u64,
+    /// Units the change set touched (its members).
+    pub units_retained: u64,
+    /// `REV_META` (with their payloads) removed by range deletions.
+    pub revisions_pruned: u64,
+    /// `REV_PAYLOAD` removed from retained revisions under `Audit`.
+    pub payloads_dropped: u64,
+    /// Key and value bytes no longer reachable. They are still on disk until
+    /// [`UnitDb::compact`] (and until no snapshot needs them, I-05).
+    pub bytes_logically_freed: u64,
+    /// `false` when the budget stopped the call before every unit was done:
+    /// call again.
+    pub complete: bool,
+}
+
+/// What [`UnitDb::compact`] did. The sizes are the engine's live table
+/// bytes (the sum of its `l<N>_bytes` statistics); `None` when the engine
+/// reports none. Files a snapshot still pins are not in the live set but are
+/// still on disk until that snapshot goes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CompactReport {
+    pub stored_bytes_before: Option<u64>,
+    pub stored_bytes_after: Option<u64>,
+}
+
+impl CompactReport {
+    /// `before - after` (0 if it grew), when both are known.
+    pub fn bytes_reclaimed(&self) -> Option<u64> {
+        Some(self.stored_bytes_before?.saturating_sub(self.stored_bytes_after?))
+    }
+}
+
+/// Live table bytes from an engine's statistics: the sum of `l<N>_bytes`.
+fn stored_bytes(stats: &[(String, u64)]) -> Option<u64> {
+    let mut total = None;
+    for (name, v) in stats {
+        let level = name.strip_prefix('l').and_then(|r| r.strip_suffix("_bytes"));
+        if level.is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit())) {
+            total = Some(total.unwrap_or(0) + v);
+        }
+    }
+    total
+}
+
+/// Length of a `REV_META`/`REV_PAYLOAD` key.
+const REV_KEY_LEN: u64 = 25;
+
+/// A bounded engine scan (of a snapshot or of the change set's transaction).
+type ScanFn<'a> = dyn Fn(Bound<&[u8]>, Bound<&[u8]>, usize) -> kerno_core::Result<Vec<(Vec<u8>, Vec<u8>)>> + 'a;
+
+/// Most unit heads one [`UnitDb::run_retention`] call reads besides the
+/// units it retains: a pass over many units with nothing to do is spread
+/// over several calls.
+const SCAN_HEADS_PER_CALL: usize = 4_096;
+
+/// Where an incomplete retention pass resumes: the `UNIT_HEAD` key of the
+/// first unit it has not finished, valid only for the same policy, the same
+/// policy epoch and a policy without `KeepFor` (whose cut-off moves with the
+/// clock). In memory only: after a reopen a pass starts from the first unit.
+pub(crate) struct RetentionCursor {
+    policy: RetentionPolicy,
+    epoch: u64,
+    resume: Vec<u8>,
+}
+
+/// One unit planned on the snapshot, written under the write slot only if
+/// its head is still the same bytes.
+#[derive(Clone)]
+struct Planned {
+    unit: UnitId,
+    raw_head: Vec<u8>,
+    head: UnitHead,
+    plan: UnitPlan,
+}
+
+/// What retention does to one unit.
+#[derive(Clone, Debug, PartialEq)]
+struct UnitPlan {
+    /// New `oldest_rev`.
+    keep_from: RevNo,
+    /// Its kind (the member's kind).
+    keep_kind: RevisionKind,
+    /// Revisions `[oldest, keep_from)` and the bytes they free.
+    pruned: u64,
+    pruned_bytes: u64,
+    /// Retained revisions below the head whose payload `Audit` drops.
+    drops: Vec<(RevNo, RevisionMeta)>,
+}
+
+/// The first revision retention keeps, given the retained `metas`
+/// (`[oldest, head]`, in order).
+fn keep_from(
+    metas: &[(RevNo, RevisionMeta, u64)],
+    head: &UnitHead,
+    policy: HistoryPolicy,
+    rule: RetentionRule,
+    now: Timestamp,
+) -> RevNo {
+    let (oldest, top) = (head.oldest_rev, head.head_rev);
+    if policy == HistoryPolicy::None {
+        return top;
+    }
+    let mut k = match rule {
+        RetentionRule::KeepAll => oldest,
+        RetentionRule::KeepLast(n) => RevNo(top.0.saturating_sub(n.saturating_sub(1))),
+        RetentionRule::KeepSince(s) => metas.iter().rev().find(|(_, m, _)| m.commit_seq <= s).map_or(oldest, |r| r.0),
+        RetentionRule::KeepFor(d) => {
+            let micros = i64::try_from(d.as_micros()).unwrap_or(i64::MAX);
+            let cutoff = now.0.saturating_sub(micros);
+            match metas.iter().find(|(_, m, _)| m.created_at.0 >= cutoff) {
+                Some((r, _, _)) => RevNo(r.0.saturating_sub(1)),
+                None => top,
+            }
+        }
+    };
+    if metas.last().is_some_and(|(_, m, _)| m.kind == RevisionKind::Delete) && top.0 > 1 {
+        k = k.min(RevNo(top.0 - 1));
+    }
+    k.max(oldest).min(top)
+}
+
+/// Every retained `REV_META` of `unit` (`[oldest, head]`), checked to be
+/// contiguous with strictly growing `commit_seq` (IU-2, IU-3).
+fn retained_metas(
+    scan: &ScanFn<'_>,
+    unit: UnitId,
+    head: &UnitHead,
+) -> Result<Vec<(RevNo, RevisionMeta, u64)>, UnitError> {
+    let (_, end) = Key::unit_rev_range(TAG_REV_META, unit);
+    let mut out: Vec<(RevNo, RevisionMeta, u64)> = Vec::new();
+    let mut next = head.oldest_rev;
+    while next <= head.head_rev {
+        let start = key(Key::RevMeta { unit, rev: next })?;
+        let want = (head.head_rev.0 - next.0 + 1).min(1024) as usize;
+        let page = scan(Bound::Included(&start), Bound::Excluded(&end), want)?;
+        if page.is_empty() {
+            return Err(corruption(format!("unit {unit}: REV_META of retained revision {next} is missing")));
+        }
+        for (k, v) in page {
+            let rev = next;
+            if rev > head.head_rev {
+                break;
+            }
+            if Key::decode(&k)? != (Key::RevMeta { unit, rev }) {
+                return Err(corruption(format!("unit {unit}: REV_META of retained revision {rev} is missing")));
+            }
+            let meta =
+                RevisionMeta::decode(rev, &v).map_err(|e| context(e, &format!("REV_META of unit {unit} rev {rev}")))?;
+            if out.last().is_some_and(|(_, p, _)| meta.commit_seq <= p.commit_seq) {
+                return Err(corruption(format!(
+                    "unit {unit}: revision {rev} has commit_seq {} out of order (IU-3)",
+                    meta.commit_seq
+                )));
+            }
+            out.push((rev, meta, v.len() as u64));
+            next = RevNo(rev.0 + 1);
+        }
+    }
+    match out.last() {
+        Some((_, m, _)) if m.commit_seq == head.updated_seq => Ok(out),
+        _ => {
+            Err(corruption(format!("unit {unit}: UNIT_HEAD disagrees with the REV_META of revision {}", head.head_rev)))
+        }
+    }
+}
+
+/// What retention does to `unit`, or `None` when nothing.
+fn plan_unit(
+    scan: &ScanFn<'_>,
+    unit: UnitId,
+    head: &UnitHead,
+    policy: HistoryPolicy,
+    rule: RetentionRule,
+    now: Timestamp,
+) -> Result<Option<UnitPlan>, UnitError> {
+    let idle = match policy {
+        HistoryPolicy::Versioned => rule == RetentionRule::KeepAll,
+        HistoryPolicy::None => head.oldest_rev == head.head_rev,
+        HistoryPolicy::Audit => false,
+    };
+    if idle || head.oldest_rev == head.head_rev {
+        return Ok(None);
+    }
+    let metas = retained_metas(scan, unit, head)?;
+    let k = keep_from(&metas, head, policy, rule, now);
+    let i = (k.0 - head.oldest_rev.0) as usize;
+    let mut pruned_bytes = 0;
+    for (_, m, len) in &metas[..i] {
+        pruned_bytes += REV_KEY_LEN + len;
+        if m.payload_present {
+            pruned_bytes += REV_KEY_LEN + u64::from(m.payload_len);
+        }
+    }
+    let drops: Vec<(RevNo, RevisionMeta)> = if policy == HistoryPolicy::Audit {
+        metas[i..metas.len() - 1]
+            .iter()
+            .filter(|(_, m, _)| m.payload_present)
+            .map(|(r, m, _)| (*r, m.clone()))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if i == 0 && drops.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(UnitPlan { keep_from: k, keep_kind: metas[i].1.kind, pruned: i as u64, pruned_bytes, drops }))
+}
+
+/// What to write for a unit planned on the snapshot (`prev`) whose head is
+/// `raw` (`head`) under the write slot, or `None` when nothing.
+///
+/// A unit that only grew since the snapshot (same `oldest_rev`, a later
+/// head, the same history policy) keeps the snapshot's plan, against its
+/// current head: the revisions it prunes and the payloads it drops are below
+/// the snapshot's head and did not change, and the first revision to keep
+/// can only move forward as a unit grows, for every rule and policy, so the
+/// plan stays a prefix of what a plan made now would prune. What the unit
+/// gained since is left for the next pass, as for a unit written after the
+/// pass. Nothing is read under the slot for it: a unit that writers update
+/// all the time is stale whenever retention reaches it, and planning it
+/// again there read its new revisions while writers waited (a change set of
+/// such units held the slot for 10-25 ms, K-E3-9). Any other change plans
+/// the unit again from its first revision.
+#[allow(clippy::too_many_arguments)]
+fn replan_unit(
+    scan: &ScanFn<'_>,
+    prev: Planned,
+    raw: Vec<u8>,
+    head: UnitHead,
+    policy: HistoryPolicy,
+    rule: RetentionRule,
+    now: Timestamp,
+    policy_moved: bool,
+) -> Result<Option<Planned>, UnitError> {
+    let unit = prev.unit;
+    let plan = if !policy_moved && head.oldest_rev == prev.head.oldest_rev && head.head_rev > prev.head.head_rev {
+        Some(prev.plan)
+    } else {
+        // A unit's type never changes after it is created, so the rule is the same.
+        plan_unit(scan, unit, &head, policy, rule, now)?
+    };
+    Ok(plan.map(|plan| Planned { unit, raw_head: raw, head, plan }))
+}
+
+impl<E: TxnEngine> UnitDb<E> {
+    /// Applies `policy` (and the history policy of each type, see the
+    /// [module documentation](self)) to at most `budget` units in one change
+    /// set with purpose `Retention`. An empty database, or one with nothing
+    /// to prune, writes nothing. Call again while `complete` is `false`.
+    ///
+    /// **Durability (decision 12c).** Retention change sets are committed
+    /// with deferred durability: no `fsync` of their own, even with
+    /// `Durability::Sync` (their [`CommitInfo::durable`] is `false`). They
+    /// become durable with the next durable change set, [`UnitDb::sync`],
+    /// a log rotation or `close`. A crash can only take back a tail of
+    /// them, never a change set the caller saw durable, and the store is
+    /// then a prefix of the commits: running retention again redoes what
+    /// was lost (it is idempotent).
+    ///
+    /// [`CommitInfo::durable`]: crate::CommitInfo::durable
+    pub fn run_retention(
+        &self,
+        policy: &RetentionPolicy,
+        budget: RetentionBudget,
+    ) -> Result<RetentionReport, UnitError> {
+        self.check_poisoned()?;
+        policy.validate()?;
+        if budget.max_units == 0 || budget.max_ops < 4 {
+            return Err(UnitError::InvalidArgument(format!(
+                "retention budget {budget:?} needs max_units >= 1 and max_ops >= 4"
+            )));
+        }
+        // A Retention change set obeys the same member limit as any other
+        // (design §4): cap the batch, the caller resumes on `complete = false`.
+        let budget = RetentionBudget { max_units: budget.max_units.min(self.config().max_changeset_ops), ..budget };
+        let mut cursor = self.retention.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Pacing counts all the work of the call (planning on the snapshot
+        // included), not only the time under the slot.
+        let mut busy = std::time::Instant::now();
+        let taken = cursor.take();
+        let mut report = RetentionReport { complete: true, ..RetentionReport::default() };
+        // The policy epoch before the snapshot: a policy committed after it
+        // is caught by the check under the write slot.
+        let epoch = self.policy_epoch.load(std::sync::atomic::Ordering::SeqCst);
+        let snap = self.raw_snapshot()?;
+        let mut mark = vec![TAG_LAYER_META];
+        mark.extend_from_slice(LAYER_MARK_NAME.as_bytes());
+        if kerno_core::contract::Snapshot::get(&snap, &mark)?.is_none() {
+            // No layer mark: nothing the layer wrote, nothing to prune
+            // (a store with foreign keys fails at open).
+            return Ok(report);
+        }
+        let now = self.config().clock.now();
+        let resumable = !has_keep_for(policy);
+        let resume = taken.filter(|c| resumable && c.epoch == epoch && c.policy == *policy).map(|c| c.resume);
+
+        // Phase 1, without the write slot: read the heads from the resume
+        // point on and plan every unit on the snapshot.
+        let snap_scan =
+            |a: Bound<&[u8]>, b: Bound<&[u8]>, n: usize| kerno_core::contract::Snapshot::scan(&snap, a, b, n);
+        let snap_get = |k: &[u8]| kerno_core::contract::Snapshot::get(&snap, k);
+        let mut policies: BTreeMap<String, HistoryPolicy> = BTreeMap::new();
+        let mut planned: Vec<Planned> = Vec::new();
+        let mut stop: Option<Vec<u8>> = None;
+        let (_, end) = Key::tag_range(crate::codec::TAG_UNIT_HEAD);
+        let mut from = resume.unwrap_or_else(|| vec![crate::codec::TAG_UNIT_HEAD]);
+        let mut inclusive = true;
+        let mut ops = 0usize;
+        'scan: loop {
+            let start = if inclusive { Bound::Included(from.as_slice()) } else { Bound::Excluded(from.as_slice()) };
+            let page = snap_scan(start, Bound::Excluded(&end), 256)?;
+            let n = page.len();
+            for (k, v) in page {
+                if report.units_examined as usize >= SCAN_HEADS_PER_CALL + planned.len() {
+                    stop = Some(k);
+                    break 'scan;
+                }
+                let (unit, head) = decode_head(&k, &v)?;
+                report.units_examined += 1;
+                let hp = match policies.get(&head.unit_type) {
+                    Some(p) => *p,
+                    None => {
+                        let p = crate::db::policy_of(&snap_get, &head.unit_type, self.config().default_policy)?;
+                        policies.insert(head.unit_type.clone(), p);
+                        p
+                    }
+                };
+                let Some(plan) = plan_unit(&snap_scan, unit, &head, hp, policy.rule(&head.unit_type), now)? else {
+                    from = k;
+                    inclusive = false;
+                    continue;
+                };
+                match fits(&plan, planned.len(), ops, budget) {
+                    Some(take) => {
+                        ops += plan_ops(&plan, take);
+                        let partial = take < plan.drops.len();
+                        planned.push(Planned { unit, raw_head: v, head, plan });
+                        if partial {
+                            stop = Some(k);
+                            break 'scan;
+                        }
+                    }
+                    None => {
+                        stop = Some(k);
+                        break 'scan;
+                    }
+                }
+                from = k;
+                inclusive = false;
+            }
+            if n < 256 {
+                break;
+            }
+        }
+        drop(snap);
+
+        // Phase 2, under the write slot, in change sets of at most
+        // `units_per_change_set` units (E3-09b): for each, check that every
+        // planned unit (and the policy of its type) is what the snapshot
+        // showed, plan again in the transaction the units that changed, then
+        // write; between change sets, give the slot back for a while.
+        let pacing = self.config().retention_pacing;
+        let mut ops = 0usize;
+        let mut units = 0usize;
+        let mut queue = planned.into_iter().peekable();
+        'chunks: while queue.peek().is_some() {
+            let chunk: Vec<Planned> = queue.by_ref().take(pacing.units_per_change_set).collect();
+            let mut cs = ChangeSet::begin_retention(self, now)?;
+            let mut policy_moved = false;
+            for (t, p) in &policies {
+                if cs.policy(t)? != *p {
+                    policy_moved = true;
+                }
+            }
+            let mut stale = Vec::new();
+            {
+                let txn = cs.txn()?;
+                for (i, p) in chunk.iter().enumerate() {
+                    let raw = txn.get(&key(Key::UnitHead { unit: p.unit })?)?;
+                    if policy_moved || raw.as_deref() != Some(p.raw_head.as_slice()) {
+                        stale.push((i, raw));
+                    }
+                }
+            }
+            let mut stale = stale.into_iter().peekable();
+            let mut current = Vec::with_capacity(chunk.len());
+            for (i, p) in chunk.into_iter().enumerate() {
+                let Some((_, raw)) = stale.next_if(|(j, _)| *j == i) else {
+                    current.push(p);
+                    continue;
+                };
+                let unit = p.unit;
+                let raw = raw.ok_or_else(|| corruption(format!("unit {unit}: UNIT_HEAD disappeared")))?;
+                let (_, head) = decode_head(&key(Key::UnitHead { unit })?, &raw)?;
+                let hp = cs.policy(&head.unit_type)?;
+                let txn = cs.txn()?;
+                let txn_scan = |a: Bound<&[u8]>, b: Bound<&[u8]>, n: usize| txn.scan(a, b, n);
+                let rule = policy.rule(&head.unit_type);
+                current.extend(replan_unit(&txn_scan, p, raw, head, hp, rule, now, policy_moved)?);
+            }
+            let chunk = current;
+            // The budget again, in case a unit planned again needs more.
+            let mut accepted: Vec<(&Planned, usize)> = Vec::with_capacity(chunk.len());
+            let mut budget_stop = false;
+            for p in &chunk {
+                let Some(take) = fits(&p.plan, units + accepted.len(), ops, budget) else {
+                    stop = Some(key(Key::UnitHead { unit: p.unit })?);
+                    budget_stop = true;
+                    break;
+                };
+                ops += plan_ops(&p.plan, take);
+                accepted.push((p, take));
+                if take < p.plan.drops.len() {
+                    stop = Some(key(Key::UnitHead { unit: p.unit })?);
+                    budget_stop = true;
+                    break;
+                }
+            }
+            units += accepted.len();
+            // Every range deletion first, then the points: the ranges cover
+            // only revisions below each new `oldest_rev`, which no point of
+            // this change set touches, so the result is the same, and the
+            // engine does not re-check the points already written against
+            // each new range.
+            let mut rest = Vec::with_capacity(accepted.len());
+            for (p, take) in &accepted {
+                let mut writes = unit_writes(p, *take)?;
+                let points = writes.split_off(if p.plan.pruned > 0 { 2 } else { 0 });
+                for w in &writes {
+                    cs.write(w)?;
+                }
+                rest.push(points);
+            }
+            let mut retained = 0;
+            for ((p, take), points) in accepted.iter().zip(rest) {
+                cs.retain(p.unit, p.plan.keep_from, p.plan.keep_kind, points, None)?;
+                retained += 1;
+                report.revisions_pruned += p.plan.pruned;
+                report.payloads_dropped += *take as u64;
+                report.bytes_logically_freed += p.plan.pruned_bytes
+                    + p.plan.drops.iter().take(*take).map(|(_, m)| REV_KEY_LEN + u64::from(m.payload_len)).sum::<u64>();
+            }
+            let info = cs.commit()?;
+            if retained > 0 {
+                report.units_retained += retained;
+                report.change_set = Some(info.clone());
+                report.change_sets.push(info);
+                // Pacing: pause `pause_ratio` times the work since the last
+                // pause, so that writers waiting for the slot go first and
+                // retention's CPU and I/O stay a fraction of the machine
+                // (also after the last one: callers loop on `complete = false`).
+                if pacing.pause_ratio > 0 {
+                    std::thread::sleep(busy.elapsed() * pacing.pause_ratio);
+                    busy = std::time::Instant::now();
+                }
+            }
+            if budget_stop {
+                break 'chunks;
+            }
+        }
+        if let Some(k) = stop {
+            report.complete = false;
+            if resumable {
+                *cursor = Some(RetentionCursor { policy: policy.clone(), epoch, resume: k });
+            }
+        }
+        Ok(report)
+    }
+}
+
+/// Whether any rule of `policy` is `KeepFor`.
+fn has_keep_for(policy: &RetentionPolicy) -> bool {
+    std::iter::once(&policy.default).chain(policy.by_type.values()).any(|r| matches!(r, RetentionRule::KeepFor(_)))
+}
+
+/// A `UNIT_HEAD` record, checked.
+fn decode_head(k: &[u8], v: &[u8]) -> Result<(UnitId, UnitHead), UnitError> {
+    let Key::UnitHead { unit } = Key::decode(k)? else {
+        return Err(corruption("a key in the UNIT_HEAD range is not a UNIT_HEAD".into()));
+    };
+    let head = UnitHead::decode(v).map_err(|e| context(e, &format!("UNIT_HEAD of unit {unit}")))?;
+    if head.oldest_rev.0 == 0 || head.oldest_rev > head.head_rev {
+        return Err(corruption(format!("unit {unit}: oldest_rev outside 1..=head_rev")));
+    }
+    Ok((unit, head))
+}
+
+/// How many of the plan's payload drops fit after `units` units and `ops`
+/// writes, or `None` when the unit does not fit at all.
+fn fits(plan: &UnitPlan, units: usize, ops: usize, budget: RetentionBudget) -> Option<usize> {
+    let base = if plan.pruned > 0 { 4 } else { 1 };
+    let room = budget.max_ops - ops;
+    // The least a unit can make progress with: its prune alone (the drops
+    // left for the next call), or one payload drop when nothing is pruned.
+    // Asking for a prune plus a drop starved a unit needing both under
+    // max_ops 4 or 5 (valid budgets): no call ever wrote it (E3-09c fix).
+    let least = if plan.pruned > 0 || plan.drops.is_empty() { base } else { base + 2 };
+    if units == budget.max_units || room < least {
+        return None;
+    }
+    Some(plan.drops.len().min((room - base) / 2))
+}
+
+/// The engine writes (member included) of a plan taking `take` drops.
+fn plan_ops(plan: &UnitPlan, take: usize) -> usize {
+    (if plan.pruned > 0 { 4 } else { 1 }) + 2 * take
+}
+
+/// The writes of one planned unit, its member excluded.
+fn unit_writes(p: &Planned, take: usize) -> Result<Vec<Write>, UnitError> {
+    let (unit, head, plan) = (p.unit, &p.head, &p.plan);
+    let mut writes = Vec::with_capacity(plan_ops(plan, take) - 1);
+    if plan.pruned > 0 {
+        writes.push(Write::DeleteRange(
+            key(Key::RevMeta { unit, rev: head.oldest_rev })?,
+            key(Key::RevMeta { unit, rev: plan.keep_from })?,
+        ));
+        writes.push(Write::DeleteRange(
+            key(Key::RevPayload { unit, rev: head.oldest_rev })?,
+            key(Key::RevPayload { unit, rev: plan.keep_from })?,
+        ));
+        let next = UnitHead { oldest_rev: plan.keep_from, ..head.clone() };
+        writes.push(Write::Put(key(Key::UnitHead { unit })?, next.encode()?));
+    }
+    for (rev, meta) in plan.drops.iter().take(take) {
+        let rewritten = RevisionMeta { payload_present: false, ..meta.clone() };
+        writes.push(Write::Put(key(Key::RevMeta { unit, rev: *rev })?, rewritten.encode(*rev)?));
+        writes.push(Write::Delete(key(Key::RevPayload { unit, rev: *rev })?));
+    }
+    Ok(writes)
+}
+
+impl<E: TxnEngine + Reclaim> UnitDb<E> {
+    /// Asks the engine to compact the revision ranges (`REV_META` and
+    /// `REV_PAYLOAD`, design §5.1) so that what retention deleted leaves the
+    /// live files. It delegates to the engine's public directed compaction
+    /// ([`Reclaim::compact_range`], the same call [`UnitDb::reclaim`] makes
+    /// over the whole key space); an engine without it answers its own error
+    /// (`InvalidArgument("unsupported")`). What a snapshot still sees stays
+    /// (I-05).
+    pub fn compact(&self) -> Result<CompactReport, UnitError> {
+        self.check_poisoned()?;
+        let before = stored_bytes(&self.storage_stats());
+        Reclaim::compact_range(
+            self.inner_engine(),
+            Bound::Included(&[TAG_REV_META]),
+            Bound::Excluded(&[TAG_REV_PAYLOAD + 1]),
+        )?;
+        let after = stored_bytes(&self.storage_stats());
+        Ok(CompactReport { stored_bytes_before: before, stored_bytes_after: after })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::path::Path;
+
+    use kerno_testkit::vfs::SimVfs;
+
+    use super::*;
+    use crate::db::{ChangeMeta, NewUnit, UnitUpdate};
+    use crate::{UnitConfig, UnitDb};
+
+    #[test]
+    fn stored_bytes_sums_levels_only() {
+        let s = |v: &[(&str, u64)]| v.iter().map(|(n, x)| (n.to_string(), *x)).collect::<Vec<_>>();
+        assert_eq!(stored_bytes(&s(&[])), None);
+        assert_eq!(stored_bytes(&s(&[("l0_bytes", 5), ("l6_bytes", 7), ("l0_files", 9), ("wal_bytes", 3)])), Some(12));
+        assert_eq!(stored_bytes(&s(&[("l_bytes", 5), ("lx_bytes", 1)])), None);
+    }
+
+    #[test]
+    fn report_reclaimed() {
+        let r = CompactReport { stored_bytes_before: Some(10), stored_bytes_after: Some(4) };
+        assert_eq!(r.bytes_reclaimed(), Some(6));
+        assert_eq!(CompactReport { stored_bytes_after: None, ..r }.bytes_reclaimed(), None);
+        assert_eq!(CompactReport { stored_bytes_after: Some(11), ..r }.bytes_reclaimed(), Some(0));
+    }
+
+    type Db = UnitDb<kerno_storage::KernoDb>;
+    type Entries = Vec<(Vec<u8>, Vec<u8>)>;
+
+    fn open(disk: &SimVfs) -> Db {
+        UnitDb::open(disk.as_vfs(), Path::new("/db"), &UnitConfig::default()).expect("open")
+    }
+
+    /// A unit of type `t` with `n` revisions; the commit sequence of each.
+    fn unit_of(db: &Db, t: &str, n: u8) -> (UnitId, Vec<CommitSeq>) {
+        let new = NewUnit { unit_type: t.into(), schema_version: 1, metadata: Vec::new(), payload: vec![1; 8] };
+        let (id, c) = db.create_unit(new, ChangeMeta::default()).unwrap();
+        let mut seqs = vec![c.commit_seq];
+        seqs.extend(append(db, id, 2..=n));
+        (id, seqs)
+    }
+
+    fn append(db: &Db, id: UnitId, revs: std::ops::RangeInclusive<u8>) -> Vec<CommitSeq> {
+        revs.map(|i| {
+            let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
+            cs.update(id, UnitUpdate { payload: vec![i; 8], schema_version: None, metadata: None }, None).unwrap();
+            cs.commit().unwrap().commit_seq
+        })
+        .collect()
+    }
+
+    /// The unit's head now (raw and decoded), and what `plan` makes of it
+    /// with the number of entries its scans read.
+    fn planned_now<T>(
+        db: &Db,
+        unit: UnitId,
+        plan: impl FnOnce(&ScanFn<'_>, Vec<u8>, UnitHead) -> Result<T, UnitError>,
+    ) -> (T, usize) {
+        let snap = db.raw_snapshot().unwrap();
+        let head_key = key(Key::UnitHead { unit }).unwrap();
+        let raw_head = kerno_core::contract::Snapshot::get(&snap, &head_key).unwrap().unwrap();
+        let (_, head) = decode_head(&head_key, &raw_head).unwrap();
+        let read = Cell::new(0);
+        let scan = |a: Bound<&[u8]>, b: Bound<&[u8]>, n: usize| -> kerno_core::Result<Entries> {
+            let page = kerno_core::contract::Snapshot::scan(&snap, a, b, n)?;
+            read.set(read.get() + page.len());
+            Ok(page)
+        };
+        let out = plan(&scan, raw_head, head).unwrap();
+        (out, read.get())
+    }
+
+    /// `unit` planned from scratch, as on the snapshot of a pass.
+    fn plan_now(db: &Db, unit: UnitId, hp: HistoryPolicy, rule: RetentionRule) -> Option<Planned> {
+        planned_now(db, unit, |s, raw_head, head| {
+            Ok(plan_unit(s, unit, &head, hp, rule, NOW)?.map(|plan| Planned { unit, raw_head, head, plan }))
+        })
+        .0
+    }
+
+    /// `prev` planned again against the unit's head now, with what it read.
+    fn replan_now(
+        db: &Db,
+        prev: &Planned,
+        hp: HistoryPolicy,
+        rule: RetentionRule,
+        policy_moved: bool,
+    ) -> (Option<Planned>, usize) {
+        planned_now(db, prev.unit, |s, raw, head| replan_unit(s, prev.clone(), raw, head, hp, rule, NOW, policy_moved))
+    }
+
+    const NOW: Timestamp = Timestamp(1_700_000_000_000_000);
+
+    /// A unit that only grew since the snapshot keeps the snapshot's plan,
+    /// written against its current head, without reading anything; that
+    /// plan prunes a prefix of what a plan made now prunes.
+    #[test]
+    fn replan_keeps_the_snapshot_plan_of_a_unit_that_only_grew() {
+        use HistoryPolicy::{Audit, Versioned};
+        use RetentionRule::{KeepAll, KeepLast, KeepSince};
+        type Case = (&'static str, HistoryPolicy, fn(&[CommitSeq]) -> RetentionRule);
+        let cases: [Case; 6] = [
+            ("last 1", Versioned, |_| KeepLast(1)),
+            ("last 3", Versioned, |_| KeepLast(3)),
+            ("since revision 10", Versioned, |s| KeepSince(s[9])),
+            ("since a sequence the appended revisions reach", Versioned, |s| KeepSince(CommitSeq(s[39].0 + 3))),
+            ("audit last 2", Audit, |_| KeepLast(2)),
+            ("audit keep all", Audit, |_| KeepAll),
+        ];
+        for (name, hp, rule) in cases {
+            let disk = SimVfs::new(0);
+            let db = open(&disk);
+            // The revisions are written as `Versioned`, so that an `Audit`
+            // type has payloads to drop.
+            let (id, seqs) = unit_of(&db, "t", 40);
+            db.set_policy("t", hp, ChangeMeta::default()).unwrap();
+            let rule = rule(&seqs);
+            let prev = plan_now(&db, id, hp, rule).unwrap_or_else(|| panic!("{name}: nothing to prune at first"));
+            append(&db, id, 41..=45);
+            let (again, read) = replan_now(&db, &prev, hp, rule, false);
+            let again = again.unwrap_or_else(|| panic!("{name}: the snapshot's plan is dropped"));
+            assert_eq!(read, 0, "{name}: nothing is read under the slot");
+            assert_eq!(again.plan, prev.plan, "{name}: the snapshot's plan");
+            assert_eq!(again.head.head_rev, RevNo(45), "{name}: written against the current head");
+            let full = plan_now(&db, id, hp, rule).unwrap().plan;
+            assert!(prev.plan.keep_from <= full.keep_from && prev.plan.pruned <= full.pruned, "{name}: a prefix");
+            assert!(prev.plan.drops.iter().all(|d| full.drops.contains(d) || d.0 < full.keep_from), "{name}");
+        }
+    }
+
+    /// A moved history policy or a moved `oldest_rev` may make the snapshot's
+    /// plan prune what must now be kept, or count what is gone: then the unit
+    /// is planned again from its first revision.
+    #[test]
+    fn replan_starts_over_when_the_old_plan_may_not_hold() {
+        // Planned under `None` (keep the head only) at 20 revisions; the type
+        // is `Versioned` now and keeps five.
+        let disk = SimVfs::new(0);
+        let db = open(&disk);
+        let (id, _) = unit_of(&db, "t", 20);
+        let rule = RetentionRule::KeepLast(5);
+        let old = plan_now(&db, id, HistoryPolicy::None, rule).unwrap();
+        assert_eq!(old.plan.keep_from, RevNo(20));
+        append(&db, id, 21..=22);
+        let versioned = HistoryPolicy::Versioned;
+        let (moved, read) = replan_now(&db, &old, versioned, rule, true);
+        let full = plan_now(&db, id, versioned, rule).unwrap().plan;
+        assert_eq!(full.keep_from, RevNo(18), "five revisions kept: 18 to 22");
+        assert_eq!(moved.unwrap().plan, full);
+        assert_eq!(read, 22, "the policy moved: every revision is read again");
+
+        // Planned to keep the last two of ten; a pass since pruned up to
+        // revision 5 and the unit grew to twelve, so the old plan's range and
+        // count no longer hold.
+        let disk = SimVfs::new(0);
+        let db = open(&disk);
+        let (id, _) = unit_of(&db, "t", 10);
+        let last_two = RetentionRule::KeepLast(2);
+        let old = plan_now(&db, id, versioned, last_two).unwrap();
+        assert_eq!((old.plan.keep_from, old.plan.pruned), (RevNo(9), 8));
+        db.run_retention(&RetentionPolicy::all(RetentionRule::KeepLast(6)), RetentionBudget::default()).unwrap();
+        append(&db, id, 11..=12);
+        let (again, _) = replan_now(&db, &old, versioned, last_two, false);
+        let again = again.unwrap().plan;
+        assert_eq!(again, plan_now(&db, id, versioned, last_two).unwrap().plan);
+        assert_eq!((again.keep_from, again.pruned), (RevNo(11), 6), "revisions 5 to 10 are left to prune");
+    }
+}

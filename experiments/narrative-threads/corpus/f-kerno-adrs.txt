@@ -1,0 +1,1250 @@
+# ADR-0001 — Motor de almacenamiento físico
+
+| Campo | Valor |
+|---|---|
+| Estado | **Aceptado** (2026-10-28, por el propietario del proyecto) — con la evidencia de M0 (410 ejecuciones de benchmark, suites de fallos con 400 y 1000 semillas) y las condiciones de la decisión como trabajo obligatorio de Fase 1 |
+| Fecha | 2026-10-27 (propuesta) · 2026-10-28 (aceptación) |
+| Relacionado con | SAD §7.1, §15, §17; ADR-0002, ADR-0003, ADR-0004, ADR-0009, ADR-0012; [informe M0](../testing/m0-report.md); [matriz de fallos](../architecture/failure-matrix.md) |
+
+## Contexto
+
+Kerno necesita un núcleo key-value transaccional, embebido y local-first sobre el que construir documentos, revisiones, índices y recuperación para IA. La arquitectura física condiciona el formato persistente, el protocolo de commit, la recuperación, el coste del historial y la supresión de datos, y cambiarla después sería una migración, no una refactorización. Por eso SAD §7.1 y D-11 exigen decidir entre **B+ tree copy-on-write** y **LSM tree** con una prueba reproducible, no por popularidad ni por cifras de terceros.
+
+## Opciones consideradas
+
+1. **A — B+ tree copy-on-write** (shadow paging, estilo LMDB/redb): un archivo de páginas, meta doble, MVCC por retención de páginas, sin hilos de fondo.
+2. **B — LSM nivelado** (estilo LevelDB/RocksDB): WAL + memtable + SST inmutables + compactación en segundo plano, MVCC por versiones de archivos.
+3. **C — Tercera vía** (adoptar un motor existente como capa de almacenamiento, o un híbrido con dos motores primarios): solo si la evidencia lo justificara. SAD §15 plantea ADR-0001 como implementación propia de uno de los dos enfoques y admite una tercera opción «solo si la evidencia la justifica»; los principios de núcleo pequeño y de medir antes de especializar (SAD §3, principios 2 y 8) y el plan maestro de Kerno descartan dos motores primarios en la primera versión.
+
+## Criterios de decisión (fijados antes de medir)
+
+De SAD §15 y §17.5: correctitud; latencias p50/p95/p99; throughput; tiempo de recuperación; RAM máxima; bytes escritos y tamaño en disco frente a datos; complejidad operacional; comportamiento en recuperación, compactación y rangos; compatibilidad futura con el Revision Engine. Metodología en ADR-0012. Los casos de referencia (LiveSpec, Cauce, memoria de agentes) pesan más que los micro-benchmarks.
+
+## Evidencia
+
+Todo el detalle está en el [informe de M0](../testing/m0-report.md); aquí, lo que decide.
+
+### 1. Correctitud: requisito cumplido por ambos
+
+Ambos prototipos pasan, con 400 semillas, la misma batería compartida (el B+ tree, sin la variante `Buffered` + corte de energía, cuya garantía no ofrece; §2): modelo aleatorio, aislamiento, concurrencia, caídas en puntos aleatorios y en **cada** operación de E/S (muerte de proceso y corte de energía, con desgarro a 512 B y a nivel de byte), un EIO aislado en cada operación, bit flips dirigidos y truncamientos, y una prueba diferencial contra redb, fjall y SQLite. Ninguno devolvió nunca datos erróneos ni retrocedió en silencio.
+
+Llegar ahí exigió corregir defectos reales en los dos, hallados por el harness y por una revisión adversarial con reproducción independiente: en el B+ tree, uno de severidad **alta** (la apertura confiaba en un meta no durable y podía destruir el único árbol durable) y tres medios; en el LSM, uno **medio-alto** (daño a mitad del WAL tomado por cola rota, con pérdida silenciosa de commits confirmados) y uno medio. **La correctitud no desempata**: ambas arquitecturas tienen protocolos con sutilezas, aunque en sitios distintos (invariantes de meta y páginas libres en el B+ tree; ciclo de vida de archivos y concurrencia con hilos de fondo en el LSM).
+
+### 2. Durabilidad sin `fsync` por commit
+
+| | B+ tree CoW | LSM |
+|---|---|---|
+| Corte de energía en modo `Buffered` | estado exacto de algún commit **o** corrupción detectada; ~87 % de los cortes simulados dejaron la base **sin poder abrirse** (y otro 12 %, con daño detectado al leer) | **prefijo consistente** de commits, siempre |
+
+Ofrecer en un CoW la misma garantía requiere puntos de sincronización y reutilización diferida de páginas (diseño esbozado, no implementado). En el LSM sale del propio diseño del WAL. Kerno quiere ofrecer un modo de durabilidad relajada sin comprometer la consistencia (ADR-0002), así que esto pesa.
+
+### 3. Rendimiento (escala `medium`, 200 000 registros, `Sync` salvo indicación, mediana de 3 repeticiones; las cifras `large` son de una sola ejecución)
+
+| Workload | Métrica | B+ tree | LSM | LSM / B+ | redb | fjall | SQLite |
+|---|---|---:|---:|---:|---:|---:|---:|
+| **Cauce** (commit durable + lecturas) | pasos/s | 1 111 | **3 087** | 2,8× | 1 748 | 2 941 | 2 187 |
+| | p99 commit · p99 lectura (µs) | 1 966 · **76** | **713** · 98 | | 1 213 · 59 | 658 · 118 | 1 078 · 151 |
+| | recuperación tras cierre sucio (ms) | **0,9** | 9,7 | | 1,1 | 363 | 0,7 |
+| **Cauce** `Buffered` (`small`) | pasos/s | 16 250 | **57 110** | 3,5× | 15 680 † | 61 490 | 7 413 |
+| **LiveSpec** | change sets/s | 408 | **667** | 1,6× | 524 | 522 | 468 |
+| | p99 commit · p99 listado de módulo (µs) | **3 762 · 440** | 4 764 · 657 | | 3 148 · 377 | 2 425 · 1 296 | 12 530 · 346 |
+| **Memoria de agentes** | pasos/s (`medium` · `small`) | **1 073** · 1 377 | 1 037 · **1 642** | 0,97× · 1,19× | 1 098 · 1 595 | 1 279 · 2 166 | 704 · 832 |
+| | p99 escritura (µs) | **1 573** | 5 837 | | 2 128 | 1 090 | 1 613 |
+| **Historial simulado** (escritura) | revisiones/s (miles) | 8,3 | **66,6** | 8,0× | 11,4 | 61,6 | 11,4 |
+| | p99 commit de 100 revisiones (µs) | 17 870 | **9 118** | | 13 480 | 3 168 | 26 800 |
+| **Historial simulado** (lectura) | p50 historial de un registro (µs) | **7,6** | 14,4 | | 5,9 | 20,3 | 9,8 |
+| Commits de un registro | commits/s | 1 542 | **4 044** | 2,6× | 2 499 | 4 054 | 4 113 |
+| | p99 commit (µs) | 1 331 | **584** | | 951 | 616 | 630 |
+| | `fsync` por commit | 2 | **1** | | — | — | — |
+| | amplificación de escritura | 112× | **1,1×** | | 132× | 1,2× | 37× |
+| Commits de un registro `Buffered` (`small`) | commits/s | 31 080 | **200 800** | 6,5× | 18 770 † | 311 600 | 27 760 |
+| Borrados puntuales | commits/s | 1 365 | **4 343** | 3,2× | 2 480 | 3 991 | 3 202 |
+| Carga masiva | kops/s (`medium` · `large`) | 20,1 · 10,4 | **162 · 110** | 8,0× · 10,6× | 26,2 · 18,5 | 133 · 131 | 12,6 · 10,3 |
+| | espacio en disco / datos | 1,65 | **1,03** | | 2,36 | 1,58 | 1,48 |
+| | RAM máxima (MB) | 89 | **25** | | 72 | 136 | 40 |
+| Mixto 90/10 (4 hilos) | kops/s | 11,6 | **28,0** | 2,4× | 15,3 | 30,3 | 25,3 |
+| | p99 lectura · p99 escritura (µs) | 84 · 7 274 | **62 · 3 817** | | 128 · 6 488 | 45 · 3 504 | 237 · 3 916 |
+| Lecturas puntuales, caché caliente | kops/s 1 hilo · p99 (µs) | 188 · 12,5 | **230** · 12,5 | 1,2× | 273 · 9,4 | 235 · 9,0 | 138 · 21,3 |
+| Lecturas puntuales, caché fría | kops/s | 57 | **117** | 2,1× | 65 | 143 | 52 |
+| Escaneo de 100, caché caliente / fría | p99 (µs) | 171 / 1 758 | **146 / 521** | | 182 / 1 652 | 140 / 310 | 167 / 1 745 |
+| Inserción secuencial + actualizaciones | kops/s actualización | 93 | **115** | 1,2× | 111 | 86 | 121 |
+| | p99 commit de 100 actualizaciones (µs) | **2 306** | 6 840 | | 1 732 | 2 634 | 7 999 |
+| | amplificación de escritura · espacio / datos | **2,3× · 1,62** | 3,4× · 2,08 | | 2,9× · 2,11 | 1,7× · 3,24 | 3,2× · 1,34 |
+| Carga masiva: reapertura limpia · cierre limpio | ms | **1,0 · 12** | 3,4 · 759 | | 1,2 · 8,7 | 392 · 96 | 0,5 · 13 |
+
+† redb `Durability::None` no sobrevive a la muerte del proceso: cifra no comparable (ADR-0012).
+
+Entorno: VM con 4 núcleos y `fdatasync` p50 de 113 µs (p99 568 µs), 410 ejecuciones sin fallos; detalle, rangos y escalas `small` y `large` en el [informe de M0 §3](../testing/m0-report.md#3-rendimiento).
+
+Lectura de los datos:
+
+- **El LSM reproduce el perfil de fjall; el B+ tree queda por debajo de redb salvo en inserción secuencial.** En `medium` y modo `Sync`, el prototipo LSM rinde entre 0,8× y 1,3× fjall; el B+ tree, entre 0,55× y 0,8× redb en Cauce, LiveSpec, commits de un registro, borrados, mixto, historial y carga masiva (en parte por sus dos `fsync` por commit frente a uno), a la par en memoria de agentes y por encima en inserción secuencial (1,3×). Por eso las razones LSM / B+ incluyen también diferencias de madurez (riesgo R-S1). **Entre los motores maduros (fjall frente a redb) la ventaja de la arquitectura LSM se mantiene y en general es menor**: empate en LiveSpec (1,0×), 1,6× en commits de un registro y en borrados, 1,7× en Cauce, 2,0× en el mixto y 5,1–5,4× en carga masiva y escritura de historial; solo en memoria de agentes es mayor que entre los prototipos (1,2× frente a 0,97×); redb gana en actualizaciones secuenciales (fjall 0,78×) y en lecturas puntuales con un hilo (0,86×).
+- **Rendimiento de escritura: el LSM gana en casi todo, con márgenes muy distintos.** En los casos de referencia va de un empate (memoria de agentes: 0,97× en `medium`, 1,19× en `small`, con valores de 1–4 KiB y embeddings de 3 KiB) a 1,6× (LiveSpec), 2,8× (Cauce) y 8,0× (escritura de historial). En micro-benchmarks, de 1,2–1,3× (inserción secuencial) a 2,6× (commits durables de un registro), 6,5× (commits sin `fsync`) y 8–10,6× (carga masiva aleatoria). En un CoW cada commit reescribe la ruta raíz-hoja de cada hoja tocada más metadatos; con dos `fsync` (prototipo) o uno (redb), el techo de commits durables queda por debajo del LSM.
+- **Bytes escritos y espacio: a favor del LSM salvo en escritura secuencial y a escala `small`.** Escribe ~100× menos bytes por commit pequeño y ocupa menos tras una carga y en memoria de agentes en `medium` (2,64 frente a 3,93); con inserciones secuenciales y actualizaciones ocupa más (2,08 frente a 1,62) y, en `medium`, también escribe más (3,4× frente a 2,3×); a escala `small` ocupa más en el historial (2,98 frente a 2,32) y en memoria de agentes (2,03 frente a 1,64).
+- **Latencia de cola: depende del workload.** El LSM tiene mejor p99 en los commits durables pequeños (Cauce 2,8×, commits de un registro 2,3×, escritura en el mixto 1,9×, historial 2,0×, borrados 3,2×). El B+ tree lo tiene en `medium` cuando la compactación del LSM coincide con escritura sostenida (memoria de agentes 3,7×, actualizaciones secuenciales 3,0×, inserción secuencial 2,1×, commit de LiveSpec 1,3×; en `small`, con poca compactación, esas cuatro colas las gana el LSM) y en lecturas cortas de rangos pequeños (listado de módulo 1,5×, recuperación de recuerdos 2,0×, lectura de Cauce 1,3×).
+- **Lecturas con caché caliente: parecidas**; el B+ tree gana en el historial de un registro (1,9×, un rango contiguo dentro de una hoja) y en escaneos a escala `small`, y el LSM en lecturas puntuales y en escaneos desde `medium`. **Con caché fría gana el LSM** (2,1× en lecturas puntuales, p99 de escaneo 3,4× menor): la asignación copy-on-write dispersa las páginas y las SST son secuenciales.
+- **Apertura y cierre: gana el B+ tree** (reapertura de 1–2 ms frente a 3–18 ms en `medium` y `large`; cierre de 12 ms frente a 0,76 s en `medium` y de 22 ms frente a 3,6 s en `large`, porque el LSM compacta antes de cerrar).
+- **Memoria:** el LSM usa mucha menos RAM al cargar (25 frente a 89 MB), pero algo más en memoria de agentes y LiveSpec, por sus memtables.
+
+### 4. Criterios cualitativos
+
+| Criterio | B+ tree CoW | LSM |
+|---|---|---|
+| Complejidad operacional | **Menor**: sin hilos de fondo, sin compactación ni ajustes | Mayor: compactación, backpressure, ciclo de vida de archivos, ajustes por nivel |
+| Recuperación | **Trivial**: elegir meta + `fsync`; sin reproducción | Reproducción del WAL + reescritura a L0 + MANIFEST; reentrante y probada |
+| Compactación | No hay; el archivo no se encoge sin compactación offline | Continua; amplificación de escritura en segundo plano; tombstones |
+| Rangos | Recorrido directo de hojas | Fusión de varias fuentes; necesita bloom + índices |
+| Compatibilidad con Revision Engine | Cada revisión es una escritura aleatoria más (caro: 8,0× menos revisiones/s que el LSM en el prototipo, 5,4× redb frente a fjall; 112× bytes en commits de un registro) | Las revisiones son escrituras secuenciales en WAL/memtable (barato); lectura de historial algo más lenta |
+| Retención y supresión (ADR-0009) | Páginas liberadas conservan bytes hasta reutilizarse; borrar rangos libera hojas | Versiones antiguas en SST/WAL hasta compactar; necesita *range tombstones* y compactación forzada |
+| Cifrado (ADR-0006) | Nonce nuevo por página reescrita | Archivos inmutables: se cifran una vez |
+| Snapshots largos | Retienen páginas (el archivo crece) | Retienen archivos y versiones (el directorio crece) |
+
+## Decisión
+
+**Adoptar un LSM nivelado como arquitectura de almacenamiento del núcleo de Kerno**, partiendo del diseño y las pruebas del prototipo `spike-lsm`, con estas condiciones antes de congelar el formato (ADR-0003):
+
+1. **Colas de lectura y escritura acotadas**: ajustar compactación (subcompactaciones o límites por ronda, límites de solapamiento con el nivel abuelo), presupuesto de compactación en `close()` y métricas de stalls; criterio de aceptación con los p99 de LiveSpec, Cauce y memoria de agentes frente al baseline de M0 (el p99 de escritura en memoria de agentes, 3,7× el del B+ tree, es el caso a resolver).
+2. **Range tombstones y compactación dirigida** de rangos, requisito de la retención y supresión de revisiones (ADR-0004, ADR-0009).
+3. **MANIFEST como log de ediciones** con marca de cierre limpio, y **group commit** para escritores concurrentes.
+4. Mantener **el prototipo B+ tree y todo el harness** como oráculo diferencial y como referencia de rendimiento de lectura.
+5. **Revisar esta decisión** si un caso de uso real resulta dominado por lecturas de cola baja con pocas escrituras (disparador: incumplir los objetivos de p99 de lectura de LiveSpec tras las optimizaciones del punto 1).
+
+### Por qué no las otras opciones
+
+- **B+ tree CoW**: más simple de operar, con apertura y cierre inmediatos y mejores colas cuando la compactación del LSM compite con escrituras sostenidas, pero los casos de referencia de Kerno son intensivos en escritura (Cauce: commits pequeños durables; memoria de agentes: ingesta continua; Revision Engine: cada cambio escribe además una revisión y un `ChangeSet`). Ahí el prototipo CoW rinde entre lo mismo (memoria de agentes) y 8× menos (escritura de historial), con 2,8× menos en Cauce y 1,6× menos en LiveSpec; entre motores maduros (redb frente a fjall) la distancia va en el mismo sentido y en general es menor (de un empate en LiveSpec a 1,7× en Cauce y 5,4× en historial; solo en memoria de agentes es mayor, 1,2×); escribe ~100× más bytes por commit pequeño, tiene peores colas en commits durables pequeños, lee peor con caché fría y no ofrece un modo de durabilidad relajada consistente sin trabajo adicional sustancial.
+- **Tercera vía**: en días de desarrollo, los prototipos quedaron cerca de los motores maduros de su familia —el LSM, a la par de fjall (0,8–1,3× en `medium`); el B+ tree, dentro del objetivo de 2× de redb de ADR-0012 (0,55–0,8× en la mayoría de workloads, a la par en memoria de agentes y por encima en inserción secuencial)— y superaron una batería de fallos más exigente que la de una prueba funcional, así que la evidencia **no** obliga a renunciar al núcleo propio. Un híbrido con dos motores primarios contradice el principio de núcleo pequeño (SAD §3, principio 2). Adoptar un motor externo sigue siendo un plan de contingencia si la Fase 1 no cumple sus criterios de salida.
+
+## Consecuencias
+
+- **Decisiones que ahora dependen del almacenamiento**: protocolo de commit (WAL + MANIFEST, ADR-0002), formato (WAL, SST, MANIFEST con cabeceras versionadas, ADR-0003), coste y diseño de retención/supresión (compactación dirigida, ADR-0009), unidad de cifrado (archivo/bloque inmutable, ADR-0006), métricas operativas (niveles, compactación, stalls).
+- **Decisiones que siguen desacopladas**: semántica de transacciones y errores (ADR-0002), modelo de revisiones sobre claves (ADR-0004; el diseño solo exige batches atómicos y scans), identificadores (ADR-0005), índices derivados con watermark de secuencia (ADR-0007), serialización (ADR-0008), API (ADR-0010), vectores (ADR-0011).
+- La Fase 1 empieza con un motor con hilos de fondo: las pruebas de concurrencia y de fallos durante compactación son obligatorias desde el primer día (el harness de M0 ya las incluye).
+- El cierre limpio cuesta más (compacta hasta estabilizar); se acotará con un presupuesto.
+
+## Seguimiento
+
+- Aceptado el 2026-10-28 junto con ADR-0002 y ADR-0003; M0 queda cerrado.
+- Repetir los benchmarks de M0 en el hardware objetivo (riesgo R-S3) antes de cerrar la Fase 1.
+- Implementar los puntos 1–3 de la decisión en Fase 1, con criterios de salida de ADR-0012.
+- **Seguimiento de la Fase 1 (WP14, 2026-10-29; sin cambios de decisión).** El motor del producto (`kerno-storage`) implementa las condiciones de esta decisión sobre el formato v1 ([`docs/file-format/v1.md`](../file-format/v1.md), interpretaciones en [ADR-0013](0013-formato-v1-y-protocolo-del-motor.md), aún «Propuesto»). La medición de salida en la clase de VM de M0 **no cumple T1** (condición 1) y deja otros incumplimientos documentados en el [informe de la Fase 1](../testing/f1-report.md); la revisión de contingencia (R-10/R-11) la decide el propietario. La repetición en el hardware objetivo (R-S3) sigue abierta.
+
+# ADR-0002 — Modelo de transacciones y durabilidad
+
+| Campo | Valor |
+|---|---|
+| Estado | **Aceptado** (2026-10-28, por el propietario del proyecto, junto con ADR-0001) |
+| Fecha | 2026-10-27 (propuesta) · 2026-10-28 (aceptación) |
+| Relacionado con | SAD §4.2, §6.2, §7.2, §7.3; [matriz de fallos](../architecture/failure-matrix.md); invariantes I-01…I-11; ADR-0001 |
+
+## Contexto
+
+SAD §7.2 exige definir explícitamente:
+
+1. qué significa que una transacción está confirmada;
+2. cuándo se sincroniza y qué devuelve la API si la sincronización falla;
+3. cómo se detectan escrituras parciales;
+4. cómo se resuelven caídas antes, durante y después del commit;
+5. cómo se recupera una actualización de formato interrumpida;
+6. qué herramienta verifica o exporta una base dañada sin sobrescribirla.
+
+El criterio de aprobación (SAD §15) es una **matriz de fallos** con el estado esperado tras reabrir en cada punto de interrupción, y la documentación de las garantías de cada modo de durabilidad.
+
+## Opciones consideradas
+
+1. **WAL + protocolo de commit**, con estructura principal reconstruible (LSM; también un B-tree con WAL estilo SQLite/InnoDB).
+2. **Copy-on-write con raíz/meta de commit** (shadow paging estilo LMDB/redb): el commit es la escritura atómica de un meta que apunta a la nueva raíz.
+3. **Variante híbrida** según el motor elegido (p. ej. CoW con «1PC + checksum», o CoW con un WAL pequeño para commits pequeños).
+
+Ambas opciones principales se implementaron en M0 y se probaron con la misma matriz de fallos.
+
+## Decisión
+
+### Semántica de commit (independiente del motor)
+
+| Concepto | Definición |
+|---|---|
+| **Transacción** | Un conjunto de escrituras (put/delete) sobre una base, aplicado atómicamente. Kerno tendrá un único escritor por base (D-03): la transacción de escritura ve sus propias escrituras y el último estado confirmado (serializable para escrituras); los lectores trabajan sobre snapshots (aislamiento snapshot). |
+| **Secuencia de commit** | Entero de 64 bits, monotónico, asignado por la base: cada commit no vacío recibe `anterior + 1`. Se persiste, sobrevive a caídas y es el orden transaccional (nunca el timestamp de UUIDv7, I-26). Sirve de *watermark* para derivados (ADR-0007). |
+| **Confirmada** | `commit` devolvió `Ok(seq)`. En modo `Sync` esto implica **durable ante corte de energía**. En modo `Buffered`, implica visible y durable ante muerte del proceso. |
+| **Visibilidad** | Un commit es visible para snapshots nuevos cuando `commit` retorna, y nunca antes de cumplir la garantía de su modo de durabilidad: en `Sync`, ningún lector observa datos que una caída podría perder. |
+| **Snapshot** | Vista del estado exacto tras el commit `seq`, estable mientras viva, sin bloquear al escritor. Los snapshots de larga duración retienen versiones antiguas (páginas o archivos) y se expondrán como métrica (edad del snapshot más antiguo, bytes retenidos). |
+| **Commit vacío** | No crea commit; devuelve la secuencia actual. |
+
+### Errores y resultado de un commit
+
+| Error | Significado para el llamador |
+|---|---|
+| `InvalidArgument` | Rechazado antes de escribir. **No aplicado.** |
+| `Locked` | La base está abierta en otro handle o proceso. |
+| `Poisoned` | Un error anterior dejó el handle en estado desconocido; **no aplicado**. Hay que reabrir. |
+| `Io` durante el commit | **Resultado indeterminado** hasta reabrir: tras la recuperación el commit está completo o ausente, nunca a medias. El handle queda envenenado. |
+| `Corruption` | Se detectó daño; no se devuelven datos dañados. |
+
+Tras un `fsync` fallido **no se reintenta asumiendo que los datos llegaron al disco** (I-10): el handle queda envenenado y la recuperación decide con lo que realmente está en disco.
+
+### Modos de durabilidad
+
+| Modo | Garantía | Coste observado en M0 |
+|---|---|---|
+| `Sync` (por defecto) | Confirmado ⇒ sobrevive a corte de energía. | 1 `fsync` por commit en LSM, 2 en el B+ tree CoW del prototipo. |
+| `Buffered` | Confirmado ⇒ sobrevive a muerte del proceso. Ante corte de energía, **el motor elegido debe garantizar un prefijo consistente** de commits (nunca datos dañados). Se completa con una llamada explícita `sync()` y en `close()`. | 0 `fsync` por commit. |
+
+M0 mostró que esta última garantía **no es gratuita en un CoW B+ tree**: sin barreras, un meta nuevo puede persistir antes que sus páginas y las páginas liberadas se reutilizan antes de ser durables; el prototipo detecta el problema (nunca devuelve datos erróneos) pero ~87 % de los cortes simulados dejaron la base sin poder abrirse (y otro 12 %, con daño detectado al leer). Ofrecerla en un CoW exige puntos de sincronización periódicos y reutilización diferida de páginas (ver [diseño del prototipo](../../spikes/storage/spike-btree/DESIGN.md#durability-modes)). En un LSM sale del propio diseño del WAL.
+
+**Agrupación de commits (group commit)** queda como optimización de Fase 1 para escritores concurrentes; no cambia la semántica.
+
+### Detección de escrituras parciales y recuperación
+
+- Todo registro de journal, página, bloque, manifest o meta lleva longitud explícita y checksum verificado antes de usarse (ADR-0003).
+- El último commit válido se identifica sin ambigüedad: meta con secuencia más alta y crc válido (CoW) o MANIFEST + reproducción del WAL con secuencias consecutivas (LSM).
+- Una cola rota solo se acepta al final del journal más reciente tras una caída; tras un cierre limpio, o seguida de registros válidos, es corrupción.
+- Los archivos que definen el estado se crean y reemplazan de forma atómica (temporal → `fsync` → `rename` → `fsync` del directorio). Un archivo existente vacío o sin estado válido es corrupción, nunca «base nueva».
+- La recuperación es automática al abrir, **reentrante** (puede caer y repetirse, I-11) y no destructiva: solo descarta lo que el protocolo define como no confirmado (colas rotas, archivos huérfanos no referenciados por el estado durable). Ante corrupción, `open` falla con `Corruption` y **no repara**.
+- La matriz completa, por motor y por punto de fallo, está en [failure-matrix.md](../architecture/failure-matrix.md).
+
+### Actualización de formato interrumpida
+
+Se diseñará en ADR-0003: la migración escribe a archivos nuevos (o a una versión nueva del estado) y el cambio de versión es el mismo paso atómico que un commit (meta o MANIFEST); el estado de la migración se persiste para poder reanudarla o abortarla. M0 no implementa migraciones.
+
+### Herramienta de verificación
+
+La CLI (Fase 2) tendrá `kerno verify` (lee todo, valida checksums y estructura, no escribe) y `kerno export --salvage` (exporta lo legible a formato lógico en otro directorio). Ninguna reparación destructiva se ejecuta automáticamente (SAD §12).
+
+## Evidencia (M0)
+
+- Ambos prototipos pasan, con 400 semillas en `release`: caídas en puntos aleatorios (incluso durante la recuperación), caída antes de **cada** operación de E/S del escenario fijo (muerte de proceso y corte de energía), un EIO aislado en cada operación (reinicio y corte inmediato), bit flips y truncamientos. Ver el [informe de M0](../testing/m0-report.md).
+- Las suites se validaron inyectando fallos conocidos en el motor de referencia (`fsync` omitido, `rename` sin `fsync`, error de `fsync` ignorado, sincronización de directorio condicional); todas fueron detectadas ([plan de pruebas](../testing/test-plan.md#21-validación-del-harness-mutation-testing-manual)).
+
+## Consecuencias
+
+- La API pública de Fase 1 (ADR-0010) expondrá: `begin_write()` (transacción de escritura con lectura de sus propias escrituras), `commit()`/`abort()`, `snapshot()`, `sync()`, y el modo de durabilidad por base y, opcionalmente, por commit.
+- La secuencia de commit es parte del formato persistente y del contrato público.
+- El motor elegido en ADR-0001 hereda la fila correspondiente de la matriz de fallos como **especificación**; cualquier cambio de protocolo debe actualizarla y mantener las suites verdes.
+
+## Seguimiento
+
+- Fase 1: transacciones read-modify-write sobre el motor elegido; `sync()` explícito; métricas de snapshots; group commit si los benchmarks lo justifican.
+- Fase 1: semántica Linux de `fsync` fallido y pruebas con dispositivos reales (R-S2).
+- **Seguimiento de la Fase 1 (WP14, 2026-10-29; sin cambios de decisión).** Los dos puntos anteriores están implementados en `kerno-storage`: transacciones read-modify-write pesimistas (`begin_write`, [diseño de la Fase 1 §5.7](../architecture/phase1-design.md)), `sync()`, group commit y métricas de instantáneas; la semántica de Linux tras un `fsync` fallido se prueba con `FsyncFailure::LinuxDropPages` en `SimVfs`. La durabilidad por commit sigue diferida: el formato la admite (`synced_len` por trama). Las decisiones de protocolo que interpretan este ADR están en [ADR-0013](0013-formato-v1-y-protocolo-del-motor.md) y en [el formato v1](../file-format/v1.md); las filas de la matriz de fallos, en [failure-matrix.md §6](../architecture/failure-matrix.md#6-lsm-v1-kerno-storage). Evidencia de salida: `kill -9` real de un escritor con `StdVfs` en `Sync` y `Buffered` (`crates/kerno-storage/tests/process_kill.rs`) y el [informe de la Fase 1](../testing/f1-report.md). La prueba con un dispositivo con pérdida de páginas (LazyFS) sigue **pendiente de su registro** (ver ese informe).
+
+# ADR-0003 — Formato físico y versionado
+
+| Campo | Valor |
+|---|---|
+| Estado | **Aceptado** (2026-10-28, por el propietario del proyecto): las reglas de versionado e integridad son obligatorias; el formato concreto se congela al cerrar Fase 1 |
+| Fecha | 2026-10-27 (propuesta) · 2026-10-28 (aceptación) |
+| Relacionado con | SAD §13, D-10; ADR-0001, ADR-0002, ADR-0006; [principios de formato](../file-format/README.md); invariantes I-08, I-09, I-15, I-30 |
+
+## Contexto
+
+Una vez existan bases de datos reales, cambiar el formato será una migración, no una refactorización. SAD §13 pide tres ejes de versión separados (formato físico, esquema lógico, datos derivados), rechazo seguro de versiones incompatibles, detección de truncamientos y corrupción, y una exportación lógica independiente.
+
+M0 no congela ningún formato: los dos prototipos tienen formatos propios, versionados solo por *magic* y un número de versión. Lo que sí deja M0 es evidencia de **qué propiedades de formato hacen falta** para pasar las pruebas de integridad y de fallos, y eso es lo que fija este ADR.
+
+## Decisión
+
+### 1. Identificación y versión de cada archivo
+
+Todo archivo persistente empieza (o, si es de solo-anexado, termina) con una cabecera fija:
+
+| Campo | Contenido |
+|---|---|
+| `magic` | 8 bytes por tipo de archivo (`KRNO…`), distintos para datos, journal, manifest, exportación |
+| `format_version` | `u32` del formato físico de ese tipo de archivo |
+| `compat` / `ro_compat` / `incompat` | Tres conjuntos de bits de características, al estilo ext4: un lector que no conoce un bit `incompat` **rechaza** abrir; uno que no conoce un bit `ro_compat` abre **solo en lectura**; los bits `compat` se ignoran sin riesgo |
+| `page_size` / `block_size` | si aplica |
+| `crc32c` de la cabecera | |
+
+Así, una función nueva (p. ej. cifrado, compresión, un índice nuevo) se añade como bit de característica sin forzar una migración completa, y una versión antigua de Kerno nunca escribe sobre un formato que no entiende.
+
+### 2. Integridad
+
+- **Todo byte que influya en un resultado está cubierto por un checksum que se verifica antes de usarlo** (I-08). Las pruebas de M0 mostraron que cualquier excepción —un bloom filter sin crc, una lista libre sin crc— produce resultados erróneos silenciosos.
+- Se conserva el modelo de M0 según el motor elegido: checksums en el padre (árbol Merkle) para un CoW B+ tree; checksum por registro/bloque/archivo para un LSM.
+- **Checksum de cabecera propio en cada página/bloque** además del del padre, para poder verificar y depurar (`kerno verify`) páginas sueltas sin recorrer el árbol.
+- CRC32C para detectar daño accidental. La integridad frente a manipulación es AEAD (ADR-0006): el formato reserva desde la versión 1 espacio por página/bloque para nonce y etiqueta, y un bit `incompat` indica si están en uso.
+- Toda longitud, desplazamiento, contador o puntero leído del disco se valida contra el tamaño del archivo y los límites del formato **antes** de indexar, reservar memoria o iterar; las cadenas (overflow, listas libres) se recorren con un límite derivado de datos verificados.
+
+### 3. Atomicidad de los archivos que definen el estado
+
+- Creación y reemplazo atómicos (temporal → `fsync` → `rename` → `fsync` del directorio).
+- Un archivo existente vacío, corto o sin estado válido es `Corruption`, nunca «base nueva» (I-09). En M0 ambos prototipos tuvieron que adoptar esto para pasar la suite de truncamientos.
+- Tras un **cierre limpio** no debe quedar ambigüedad entre «cola rota» y «corrupción»: o se marca el cierre limpio, o el estado queda en estructuras sin cola (checkpoint completo), o hay redundancia (dos copias del meta con el mismo commit).
+
+### 4. Ejes de versión independientes (SAD §13)
+
+| Eje | Dónde vive | Quién lo cambia |
+|---|---|---|
+| Formato físico | cabecera de cada archivo + bits de características | releases del motor |
+| Esquema lógico | metadatos de colección (claves reservadas) | la aplicación (migraciones de esquema) |
+| Datos derivados | definición de cada índice/embedding: algoritmo, versión, parámetros, watermark | Kerno al reconstruir (ADR-0007) |
+
+Cambiar la versión de un índice derivado **no** requiere migrar el formato físico: el índice se marca `stale` y se reconstruye desde la fuente.
+
+### 5. Migraciones del formato físico
+
+- Precondiciones comprobadas (versión de origen soportada, espacio libre, backup reciente o confirmación explícita).
+- La migración escribe estructuras nuevas sin modificar las de origen; el cambio de versión es un commit atómico más (meta o manifest), de modo que la matriz de fallos de ADR-0002 la cubre.
+- El estado de la migración se persiste: tras una caída, la apertura reanuda o revierte.
+- Validación posterior (`verify` completo) antes de borrar las estructuras de origen.
+- Cada release documenta qué versiones abre directamente, cuáles migra y cuáles rechaza. No se promete compatibilidad hacia atrás indefinida ni *downgrade* automático.
+- Las pruebas de migración se ejecutan con interrupción simulada en cada punto de E/S (misma técnica que `crash::every_point`).
+
+### 6. Exportación lógica
+
+Formato independiente del almacenamiento interno, versionado y documentado: una cabecera (versión, origen, secuencia de commit del snapshot exportado), seguida de registros de colección, documento, revisión, `ChangeSet` y mapeos de identificadores públicos, con checksum por registro y un registro final con recuentos. Codificación propuesta: JSON Lines para legibilidad y CBOR determinista (RFC 8949 §4.2) para fidelidad binaria; la elección final depende de ADR-0008. La exportación se toma siempre desde un snapshot (consistente sin bloquear escritores).
+
+### 7. Vectores de prueba
+
+Cada versión de formato publica archivos de ejemplo y sus contenidos esperados. Las pruebas de compatibilidad abren todos los vectores de versiones soportadas y comprueban el rechazo seguro de las no soportadas y de bits `incompat` desconocidos.
+
+## Evidencia de M0
+
+- Bit flips (400 semillas, la mitad dirigidos a cabeceras, pies y metas) y truncamientos (incluido a 0 bytes) tras cierre limpio: ambos prototipos devuelven datos correctos o error, nunca datos erróneos ni un commit anterior ([informe M0](../testing/m0-report.md)).
+- Fallos reales que las pruebas obligaron a corregir y que motivan las reglas anteriores: corrupción a mitad del log tratada como cola rota tras un cierre limpio (regla 3, motor de referencia); sincronización del directorio solo al crear el archivo (regla 3 y ADR-0002; motor de referencia y B+ tree); elección del slot de meta por paridad de la secuencia, que tras perder un slot habría sobrescrito el único meta válido (regla 3; B+ tree).
+- Riesgo de diseño señalado antes de implementar y cubierto por la regla 2: un filtro bloom dañado sin checksum haría que claves presentes parecieran ausentes, sin ningún error.
+
+## Consecuencias
+
+- El formato concreto (layout de páginas o bloques) se escribe en `docs/file-format/` durante Fase 1 a partir del prototipo elegido en ADR-0001, con estas reglas como requisitos.
+- Ninguna base de datos de usuario se crea antes de que ese documento y sus vectores de prueba existan (SAD §20.6).
+- Reservar espacio para AEAD desde la versión 1 cuesta unos bytes por página/bloque, pero evita una migración completa al activar el cifrado.
+
+## Seguimiento
+
+- Fase 1: especificación del formato v1, vectores de prueba, `kerno verify`.
+- Fase 4: exportación lógica e importación, pruebas de ida y vuelta.
+- Fase 6: fuzzing de lectores de formato; pruebas de compatibilidad entre releases.
+- **Seguimiento de la Fase 1 (WP14, 2026-10-29; sin cambios de decisión).** El formato v1 está especificado en [`docs/file-format/v1.md`](../file-format/v1.md), con vectores de estructura y de directorio, un decodificador independiente y una guardia de regeneración byte a byte; las interpretaciones que el propietario debe revisar están en [ADR-0013](0013-formato-v1-y-protocolo-del-motor.md). La verificación de integridad existe como biblioteca (`verify()`, `inspect()`); la CLI `kerno verify` pasa a la Fase 2. **Estado de la congelación: pendiente.** Exige que el propietario acepte ADR-0013 y que se revise el [modelo de amenazas](../security/threat-model.md) (la revisión R-07 está hecha); mientras tanto todo archivo escrito lleva el bit `DRAFT` (v1.md §4.3) y ninguna base de usuario debe crearse con este formato.
+
+# ADR-0004 — Historial de revisiones
+
+| Campo | Valor |
+|---|---|
+| Estado | **Aceptado** (2026-10-31, por el propietario; [acta E3-00](../architecture/etapa3-acta-e3-00.md)) |
+| Fecha | 2026-10-27 (apertura) · 2026-10-31 (aceptación) |
+| Relacionado con | SAD §8, D-06, invariantes I-20…I-22 |
+
+## Contexto
+
+Kerno debe reconstruir y comparar versiones anteriores de los registros sin convertir el journal de recuperación en historial permanente (D-06). Hay que definir qué representa una revisión y cuándo se almacena como snapshot o como delta.
+
+**Pregunta:** ¿Qué representa una revisión y cuándo usar snapshot/delta?
+
+## Opciones consideradas
+
+1. **Snapshot por revisión** — reconstrucción O(1), coste de espacio proporcional al tamaño del documento por cambio.
+2. **Solo deltas** — mínimo espacio, reconstrucción O(profundidad); inaceptable sin límite.
+3. **Híbrido snapshot + delta con límite de profundidad/tamaño** — propuesta del SAD.
+
+## Propuesta inicial (SAD §15)
+
+Revision Engine separado del journal; `ChangeSet` opcional; snapshot + delta con límite de profundidad; restauración que crea una nueva revisión.
+
+## Criterios de decisión
+
+Reconstrucción exacta, diff determinista y retención configurable.
+
+## Lo que aportó M0
+
+M0 dejó un [diseño preliminar](../architecture/revision-model-design.md) (disposición de claves `c/`, `r/`, `x/`, políticas `none`/`audit`/`versioned`) y midió su coste en ambos candidatos con el workload `history_sim` ([informe M0](../testing/m0-report.md)). El diseño no requiere nada del motor más allá de batches atómicos y scans por rango.
+
+## Dependencias
+
+Depende de ADR-0001 (coste de escritura/lectura de rangos y borrado físico) y de ADR-0008 (formato de delta y hash canónico).
+
+## Decisión
+
+Se acepta el modelo de revisiones del [diseño de la Etapa 3](../architecture/etapa3-design.md) (§2.4, §3), con estas condiciones del propietario:
+
+1. **Copia completa por revisión** (opción 1): cada revisión guarda su carga útil entera; no hay deltas hasta que los benchmarks los justifiquen. `Delta` queda reservado en el byte `kind` de `RevisionMeta`.
+2. **Una sola copia de la carga útil vigente**: vive en `REV_PAYLOAD(unit, head_rev)`, no en la cabeza; leerla cuesta 2 `get`, coste aceptado.
+3. **Metadatos y clasificación versionados y auditados** en la revisión (`REV_META`).
+4. El historial vive en claves propias de la capa, no en el WAL (D-06, I-20); restaurar crea una revisión nueva (I-22).
+5. El hash de contenido y el formato de la carga útil como bytes opacos dependen de ADR-0008 (aceptado el 2026-10-31: BLAKE3-256).
+
+La opción 3 (híbrido con límite de profundidad) del SAD queda como evolución futura, sujeta a medición y a un ADR nuevo.
+
+# ADR-0005 — Identificadores públicos
+
+| Campo | Valor |
+|---|---|
+| Estado | Propuesto (borrador para revisión; no bloquea M0) |
+| Fecha | 2026-10-27 |
+| Relacionado con | SAD §5.2, §11.2, D-05, invariantes I-26, I-27, [threat model](../security/threat-model.md), ADR-0006 |
+
+## Contexto
+
+Cada registro tiene un `internal_id` UUIDv7 (D-05). UUIDv7 expone su instante de creación con precisión de milisegundos y, según RFC 9562, no debe tratarse como secreto ni como capacidad de seguridad. Exponerlo directamente revela cuándo se creó cada registro y facilita enumerar registros contiguos en el tiempo.
+
+Kerno necesita una representación pública **opaca, estable y validable**, detrás de una abstracción `IdentifierCodec` intercambiable, sin que la opacidad se confunda con autorización.
+
+## Opciones consideradas
+
+1. **Token aleatorio opaco con mapeo persistido.** Se genera una vez por registro con un CSPRNG del sistema (≥ 128 bits), se guarda junto al registro y en un índice `token → internal_id` dentro de la misma transacción.
+   - ✔ No hay claves que gestionar, rotar o perder; un token filtrado no revela nada del ID interno.
+   - ✔ Se puede revocar o reemitir el token de un registro sin tocar su identidad interna.
+   - ✘ Una entrada de índice extra por registro (≈ 40–60 B) y una búsqueda puntual para resolver cada token.
+   - ✘ Exportar/importar exige conservar el mapeo (forma parte de los datos, no de una clave externa).
+2. **Token cifrado autenticado y reversible.** `versión ‖ id_de_clave ‖ AEAD(internal_id)` con un algoritmo y biblioteca consolidados (cifrado determinista resistente a mal uso de nonce, p. ej. AES-SIV, RFC 5297), generado y almacenado una sola vez por registro.
+   - ✔ Resolución sin índice; tokens válidos verificables sin acceso a la base.
+   - ✘ Requiere gestión de claves, rotación y política ante pérdida de clave (ADR-0006) antes de publicar el formato.
+   - ✘ Tokens más largos (≥ 40 caracteres en base32) y acoplados a la versión del esquema de cifrado.
+   - ✘ Una clave comprometida desanonimiza todos los tokens emitidos con ella.
+3. **Exponer el UUIDv7 o una transformación propia de sus bits.** Descartada por el SAD: revela el timestamp y la «ofuscación» casera no es seguridad.
+
+## Criterios de decisión (SAD §15)
+
+Estabilidad del token, rechazo de manipulación, soporte de versionado y claridad de la separación entre identificación y autorización.
+
+## Evidencia de M0
+
+- Resolver un token con la opción 1 cuesta una lectura puntual adicional. En M0, una lectura puntual con caché caliente cuesta entre 0,7 y 8,7 µs (p50, según motor y tamaño, de 20 000 a 1 M de registros; [informe M0](../testing/m0-report.md), `point_reads`), despreciable frente a un commit durable (cientos de µs).
+- La entrada de índice extra se escribe en el mismo batch atómico que el registro (I-01), por lo que token y registro no pueden desincronizarse.
+
+## Propuesta
+
+- **Codec por defecto: opción 1** (token aleatorio + mapeo), con formato `k{versión}_{base32 de 128 bits aleatorios}` y, opcionalmente, un prefijo de tipo definido por la aplicación. La validación comprueba prefijo, versión, alfabeto y longitud antes de buscar.
+- **Opción 2 como codec alternativo**, implementable cuando ADR-0006 defina proveedor de claves y rotación. El token se genera y almacena una vez por registro; la rotación de claves no cambia tokens ya emitidos (se conservan las claves antiguas para descifrar o se usa el token almacenado).
+- En ambos casos, **un token válido no autoriza nada** (I-27): la capa que expone Kerno verifica permisos en cada operación.
+
+## Consecuencias
+
+- El índice `token → internal_id` es transaccional (ADR-0007) y forma parte de la exportación lógica (I-30).
+- No hay material criptográfico en el camino crítico por defecto; ADR-0006 puede cerrarse después sin bloquear las fases 1–3.
+- El formato del token lleva versión desde el primer día, de modo que cambiar de codec no rompe tokens existentes.
+
+## Seguimiento
+
+- Fase 4: implementar `IdentifierCodec`, pruebas de tokens manipulados (formato, versión, longitud, alfabeto, tokens inexistentes) y de estabilidad tras exportar/importar.
+- Revisar esta propuesta cuando ADR-0006 esté aceptado.
+
+# ADR-0006 — Cifrado y gestión de claves
+
+| Campo | Valor |
+|---|---|
+| Estado | Pendiente |
+| Fecha | 2026-10-27 (apertura) |
+| Relacionado con | SAD §11.3, D-09, invariante I-28, [threat model](../security/threat-model.md) |
+
+## Contexto
+
+El cifrado en reposo y la gestión de claves afectan al formato físico (cabeceras, tamaño de página/bloque, nonces), a la recuperación y a los backups. Debe decidirse antes de congelar el formato (ADR-0003).
+
+**Pregunta:** Alcance del cifrado de archivos y forma de administrar claves.
+
+## Opciones consideradas
+
+1. **Cifrado por página/bloque con AEAD** (p. ej. AES-256-GCM-SIV o XChaCha20-Poly1305 de una biblioteca auditada) — integridad criptográfica incluida; requiere espacio para nonce y tag por unidad.
+2. **Cifrado a nivel de sistema de archivos/dispositivo** delegado al SO — sin cambios de formato, pero sin protección de backups exportados ni control de claves por Kerno.
+3. **Cifrado por registro/campo** — permite borrado criptográfico selectivo; más metadatos y complejidad en índices.
+
+## Propuesta inicial (SAD §15)
+
+Algoritmos estándar y biblioteca auditada; claves fuera del directorio de datos; interfaz de proveedor de claves (`KeyProvider`) y estrategia de rotación definida.
+
+## Criterios de decisión
+
+Datos, journals, temporales y backups cubiertos; pérdida de clave documentada; pruebas de integridad y rotación.
+
+## Lo que aportó M0
+
+M0 usa CRC32C, que detecta corrupción accidental pero **no** manipulación (riesgo R-S5). Ambos candidatos escriben unidades de tamaño conocido (páginas de 4 KiB en el B+ tree; bloques de ~4 KiB más metadatos en LSM), por lo que reservar espacio para nonce + tag es viable en cualquiera. En CoW B+ tree cada página reescrita recibe una ubicación nueva, lo que facilita nonces únicos; en LSM los archivos son inmutables y se cifran una sola vez al escribirse.
+
+## Dependencias
+
+Condiciona ADR-0003 (cabeceras y tamaños), ADR-0009 (borrado criptográfico) y ADR-0005 (claves para tokens cifrados).
+
+## Decisión
+
+Pendiente. No debe codificarse ningún supuesto de este ADR de forma difícil de revertir hasta que se acepte.
+
+# ADR-0007 — Consistencia y reconstrucción de índices
+
+| Campo | Valor |
+|---|---|
+| Estado | Aceptado |
+| Fecha | 2026-10-27 (apertura); 2026-11-04 (aceptado por el propietario, E4-00) |
+| Relacionado con | SAD §9, D-07, invariantes I-21, I-23, I-24 |
+
+## Contexto
+
+Los índices secundarios y derivados deben ser coherentes con el contenido fuente o declarar explícitamente su frescura.
+
+**Pregunta:** Qué índices participan en transacciones y cuáles son derivados.
+
+## Opciones consideradas
+
+1. **Transaccionales**: se actualizan en el mismo batch atómico que el contenido.
+2. **Derivados asíncronos**: se actualizan después, con estado (`ready`/`building`/`stale`/`failed`) y watermark de secuencia.
+3. **Mixto por definición de índice** (propuesta).
+
+## Propuesta inicial (SAD §15)
+
+Índice primario consistente con el commit; índices secundarios críticos con frontera atómica clara; índices costosos con estado de frescura y reconstrucción.
+
+## Criterios de decisión
+
+Los índices reconstruidos producen resultados equivalentes a un índice nuevo sobre los mismos datos.
+
+## Lo que aportó M0
+
+El contrato del spike (batch atómico + secuencia de commit monotónica y persistente) es suficiente para ambos modos: un índice transaccional son claves adicionales en el mismo batch; un índice derivado guarda su watermark como una clave más y compara con `Snapshot::seq()`.
+
+## Dependencias
+
+Depende de ADR-0002 (secuencia de commit como watermark).
+
+## Decisión
+
+Pendiente. No debe codificarse ningún supuesto de este ADR de forma difícil de revertir hasta que se acepte.
+
+## Decisión (2026-11-04)
+
+Aceptada la opción recomendada: el índice primario es consistente con el commit; los índices secundarios son derivados asíncronos con estado (`ready`/`building`/`stale`/`failed`) y watermark de secuencia. I-23 e I-24 se promueven en E4-03.
+
+## Evidencia (E4-03, 2026-11-05)
+
+E4-03 implementa el índice primario de `kerno-units` ([`index.rs`](../../crates/kerno-units/src/index.rs), [units-v1.md](../file-format/units-v1.md) §3.9–§3.10) con el estado `ready`/`building`/`stale`/`failed` y el watermark que esta decisión pide. Lo que se decidió al implementarlo:
+
+- **El watermark es la secuencia de commit del `ChangeSet` que escribió las entradas.** Ese `ChangeSet` (propósito `Index`) no cambia ninguna unidad, así que las entradas son función del estado en ese mismo commit y la capa puede escribir su propia secuencia (se predice, como en cualquier `ChangeSet`). Comparar con `Snapshot::seq()` es entonces exacto: `Ready` si son iguales, `Stale` si la instantánea es posterior.
+- **Cualquier commit posterior deja el índice `Stale`**, también uno que no toca ninguna unidad (una política, una relación). Es conservador a propósito: una consulta nunca declara una frescura que no puede demostrar. `UnitSnapshot::query` cae a la ruta de referencia y dice por qué; `indexed_scan` se niega.
+- **`Ready` y `Failed` se guardan; `Stale` se calcula; `Building` es del manejador.** Una construcción es un solo `ChangeSet` atómico, así que un estado `Building` guardado no existiría nunca de forma veraz tras una caída.
+- **La construcción lee solo las cabezas.** El daño más profundo es de `verify_units` (K-E3-7) y cada unidad que devuelve una consulta por índice se lee y verifica como en `get_unit`.
+
+**Punto abierto para el propietario.** Esta decisión dice que el índice primario es «consistente con el commit». E4-03 lo implementa como derivado con frescura explícita, porque el acta (§3, fila E4-03) y la invariante I-23 piden el estado y el watermark para él. La consecuencia es que, tras cualquier escritura, las consultas usan la ruta de referencia hasta la siguiente `rebuild_index`. Si un workload medido lo justifica, el siguiente paso es mantenerlo dentro de cada `ChangeSet` (siempre `Ready`, con el coste de escritura que K-E3-9 ya señala) o reconstruirlo en segundo plano; el formato y el estado ya lo admiten. Propuesta: decidirlo en E4-04, con un workload escrito, y no antes.
+
+## Evidencia (E4-04, 2026-11-05)
+
+El workload W1 ([etapa4-workloads.md](../architecture/etapa4-workloads.md)), escrito antes de medir, justificó un índice secundario por `(unit_type, schema_version)`: con 100 000 unidades y selectividad del 1 %, la ruta primaria quedaba a 4,8–12,3× de la cota ideal con p95 de 57–71 ms. `IDX_TYPE` ([units-v1.md](../file-format/units-v1.md) §3.11) es derivado como dice esta decisión y comparte generación con `IDX_PRIMARY`: misma construcción, misma transacción, mismo `IDX_META`, mismo estado y watermark. W1 mide lecturas sobre un índice `Ready`; no mide escrituras intercaladas, así que **no** aporta evidencia para mantener los índices dentro de cada `ChangeSet`. El punto abierto de arriba sigue abierto, a la espera de un workload que lo mida.
+
+## Decisión del propietario sobre el punto abierto (2026-11-05)
+
+Se aprueba la implementación de E4-03/E4-04: los índices de unidades (`IDX_PRIMARY`, `IDX_TYPE`) siguen siendo **derivados** con frescura explícita y solo los escribe `rebuild_index`; tras una escritura, `query` usa la ruta de referencia hasta la siguiente reconstrucción (I-32). Mantenerlos dentro de cada `ChangeSet` o reconstruirlos en segundo plano **no** se hace sin un workload escrito antes de medir que incluya escrituras intercaladas y muestre que la ruta de referencia no basta. Los índices de adyacencia de relaciones no cambian: son transaccionales (ADR-0014, I-21).
+
+**Límite conocido.** La construcción guarda todas las entradas en memoria y las escribe en un solo lote, así que está limitada por los límites del lote del motor (1 Mi operaciones y 64 MiB por defecto); por encima falla con `ChangeSetTooLarge` y el estado queda `Failed`.
+
+# ADR-0008 — Serialización documental y hashes
+
+| Campo | Valor |
+|---|---|
+| Estado | **Aceptado** (2026-10-31, por el propietario al cerrar E3-02; versión mínima para la Etapa 3) |
+| Fecha | 2026-10-27 (apertura) |
+| Relacionado con | SAD §5.3, §13, RFC 8785 |
+
+## Contexto
+
+Los hashes de contenido de las revisiones deben ser reproducibles entre ejecuciones y versiones; eso exige una serialización canónica.
+
+**Pregunta:** JSON inicial, soporte binario y canonicalización para hashing.
+
+## Opciones consideradas
+
+1. **JSON + RFC 8785 (JCS)** para hashing; almacenamiento en una codificación binaria propia o estándar (CBOR determinista, RFC 8949 §4.2).
+2. **Codificación binaria canónica única** para almacenamiento y hash.
+3. **Bytes opacos** (la aplicación decide) con hash sobre los bytes tal cual.
+
+## Propuesta inicial (SAD §15)
+
+Separar formato lógico y físico; evaluar RFC 8785 para JSON cuando sus restricciones sean aceptables; versionar el algoritmo de hash.
+
+## Criterios de decisión
+
+Resultados reproducibles en los casos soportados y pruebas de compatibilidad.
+
+## Lo que aportó M0
+
+Sin trabajo en M0 más allá de reservar en el diseño de revisiones el campo `content_hash` y el identificador de algoritmo.
+
+## Dependencias
+
+Condiciona ADR-0004 (deltas y hashes) y ADR-0003 (versionado del algoritmo).
+
+## Decisión
+
+Propuesta mínima, limitada a lo que la Etapa 3 necesita (opción 3 de arriba); la canonicalización estructural (JCS, CBOR) y el diff quedan fuera y se decidirán en un ADR posterior:
+
+1. **Bytes opacos.** La carga útil de una revisión son bytes que la capa no interpreta; `payload_codec = 0`. El hash se calcula sobre `payload_codec ‖ payload` tal como se guarda.
+2. **Hash BLAKE3-256** (32 bytes), identificado por un byte `alg` en el campo `content_hash` (`alg = 1`), para no fijar el algoritmo en el formato de la capa. Añadir la dependencia exige justificar que ni la biblioteca estándar ni el manifiesto actual la cubren, y entra con la aceptación de este ADR, no antes.
+3. **CRC-32C provisional** (`alg = 0`), ya disponible en el proyecto y **sin garantía criptográfica**, hasta que esta decisión esté completa; sirve solo para detectar discordancia extremo a extremo.
+4. El hash se verifica en cada lectura de carga útil; una discordancia es `Corruption` (I-08).
+
+**Aceptación (2026-10-31).** El propietario aceptó este ADR con estas condiciones:
+
+- BLAKE3-256 (`alg = 1`) es el hash de integridad de `REV_PAYLOAD`. Ni la biblioteca estándar ni el manifiesto tenían un hash criptográfico, y por eso la dependencia `blake3` (sin funciones por defecto, solo `std`) entró en `kerno-units` con E3-02.
+- La versión está fijada de forma exacta en el manifiesto del espacio de trabajo (`blake3 = "=1.8.7"`) y en `Cargo.lock`. Cambiarla es un cambio revisado.
+- Los vectores oficiales de BLAKE3 de `crates/kerno-units/tests/payload_integrity.rs` son pruebas de compatibilidad y no se modifican.
+- CRC-32C (`alg = 0`) sigue siendo provisional, sin garantía criptográfica, y no sustituye a BLAKE3-256.
+
+Codificación del campo: [`units-v1.md`](../file-format/units-v1.md) §4.
+
+# ADR-0009 — Supresión, retención y backups
+
+| Campo | Valor |
+|---|---|
+| Estado | Pendiente |
+| Fecha | 2026-10-27 (apertura) |
+| Relacionado con | SAD §8.4, §11.5, §12, NIST SP 800-88 Rev. 2 |
+
+## Contexto
+
+Borrar un dato actual no borra sus revisiones, índices, embeddings, páginas liberadas, segmentos antiguos ni backups.
+
+**Pregunta:** Cómo coordinar borrado lógico/físico, revisiones, índices, embeddings y backups.
+
+## Opciones consideradas
+
+1. **Borrado lógico + compactación/scrub forzado** del rango afectado.
+2. **Borrado criptográfico** (claves por registro o por colección destruidas).
+3. **Combinación** según la clase de dato y la política.
+
+## Propuesta inicial (SAD §15)
+
+Políticas explícitas por colección; operaciones de supresión conscientes de datos derivados; documentación de ventanas de expiración de backups.
+
+## Criterios de decisión
+
+Una prueba de extremo a extremo demuestra qué se elimina inmediatamente, qué queda sujeto a compactación y qué plazo siguen los backups.
+
+## Lo que aportó M0
+
+M0 hizo visible que el borrado físico depende del motor: en CoW B+ tree las páginas liberadas conservan bytes antiguos hasta reutilizarse; en LSM las versiones antiguas persisten en SST y WAL hasta compactación y reciclaje. Ver §5 del [diseño de revisiones](../architecture/revision-model-design.md).
+
+## Dependencias
+
+Depende de ADR-0001, ADR-0004 y ADR-0006.
+
+## Decisión
+
+Pendiente. No debe codificarse ningún supuesto de este ADR de forma difícil de revertir hasta que se acepte.
+
+# ADR-0010 — API pública y límites de crates
+
+| Campo | Valor |
+|---|---|
+| Estado | **Aceptado** (2026-10-31, por el propietario; [acta E3-00](../architecture/etapa3-acta-e3-00.md)) |
+| Fecha | 2026-10-27 (apertura) · 2026-10-31 (aceptación) |
+| Relacionado con | SAD §6, §9.3, §14 |
+
+## Contexto
+
+La API pública debe ser pequeña, tipada y estable; los detalles del motor físico no deben filtrarse.
+
+**Pregunta:** Qué tipos y errores son públicos y cuáles módulos son internos.
+
+## Opciones consideradas
+
+1. **Un crate público `kerno`** que reexporta una fachada; crates internos no publicados.
+2. **Varios crates públicos** por capa.
+3. **Un único crate** con módulos privados hasta Fase 2.
+
+## Propuesta inicial (SAD §15)
+
+API pequeña, tipada y estable; no hacer públicos los detalles de páginas o del motor físico; módulos separados solo cuando sus contratos estén claros.
+
+## Criterios de decisión
+
+Ejemplo de aplicación externa que compila; guía de errores; política de deprecación y semver.
+
+## Lo que aportó M0
+
+El trait `Engine` del spike (hoy en `crates/kerno-core/src/contract.rs`) es un contrato **interno** de comparación, no la API pública: carece de transacciones read-modify-write, cursores, cancelación y errores por categoría. Sí aporta una taxonomía inicial de errores (`Io`, `Corruption`, `Locked`, `InvalidArgument`, `Poisoned`) que conviene conservar.
+
+## Dependencias
+
+Depende de ADR-0002 (forma de las transacciones).
+
+## Decisión
+
+Se acepta, para la Etapa 3, la separación por crates del [diseño de la Etapa 3](../architecture/etapa3-design.md) (§6), con estas condiciones del propietario:
+
+1. **Crate nuevo `kerno-units`**, genérico sobre `TxnEngine` de `kerno-core`, con separación estricta de `kerno-storage`: no depende de sus módulos internos y no introduce regresiones en los objetivos T1–T10.
+2. **Marca de capa en disco** (`LAYER_META`), sin bit `incompat` para UNITS mientras `kerno-storage` sea interno.
+3. El único cambio permitido fuera de `kerno-units` es `Txn::read_seq` en `kerno-core`, con sus `impl` en `WriteTxn` y `EmulatedTxn`.
+4. `AsOf::Time` queda fuera de la Etapa 3.
+
+La fachada pública única (`kerno`, opción 1) y la política de semver se deciden cuando exista una API pública estable; esta aceptación no las fija.
+
+# ADR-0011 — Perfil de vector y recuperación híbrida
+
+| Campo | Valor |
+|---|---|
+| Estado | Pendiente |
+| Fecha | 2026-10-27 (apertura) |
+| Relacionado con | SAD §10, D-08, invariante I-25 |
+
+## Contexto
+
+La recuperación híbrida combina texto, vectores y filtros. Los vectores son derivados de una revisión fuente y de un perfil de modelo.
+
+**Pregunta:** Qué contratos comunes definen embeddings, métricas, filtros y frescura de índices.
+
+## Opciones consideradas
+
+1. **Búsqueda exacta (fuerza bruta) primero** como baseline de recall.
+2. **ANN (HNSW u otro) desde el inicio**.
+3. **Delegar en una biblioteca externa** de búsqueda vectorial.
+
+## Propuesta inicial (SAD §15)
+
+Vectores exactos primero; metadatos de modelo y revisión fuente; generación mediante adaptadores; ANN solo con evidencia.
+
+## Criterios de decisión
+
+Comparación con baseline exacto, verificación de dimensiones/métrica y prueba de invalidación tras actualizar/borrar el documento.
+
+## Lo que aportó M0
+
+El workload `agent_memory` almacena embeddings de 768 × f32 (3 KiB) como valores normales y mide escritura, lectura y espacio en ambos candidatos. Valores de este tamaño son relevantes para ADR-0001 (overflow pages en B+ tree, bloques grandes en LSM).
+
+## Dependencias
+
+Depende de ADR-0007 (frescura) y ADR-0004 (revisión fuente).
+
+## Decisión
+
+Pendiente. No debe codificarse ningún supuesto de este ADR de forma difícil de revertir hasta que se acepte.
+
+# ADR-0012 — Metodología de benchmarks y umbrales de salida
+
+| Campo | Valor |
+|---|---|
+| Estado | Propuesto (aplicado en M0) |
+| Fecha | 2026-10-27 |
+| Relacionado con | SAD §17.3–17.6, §18, ADR-0001, riesgos R-S1, R-S3, R-S4 |
+
+## Contexto
+
+ADR-0001 debe decidirse con evidencia comparable. Un benchmark mal planteado (durabilidad distinta, datos distintos, una sola ejecución, solo medianas) puede producir la decisión equivocada con apariencia de rigor.
+
+## Decisión
+
+Toda medición que respalde una decisión de arquitectura sigue estas reglas, implementadas en [`spikes/storage/spike-bench`](../../spikes/storage/spike-bench):
+
+### Igualdad de condiciones
+
+| Aspecto | Regla |
+|---|---|
+| Máquina | Todas las ejecuciones de una comparación en la misma máquina, secuencialmente (nunca en paralelo). |
+| Compilación | Mismo `rustc`, perfil `release`, mismas dependencias (`Cargo.lock` versionado). |
+| Datos | Mismos generadores deterministas y semillas para todos los motores. |
+| Durabilidad | Equivalente y explícita (tabla siguiente). Nunca se compara durabilidad fuerte con relajada como si fueran iguales. |
+| Caché | Presupuesto de 64 MiB por motor (en SQLite, cada conexión tiene su propia caché: la mitad para la escritora y un octavo para cada una de hasta cuatro lectoras). La caché de páginas del SO es compartida y se declara (`warm`), o se vacía antes de reabrir la base para las fases de lectura (`--cold true`, requiere root). |
+| Compresión | Desactivada en todos (fjall la activa por defecto; se desactiva). |
+| Aislamiento | Cada combinación (motor, workload, escala, repetición) corre en un **proceso nuevo** y un **directorio nuevo**, para que RAM máxima y contadores de E/S no se contaminen. |
+
+### Equivalencia de durabilidad
+
+| Modo del spike | Prototipos | redb | fjall | SQLite |
+|---|---|---|---|---|
+| `sync` (sobrevive a corte de energía al confirmar) | `Durability::Sync` | `Durability::Immediate` | `PersistMode::SyncData` por commit | `journal_mode=WAL`, `synchronous=FULL` |
+| `buffered` (sin `fsync` por commit) | `Durability::Buffered` (sobrevive a muerte del proceso) | `Durability::None` — **no equivalente**: no sobrevive a la muerte del proceso | `PersistMode::Buffer` | `synchronous=NORMAL` |
+
+Las cifras de `buffered` de redb se publican marcadas como no comparables.
+
+### Repeticiones y calentamiento
+
+- Cada combinación se ejecuta **3 veces** (configurable con `REPS`), intercalando los motores en cada repetición para que las derivas lentas de la máquina no favorezcan a uno. La escala `large` se ejecuta por defecto **una sola vez** (`LARGE_REPS=1`) y solo en `bulk_load`, `point_reads`, `range_scans` y `small_commits`: sus cifras son ejecuciones únicas (indican tendencia, no mediana) y la regla del rango no se les aplica.
+- La carga de datos previa (*preload*) no se mide. En `point_reads`, `range_scans`, `small_commits`, `point_deletes` y `mixed` la medición empieza tras cerrar y reabrir la base; en `livespec`, `cauce` y `agent_memory` empieza justo después de la precarga, sobre la misma instancia abierta (en `cauce`, la reapertura tras un cierre sucio ocurre después de la fase medida y solo da `recovery_ms`); `append_seq` y `history_sim` parten de una base vacía, y en `bulk_load` lo medido es la propia carga.
+- **Calentamiento** separado de la medición (SAD §17.4): en las cargas que reabren la base antes de medir (`point_reads`, `range_scans`, `small_commits`, `point_deletes` y `mixed`), con caché caliente se recorre la base completa con escaneos paginados antes de medir (su duración se registra como `warmup_ms`, fuera de toda métrica). Las demás no necesitan calentamiento explícito: miden la propia carga, parten de una base vacía o miden justo después de escribir sus datos en el mismo proceso; en ellas «caché caliente» significa que no se vació la caché del SO. Con `--cold true` no hay calentamiento, a propósito; el informe solo etiqueta una ejecución como «caché fría» si el vaciado de la caché del SO funcionó.
+- El informe muestra la **mediana**; si el rango entre mínimo y máximo supera el 15 % de la mediana, se muestra el rango junto a ella.
+
+### Métricas obligatorias
+
+Throughput; latencias **p50/p95/p99** (y p999/máximo donde hay colas relevantes); RAM máxima (`VmHWM`); bytes escritos / bytes lógicos (`wchar` de `/proc/self/io`, igual para todos los motores); espacio en disco / bytes lógicos; tiempo de reapertura limpia y de recuperación tras cierre sucio; `fsync` por commit en los prototipos (contados por `CountingVfs`).
+
+### Entorno publicado
+
+Con cada conjunto de resultados se guarda `env.json`: CPU, núcleos, memoria, kernel, sistema de archivos, versión de `rustc`, commit de git y **latencia medida de `fdatasync`** (p50/p95/p99) del disco usado, que es el suelo de cualquier commit durable.
+
+### Escalas
+
+`small` (20 000 registros, cabe en caché), `medium` (200 000), `large` (1 000 000, si el entorno lo permite; por defecto una sola repetición y solo carga masiva, lecturas puntuales, escaneos y commits pequeños). El tamaño es un parámetro registrado, no una condición universal.
+
+### Reproducción
+
+Un único comando: [`spikes/storage/run-benchmarks.sh`](../../spikes/storage/run-benchmarks.sh). Los datos crudos (`results.jsonl`) se versionan junto al informe.
+
+## Umbrales de salida
+
+Siguiendo SAD §17.4, **no** se fijó ningún umbral de velocidad antes de medir. Con el baseline de M0 se proponen, para la Fase 1:
+
+1. **Correctitud (bloqueante):** cero fallos en las suites compartidas con ≥ 1000 semillas y en el barrido de todos los puntos de E/S, para ambos tipos de fallo.
+2. **Regresión (bloqueante en CI de rendimiento):** ninguna métrica de throughput empeora > 10 % y ningún p99 > 20 % respecto del último baseline de la misma máquina, salvo justificación en el PR.
+3. **Objetivo relativo (orientativo):** el motor elegido debe quedar dentro de 2× del motor maduro de su misma familia (redb para CoW B+ tree, fjall para LSM) en los workloads de M0 a escala `medium`, y documentar dónde no lo consigue.
+
+## Limitaciones conocidas
+
+- `wchar` cuenta bytes entregados a llamadas de escritura, no bytes que llegan al dispositivo (no incluye amplificación del sistema de archivos ni del FTL).
+- Una VM con almacenamiento virtualizado puede tener latencias de `fsync` muy distintas a las de un SSD local; las conclusiones sobre commits pequeños se apoyan también en `fsync`/commit, que es independiente del hardware.
+- Los motores de referencia no persisten la secuencia de commit del contrato del spike (no la necesitan los benchmarks).
+- Los prototipos tienen días de desarrollo; sus diferencias frente a redb/fjall miden también madurez, no solo arquitectura (R-S1).
+
+# ADR-0013 — Formato v1 y protocolo del motor
+
+| Campo | Valor |
+|---|---|
+| Estado | Aceptado (2026-10-31), condicionado a la revisión adversarial de la Fase 1 ([f1-adversarial-review](../testing/f1-adversarial-review.md)), cuyos bloqueantes B1, G1 y M1 quedaron corregidos |
+| Fecha | 2026-10-28 |
+| Decisores | Propietario del proyecto |
+| Relacionado con | ADR-0001, ADR-0002, ADR-0003 (aceptados, que este ADR interpreta sin reemplazar), ADR-0006, ADR-0012; [formato v1](../file-format/v1.md); [diseño de la Fase 1](../architecture/phase1-design.md) §4, §5, §7, §12 y §13; invariantes I-03, I-08, I-09, I-11, I-15, I-16, I-18 |
+
+## Contexto
+
+ADR-0001, ADR-0002 y ADR-0003 fijan **qué** debe cumplir el núcleo (LSM nivelado, semántica de commit y durabilidad, versionado e integridad), pero dejan abiertos los detalles de **cómo** se concretan en bytes y en el protocolo del motor. El diseño de la Fase 1 (C-01…C-33) y el borrador [`v1.md`](../file-format/v1.md) toman esas decisiones; algunas interpretan una regla aceptada de una forma que el propietario debe poder revisar antes de que el formato se congele, porque después cambiarlas exige subir `format_version` o un bit de característica (v1.md §15).
+
+Este ADR reúne esas interpretaciones, con las alternativas que se descartaron y el motivo. No cambia ningún ADR aceptado: donde un ADR aceptado necesita una nota de seguimiento, se añade allí (C-21).
+
+Desde WP06 el formato existe como código puro (`crates/kerno-storage/src/format/`), con 194 vectores de estructura (`crates/kerno-storage/tests/vectors/v1/structs/`), un decodificador independiente escrito desde la especificación (`tests/spec_decoder/`) y bloques hexadecimales en v1.md §13.5 que la CI compara con los vectores. El motor todavía no lo usa (WP07).
+
+## Opciones consideradas
+
+Cada punto indica la opción elegida (**en negrita**) y las descartadas.
+
+1. **Cabecera común con `db_id`** (ADR-0003 §1).
+   - **Cabecera de 96 bytes en el desplazamiento 0 de los tres tipos de archivo, con `db_id` aleatorio de 16 bytes y el número de archivo, verificados contra el MANIFEST y el nombre (HDR-10).** Detecta archivos de otra base o renombrados con un CRC válido, que ningún checksum detecta.
+   - Cabecera al final en los archivos de solo anexado (ADR-0003 §1 lo permite): un log no puede terminar en una cabecera mientras se escribe, y la cabecera al principio permite rechazar por versión antes de leer nada más.
+   - Sin `db_id` (solo *magic* y versión): una SST copiada de otra base con el mismo número se aceptaría.
+2. **Sin archivo `CURRENT`.**
+   - **`MANIFEST` con nombre fijo, reemplazado por rename atómico en cada *checkpoint* (W-10).** Un solo archivo define el estado; la creación (DIR-3) y el reemplazo son el mismo protocolo temporal → `fsync` → `rename` → `fsync` del directorio de ADR-0003 §3.
+   - `CURRENT` que apunta a `MANIFEST-NNNNNN` (estilo LevelDB/RocksDB): un archivo y una sincronización más por *checkpoint*, y un estado intermedio más que recuperar.
+3. **`CLEAN` dentro del *checkpoint* y `SESSION_OPEN`** (ADR-0003 §3, ADR-0001 condición 3).
+   - **El cierre limpio escribe un *checkpoint* cuyo único registro es un `SNAPSHOT` con `CLEAN`; la reapertura anexa `SESSION_OPEN`, que lo anula (MAN-R4).** Tras un cierre limpio el directorio contiene solo `LOCK`, `MANIFEST` (un registro) y SST, así que ningún daño posterior es ambiguo; una reapertura limpia cuesta 2 sincronizaciones (M0: 3).
+   - Un registro `CLEAN` anexado al log: deja un log largo tras el cierre y obliga a decidir si una cola rota después de `CLEAN` es daño.
+   - Un archivo marcador aparte: otro archivo cuyo estado hay que hacer atómico con el MANIFEST.
+4. **`synced_len` en lugar del bit `SYNCED`** (ADR-0002, C-04).
+   - **Cada trama del WAL lleva `synced_len`, los bytes del archivo que el escritor sabía duraderos al escribirla (W-11); WAL-R5 distingue cola rota de daño buscando una trama posterior con `synced_len` más allá del punto roto.** Funciona igual con un escritor en `Sync`, con *group commit* (una trama = un grupo, un CRC) y en `Buffered`, y admite durabilidad por commit sin cambiar el formato. Para que valga con grupos, la cota de `first_seq` de una trama candidata en `q` cuenta un commit por byte desde el punto roto (`q − P`), no un commit por trama como en el M0: una trama puede llevar hasta 65 536 commits de un solo byte (WAL-C3), y con la cota del M0 un daño en un grupo duradero se tomaba por cola rota (corregido en la revisión de WP06; lo fijan los vectores `neg_walr5_group_*` y `neg_walr6_group_broken_header`).
+   - El bit 31 `SYNCED` del M0 por registro: no expresa grupos ni el prefijo sincronizado en `Buffered`.
+   - Aceptar cualquier cola rota del WAL más reciente: pierde en silencio commits confirmados si el daño está a mitad del archivo (el defecto medio-alto del M0).
+5. **Ranura AEAD** (ADR-0003 §2, ADR-0006).
+   - **Ranura de 40 bytes (`nonce[24] ‖ tag[16]`) siempre presente en cada bloque de SST y cada registro de MANIFEST; en las tramas del WAL, solo si la cabecera de ese WAL tiene el bit `AEAD` (por archivo). Con `AEAD` desactivado la ranura debe ser cero y la cubre el CRC (AEAD-1).** Un WAL nunca sobrevive a un cierre limpio, así que activar el cifrado no exige migrarlo, y los commits pequeños no pagan 40 bytes por trama (T7).
+   - Ranura siempre presente también en el WAL: una sola constante, `FRAME_SLOT_ALWAYS` (`format::features`), y la especificación (WAL-R6, v1.md §5) cubren ya esta variante; los vectores incluyen una trama con ranura (`frame_with_slot`).
+   - Ranura solo con el bit activado en todos los tipos: activar el cifrado obligaría a reescribir todas las SST y el MANIFEST.
+6. **Lápidas de rango en la base de v1** (ADR-0001 condición 2, C-11).
+   - **`DELETE_RANGE` en el commit canónico, bloque de rangos fragmentados en la SST y `largest_exclusive` en `FileMeta`, sin bit `incompat`.** Todo lector v1 los entiende desde el primer día; las SST de solo rangos son válidas.
+   - Añadirlas después con un bit `incompat`: cada base creada antes quedaría sin poder suprimir rangos sin migración.
+7. **Una versión por clave de usuario en cada SST** (SST-I1).
+   - **Cada SST contiene como mucho una versión por clave; las instantáneas retienen archivos completos (W-6, SEM-5).** El lector no necesita fusionar versiones dentro de una tabla y la visibilidad se decide solo por secuencias.
+   - SST multiversión: llegarían con un bit `incompat` si la retención de instantáneas largas lo exigiera.
+8. **Errores `Incompatible` y `ReadOnly`** (ADR-0002, C-16).
+   - **Dos variantes nuevas de `kerno_core::Error`, que se marca `#[non_exhaustive]`.** Una versión o característica desconocida no es daño y no debe presentarse como `Corruption`; la CRC de la cabecera se comprueba antes que la versión (HDR-3 antes de HDR-4) para que el daño aleatorio nunca parezca `Incompatible`.
+   - Reutilizar `Corruption` o `InvalidArgument`: confundiría a quien decide si restaurar una copia o actualizar el binario.
+9. **Solo lectura automática ante un bit `ro_compat` desconocido** (ADR-0003 §1, HDR-7).
+   - **La base entera se abre en solo lectura y `is_read_only()` informa del archivo y los bits.** Es la semántica de ADR-0003 llevada al nivel de la base: un archivo con un bit `ro_compat` desconocido hace que ningún escritor v1 pueda tocar el conjunto.
+   - Rechazar con `Incompatible`: impide leer datos que un lector v1 entiende.
+   - Abrir en lectura-escritura por archivo: un escritor reescribiría ese archivo en una compactación sin conservar lo que no entiende.
+10. **Bit `DRAFT` y proceso de congelación** (ADR-0003, v1.md §4.3 y §15).
+    - **Hasta la congelación todo archivo lleva `incompat` bit 63; al congelar (WP14) el bit sale del conjunto conocido y una base del borrador se rechaza con `Incompatible("pre-freeze draft format")`.** Ninguna base creada con reglas que pudieron cambiar se lee con las reglas definitivas. Mientras rige, cambiar un byte exige historial en v1.md, vectores regenerados con nota en este ADR y `spec_decoder_agrees`.
+    - Sin marca: una base del borrador podría abrirse tras la congelación y leerse mal.
+11. **Límites de formato frente a límites de API** (v1.md §1.4, C-26).
+    - **Los lectores aplican límites de formato amplios (`Corruption`); el escritor aplica límites de API más estrictos (`InvalidArgument`) antes de escribir nada.** Subir un límite de API dentro del de formato no es un cambio de formato.
+    - Un único límite: cualquier ampliación futura sería un cambio de formato.
+12. **Durabilidad por commit diferida** (ADR-0002, C-05).
+    - **La Fase 1 ofrece durabilidad por base (`Sync`/`Buffered`) y `sync()`; `commit_with` queda para después.** El formato ya la admite: `synced_len` describe cualquier mezcla de tramas sincronizadas y no sincronizadas.
+    - Implementarla ya: más estados que probar en los barridos de caídas sin un caso de uso que la pida en la Fase 1.
+13. **Plataforma verificada: solo Linux** (ADR-0002, C-28).
+    - **Las garantías de `Sync` se verifican en Linux (ext4/xfs); en otra plataforma, abrir con `Sync` exige `allow_unverified_platform`.** macOS (`F_FULLFSYNC`) y Windows quedan sin verificar.
+    - Prometer las mismas garantías en todas: no hay evidencia que las respalde (C-28).
+14. **Objetivos de rendimiento T1–T10** (ADR-0001 condición 1, ADR-0012).
+    - **Los objetivos son los de [phase1-design.md](../architecture/phase1-design.md) §7.2, registrados antes de medir (WP04) y aprobados por el propietario (C-06).** Este ADR los cita por referencia: no los duplica para que no diverjan.
+
+15. **Preasignación y reciclado del WAL sin bit `incompat`** (seguimiento de WP05, ADR-0001 condición 1).
+    - **El escritor deja el WAL como `cabecera ‖ ceros` y reutiliza un WAL ya volcado tras sobrescribirlo entero con ceros; el lector no cambia.** Es el relleno de ceros que §6.1 y WAL-R4 ya admiten, así que ningún archivo válido cambia de bytes y los vectores siguen idénticos (v1.md §6.5, nota «Preasignación y reciclado»). Las tramas de la vida anterior de un archivo reciclado no se reproducirían (su CRC cubre otro número de archivo), pero un WAL intermedio de la cadena que termine en ellas sería una cola rota (REC-10a): por eso se sobrescriben con ceros antes de renombrar el archivo a su nombre canónico.
+    - Reciclado sin poner a cero, con el bit `incompat` reservado: ahorra la escritura de ceros, pero exige que el lector acepte como final limpio un archivo que acaba en tramas ajenas (un cambio de WAL-R4 y de REC-10a que invalida el barrido de caídas y los vectores). Se deja para cuando la medición pida ese ahorro.
+
+## Criterios de decisión
+
+Fijados antes de implementar el códec:
+
+- Ninguna regla aceptada de ADR-0001/0002/0003 se relaja: todo byte que influye en un resultado está cubierto por un CRC (I-08) y por una regla de validación con identificador.
+- Un daño aleatorio nunca se presenta como `Incompatible`; una incompatibilidad nunca se presenta como daño.
+- Lo que una caída deja a medias se distingue de un daño posterior sin heurísticas dependientes del tiempo (I-03, I-11).
+- Coste en el camino caliente: ningún byte por commit que no sea necesario (T7) y ninguna sincronización extra en la reapertura limpia (T8).
+- Cada decisión se puede revertir antes de la congelación cambiando el borrador y regenerando vectores (v1.md §15).
+
+## Evidencia
+
+- El códec (`crates/kerno-storage/src/format/`) implementa v1.md §1–§8 y §12 como funciones puras, con 194 vectores (45 positivos, 149 negativos que cubren cada regla que un decodificador puede informar, con su clase).
+- `spec_decoder_agrees`: un decodificador escrito solo desde v1.md coincide con el códec en regla, clase y contenido en todos los vectores y en 5 000 entradas editadas por decodificador en cada ejecución (1,4 millones en una ejecución local con `KERNO_AGREE_INPUTS=100000`), incluidas ediciones dentro de un bloque, una trama o un registro con su CRC recalculado.
+- `decoders_never_panic_on_random_bytes`: 10^5 entradas por cada uno de los 14 decodificadores sin pánicos.
+- La función bloom es la del M0 (`bloom_matches_m0_function`), y la forma canónica del commit equivale a aplicar el lote operación a operación (`canonicalize_matches_sequential_application`, aleatorizada).
+- La evidencia de comportamiento del motor (barridos de caídas, corrupción a 1000 semillas, `kill -9`, LazyFS) llega con WP07–WP14 y se enlazará aquí antes de pedir la aceptación.
+
+## Decisión
+
+Se adoptan las opciones marcadas en los puntos 1–14 para el formato v1 y el protocolo del motor de la Fase 1, tal como las especifica [`v1.md`](../file-format/v1.md):
+
+| # | Decisión | Interpreta | Especificación |
+|---|---|---|---|
+| 1 | Cabecera común de 96 bytes con `db_id` y número de archivo | ADR-0003 §1 | v1.md §3, HDR-10 |
+| 2 | Sin `CURRENT`; `MANIFEST` reemplazado por rename | ADR-0003 §3 | v1.md §2, §8.9 |
+| 3 | `CLEAN` en el *checkpoint*; `SESSION_OPEN` al reabrir | ADR-0003 §3 | v1.md §8.5, §9.4, MAN-R4 |
+| 4 | `synced_len` por trama | ADR-0002 | v1.md §6.2, W-11, WAL-R5 |
+| 5 | Ranura AEAD por bloque y registro; en el WAL, por archivo (`FRAME_SLOT_ALWAYS = false`) | ADR-0003 §2 | v1.md §5 |
+| 6 | Lápidas de rango en la base | ADR-0001 cond. 2 | v1.md §6.3, §7.4 |
+| 7 | Una versión por clave en cada SST | ADR-0001 | v1.md SST-I1 |
+| 8 | `Incompatible` y `ReadOnly` | ADR-0002 | phase1-design §4 |
+| 9 | Solo lectura ante `ro_compat` desconocido | ADR-0003 §1 | v1.md HDR-7 |
+| 10 | Bit `DRAFT` y congelación | ADR-0003 | v1.md §4.3, §15 |
+| 11 | Límites de formato y de API separados | ADR-0003 §2 | v1.md §1.4 |
+| 12 | Durabilidad por commit diferida | ADR-0002 | phase1-design §9 |
+| 13 | Solo Linux verificado | ADR-0002 | phase1-design §5.10 |
+| 14 | T1–T10 por referencia | ADR-0001, ADR-0012 | phase1-design §7.2 |
+
+## Consecuencias
+
+- **Formato:** v1 queda definido byte a byte con identificadores de regla; cualquier cambio posterior a la congelación exige `format_version` o un bit nuevo, vectores y un ADR.
+- **Recuperación:** la tabla de decisión (v1.md §9) forma parte del formato; WP08 la implementa como función pura compartida por la apertura, la solo lectura y `verify()`.
+- **Cifrado:** activar AEAD (ADR-0006) no exigirá migrar SST ni MANIFEST; los WAL se crean ya con el bit.
+- **Coste:** 32 bytes de cabecera de trama por grupo de commits y 44 por bloque de SST; una reapertura limpia, 2 sincronizaciones.
+- **`synced_len` y cabecera rota (punto 4):** la primera trama de cada WAL lleva `synced_len = 0`, porque W-1 no sincroniza la cabecera. Si tras una caída la cabecera del WAL más reciente se daña (no por la caída, sino por un fallo del medio) y ese WAL solo tiene tramas con `synced_len = 0`, WAL-R6 lo trata como un WAL sin tramas, y un commit confirmado en `Sync` puede perderse sin error. Es un caso de daño posterior a la escritura, no de caída; las suites de corrupción del M0 actúan tras un cierre limpio, cuando no queda ningún WAL. La alternativa es sincronizar la cabecera en W-1 (un `sync_data` más por rotación, una vez cada `write_buffer_bytes`), con lo que toda trama llevaría `synced_len ≥ 96` y WAL-R6 podría rechazar cualquier trama válida bajo una cabecera rota. Queda como decisión del propietario (ver Seguimiento). **Cerrado (2026-10-31, M1 de la revisión adversarial):** el escritor sincroniza la cabecera en W-1 y WAL-R6 rechaza cualquier trama válida bajo una cabecera rota.
+- **Precisiones de WP06** (historial de v1.md, sin cambiar ningún archivo válido): la cabecera rota de WAL-R6 incluye ahora HDR-2 con un *magic* desconocido (ni de v1 ni del M0), porque una cabecera nunca sincronizada puede quedar a ceros mientras la primera trama sí llega al disco (el modelo de `SimVfs` lo produce); la tabla de §13.1 fija qué regla informa cada comprobación y en qué orden, que es lo que permite que dos decodificadores independientes coincidan. La revisión de WP06 corrigió la cota de WAL-R5 y WAL-R6 para tramas de grupo (punto 4) y añadió al lector dos límites de §1.4 que no aplicaba (`last_seq` y `edit_seq` ≤ 2^63−1, para que ninguna secuencia derivada desborde); ningún vector existente cambió.
+
+## Qué es inmutable y qué es versionado
+
+Con la aceptación, el propietario fija la frontera:
+
+- **Inmutable mientras exista v1** (cambiarlo exige un `format_version` nuevo, no un bit): el *magic* y la cabecera común de 96 bytes (§3), la codificación de enteros, varints y checksums (§1.1–§1.2), el encapsulado TLV (§1.3), el encapsulado de trama del WAL y de bloque de SST (§6.2, §7.2), el pie de SST (§7.8), el registro del MANIFEST (§8.2) y la semántica de la tabla de recuperación (§9), incluida WAL-R6 endurecida por M1.
+- **Versionado por bits de características** (§4): capacidades nuevas que un lector antiguo puede ignorar (`compat`), abrir solo en lectura (`ro_compat`) o debe rechazar (`incompat`), entre ellas AEAD (punto 5) y la durabilidad por commit (punto 12).
+- **Ajustable sin tocar el formato:** límites de la API (punto 11), parámetros de ajuste (tamaños de bloque y de memtable, `bytes_per_sync`, compactación) y los objetivos de rendimiento T1–T10, que siguen por referencia (punto 14).
+- El bit `DRAFT` (punto 10) se retiró en la congelación del 2026-10-31; los archivos escritos con él se rechazan con `Incompatible("pre-freeze draft format")`.
+
+## Seguimiento
+
+- ~~Antes de la congelación (WP14): aceptación por el propietario, en particular de los puntos 2, 3, 4, 5, 8, 9 y 10 (phase1-design §13, decisión 2), y revisión del modelo de amenazas (R-07).~~ Hecho: aceptado el 2026-10-31 y R-07 revisada en WP14.
+- ~~Ejecutar la congelación (v1.md §15)~~: ejecutada el 2026-10-31. `WRITE_INCOMPAT` = 0, `DRAFT` fuera de `KNOWN_INCOMPAT` y rechazado por su nombre en HDR-6, todos los vectores regenerados con la guardia, vector negativo `draft-v1` añadido.
+- ~~Decidir si W-1 sincroniza la cabecera del WAL~~: adoptado (M1, 2026-10-31).
+- Enlazar aquí la evidencia del motor (WP07–WP14) y la medición de T7 y T8.
+- Registro de cambios de bytes del borrador (v1.md §15, tabla «Historial del borrador»): el último es la propia congelación, que cambia el `incompat` de la cabecera (y su CRC) de todo archivo escrito. Desde ella, un cambio de bytes exige `format_version` o un bit nuevo.
+
+# ADR-0014 — Representación física de relaciones
+
+| Campo | Valor |
+|---|---|
+| Estado | Aceptado (opción 2; evidencia de E4-02) |
+| Fecha | 2026-10-28 (propuesta); 2026-11-05 (aceptado con la evidencia de E4-02) |
+| Decisores | Propietario del proyecto (aprobó la semántica del criterio 4 en E4-00); ratificación de esta decisión en el acta de E4-02 |
+| Relacionado con | [especificación v0.2.0](../spec/especificacion-arquitectonica-v0.2.0.md) §6.4, §10, §12; SAD §9 (tabla de estructuras, fila 7); ADR-0001, ADR-0004, ADR-0007, ADR-0010; invariantes I-21, I-39 |
+
+## Contexto
+
+La Etapa 4 introduce relaciones tipadas (`Edge`) entre unidades: `edge_id`, `from_unit_id`, `to_unit_id`, `relation_type`, peso y validez temporal opcionales, procedencia y atributos. La especificación pide no asumir que todas son dirigidas ni que tienen peso, y separar relaciones declaradas de inferidas. El SAD (§1 y §20, «Fuera de la primera tanda») excluye un lenguaje de grafos y reserva un motor de grafos especializado para cuando un workload lo justifique.
+
+El motor físico es un LSM nivelado (ADR-0001) con lotes atómicos, aislamiento por instantánea y recorridos por rango. La pregunta es cómo codificar relaciones sobre ese motor.
+
+## Opciones consideradas
+
+1. **Relaciones como unidades** con un tipo reservado, sin índice de adyacencia. Mínima superficie; recorrer vecinos exige un filtro sobre todas las relaciones.
+2. **Registro de relación + índices de adyacencia transaccionales** (propuesta). Un registro por `edge_id` y dos entradas de índice con claves ordenadas `out/{from}/{type}/{edge_id}` e `in/{to}/{type}/{edge_id}`, escritos en el mismo lote que el registro. Vecinos por rango; coste: tres escrituras por relación.
+3. **Listas de adyacencia por unidad** (un valor con todos los vecinos). Lectura de vecinos en una sola clave; reescritura completa de la lista en cada cambio y conflictos de escritura en nodos con muchas relaciones.
+4. **Motor de grafos dedicado**. Fuera de alcance hasta que un benchmark lo justifique (SAD, spec §5).
+
+## Criterios de decisión
+
+Fijados el 2026-11-05, **antes** de la medición completa de «Evidencia». Los cinco criterios son los de la propuesta; E4-02 los vuelve medibles con un umbral o una prueba que decide cada uno. El banco se ejecutó antes en modo `--quick` solo para depurarlo; sus resultados no se usaron para elegir los umbrales. Una opción que incumple un criterio de corrección (1, 2, 4, 5) no se acepta, sea cual sea su rendimiento; los criterios de coste (3) se juzgan entre opciones.
+
+1. **Atomicidad.** El registro de una relación y sus entradas de índice se confirman en la misma frontera que el resto del cambio (I-21). Se cumple si, en un barrido de caídas antes de cada operación mutante (corte de energía y muerte del proceso, 4 semillas, `Emulated<LogEngine>` y `KernoDb`), el almacén recuperado es siempre el de un prefijo entero de `ChangeSet` (byte a byte frente a un oráculo sin fallos) y `verify_units` no da hallazgos: **cero** estados con el registro sin sus entradas o al revés.
+2. **Equivalencia.** Recorrer vecinos por índice devuelve exactamente lo que devuelve la ruta de referencia (filtro sobre todos los registros, sin índice) sobre la misma instantánea (I-32). Se cumple con **cero** diferencias, para toda unidad, dirección y tipo, tras cada paso de cargas aleatorias con semilla (altas, bajas y abortos), con más relaciones por unidad que una página de lectura (256) y en las instantáneas antiguas; y en el banco, 20 nodos × 1 y 2 saltos entre las dos opciones.
+3. **Coste.** Sobre dos cargas sintéticas con la forma de los workloads del roadmap, ambas con 5 000 unidades: `livespec` (símbolos y especificaciones; grado de salida 5; la mitad de las relaciones apuntan al 5 % de las unidades) y `memory` (memoria de agentes; cadena más enlaces a elementos recientes; grado 3, sin concentradores):
+   - (a) Escritura por relación: claves, bytes de WAL y bytes volcados de la opción 2 **≤ 1,5×** los de la opción 1.
+   - (b) Lectura: p99 de recorrer 1 y 2 saltos de la opción 2 **≤** el de la opción 1 en las dos cargas, y p99 de 1 salto de la opción 2 **≤ 1 ms**.
+   - (c) Efecto sobre lo ya aprobado: con relaciones activas, U2 y U6 se re-miden **con los umbrales sin cambiar** (U2: p99 de `history` ≤ 1,5× el de la referencia; U6: p99 y rendimiento de escritura durante la poda no peores que antes, con la misma carga) y no salen peor que el rango ya documentado en el informe de la Etapa 3 (U2 0,95×–1,67×; U6 p99 de escritura ≤ 1,59× y rendimiento ≥ 0,76×). Un incumplimiento previo (K-E3-8, K-E3-9) no se atribuye a las relaciones si queda dentro de ese rango.
+4. **Archivar o borrar con relaciones.** Semántica explícita, aprobada por el propietario en E4-00: **rechazo**. Se cumple si archivar y borrar una unidad con una relación viva, por cualquiera de sus dos extremos, falla con un error que nombra la unidad y una relación, sin efecto sobre el almacén y sin romper el `ChangeSet`, en `Emulated<LogEngine>` y `KernoDb`; y si borrar antes las relaciones (incluso en el mismo `ChangeSet`) permite archivar o borrar.
+5. **Procedencia (I-39).** Toda relación lleva un campo de procedencia obligatorio (`declared`, `imported`, `algorithmic`, `inferred`) que no se puede omitir (sin valor por defecto), con origen para todas salvo `declared` y confianza solo para `inferred`. Se cumple si el escritor y el decodificador rechazan toda combinación incoherente, y si una relación inferida no se devuelve nunca como declarada por ninguna de las dos rutas de lectura, ni siquiera con los mismos extremos y tipo que una declarada.
+
+## Evidencia
+
+Prototipo y mediciones de E4-02 (2026-11-05), en `kerno-units` sobre `kerno-storage` (`KernoDb`, opciones por defecto: `Sync`, caché 64 MiB, búfer de escritura 8 MiB, sistema de archivos real), un solo equipo, sin otras cargas deliberadas (carga media de 1,0 al empezar). Código: relaciones en `crates/kerno-units/src/db.rs`, `codec.rs` y `reference.rs`; bancos `examples/relation_bench.rs` (opción 1 frente a opción 2) y `examples/unit_bench.rs --relations` (U2 y U6).
+
+**Qué se construyó.** Opción 2: `create_relation` escribe `REL` y sus entradas `REL_OUT` y `REL_IN` en el mismo `ChangeSet`; `delete_relation` las borra juntas; `relations_of` lee la adyacencia por rango y comprueba cada entrada contra su `REL`; la ruta de referencia (`reference_relations`, `reference_relations_of`) recorre todos los `REL` y nunca una entrada de índice. Opción 1: una relación es una unidad de tipo reservado con la carga `from ‖ to ‖ procedencia ‖ tipo`; los vecinos se obtienen filtrando todas (`reference_by_type`); en 2 saltos lee todas una vez y filtra la copia dos veces, que es su mejor caso. Formato: [units-v1.md](../file-format/units-v1.md) §3.7–§3.8 (tags `0x40..=0x42`, regla UNIT-36).
+
+**Criterio 3 (a) y (b), `relation_bench` completo** (5 000 unidades; `livespec` 25 000 relaciones, `memory` 15 000; consultas: 2 000 por salto y carga en la opción 2, 200 en la opción 1, tras un 10 % de calentamiento):
+
+| | Opción 1 (unidad por relación) | Opción 2 (registro + 2 índices) | Opción 2 / opción 1 |
+|---|---|---|---|
+| Claves escritas por relación | 4,00 | 3,00 | 0,75× |
+| WAL por relación | 351,2 B | 198,2 B | 0,56× |
+| Volcado a tablas por relación | 382,9 B | 221,3 B | 0,58× |
+| `livespec` 1 salto: p50 / p99 | 87,10 / 130,64 ms | 0,0074 / 0,0244 ms | ≈ 1/5 000 (p99) |
+| `livespec` 2 saltos: p50 / p99 | 86,34 / 123,00 ms | 0,0416 / 0,1024 ms | ≈ 1/1 200 (p99) |
+| `memory` 1 salto: p50 / p99 | 55,90 / 73,96 ms | 0,0049 / 0,0119 ms | ≈ 1/6 200 (p99) |
+| `memory` 2 saltos: p50 / p99 | 57,31 / 89,77 ms | 0,0162 / 0,0494 ms | ≈ 1/1 800 (p99) |
+
+La opción 1 escribe *más* porque cada relación hereda la maquinaria de la unidad (cabeza, `REV_META`, `REV_PAYLOAD` y miembro del `ChangeSet`); la opción 2 escribe tres claves pequeñas. Compactación: 0 bytes por relación en ambas a este tamaño (todo cabe en el volcado). Los dos lados devolvieron los mismos vecinos en 20 nodos × 1 y 2 saltos en cada carga.
+
+**Criterios 1, 2, 4 y 5, pruebas** (todas pasan en `Emulated<LogEngine>` y `KernoDb`; ejecución: `cargo test -p kerno-units --test relations --test crash`):
+
+- Criterio 1: `crash::{emulated_log,kerno}::relations_every_point_{power_loss,process_kill}`, 49 puntos por semilla × 4 semillas; almacén igual al oráculo en todos, `verify_units` limpio, y la base recuperada acepta una relación y su borrado. La prueba se vio fallar al compararla con el prefijo equivocado. Filas R1–R5 de la [matriz de fallos](../architecture/failure-matrix.md) §8.
+- Criterio 2: `relations::differential_seeded` (4 semillas × 40 pasos, 12 unidades, 3 tipos donde uno es prefijo de otro, con abortos), `differential_across_scan_pages` (600 relaciones sobre 3 unidades) y la comparación del banco: 0 diferencias.
+- Criterio 4: `relations::archive_and_delete_are_rejected_with_live_relations`: rechazo por ambos extremos, error `UnitHasRelations` que nombra la unidad y la relación, el `ChangeSet` sigue siendo utilizable, y archivar o borrar tras borrar las relaciones en el mismo `ChangeSet` funciona. La prueba se vio fallar al invertir su aserción.
+- Criterio 5: `relations::provenance_is_stored_and_checked` y `declared_is_never_confused_with_inferred` (también a nivel de bytes: cambiar el tipo de procedencia de un registro inferido a declarado o importado lo hace indecodificable).
+
+**Criterio 3 (c): U2 y U6 re-medidos, umbrales sin cambiar** (`unit_bench` completo: mismos tamaños y método que el informe de la Etapa 3; `--relations` añade 3 relaciones salientes por unidad antes de medir y, en U6, una relación por cada `update` de los escritores, en el mismo `ChangeSet`). Escala completa, **sin reducir**; U2 en 3 pasadas por modo, U6 en **1** pasada por modo (≈ 5 min cada una; no se repitió).
+
+| U2: p99 `history` / referencia (umbral ≤ 1,5×) | Pasada 1 | Pasada 2 | Pasada 3 |
+|---|---|---|---|
+| Sin relaciones | 0,0780 / 0,0517 ms = **1,51×** (incumple por 0,01) | 0,0771 / 0,0586 = 1,31× | 0,0663 / 0,0447 = 1,48× |
+| Con relaciones | 0,0781 / 0,0626 = 1,25× | 0,0755 / 0,0518 = 1,46× | 0,0800 / 0,0543 = 1,47× |
+
+U2 queda en el rango del informe de la Etapa 3 (0,95×–1,67×), con la misma oscilación alrededor de 1,5× (K-E3-8); `history_page` 0,70×–1,00× de la referencia, informativo. Las relaciones no están en el camino de `history`.
+
+| U6 (retención `KeepLast(1)` con 2 escritores y 1 lector) | p99 escritura durante / peor «antes» | Rendimiento escritura durante / menor «antes» | p99 lectura durante / peor «antes» | Retención | Veredicto |
+|---|---|---|---|---|---|
+| Presupuesto por defecto, sin relaciones | 2,802 / 2,908 ms = 0,96× | 2 002,5 / 2 283,0 = 0,88× | 0,0225 / 0,0081 = 2,77× | 16 888 rev/s | incumple |
+| Presupuesto por defecto, con relaciones | 2,399 / 2,237 ms = 1,07× | 2 316,8 / 2 405,2 = 0,96× | 0,0097 / 0,0074 = 1,30× | 21 633 rev/s | incumple |
+| 25 unidades, sin relaciones | 2,769 / 2,567 ms = 1,08× | 2 188,6 / 2 369,9 = 0,92× | 0,0317 / 0,0124 = 2,55× | 12 946 rev/s | incumple |
+| 25 unidades, con relaciones | 2,640 / 2,182 ms = 1,21× | 2 210,2 / 2 362,7 = 0,94× | 0,0260 / 0,0244 = 1,07× | 12 796 rev/s | incumple |
+
+**U6 sigue incumpliendo (K-E3-9), con y sin relaciones, igual que al cierre de la Etapa 3.** Con relaciones activas el p99 de escritura (1,07× y 1,21×) y el rendimiento (0,96× y 0,94×) quedan dentro del rango ya documentado (p99 ≤ 1,59×, rendimiento ≥ 0,76×); no se atribuye a las relaciones ningún empeoramiento, pero con una pasada por modo y ventanas «antes» que en el informe de la Etapa 3 varían 2–3× entre sí, la diferencia entre «con» y «sin» (0,96× frente a 1,07×, etc.) está dentro del ruido y no demuestra que las relaciones sean gratis en U6. Ningún umbral se ha bajado ni se declara cumplido.
+
+**Límites de esta evidencia.** Cargas sintéticas de 5 000 unidades y 15 000–25 000 relaciones, no los workloads reales de LiveSpec ni de memoria de agentes (no existen aún); el mayor grado de entrada es de unos 50 por concentrador, muy lejos de las 10⁵ relaciones de «Condiciones para reabrir», que **no** se han medido. Las latencias de la opción 1 dependen de que se lea todo el conjunto de relaciones; una opción 1 con un índice añadido es, en la práctica, la opción 2. La opción 3 (listas de adyacencia por unidad) y la 4 no se prototiparon: se descartan por el argumento de la propuesta (reescritura completa de la lista en cada cambio y conflictos en nodos con muchas relaciones), que esta evidencia no contradice ni confirma.
+
+## Decisión
+
+**Opción 2: registro de relación más índices de adyacencia transaccionales**, aceptada el 2026-11-05 con la evidencia de E4-02. Cumple los cinco criterios; la opción 1 cumple 1, 2, 4 y 5 por construcción pero pierde en el 3 (b) por cuatro órdenes de magnitud y escribe más por relación (3 (a)). Lo que se decide:
+
+- Una relación es dirigida, con `edge_id`, `from`, `to`, `relation_type` (1..=64 B), `created_seq` y procedencia obligatoria (`declared`, `imported`, `algorithmic`, `inferred`; origen salvo en `declared`; confianza en milésimas solo en `inferred`). El actor, el origen y el motivo son los del `ChangeSet` que la creó.
+- El registro y las dos entradas de índice se escriben y borran siempre en el mismo `ChangeSet`.
+- Archivar o borrar una unidad con relaciones vivas, por cualquiera de sus extremos, se **rechaza** (`UnitError::UnitHasRelations`); crear una relación exige dos unidades `Active` en el `ChangeSet`. Es relajable a cascada o a relación colgante marcada sin cambiar el formato (decisión del propietario, E4-00).
+- Una relación **no tiene revisiones propias**: crearla o borrarla es un cambio de un `ChangeSet`, y ese `ChangeSet` es la única huella (resuelve la duda de ADR-0004 para esta etapa). Peso y validez temporal opcionales **no** se incluyen en E4-02; añadirlos es un campo nuevo del registro y requiere decidir la interacción con el historial.
+- Las relaciones cuentan contra el límite de operaciones de un `ChangeSet` y un `ChangeSet` que solo crea o borra relaciones es un commit (no está vacío).
+
+## Consecuencias
+
+- Las claves de adyacencia pasan a formar parte del esquema lógico de claves; su codificación se versiona con el resto del formato lógico (ADR-0003, ADR-0008). E4-02 las define en [units-v1.md](../file-format/units-v1.md) §2, §3.7 y §3.8 **sin subir `layer_version`** (sigue en 1): son tags nuevos (`0x40..=0x42`) que una capa anterior rechaza como `IncompatibleLayer` (UNIT-2) al verificar, pero una capa anterior que abriera el almacén sin recorrerlo no conocería el rechazo de archivar con relaciones. Mientras no haya almacenes v1 en uso fuera del desarrollo es aceptable; antes de congelar el formato de la capa, el propietario debe decidir si basta o si hay que subir `layer_version` a 2.
+- Las relaciones con validez temporal interactúan con el historial (ADR-0004): por ahora la relación no tiene revisiones propias ni validez temporal (véase «Decisión»).
+- Una relación hacia una unidad suprimida queda sujeta a ADR-0009. Con el rechazo de E4-02 no puede existir una relación hacia una unidad archivada o borrada, por lo que la supresión física no tiene relaciones colgantes que tratar mientras se mantenga ese rechazo.
+- El borrado de una unidad exige dos lecturas de rango de una entrada (una por índice) dentro de la `Txn`; el coste de las relaciones en la ruta de escritura de `ChangeSet` sin relaciones no se ha medido por separado de U1/U2/U6.
+- Los índices de adyacencia son **primarios** (se actualizan en el mismo `ChangeSet`, ADR-0007), no secundarios con estado de frescura: E4-03 no necesita watermark para ellos. `UnitSnapshot::relations_of` comprueba cada entrada contra su `REL`.
+
+## Condiciones para reabrir
+
+Workloads con recorridos de más de dos saltos dominantes, o nodos con más de 10⁵ relaciones donde el coste de la opción 2 sea inaceptable.
+
+## Seguimiento
+
+- ~~Prototipo y benchmark al inicio de la Etapa 4.~~ Hecho en E4-02 («Evidencia»).
+- ~~Prueba de propiedades: índices de adyacencia coherentes con los registros tras fallos (matriz de fallos).~~ Hecho: [matriz de fallos](../architecture/failure-matrix.md) §8, filas R1–R5.
+- Repetir U6 (varias pasadas, con y sin relaciones) cuando se aborde K-E3-9; medir un nodo con 10⁵ relaciones antes de dar por descartadas las «Condiciones para reabrir».
+
+## Nota de E4-00 (2026-11-04)
+
+Sigue *Propuesto*. La decisión final sale del prototipo de E4-02. Semántica aprobada por el propietario para unidades archivadas o borradas con relaciones vivas: **rechazo** de la operación (relajable más adelante a cascada o relación colgante marcada).
+
+# ADR-0015 — Privacidad de la observabilidad
+
+| Campo | Valor |
+|---|---|
+| Estado | **Aceptado** el 2026-11-06 con la evidencia de E5-04 (decisión del propietario del 2026-11-05; [acta de la Etapa 5](../architecture/etapa5-acta.md) §8) |
+| Fecha | 2026-10-28 |
+| Decisores | Propietario del proyecto |
+| Relacionado con | [especificación v0.2.0](../spec/especificacion-arquitectonica-v0.2.0.md) §6.5, §7, §18; SAD §11.4; [ejecución adaptativa](../architecture/adaptive-execution.md); [threat model](../security/threat-model.md); ADR-0009, ADR-0016; invariantes I-29, I-37 |
+
+## Contexto
+
+La Fase 1 ya expone métricas de almacenamiento (WP04: contadores e histogramas sin contenido de usuario). Las Etapas 5 y 6 añaden observaciones de ejecución, explicaciones de plan y estadísticas, que sí pueden filtrar datos: literales de consultas, claves, valores de filtros o tamaños que revelan contenido. La especificación exige no guardar valores sensibles por defecto; el SAD §11.4 prohíbe registrar contenido completo, secretos y tokens.
+
+## Opciones consideradas
+
+1. **Sin observaciones persistentes**: solo métricas agregadas en memoria. Seguro, pero impide la adaptación basada en evidencia (Etapa 6).
+2. **Niveles de detalle con redacción por defecto** (propuesta): `off` (por defecto), `aggregate` (contadores e histogramas por huella, sin texto), `fingerprint` (huella normalizada sin literales) y `diagnostic` (texto de huella y explicación de plan, activable solo explícitamente, con retención corta).
+3. **Registro completo con cifrado**: guarda todo cifrado. Complejidad de claves (ADR-0006) y el riesgo sigue presente al descifrar para diagnóstico.
+
+## Criterios de decisión
+
+1. Con el nivel por defecto, ninguna salida de observabilidad contiene literales ni contenido (prueba con centinelas, I-37).
+2. La adaptación de la Etapa 6 funciona con el nivel `fingerprint`.
+3. La retención y supresión de observaciones cumplen ADR-0009 (una supresión de datos no deja copias en observaciones).
+4. Coste de registrar una observación: medido; no puede aumentar la p99 de la consulta observada por encima del umbral que fije la Etapa 5.
+
+## Evidencia
+
+- **Criterio 1 (sin literales ni contenido, I-37).** `crates/kerno-units/tests/sentinels.rs` planta centinelas en el tipo, la carga útil, los metadatos, el tipo de relación, el origen y la fuente de procedencia, y los valores de ambos filtros, y los busca (texto, lista decimal de bytes y hex) en los registros y contadores del observador, en las explicaciones de plan, en las huellas y en los errores de consultas y escrituras, en los cuatro niveles y con un registro dañado. Ninguno aparece, tampoco en `diagnostic`: el texto de la forma lleva marcadores tipados. Comprueba además que cada huella informada es la de la misma forma con otros literales, para que un literal metido solo en la entrada del hash no pase. La prueba incluye un control (la respuesta al llamador sí contiene los centinelas) y muere con la mutación «copiar el literal en la huella o en la explicación» en sus tres variantes: en el texto de la forma (filtro y relaciones), solo en la entrada del hash y en el coste de un candidato del plan. Informe: [E5-04](../architecture/etapa5-centinelas.md).
+- **Criterio 2 (la Etapa 6 funciona con `fingerprint`).** El registro de nivel `fingerprint` lleva huella con clave, camino, plan, filas, secuencia, duración y fallback ([E5-03](../architecture/etapa5-observacion.md)); no hace falta texto.
+- **Criterio 3 (supresión, ADR-0009).** Las observaciones viven solo en memoria, con retención por tamaño y edad, y no guardan contenido de unidades; una supresión de datos no deja copias en ellas. La exportación y la persistencia quedan fuera de alcance hasta una decisión nueva.
+- **Criterio 4 (coste).** Umbral fijado antes de medir: ≤ 5 % de la p99 de la consulta observada. En [E5-03](../architecture/etapa5-observacion.md) §7 cumple en 7 de 8 mediciones; `diagnostic` en 20 000 unidades, ejecución 1, queda en +5,9 % (+3,6 % en la ejecución 2). Se registra como riesgo y no bloquea (acta §8, punto 5); `diagnostic` es solo por activación explícita.
+- **Clave local.** La huella usa BLAKE3 con clave local no exportada (sin accesor, sin `Debug` de sus bytes): una forma tiene pocos valores y un hash sin clave caería a un diccionario ([E5-01](../architecture/etapa5-huella-y-plan.md)).
+
+## Decisión
+
+Opción 2, aceptada el 2026-11-06 con la evidencia de arriba, por decisión del propietario del 2026-11-05. Los literales se sustituyen por marcadores tipados antes de calcular la huella; la huella usa BLAKE3 con clave local no exportada, con algoritmo y versión registrados. El nivel por defecto es `off`; `diagnostic` solo se activa explícitamente.
+
+## Consecuencias
+
+- El planificador debe trabajar con huellas, no con texto de consultas.
+- El nivel `diagnostic` necesita documentación operativa y aviso explícito al activarlo.
+- Las observaciones son datos derivados: se excluyen de la exportación lógica por defecto y se borran sin afectar a los datos (I-34).
+
+## Condiciones para reabrir
+
+Un caso de uso que exija observaciones con valores (por ejemplo, depuración de una consulta concreta en producción) o una regulación aplicable que imponga requisitos distintos.
+
+## Seguimiento
+
+- Hecho en E5-04: prueba de centinelas y revisión del [threat model](../security/threat-model.md) (T-08, T-11).
+- Si se añade un campo a una observación, una explicación o un error, la prueba de centinelas lo cubre antes de integrarlo.
+
+# ADR-0016 — Adaptación operacional e invalidación
+
+| Campo | Valor |
+|---|---|
+| Estado | Propuesto |
+| Fecha | 2026-10-28 |
+| Decisores | Propietario del proyecto (pendiente) |
+| Relacionado con | [especificación v0.2.0](../spec/especificacion-arquitectonica-v0.2.0.md) §2, §9, §10, §15; [ejecución adaptativa](../architecture/adaptive-execution.md); ADR-0007, ADR-0012, ADR-0015, ADR-0018; invariantes I-32…I-36 |
+
+## Contexto
+
+La especificación propone que el motor aprenda a ejecutar mejor las consultas frecuentes (Etapa 6) sin cambiar su significado, y que toda adaptación pueda inspeccionarse, medirse, desactivarse y revertirse. Hace falta decidir qué puede aprender el motor, dónde vive ese estado, cuándo se invalida y cómo se prueba que no altera resultados.
+
+## Opciones consideradas
+
+1. **Sin adaptación**: planificador determinista basado solo en estadísticas. Línea base obligatoria en cualquier caso.
+2. **Adaptación limitada a una optimización reversible** (propuesta para la Etapa 6): un único mecanismo, por ejemplo plan reutilizable por huella o caché de resultados invalidada por secuencia de commit, con metadatos completos (spec §9) y comparación contra el modo desactivado.
+3. **Adaptación general** (pesos aprendidos para varias rutas, índices automáticos). Mayor superficie de errores; la especificación prohíbe además cambios de esquema autónomos sin política explícita.
+
+## Criterios de decisión
+
+1. Equivalencia con la ruta de referencia (I-32) en la prueba diferencial, con la optimización activada, desactivada e invalidada a mitad de ejecución.
+2. Mejora neta medida frente al modo desactivado, con umbrales fijados antes de medir (ADR-0012), incluyendo coste de mantenimiento, memoria y almacenamiento.
+3. Invalidación probada para cada dependencia declarada (I-35).
+4. Desactivación global y por consulta (I-36) y borrado sin efecto en los datos (I-34).
+
+## Evidencia
+
+La Etapa 5 dejó el planificador determinista, la ruta de referencia y la prueba diferencial planificador/referencia en CI (I-32 verificada para índices, [etapa5-cierre.md](../architecture/etapa5-cierre.md)), y `ExecutionObservation` con niveles (E5-03, E5-04). No hay todavía evidencia de ninguna optimización aprendida: la aporta el benchmark de la Etapa 6.
+
+## Garantías (condiciones del propietario, 2026-11-07)
+
+Una optimización aprendida solo puede activarse si cumple todas estas garantías; cada una tiene su prueba en la Etapa 6.
+
+| # | Garantía | Regla | Prueba |
+|---|---|---|---|
+| G1 | La adaptación nunca compromete la corrección | La ruta optimizada devuelve el mismo multiconjunto (y el mismo orden, si la consulta lo fija) que la ruta de referencia sobre la misma instantánea | I-32: prueba diferencial con la optimización activada, desactivada e invalidada a mitad de ejecución |
+| G2 | La ruta de referencia siempre existe | Se mantiene, se compila y se prueba en CI aunque no se use; ante cualquier precondición incumplida, dependencia desconocida, error, discrepancia o duda, el planificador ejecuta la ruta de referencia (u otro plan válido sin estado aprendido) | I-33: inyección de precondiciones falsas, invalidaciones y fallos del estado aprendido |
+| G3 | Las observaciones no son autoridad | `ExecutionObservation` solo propone candidatos y estima costes; nunca demuestra que una ruta sea válida ni sustituye una comprobación. La validez sale de las precondiciones comprobadas en cada uso y de la prueba diferencial, no de cuántas veces funcionó | Prueba con observaciones falsificadas o corruptas: el resultado sigue cumpliendo I-32 |
+| G4 | La invalidación es explícita | Cada optimización declara sus dependencias (esquema, definición de índice, estadísticas, revisiones y datos que lee, precondiciones) con número de versión; se comprueban **antes de cada uso** y una que no coincide invalida la optimización. Una caché de resultados queda ligada a la secuencia de commit de su instantánea y no sirve otra secuencia; se elimina la excepción «salvo prueba de que los datos leídos no cambiaron» hasta que un ADR posterior defina esa prueba | I-35: un caso por dependencia declarada |
+| G5 | El aprendizaje no se salta validaciones | Una ruta aprendida pasa por las mismas comprobaciones que la planificada: lectura verificada, filtro, estado activo y orden (`check_units`); ninguna caché devuelve datos sin esas comprobaciones ni evita las invariantes del motor | Mutaciones que quitan una comprobación en la ruta aprendida mueren en la suite |
+| G6 | La adaptación es reversible | Desactivarla (global o por consulta), invalidarla o borrar su estado no cambia datos confirmados, revisiones, relaciones, índices transaccionales ni la secuencia de commit, y la semántica de las consultas sigue igual | I-34, I-36: suite completa con la adaptación desactivada; estado lógico y `commit_seq` iguales antes y después |
+| G7 | Trazabilidad | Cada decisión sobre una optimización (creación con su evidencia, activación, uso, fallback con su causa, invalidación con la dependencia que cambió, desactivación, borrado) queda registrada con la versión de la optimización y del planificador, y la explicación del plan dice si usó estado aprendido y cuál. El registro sigue las reglas de privacidad de ADR-0015 (sin literales ni contenido) | Prueba que recorre cada transición y encuentra su registro; centinelas (I-37) |
+
+## Decisión
+
+Pendiente de aprobación del propietario. Propuesta: opción 2, sujeta a las garantías G1–G7. El estado aprendido es un dato derivado: se guarda separado de los datos de usuario, no participa en transacciones de usuario, se reconstruye desde observaciones o se descarta. Invalidación por número de versión: cada optimización registra las versiones de esquema, índices y estadísticas de las que depende, y se comprueba antes de usarla; una caché de resultados además registra la secuencia de commit de la instantánea y no sirve lecturas de otra secuencia salvo prueba de que los datos leídos no cambiaron.
+
+## Consecuencias
+
+- El planificador necesita versiones monotónicas para esquema, índices y estadísticas desde la Etapa 5.
+- Las lecturas no mutan datos de usuario (spec §2); registrar observaciones o actualizar estadísticas desde una lectura escribe solo en el almacén derivado y nunca bloquea al escritor.
+- La equivalencia exige que la ruta de referencia se mantenga y se pruebe en CI aunque no se use en producción.
+
+## Condiciones para reabrir
+
+Evidencia de que una segunda optimización aporta más utilidad que la elegida, o de que la invalidación por versión produce demasiados fallos de caché para ser útil.
+
+## Seguimiento
+
+- Elegir el mecanismo concreto al iniciar la Etapa 6, con su benchmark.
+- Prueba diferencial planificador/referencia desde la Etapa 5.
+
+# ADR-0017 — Semántica de la «unidad neuronal»
+
+| Campo | Valor |
+|---|---|
+| Estado | Propuesto |
+| Fecha | 2026-10-28 |
+| Decisores | Propietario del proyecto (pendiente) |
+| Relacionado con | [especificación v0.2.0](../spec/especificacion-arquitectonica-v0.2.0.md) §2, §3, §6.1, §10, §21; SAD §5; ADR-0004, ADR-0005, ADR-0008, ADR-0014, ADR-0016; invariantes I-22, I-39 |
+
+## Contexto
+
+La especificación usa el cerebro como inspiración (§3) y advierte que las correspondencias son hipótesis de diseño, no equivalencias científicas, y que los módulos se definen por contratos técnicos y no por nombres anatómicos. Hace falta fijar qué significa «unidad» en el modelo de datos y qué significan los términos inspirados en el cerebro (conexión, plasticidad, consolidación, olvido), para que nadie los implemente con otra semántica.
+
+## Opciones consideradas
+
+1. **Unidad = documento con identidad y ciclo de vida** (propuesta). La «unidad neuronal» es solo un nombre de la metáfora; técnicamente es una `Unit` (spec §6.1): identidad estable, tipo, versión de esquema, revisión vigente, estado de ciclo de vida, metadatos y referencia de contenido. Las «conexiones» son `Edge` (ADR-0014); la «plasticidad», ajustes de estadísticas o prioridades (ADR-0016); la «consolidación», artefactos derivados con procedencia (ADR-0018).
+2. **Unidad con estado dinámico propio** (activación, pesos que cambian al leer). Rechazada en la propuesta: haría que las lecturas muten datos (spec §2) y mezclaría aprendizaje operacional con contenido (spec §10).
+3. **Sin término «unidad»**, solo «documento» como en el SAD. Pierde la generalidad que pide la especificación (documento, recuerdo, evento, hecho, recurso).
+
+## Criterios de decisión
+
+1. Cada término de la metáfora se define con un contrato técnico verificable y un caso de uso (spec §2).
+2. Ninguna lectura cambia datos de unidad.
+3. Compatibilidad con el modelo documental del SAD (§5) y con el historial de revisiones (ADR-0004).
+
+## Evidencia
+
+No aplica una medición: es una decisión de vocabulario y contrato. Se valida con ejemplos y pruebas cuando exista la API de la Etapa 3.
+
+## Decisión
+
+Pendiente. Propuesta: opción 1, con estas reglas:
+
+- `Unit` equivale al documento del SAD; `unit_type` es la colección o tipo lógico.
+- `lifecycle_state` admite al menos `active`, `archived` y `deleted`; las transiciones las define ADR-0009.
+- Un término de la metáfora no da nombre a crates ni módulos (spec §3, §13).
+- El «olvido» nunca borra contenido por baja frecuencia de acceso; solo políticas explícitas de retención (spec §10).
+- Toda «conexión» inferida guarda origen y confianza y no se presenta como declarada (I-39).
+
+## Consecuencias
+
+- La documentación y la API usan `Unit`, `Revision`, `ChangeSet` y `Edge`; los términos cerebrales solo aparecen en la documentación de visión.
+- Un mecanismo inspirado en el cerebro que no tenga caso de uso y prueba de valor no entra en el producto.
+
+## Condiciones para reabrir
+
+Un caso de uso validado que necesite estado dinámico por unidad; en ese caso se modelaría como dato derivado, no como parte de la unidad.
+
+## Seguimiento
+
+- Aplicar el vocabulario en ADR-0010 (API pública) al iniciar la Etapa 3.
+
+# ADR-0018 — Versionado y reconstrucción de artefactos derivados
+
+| Campo | Valor |
+|---|---|
+| Estado | Propuesto |
+| Fecha | 2026-10-28 |
+| Decisores | Propietario del proyecto (pendiente) |
+| Relacionado con | [especificación v0.2.0](../spec/especificacion-arquitectonica-v0.2.0.md) §10, §11, §12, §14; SAD §9.2, §10.2–10.3; ADR-0007, ADR-0009, ADR-0011, ADR-0016; invariantes I-23, I-24, I-25, I-38 |
+
+## Contexto
+
+Índices no transaccionales, embeddings, resúmenes, agrupaciones, relaciones inferidas, cachés y optimizaciones aprendidas son **artefactos derivados**: se calculan a partir de datos fuente y pueden quedar obsoletos. ADR-0007 cubre la frescura de índices y ADR-0011 los metadatos de embeddings; falta un contrato común para todos los derivados que diga cómo se versionan, cuándo quedan obsoletos y cómo se reconstruyen.
+
+## Opciones consideradas
+
+1. **Contrato por tipo de derivado**, cada uno con sus reglas. Flexible, pero repite lógica de procedencia y supresión en cada sitio.
+2. **Registro común de derivados** (propuesta): todo derivado lleva un descriptor con fuentes (unidad y revisión exactas o rango de secuencia), método o modelo y versión, parámetros que afectan al resultado, fecha, hash de la entrada, estado (`ready`, `building`, `stale`, `failed`, `superseded`) y si es reconstruible.
+3. **Derivados inmutables solo por recálculo completo**. Simple, pero inviable para embeddings y resúmenes costosos.
+
+## Criterios de decisión
+
+1. Cada derivado se puede vincular a sus fuentes y marcar obsoleto cuando cambian (I-38, I-25).
+2. Un derivado reconstruible produce el mismo resultado que uno nuevo sobre los mismos datos, salvo métodos no deterministas declarados como tales (I-24).
+3. Suprimir una fuente invalida o suprime sus derivados según ADR-0009.
+4. Un resumen nunca reemplaza el original cuando se requiere auditoría (spec §10).
+5. No se mezclan modelos ni dimensiones incompatibles (spec §11).
+
+## Evidencia
+
+Ninguna todavía. M0 y la Fase 1 no generan derivados de este tipo.
+
+## Decisión
+
+Pendiente. Propuesta: opción 2. Los derivados generados por modelos externos se producen detrás de adaptadores o jobs fuera del núcleo transaccional (I-31); el núcleo solo guarda el resultado y su descriptor. Un cambio de modelo o versión crea derivados nuevos (`superseded` para los anteriores) en lugar de reescribirlos. La exportación lógica distingue datos fuente de derivados reconstruibles (spec §14).
+
+## Consecuencias
+
+- El descriptor es parte del formato lógico y se versiona (ADR-0003, ADR-0008).
+- Detectar obsolescencia exige que la escritura de una fuente sea barata de cruzar con sus derivados: hace falta un índice inverso fuente → derivados.
+- Los métodos no deterministas (por ejemplo, algunos modelos de embeddings) deben declarar el hash de la salida, no solo el de la entrada, para la verificación.
+
+## Condiciones para reabrir
+
+Un tipo de derivado cuyo coste de descriptor o de índice inverso sea desproporcionado frente al derivado mismo.
+
+## Seguimiento
+
+- Aplicar el contrato a los índices de la Etapa 4 y a las optimizaciones de la Etapa 6 antes de los embeddings de la Etapa 8.
+- Prueba de extremo a extremo: modificar y suprimir una fuente y comprobar el estado de cada derivado.

@@ -1,0 +1,151 @@
+//! Plain data shared by the vector encoder and the independent decoder: the
+//! decoded form of each structure of `units-v1.md`. It holds no parsing or
+//! encoding code, and every field is a raw integer or byte string so that a
+//! negative vector can carry a value the format rejects.
+
+pub type UnitId = [u8; 16];
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Hash {
+    pub alg: u8,
+    pub digest: [u8; 32],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Layer {
+    pub name: Vec<u8>,
+    pub layer_version: u32,
+    pub history_policy: u8,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Head {
+    pub unit_id: UnitId,
+    pub unit_type: Vec<u8>,
+    pub schema_version: u32,
+    pub lifecycle: u8,
+    pub head_rev: u64,
+    pub oldest_rev: u64,
+    pub created_seq: u64,
+    pub updated_seq: u64,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub content_hash: Hash,
+    pub payload_len: u32,
+    pub payload_codec: u8,
+    pub metadata: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RevMeta {
+    pub unit_id: UnitId,
+    pub rev_no: u64,
+    pub kind: u8,
+    pub parent_rev: u64,
+    pub commit_seq: u64,
+    pub created_at: i64,
+    pub schema_version: u32,
+    pub content_hash: Hash,
+    pub payload_len: u32,
+    pub payload_codec: u8,
+    pub payload_present: u8,
+    pub restored_from: u64,
+    pub metadata: Vec<u8>,
+    pub actor_ref: Vec<u8>,
+    pub source_ref: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RevPayload {
+    pub unit_id: UnitId,
+    pub rev_no: u64,
+    pub payload: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChangeSet {
+    pub commit_seq: u64,
+    pub created_at: i64,
+    pub member_count: u32,
+    pub purpose: u8,
+    pub reason: Vec<u8>,
+    pub actor_ref: Vec<u8>,
+    pub source_ref: Vec<u8>,
+    pub correlation: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Member {
+    pub commit_seq: u64,
+    pub ordinal: u32,
+    pub unit_id: UnitId,
+    pub rev_no: u64,
+    pub kind: u8,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct IdxMeta {
+    pub outcome: u8,
+    pub watermark: u64,
+    pub entries: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct IdxPrimary {
+    pub unit_id: UnitId,
+    pub unit_type: Vec<u8>,
+    pub schema_version: u32,
+}
+
+/// `IDX_TYPE` (E4-04): everything is in the key; the value is the envelope.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IdxType {
+    pub unit_type: Vec<u8>,
+    pub schema_version: u32,
+    pub unit_id: UnitId,
+}
+
+/// `REL` (E4-02): a declared or derived relation and its provenance.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Rel {
+    pub edge_id: [u8; 16],
+    pub from: UnitId,
+    pub to: UnitId,
+    pub relation_type: Vec<u8>,
+    pub created_seq: u64,
+    pub provenance: u8,
+    pub origin: Vec<u8>,
+    pub confidence: u16,
+}
+
+/// `REL_OUT` (`tag = 0x41`) or `REL_IN` (`tag = 0x42`) adjacency entry (E4-02).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RelAdj {
+    pub tag: u8,
+    pub unit_id: UnitId,
+    pub relation_type: Vec<u8>,
+    pub edge_id: [u8; 16],
+    pub other: UnitId,
+}
+
+/// A decoded key and value.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Rec {
+    Layer(Layer),
+    Head(Head),
+    RevMeta(RevMeta),
+    RevPayload(RevPayload),
+    ChangeSet(ChangeSet),
+    Member(Member),
+    IdxMeta(IdxMeta),
+    IdxPrimary(IdxPrimary),
+    IdxType(IdxType),
+    Rel(Rel),
+    RelAdj(RelAdj),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Class {
+    Corruption,
+    IncompatibleLayer,
+}

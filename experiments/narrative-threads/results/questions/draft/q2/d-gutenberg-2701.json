@@ -1,0 +1,736 @@
+{
+ "document": "d-gutenberg-2701.txt",
+ "sha256": "6e2084a6a9e597062bb3e22b1727dfc037c6bc4d23c4f61eae366bddc11accc3",
+ "status": "draft: pending human review",
+ "prompt_version": "q2",
+ "alias": "haiku",
+ "windows": [
+  {
+   "index": 0,
+   "start": 0,
+   "end": 299616,
+   "asked": 6,
+   "call_id": "questions:q2:d-gutenberg-2701.txt:w0",
+   "model_ids": [
+    "claude-haiku-5-5"
+   ],
+   "charged_usd": 0.03340585
+  },
+  {
+   "index": 1,
+   "start": 299618,
+   "end": 599050,
+   "asked": 6,
+   "call_id": "questions:q2:d-gutenberg-2701.txt:w1",
+   "model_ids": [
+    "claude-haiku-5-5"
+   ],
+   "charged_usd": 0.032561849999999996
+  },
+  {
+   "index": 2,
+   "start": 599052,
+   "end": 898697,
+   "asked": 6,
+   "call_id": "questions:q2:d-gutenberg-2701.txt:w2",
+   "model_ids": [
+    "claude-haiku-5-5"
+   ],
+   "charged_usd": 0.03618405
+  },
+  {
+   "index": 3,
+   "start": 898699,
+   "end": 1197993,
+   "asked": 6,
+   "call_id": "questions:q2:d-gutenberg-2701.txt:w3",
+   "model_ids": [
+    "claude-haiku-5-5"
+   ],
+   "charged_usd": 0.043148700000000005
+  },
+  {
+   "index": 4,
+   "start": 1197995,
+   "end": 1234329,
+   "asked": 6,
+   "call_id": "questions:q2:d-gutenberg-2701.txt:w4",
+   "model_ids": [
+    "claude-haiku-5-5"
+   ],
+   "charged_usd": 0.004718559999999999
+  }
+ ],
+ "questions": [
+  {
+   "id": "d01",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does Ishmael's attitude toward Queequeg change from the night they first share a bed to the point where he commits himself to sailing with him?",
+   "reference_answer": "At first Ishmael is so suspicious of the harpooneer that he resolves to sleep on the bench rather than share a bed. After the strange night with the tomahawk and idol, he decides a sober cannibal is better company than a drunken Christian. By the time of the whaling voyage he has bonded with Queequeg so completely that he clings to him for the rest of the voyage.",
+   "evidence": [
+    {
+     "start": 80267,
+     "end": 80327,
+     "quote": "Better sleep with a sober cannibal than a drunken Christian."
+    },
+    {
+     "start": 156922,
+     "end": 157022,
+     "quote": "From that hour I clove to Queequeg like a barnacle; yea, till poor Queequeg took his last long dive."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "d02",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the crew's knowledge of Captain Ahab move from secondhand rumor to direct experience of him as the Pequod sails?",
+   "reference_answer": "Before sailing, Ishmael only hears about Ahab from Peleg, who says Ahab has lost a leg to a whale. Once at sea, Ishmael finally sees Ahab standing on the quarter-deck, and the reality exceeds what he had imagined. By the time of the dream chapter, Stubb is convinced that Ahab has some hidden purpose involving a white whale.",
+   "evidence": [
+    {
+     "start": 177794,
+     "end": 177875,
+     "quote": "Clap eye on Captain Ahab, young man, and thou wilt find that he has only one leg."
+    },
+    {
+     "start": 281316,
+     "end": 281386,
+     "quote": "Reality outran apprehension; Captain Ahab stood upon his quarter-deck."
+    },
+    {
+     "start": 299519,
+     "end": 299561,
+     "quote": "Ahab has that that’s bloody on his mind."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "d03",
+   "window": 0,
+   "type": "contrast",
+   "question": "How does Bildad's religious profession compare with his conduct as a ship's owner and officer?",
+   "reference_answer": "Bildad presents himself as a pious Quaker who quotes Scripture and warns others about their souls. Yet the narrator says he was hard-hearted as a chief mate and that he forbids profane songs while the crew sings a bawdy chorus. The gap between his professed piety and his practical conduct is a recurring irony.",
+   "evidence": [
+    {
+     "start": 185609,
+     "end": 185706,
+     "quote": "For a pious man, especially for a Quaker, he was certainly rather hard-hearted, to say the least."
+    },
+    {
+     "start": 242124,
+     "end": 242371,
+     "quote": "Nevertheless, not three days previous, Bildad had told them that no profane songs would be allowed on board the Pequod, particularly in getting under weigh; and Charity, his sister, had placed a small choice copy of Watts in each seaman’s berth."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "d04",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does Ishmael's response to Queequeg's idol-worship develop from his first participation in the rite to his later view of Queequeg's religious practices?",
+   "reference_answer": "On the first night Ishmael reasons his way into joining the idol ritual, kindling the shavings and kissing the idol's nose for the sake of friendship. Later, during Queequeg's Ramadan, he treats the faith with tolerance and lets Queequeg rest in it. The early participation and later live-and-let-be stance show a gradual shift in his stance towards other religions.",
+   "evidence": [
+    {
+     "start": 138117,
+     "end": 138376,
+     "quote": "So I kindled the shavings; helped prop up the innocent little idol; offered him burnt biscuit with Queequeg; salamed before him twice or thrice; kissed his nose; and that done, we undressed and went to bed, at peace with our own consciences and all the world."
+    },
+    {
+     "start": 200670,
+     "end": 200773,
+     "quote": "Queequeg thought he knew what he was about, I suppose; he seemed to be content; and there let him rest."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "d05",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does Ishmael's judgment of the ragged prophet Elijah shift from dismissing him to being haunted by him as the voyage begins?",
+   "reference_answer": "At first Ishmael and Queequeg dismiss Elijah as a crazy humbug trying to be a bugbear. Elijah's cryptic questions keep returning to Ishmael, though, and by the time the Pequod is at sea, his incoherences recur to Ishmael with a subtle energy he cannot shake. Dismissal turns into lingering unease over the course of the story.",
+   "evidence": [
+    {
+     "start": 225997,
+     "end": 226065,
+     "quote": "and agreed that he was nothing but a humbug, trying to be a bugbear."
+    },
+    {
+     "start": 279302,
+     "end": 279477,
+     "quote": "This was strangely heightened at times by the ragged Elijah’s diabolical incoherences uninvitedly recurring to me, with a subtle energy I could not have before conceived of."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "d06",
+   "window": 0,
+   "type": "causal",
+   "question": "Why does Ahab lash out at Stubb over a trivial matter of muffling the noise of his ivory leg?",
+   "reference_answer": "Ahab's savagery stems from the loss of his leg to the white whale, which left him moody and violent. Peleg attributes his bad temper to the bleeding stump and the accursed whale. When Stubb suggests muffling the ivory heel, Ahab's rage erupts at him as an insult, showing the wound behind his mood.",
+   "evidence": [
+    {
+     "start": 198281,
+     "end": 198458,
+     "quote": "I know, too, that ever since he lost his leg last voyage by that accursed whale, he’s been a kind of moody—desperate moody, and savage sometimes; but that will all pass off."
+    }
+   ],
+   "evidence_rejected": 1,
+   "unlocated_quotes": [
+    "“Am I a cannon-ball, Stubb,” said Ahab, “that thou wouldst wad me that fashion?”"
+   ],
+   "needs_review": false
+  },
+  {
+   "id": "d07",
+   "window": 1,
+   "type": "trajectory",
+   "question": "How does Ahab's obsession with the white whale develop from the quarter-deck oath to the night-time charts?",
+   "reference_answer": "Ahab's obsession starts as a visible, public purpose in the quarter-deck scene, where his pacing leaves marks that reflect one unceasing thought. Ishmael later argues that the monomania did not begin at the moment Ahab lost his leg but grew during the homeward voyage. By the night-time chart scenes, the same purpose has become a settled, methodical maze of calculations that fills every night.",
+   "evidence": [
+    {
+     "start": 363741,
+     "end": 363916,
+     "quote": "Did you fixedly gaze, too, upon that ribbed and dented brow; there also, you would see still stranger foot-prints—the foot-prints of his one unsleeping, ever-pacing thought."
+    },
+    {
+     "start": 409861,
+     "end": 409977,
+     "quote": "It is not probable that this monomania in him took its instant rise at the precise time of his bodily dismemberment."
+    },
+    {
+     "start": 441469,
+     "end": 441656,
+     "quote": "For with the charts of all four oceans before him, Ahab was threading a maze of currents and eddies, with a view to the more certain accomplishment of that monomaniac thought of his soul."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "d08",
+   "window": 1,
+   "type": "trajectory",
+   "question": "How does Starbuck's position toward Ahab's quest change from his first objection to the later account of his inner state?",
+   "reference_answer": "In the quarter-deck scene, Starbuck openly objects that he came to hunt whales, not to serve his captain's vengeance. Much later, the narrator says Starbuck's obedience is only forced, since Ahab controls his will through a magnetic hold. Starbuck's private abhorrence of the quest persists beneath that outward compliance.",
+   "evidence": [
+    {
+     "start": 370973,
+     "end": 371172,
+     "quote": "“I am game for his crooked jaw, and for the jaws of Death too, Captain Ahab, if it fairly comes in the way of the business we follow; but I came here to hunt whales, not my commander’s vengeance."
+    },
+    {
+     "start": 473885,
+     "end": 474176,
+     "quote": "Starbuck’s body and Starbuck’s coerced will were Ahab’s, so long as Ahab kept his magnet at Starbuck’s brain; still he knew that for all this the chief mate, in his soul, abhorred his captain’s quest, and could he, would joyfully disintegrate himself from it, or even frustrate it."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "d09",
+   "window": 1,
+   "type": "causal",
+   "question": "Why does Ahab keep the ship's ordinary whaling routine going instead of pursuing Moby Dick alone?",
+   "reference_answer": "Ahab announced his private aim to the crew at the quarter-deck, and that announcement exposed him to a charge of usurpation. To protect his command, he decided to keep the voyage's nominal business going and to show his usual interest in whaling. The sudden public revelation of his purpose is the cause, and the later need to keep up ordinary duties is the effect.",
+   "evidence": [
+    {
+     "start": 476866,
+     "end": 477127,
+     "quote": "Having impulsively, it is probable, and perhaps somewhat prematurely revealed the prime but private purpose of the Pequod’s voyage, Ahab was now entirely conscious that, in so doing, he had indirectly laid himself open to the unanswerable charge of usurpation"
+    },
+    {
+     "start": 477837,
+     "end": 478119,
+     "quote": "Ahab plainly saw that he must still in a good degree continue true to the natural, nominal purpose of the Pequod’s voyage; observe all customary usages; and not only that, but force himself to evince all his well known passionate interest in the general pursuit of his profession."
+    }
+   ],
+   "evidence_rejected": 1,
+   "unlocated_quotes": [
+    "“And this is what ye have shipped for, men! to chase that white whale on both sides of land, and over all sides of earth, till he spouts black blood and rolls fin out."
+   ],
+   "needs_review": false
+  },
+  {
+   "id": "d10",
+   "window": 1,
+   "type": "evolution",
+   "question": "How does the stated goal of the chase change from Ahab's first oath to the ship's turn at the end of the Albatross chapter?",
+   "reference_answer": "At the quarter-deck, Ahab vows to chase the whale around the Cape of Good Hope, the Horn, the Norway Maelstrom and beyond. When the Pequod meets the Albatross, Ahab orders the ship to keep her heading round the world. The goal has widened from pursuing one whale across specific dangerous waters to a global circuit, and Ishmael questions whether that circuit leads anywhere.",
+   "evidence": [
+    {
+     "start": 370170,
+     "end": 370322,
+     "quote": "Aye, aye! and I’ll chase him round Good Hope, and round the Horn, and round the Norway Maelstrom, and round perdition’s flames before I give him up."
+    },
+    {
+     "start": 528960,
+     "end": 529148,
+     "quote": "But turning to the steersman, who thus far had been holding the ship in the wind to diminish her headway, he cried out in his old lion voice,—“Up helm! Keep her off round the world!”"
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "d11",
+   "window": 1,
+   "type": "contrast",
+   "question": "How does Ahab's madness appear to Ishmael in the Sunset chapter compared with his calculated shrewdness later in the voyage?",
+   "reference_answer": "In the Sunset soliloquy, Ahab calls himself demoniac and says that Starbuck thinks him mad. Later, the narrator describes the monomania as subtle and says Ahab shows superlative shrewdness in managing the crew. The contrast places raving obsession and careful calculation side by side in the same man.",
+   "evidence": [
+    {
+     "start": 381121,
+     "end": 381198,
+     "quote": "They think me mad—Starbuck does; but I’m demoniac, I am madness maddened!"
+    },
+    {
+     "start": 474492,
+     "end": 474772,
+     "quote": "the subtle insanity of Ahab respecting Moby Dick was noways more significantly manifested than in his superlative sense and shrewdness in foreseeing that, for the present, the hunt should in some way be stripped of that strange imaginative impiousness which naturally invested it;"
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "d12",
+   "window": 1,
+   "type": "trajectory",
+   "question": "How does the cash motive for the hunt change from the gold ounce nailed to the mast to Ahab's later reasoning about the crew's wages?",
+   "reference_answer": "At the quarter-deck, Ahab nails a gold ounce to the mast as a reward for whoever first spots the white whale. Later, Ahab reasons that the crew must have regular cash in view to keep them loyal to the hunt. The reward used to rouse them becomes a deliberate way of managing their steadiness over the long voyage.",
+   "evidence": [
+    {
+     "start": 367635,
+     "end": 367732,
+     "quote": "look ye, whosoever of ye raises me that same white whale, he shall have this gold ounce, my boys!"
+    },
+    {
+     "start": 476500,
+     "end": 476575,
+     "quote": "I will not strip these men, thought Ahab, of all hopes of cash—aye, cash."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "d13",
+   "window": 2,
+   "type": "trajectory",
+   "question": "How does Ahab's pursuit of Moby Dick develop across the chapters, from his reaction to the dead whale to his plan for the Pacific?",
+   "reference_answer": "After Stubb's whale is killed, Ahab's mood turns to dissatisfaction, because the dead whale reminds him that Moby Dick is still unslain and no ordinary catch advances his monomaniac aim. Later, Ahab's route is planned around that aim: he sweeps the cruising grounds so that he can meet Moby Dick on the Line in the Pacific, where he is most likely to be found. The obsession starts as frustration at a single kill and becomes a fixed plan that organises the whole voyage.",
+   "evidence": [
+    {
+     "start": 647463,
+     "end": 647671,
+     "quote": "as if the sight of that dead body reminded him that Moby Dick was yet to be slain; and though a thousand other whales were brought to his ship, all that would not one jot advance his grand, monomaniac object."
+    },
+    {
+     "start": 836247,
+     "end": 836394,
+     "quote": "where Ahab, though everywhere else foiled in his pursuit, firmly counted upon giving battle to Moby Dick, in the sea he was most known to frequent;"
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "d14",
+   "window": 2,
+   "type": "trajectory",
+   "question": "How does Ishmael's bond with Queequeg change from the monkey-rope episode to the rescue of Tashtego?",
+   "reference_answer": "In the monkey-rope chapter, Ishmael describes Queequeg as his inseparable twin brother, joined to him by a rope that makes Ishmael's own fate depend on Queequeg's. Later, when Tashtego falls into the whale's head, Queequeg dives in to rescue him, and Ishmael reports the dive as an act of his brave friend. The bond moves from a fearful, bound dependence to open admiration of Queequeg's courage.",
+   "evidence": [
+    {
+     "start": 706751,
+     "end": 706885,
+     "quote": "Queequeg was my own inseparable twin brother; nor could I any way get rid of the dangerous liabilities which the hempen bond entailed."
+    },
+    {
+     "start": 756024,
+     "end": 756105,
+     "quote": "The next, a loud splash announced that my brave Queequeg had dived to the rescue."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "d15",
+   "window": 2,
+   "type": "contrast",
+   "question": "Why do the English and American draughtsmen get criticised for their whale pictures, while the French are praised, and how do the whalemen's own carvings compare?",
+   "reference_answer": "The narrator praises the French for capturing the spirit of the hunt, while English and American draughtsmen only present the mechanical outline of the whale, which he compares to sketching a pyramid's profile. Much later he praises the whalemen's own carvings on sperm-whale teeth and bone as lively sketches. So the contrast is between lifeless outline drawing by professionals and vivid, action-filled work by the men who actually hunt whales.",
+   "evidence": [
+    {
+     "start": 601330,
+     "end": 601504,
+     "quote": "For the most part, the English and American whale draughtsmen seem entirely content with presenting the mechanical outline of things, such as the vacant profile of the whale;"
+    },
+    {
+     "start": 604796,
+     "end": 605240,
+     "quote": "Throughout the Pacific, and also in Nantucket, and New Bedford, and Sag Harbor, you will come across lively sketches of whales and whaling-scenes, graven by the fishermen themselves on Sperm Whale-teeth, or ladies’ busks wrought out of the Right Whale-bone, and other like skrimshander articles, as the whalemen call the numerous little ingenious contrivances they elaborately carve out of the rough material, in their hours of ocean leisure."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "d16",
+   "window": 2,
+   "type": "causal",
+   "question": "Why did the Pequod come close to capsizing while the dead whale was being hauled in, given the load it was already carrying?",
+   "reference_answer": "Earlier, the ship was already loaded with a sperm whale's head and a right whale's carcass hanging from its side, so it lay heavily strained and resembled an overloaded mule. When the right whale sank with great force, the ship was dragged sideways, and Starbuck's refusal to let go of the body pushed it nearly over. The earlier overload is the underlying cause, and the sinking body is the immediate trigger.",
+   "evidence": [
+    {
+     "start": 725044,
+     "end": 725188,
+     "quote": "The carcases of both whales had dropped astern; and the head-laden ship not a little resembled a mule carrying a pair of overburdening panniers."
+    },
+    {
+     "start": 790936,
+     "end": 791118,
+     "quote": "But a sudden stop was put to further discoveries, by the ship’s being unprecedentedly dragged over sideways to the sea, owing to the body’s immensely increasing tendency to sink."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "d17",
+   "window": 2,
+   "type": "evolution",
+   "question": "How did the material of the whale-line change over time, and why?",
+   "reference_answer": "The whale-line was first made of the best hemp, lightly treated with tar, because tar would make it too stiff for close coiling and would not add strength. In later years, American whalers almost entirely replaced hemp with Manilla rope, which is less durable but stronger, softer and more elastic. The proposal therefore moved from the traditional hemp line to Manilla, chosen for its strength and flexibility rather than its durability.",
+   "evidence": [
+    {
+     "start": 620768,
+     "end": 620915,
+     "quote": "The line originally used in the fishery was of the best hemp, slightly vapored with tar, not impregnated with it, as in the case of ordinary ropes;"
+    },
+    {
+     "start": 621376,
+     "end": 621580,
+     "quote": "Of late years the Manilla rope has in the American fishery almost entirely superseded hemp as a material for whale-lines; for, though not so durable as hemp, it is stronger, and far more soft and elastic;"
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "d18",
+   "window": 2,
+   "type": "trajectory",
+   "question": "How is the sea's threat to men described at the start of the Brit chapter, and how is it then linked to the sea's threat to its own creatures?",
+   "reference_answer": "The Brit chapter first says the sea is an everlasting unknown that has always destroyed men, and that men have lost their sense of its full awfulness through repeated exposure. The narrator then says the sea is also a fiend to its own offspring, dashing even the mightiest whales against rocks alongside wrecked ships. The view extends from danger to humans to a general cruelty of the ocean that spares no creature, including its own.",
+   "evidence": [
+    {
+     "start": 612305,
+     "end": 612487,
+     "quote": "though, by vast odds, the most terrific of all mortal disasters have immemorially and indiscriminately befallen tens and hundreds of thousands of those who have gone upon the waters;"
+    },
+    {
+     "start": 613657,
+     "end": 613877,
+     "quote": "But not only is the sea such a foe to man who is an alien to it, but it is also a fiend to its own off-spring; worse than the Persian host who murdered his own guests; sparing not the creatures which itself hath spawned."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "d19",
+   "window": 3,
+   "type": "trajectory",
+   "question": "How does Pip's condition change from the bright, jolly boy of his early chapters to the damaged castaway the crew sees later?",
+   "reference_answer": "Pip begins as a genial, very bright boy whose brightness is only temporarily dimmed by the panic of the fishery. After Stubb leaves him in the sea and the ship rescues him, the crew regards him as an idiot. Much later he is a fragile, babbling figure who calls out for himself as a lost coward, and Ahab takes him in.",
+   "evidence": [
+    {
+     "start": 903608,
+     "end": 903712,
+     "quote": "Pip, though over tender-hearted, was at bottom very bright, with that pleasant, genial, jolly brightness"
+    },
+    {
+     "start": 910580,
+     "end": 910651,
+     "quote": "but from that hour the little negro went about the deck an idiot; such,"
+    },
+    {
+     "start": 1120747,
+     "end": 1120818,
+     "quote": "Pip? whom call ye Pip? Pip jumped from the whale-boat. Pip’s missing."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "d20",
+   "window": 3,
+   "type": "trajectory",
+   "question": "How does Ahab's relationship to the doubloon change from the first time he reads its emblems to the moment he claims it as his own?",
+   "reference_answer": "At first Ahab reads the doubloon as a mirror of his own self, seeing the three peaks and the volcano as images of himself. Later, in the chase, he treats the coin as a personal prize that fate has reserved for him alone. The coin changes from a symbol he interprets to a reward he feels entitled to.",
+   "evidence": [
+    {
+     "start": 943009,
+     "end": 943065,
+     "quote": "The firm tower, that is Ahab; the volcano, that is Ahab;"
+    },
+    {
+     "start": 1170438,
+     "end": 1170467,
+     "quote": "reserved the doubloon for me."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "d21",
+   "window": 3,
+   "type": "trajectory",
+   "question": "How does Starbuck's stance toward Ahab shift from the moment he resolves to quit the doubloon's warning to the moment he is alone with Ahab's loaded musket?",
+   "reference_answer": "Starbuck first reads the doubloon as a sad but true warning and resolves to quit it, lest Truth shake him falsely. Much later, with Ahab's musket in his hands, he is tempted toward murder. The honest mate moves from moral resistance to a dark consideration of killing his captain.",
+   "evidence": [
+    {
+     "start": 944675,
+     "end": 944712,
+     "quote": "quit it, lest Truth shake me falsely."
+    },
+    {
+     "start": 1105779,
+     "end": 1105867,
+     "quote": "Starbuck was an honest, upright man; but out of Starbuck’s heart, at that instant when"
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "d22",
+   "window": 3,
+   "type": "trajectory",
+   "question": "How does Ahab's trust in his navigational instruments change across the chapters, from the quadrant he smashes to the log-line he relies on?",
+   "reference_answer": "Ahab first rejects the quadrant as a mocking toy and smashes it, declaring he will no longer guide himself by it. After the compasses are reversed, he mocks the quadrant again and makes a needle of his own. He then relies on the level log and line as his only means of determining the ship's place.",
+   "evidence": [
+    {
+     "start": 1081945,
+     "end": 1081991,
+     "quote": "no longer will I guide my earthly way by thee;"
+    },
+    {
+     "start": 1114420,
+     "end": 1114498,
+     "quote": "yesterday I wrecked thee, and to-day the compasses would fain have wrecked me."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "d23",
+   "window": 3,
+   "type": "contrast",
+   "question": "How does Pip's pledge to Ahab compare with Stubb's earlier treatment of Pip in the boat?",
+   "reference_answer": "Stubb warned Pip that he would not pick him up if he jumped, and then left him behind in the sea. Much later, Pip tells Ahab that he will never desert him as Stubb deserted Pip. The passage sets Stubb's abandonment against Pip's loyalty to Ahab.",
+   "evidence": [
+    {
+     "start": 907866,
+     "end": 907945,
+     "quote": "Stick to the boat, Pip, or by the Lord, I won’t pick you up if you jump; mind"
+    },
+    {
+     "start": 1144200,
+     "end": 1144250,
+     "quote": "But I will never desert ye, sir, as Stubb did him."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "d24",
+   "window": 3,
+   "type": "evolution",
+   "question": "How does the coffin built for Queequeg end up as the ship's life-buoy?",
+   "reference_answer": "The carpenter first builds the coffin at Queequeg's request, and Queequeg lies in it and blesses it as his final bed. After he recovers, the coffin is left unused. Later, when no cask can be found, Queequeg's hint leads Starbuck to order it rigged as the life-buoy for the stern.",
+   "evidence": [
+    {
+     "start": 1041346,
+     "end": 1041427,
+     "quote": "the carpenter was at once commanded to do Queequeg’s bidding, whatever it might"
+    },
+    {
+     "start": 1127662,
+     "end": 1127718,
+     "quote": "“A life-buoy of a coffin!” cried Starbuck, starting."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "d25",
+   "window": 4,
+   "type": "trajectory",
+   "question": "How does Starbuck's appeal to Ahab to abandon the chase change from the second day to the third day?",
+   "reference_answer": "On the second day Starbuck argues that the chase is impious and asks what more Ahab wants, warning that the whale will swamp the crew. On the third day, before the final encounter, he pleads more personally, begging Ahab to desist while it is still not too late, and says that Moby Dick does not seek Ahab and that Ahab is the one seeking the whale. His tone moves from warning about the crew to a direct, emotional plea to Ahab himself.",
+   "evidence": [
+    {
+     "start": 1204025,
+     "end": 1204098,
+     "quote": "“Great God! but for one single instant show thyself,” cried Starbuck;"
+    },
+    {
+     "start": 1220900,
+     "end": 1220974,
+     "quote": "“Oh! Ahab,” cried Starbuck, “not too late is it, even now, the third"
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "d26",
+   "window": 4,
+   "type": "contrast",
+   "question": "How does Ahab's stance on omens in his speech to his men contrast with his private reflection afterwards?",
+   "reference_answer": "Publicly, Ahab urges his men to believe in omens and to laugh and cry encore at them, presenting the prophecy of the drowning things rising twice as a reason for courage. Alone afterwards, he admits that he had said the same thing to Starbuck about his broken boat and that he cannot drive out of others' hearts what is fixed in his own. The contrast is between the confident encouragement he gives others and his private awareness that he does not believe it himself.",
+   "evidence": [
+    {
+     "start": 1206060,
+     "end": 1206116,
+     "quote": "The things called omens! And yesterday I talked the same"
+    }
+   ],
+   "evidence_rejected": 1,
+   "unlocated_quotes": [
+    "“Believe ye, men, in the things called omens?"
+   ],
+   "needs_review": false
+  },
+  {
+   "id": "d27",
+   "window": 4,
+   "type": "causal",
+   "question": "Why does the Pequod end up destroyed, given Ahab's persistence in the chase?",
+   "reference_answer": "Ahab's refusal to abandon the hunt is rooted in his pride and fixed will, as the narrator frames him as someone who never changes his course once decided. When Ahab, having been flung into the sea and then hauled back, leads the boat in a final attack, the whale turns and rams the ship's bow. The ship then sinks, and Ahab's cry about the second hearse shows he sees the ship's loss as the consequence of his own pursuit.",
+   "evidence": [
+    {
+     "start": 1204898,
+     "end": 1204925,
+     "quote": "Ahab is for ever Ahab, man."
+    },
+    {
+     "start": 1228948,
+     "end": 1229022,
+     "quote": "“The ship! The hearse!—the second hearse!” cried Ahab from the boat;"
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "d28",
+   "window": 4,
+   "type": "evolution",
+   "question": "How does Ahab's understanding of the Parsee's prophecy about the hearse develop from the moment the Parsee's body is seen to his final acceptance of it?",
+   "reference_answer": "When the Parsee's body appears lashed to the whale, Ahab is shaken and says he has been befooled, recognising the prophecy of a hearse. Later, as the whale rams the ship, he asks for the second hearse and declares that all coffins and hearses should sink together into one common pool. His understanding moves from being fooled by the prophecy to accepting that he cannot have a hearse of his own and must die with the ship and whale.",
+   "evidence": [
+    {
+     "start": 1219794,
+     "end": 1219819,
+     "quote": "“Befooled, befooled!”"
+    },
+    {
+     "start": 1230072,
+     "end": 1230124,
+     "quote": "Sink all coffins and all hearses to one common pool!"
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "d29",
+   "window": 4,
+   "type": "trajectory",
+   "question": "What happens to the Parsee across the narrative, from his disappearance during the chase to the epilogue's account of the survivor?",
+   "reference_answer": "The Parsee vanishes during the chase after being caught in the tangles of Ahab's line, and the crew cannot find him. He later reappears lashed to the whale's back, which fulfils Ahab's sense that the Parsee would go before him. In the epilogue, the narrator explains that after the Parsee's disappearance he himself took the place of Ahab's bowsman, linking the Parsee's fate to the narrator's survival.",
+   "evidence": [
+    {
+     "start": 1202955,
+     "end": 1203026,
+     "quote": "“The Parsee!” cried Stubb—“he must have been caught in——”"
+    },
+    {
+     "start": 1232970,
+     "end": 1233043,
+     "quote": "It so chanced, that after the Parsee’s disappearance, I was he whom the"
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "d30",
+   "window": 4,
+   "type": "local",
+   "question": "In which chapter and on which day does the final chase take place, according to the chapter heading?",
+   "reference_answer": "The final chase is in Chapter 135, titled \"The Chase.—Third Day.\"",
+   "evidence": [
+    {
+     "start": 1207240,
+     "end": 1207276,
+     "quote": "CHAPTER 135. The Chase.—Third Day."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  }
+ ],
+ "rejected_quotes": 3,
+ "model_ids": [
+  "claude-haiku-5-5"
+ ]
+}

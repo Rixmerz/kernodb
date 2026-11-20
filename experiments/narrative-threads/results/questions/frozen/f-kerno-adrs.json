@@ -1,0 +1,607 @@
+{
+ "document": "f-kerno-adrs.txt",
+ "sha256": "b6c12d5c539eb674f9e1b357fafbd1e8ce57e7c4b250ee3c82445a4e389c1035",
+ "model_ids": [
+  "claude-haiku-5-5"
+ ],
+ "prompt_version": "q3",
+ "questions": [
+  {
+   "id": "f01",
+   "type": "trajectory",
+   "question": "¿Cómo pesa el requisito de un modo de durabilidad relajada en la elección de motor, desde el criterio planteado en ADR-0001 hasta el modelo de commit de ADR-0002?",
+   "reference_answer": "ADR-0001 dice que Kerno quiere ofrecer un modo de durabilidad relajada sin comprometer la consistencia (ADR-0002), y que ese requisito pesa en la elección. En un LSM esa garantía sale del propio diseño del WAL, lo que favorece al LSM frente al B+ tree.",
+   "evidence": [
+    {
+     "start": 4310,
+     "end": 4426,
+     "quote": "Kerno quiere ofrecer un modo de durabilidad relajada sin comprometer la consistencia (ADR-0002), así que esto pesa."
+    },
+    {
+     "start": 22661,
+     "end": 22703,
+     "quote": "En un LSM sale del propio diseño del WAL."
+    }
+   ],
+   "edited": true
+  },
+  {
+   "id": "f02",
+   "type": "trajectory",
+   "question": "¿Dónde gana el B+ tree frente al LSM y por qué, aun así, ADR-0001 descarta el B+ tree para los casos de referencia de Kerno?",
+   "reference_answer": "El B+ tree gana en colas de latencia a escala medium cuando la compactación del LSM coincide con escritura sostenida (memoria de agentes 3,7×, actualizaciones secuenciales 3,0×, inserción secuencial 2,1×, commit de LiveSpec 1,3×) y en lecturas cortas de rangos pequeños. Aun así se descarta, porque los casos de referencia de Kerno (Cauce, memoria de agentes, Revision Engine) son intensivos en escritura.",
+   "evidence": [
+    {
+     "start": 10348,
+     "end": 10760,
+     "quote": "El B+ tree lo tiene en `medium` cuando la compactación del LSM coincide con escritura sostenida (memoria de agentes 3,7×, actualizaciones secuenciales 3,0×, inserción secuencial 2,1×, commit de LiveSpec 1,3×; en `small`, con poca compactación, esas cuatro colas las gana el LSM) y en lecturas cortas de rangos pequeños (listado de módulo 1,5×, recuperación de recuerdos 2,0×, lectura de Cauce 1,3×)."
+    },
+    {
+     "start": 14374,
+     "end": 14591,
+     "quote": "pero los casos de referencia de Kerno son intensivos en escritura (Cauce: commits pequeños durables; memoria de agentes: ingesta continua; Revision Engine: cada cambio escribe además una revisión y un `ChangeSet`)."
+    }
+   ],
+   "edited": true
+  },
+  {
+   "id": "f03",
+   "type": "causal",
+   "question": "¿Por qué el LSM encaja mejor que el B+ tree con el Revision Engine, según el análisis de escritura de ADR-0001?",
+   "reference_answer": "En un CoW cada commit reescribe la ruta raíz-hoja de cada hoja tocada más metadatos, con uno o dos fsync, así que el techo de commits durables queda por debajo del LSM. En el LSM las revisiones son escrituras secuenciales en WAL/memtable, que son baratas, a costa de una lectura de historial algo más lenta.",
+   "evidence": [
+    {
+     "start": 9470,
+     "end": 9653,
+     "quote": "En un CoW cada commit reescribe la ruta raíz-hoja de cada hoja tocada más metadatos; con dos `fsync` (prototipo) o uno (redb), el techo de commits durables queda por debajo del LSM."
+    },
+    {
+     "start": 12394,
+     "end": 12499,
+     "quote": "Las revisiones son escrituras secuenciales en WAL/memtable (barato); lectura de historial algo más lenta"
+    }
+   ],
+   "edited": true
+  },
+  {
+   "id": "f04",
+   "type": "trajectory",
+   "question": "¿Cómo se relacionan las diferencias de rendimiento entre prototipos y motores maduros con la conclusión sobre la arquitectura que se adopta?",
+   "reference_answer": "ADR-0001 admite que las razones LSM/B+ incluyen también diferencias de madurez (riesgo R-S1). ADR-0012 lo repite como limitación: los prototipos tienen días de desarrollo, y sus diferencias frente a redb/fjall miden también madurez, no solo arquitectura. Por tanto, la ventaja medida no prueba por sí sola la superioridad de una arquitectura.",
+   "evidence": [
+    {
+     "start": 8434,
+     "end": 8518,
+     "quote": "Por eso las razones LSM / B+ incluyen también diferencias de madurez (riesgo R-S1)."
+    },
+    {
+     "start": 65909,
+     "end": 66040,
+     "quote": "Los prototipos tienen días de desarrollo; sus diferencias frente a redb/fjall miden también madurez, no solo arquitectura (R-S1)."
+    }
+   ],
+   "edited": true
+  },
+  {
+   "id": "f05",
+   "type": "evolution",
+   "question": "¿Cómo cambió la propuesta de ADR-0007 sobre índices desde su planteamiento hasta su aceptación?",
+   "reference_answer": "Se propuso un modelo mixto por definición de índice. Al aceptarse, se fijó así: el índice primario es consistente con el commit, y los secundarios son derivados asíncronos con estado (ready/building/stale/failed) y watermark de secuencia.",
+   "evidence": [
+    {
+     "start": 45710,
+     "end": 45762,
+     "quote": "3. **Mixto por definición de índice** (propuesta)."
+    },
+    {
+     "start": 46624,
+     "end": 46832,
+     "quote": "Aceptada la opción recomendada: el índice primario es consistente con el commit; los índices secundarios son derivados asíncronos con estado (`ready`/`building`/`stale`/`failed`) y watermark de secuencia."
+    }
+   ],
+   "edited": true
+  },
+  {
+   "id": "f06",
+   "type": "evolution",
+   "question": "¿Cómo resolvió el propietario el punto abierto de si los índices de unidades debían ser transaccionales, tras la implementación de E4-03?",
+   "reference_answer": "E4-03 implementó los índices de unidades como derivados con frescura explícita, porque el acta y la invariante I-23 exigían estado y watermark. El propietario aprobó la implementación de E4-03/E4-04: IDX_PRIMARY e IDX_TYPE siguen siendo derivados, solo los escribe rebuild_index, y tras una escritura query usa la ruta de referencia hasta la siguiente reconstrucción (I-32).",
+   "evidence": [
+    {
+     "start": 48470,
+     "end": 48623,
+     "quote": "E4-03 lo implementa como derivado con frescura explícita, porque el acta (§3, fila E4-03) y la invariante I-23 piden el estado y el watermark para él."
+    },
+    {
+     "start": 49921,
+     "end": 50204,
+     "quote": "Se aprueba la implementación de E4-03/E4-04: los índices de unidades (`IDX_PRIMARY`, `IDX_TYPE`) siguen siendo **derivados** con frescura explícita y solo los escribe `rebuild_index`; tras una escritura, `query` usa la ruta de referencia hasta la siguiente reconstrucción (I-32)."
+    }
+   ],
+   "edited": true
+  },
+  {
+   "id": "f07",
+   "type": "evolution",
+   "question": "¿Cómo evolucionó la cuestión de si la cabecera del WAL debía sincronizarse, desde detectarla como riesgo hasta su cierre?",
+   "reference_answer": "Se detectó que la primera trama de cada WAL llevaba synced_len = 0 porque W-1 no sincronizaba la cabecera. Se cerró el 2026-10-31 (M1 de la revisión adversarial): el escritor sincroniza la cabecera en W-1, y WAL-R6 rechaza cualquier trama válida bajo una cabecera rota.",
+   "evidence": [
+    {
+     "start": 80670,
+     "end": 80806,
+     "quote": "- **`synced_len` y cabecera rota (punto 4):** la primera trama de cada WAL lleva `synced_len = 0`, porque W-1 no sincroniza la cabecera."
+    },
+    {
+     "start": 81522,
+     "end": 81686,
+     "quote": "**Cerrado (2026-10-31, M1 de la revisión adversarial):** el escritor sincroniza la cabecera en W-1 y WAL-R6 rechaza cualquier trama válida bajo una cabecera rota."
+    }
+   ],
+   "edited": true
+  },
+  {
+   "id": "f08",
+   "type": "contrast",
+   "question": "¿En qué se diferencian los errores Incompatible y Corruption en el diseño del formato v1?",
+   "reference_answer": "Incompatible señala una versión o característica desconocida, que no es daño, y no debe presentarse como Corruption. Corruption señala daño. El diseño garantiza que un daño aleatorio nunca se presente como Incompatible y que una incompatibilidad nunca se presente como daño.",
+   "evidence": [
+    {
+     "start": 72777,
+     "end": 72871,
+     "quote": "Una versión o característica desconocida no es daño y no debe presentarse como `Corruption`"
+    },
+    {
+     "start": 77056,
+     "end": 77164,
+     "quote": "Un daño aleatorio nunca se presenta como `Incompatible`; una incompatibilidad nunca se presenta como daño."
+    }
+   ],
+   "edited": true
+  },
+  {
+   "id": "f09",
+   "type": "causal",
+   "question": "¿Por qué el borrador del formato v1 necesitaba marcar sus bases antes de la congelación, y qué se podía hacer con sus decisiones hasta entonces?",
+   "reference_answer": "Sin marca, una base creada con el borrador podría abrirse tras la congelación y leerse mal. Hasta la congelación, cada decisión podía revertirse cambiando el borrador y regenerando los vectores (v1.md §15).",
+   "evidence": [
+    {
+     "start": 74202,
+     "end": 74285,
+     "quote": "Sin marca: una base del borrador podría abrirse tras la congelación y leerse mal."
+    },
+    {
+     "start": 77434,
+     "end": 77550,
+     "quote": "Cada decisión se puede revertir antes de la congelación cambiando el borrador y regenerando vectores (v1.md §15)."
+    }
+   ],
+   "edited": true
+  },
+  {
+   "id": "f10",
+   "type": "trajectory",
+   "question": "¿Cómo avanza el estado de la especificación del formato desde el planteamiento de ADR-0003 hasta la congelación de v1?",
+   "reference_answer": "ADR-0003 parte de que M0 no congeló ningún formato: los prototipos solo estaban versionados por magic y un número de versión. El formato concreto se congela al cerrar la Fase 1, y el bit DRAFT se retiró en la congelación del 2026-10-31.",
+   "evidence": [
+    {
+     "start": 28048,
+     "end": 28177,
+     "quote": "M0 no congela ningún formato: los dos prototipos tienen formatos propios, versionados solo por *magic* y un número de versión."
+    },
+    {
+     "start": 27434,
+     "end": 27481,
+     "quote": "el formato concreto se congela al cerrar Fase 1"
+    },
+    {
+     "start": 83465,
+     "end": 83535,
+     "quote": "El bit `DRAFT` (punto 10) se retiró en la congelación del 2026-10-31"
+    }
+   ],
+   "edited": true
+  },
+  {
+   "id": "f11",
+   "type": "trajectory",
+   "question": "¿Cómo conviven la reserva de espacio para cifrado en el formato v1 y el estado pendiente de ADR-0006?",
+   "reference_answer": "ADR-0003 exige que el formato reserve desde la versión 1 espacio para nonce y etiqueta, con un bit incompat que indica su uso, aunque ADR-0006 siga pendiente. ADR-0013 consolida esa reserva: activar AEAD no exigirá migrar SST ni MANIFEST y los WAL se crean ya con el bit. Así el formato protege contra una migración futura sin fijar todavía el algoritmo ni la gestión de claves.",
+   "evidence": [
+    {
+     "start": 29897,
+     "end": 30126,
+     "quote": "CRC32C para detectar daño accidental. La integridad frente a manipulación es AEAD (ADR-0006): el formato reserva desde la versión 1 espacio por página/bloque para nonce y etiqueta, y un bit `incompat` indica si están en uso."
+    },
+    {
+     "start": 80447,
+     "end": 80538,
+     "quote": "activar AEAD (ADR-0006) no exigirá migrar SST ni MANIFEST; los WAL se crean ya con el bit."
+    },
+    {
+     "start": 44748,
+     "end": 44867,
+     "quote": "Condiciona ADR-0003 (cabeceras y tamaños), ADR-0009 (borrado criptográfico) y ADR-0005 (claves para tokens cifrados)."
+    }
+   ]
+  },
+  {
+   "id": "f12",
+   "type": "trajectory",
+   "question": "¿De qué ADR depende ADR-0009 y cómo lo condiciona ADR-0006?",
+   "reference_answer": "ADR-0009 depende de ADR-0001, ADR-0004 y ADR-0006. ADR-0006 condiciona el borrado criptográfico de ADR-0009, además de las cabeceras de ADR-0003 y las claves de ADR-0005, así que la supresión queda ligada a la decisión de cifrado.",
+   "evidence": [
+    {
+     "start": 55320,
+     "end": 55361,
+     "quote": "Depende de ADR-0001, ADR-0004 y ADR-0006."
+    },
+    {
+     "start": 44748,
+     "end": 44867,
+     "quote": "Condiciona ADR-0003 (cabeceras y tamaños), ADR-0009 (borrado criptográfico) y ADR-0005 (claves para tokens cifrados)."
+    }
+   ],
+   "edited": true
+  },
+  {
+   "id": "f13",
+   "type": "evolution",
+   "question": "¿Cómo evolucionó el modelo de revisiones de ADR-0004 desde la pregunta inicial hasta la decisión de copia completa?",
+   "reference_answer": "El SAD contemplaba un híbrido con límite de profundidad (opción 3), pero se decidió copia completa: cada revisión guarda su carga útil entera, sin deltas hasta que los benchmarks los justifiquen. El híbrido queda como evolución futura, sujeta a medición y a un ADR nuevo.",
+   "evidence": [
+    {
+     "start": 37765,
+     "end": 37865,
+     "quote": "cada revisión guarda su carga útil entera; no hay deltas hasta que los benchmarks los justifiquen."
+    },
+    {
+     "start": 38413,
+     "end": 38538,
+     "quote": "La opción 3 (híbrido con límite de profundidad) del SAD queda como evolución futura, sujeta a medición y a un ADR nuevo."
+    }
+   ],
+   "edited": true
+  },
+  {
+   "id": "f14",
+   "type": "trajectory",
+   "question": "¿Cómo se traslada la necesidad de suprimir datos desde el planteamiento de ADR-0009 hasta los requisitos del motor de ADR-0001 y el formato de ADR-0013?",
+   "reference_answer": "ADR-0009 señala que borrar un dato no borra sus revisiones, índices, páginas liberadas ni backups. ADR-0001 registra que el LSM retiene versiones antiguas hasta compactar, por lo que exige range tombstones y compactación dirigida, y ADR-0013 los incorpora en la base de v1 porque añadirlos después exigiría migración.",
+   "evidence": [
+    {
+     "start": 54158,
+     "end": 54277,
+     "quote": "Borrar un dato actual no borra sus revisiones, índices, embeddings, páginas liberadas, segmentos antiguos ni backups."
+    },
+    {
+     "start": 12625,
+     "end": 12723,
+     "quote": "Versiones antiguas en SST/WAL hasta compactar; necesita *range tombstones* y compactación forzada"
+    },
+    {
+     "start": 72105,
+     "end": 72222,
+     "quote": "Añadirlas después con un bit `incompat`: cada base creada antes quedaría sin poder suprimir rangos sin migración."
+    }
+   ]
+  },
+  {
+   "id": "f15",
+   "type": "causal",
+   "question": "¿Por qué el codec por defecto de ADR-0005 permite cerrar ADR-0006 más adelante?",
+   "reference_answer": "Porque el camino crítico por defecto no contiene material criptográfico, así que ADR-0006 puede cerrarse después sin bloquear las fases 1–3.",
+   "evidence": [
+    {
+     "start": 42342,
+     "end": 42470,
+     "quote": "No hay material criptográfico en el camino crítico por defecto; ADR-0006 puede cerrarse después sin bloquear las fases 1–3."
+    }
+   ],
+   "edited": true
+  },
+  {
+   "id": "f16",
+   "type": "trajectory",
+   "question": "¿Cómo llega la experiencia de embeddings de M0 hasta el contrato de artefactos derivados que debe definirse antes de la Etapa 8?",
+   "reference_answer": "En M0, el workload agent_memory almacenó embeddings de 768 × f32 (3 KiB) como valores normales y midió escritura, lectura y espacio en ambos candidatos. ADR-0018 exige aplicar el contrato de derivados a los índices de la Etapa 4 y a las optimizaciones de la Etapa 6 antes de los embeddings de la Etapa 8.",
+   "evidence": [
+    {
+     "start": 58810,
+     "end": 58957,
+     "quote": "El workload `agent_memory` almacena embeddings de 768 × f32 (3 KiB) como valores normales y mide escritura, lectura y espacio en ambos candidatos."
+    },
+    {
+     "start": 9184,
+     "end": 9230,
+     "quote": "con valores de 1–4 KiB y embeddings de 3 KiB"
+    },
+    {
+     "start": 120269,
+     "end": 120393,
+     "quote": "Aplicar el contrato a los índices de la Etapa 4 y a las optimizaciones de la Etapa 6 antes de los embeddings de la Etapa 8."
+    }
+   ],
+   "edited": true
+  },
+  {
+   "id": "f17",
+   "type": "evolution",
+   "question": "¿Cómo se modificó la regla de invalidación de cachés de resultados en ADR-0016 entre la propuesta y las garantías definitivas?",
+   "reference_answer": "La propuesta permitía que una caché de resultados no sirviera lecturas de otra secuencia salvo prueba de que los datos leídos no cambiaron. Las garantías del propietario eliminaron esa excepción: la caché queda ligada a la secuencia de commit de su instantánea, hasta que un ADR posterior defina la prueba.",
+   "evidence": [
+    {
+     "start": 112963,
+     "end": 113136,
+     "quote": "una caché de resultados además registra la secuencia de commit de la instantánea y no sirve lecturas de otra secuencia salvo prueba de que los datos leídos no cambiaron."
+    },
+    {
+     "start": 110980,
+     "end": 111213,
+     "quote": "Una caché de resultados queda ligada a la secuencia de commit de su instantánea y no sirve otra secuencia; se elimina la excepción «salvo prueba de que los datos leídos no cambiaron» hasta que un ADR posterior defina esa prueba"
+    }
+   ]
+  },
+  {
+   "id": "f18",
+   "type": "contrast",
+   "question": "¿Por qué ADR-0016 propone la opción 2 de adaptación limitada y no la opción 3 de adaptación general?",
+   "reference_answer": "La opción 3 tiene mayor superficie de errores, y la especificación prohíbe cambios de esquema autónomos sin política explícita. Por eso se propone la opción 2, sujeta a las garantías G1–G7.",
+   "evidence": [
+    {
+     "start": 108380,
+     "end": 108500,
+     "quote": "Mayor superficie de errores; la especificación prohíbe además cambios de esquema autónomos sin política explícita."
+    },
+    {
+     "start": 112561,
+     "end": 112615,
+     "quote": "Propuesta: opción 2, sujeta a las garantías G1–G7."
+    }
+   ],
+   "edited": true
+  },
+  {
+   "id": "f19",
+   "type": "trajectory",
+   "question": "¿Cómo se mantuvo la ruta de referencia desde la Etapa 5 hasta la garantía G2 de la adaptación operacional?",
+   "reference_answer": "La Etapa 5 dejó el planificador determinista, la ruta de referencia y la prueba diferencial planificador/referencia en CI. ADR-0016 exige que la ruta de referencia se mantenga, se compile y se pruebe en CI aunque no se use en producción, como condición de equivalencia.",
+   "evidence": [
+    {
+     "start": 109011,
+     "end": 109133,
+     "quote": "La Etapa 5 dejó el planificador determinista, la ruta de referencia y la prueba diferencial planificador/referencia en CI"
+    },
+    {
+     "start": 109966,
+     "end": 110024,
+     "quote": "Se mantiene, se compila y se prueba en CI aunque no se use"
+    },
+    {
+     "start": 113453,
+     "end": 113563,
+     "quote": "La equivalencia exige que la ruta de referencia se mantenga y se pruebe en CI aunque no se use en producción."
+    }
+   ],
+   "edited": true
+  },
+  {
+   "id": "f20",
+   "type": "trajectory",
+   "question": "¿Cómo evolucionó el alcance de la API pública desde el trait Engine del spike hasta la aceptación de ADR-0010?",
+   "reference_answer": "El trait Engine del spike carecía de transacciones read-modify-write, cursores, cancelación y errores por categoría. ADR-0010 aceptó una capa genérica sobre TxnEngine de kerno-core, con separación estricta de kerno-storage, y dejó la fachada pública única y la política de semver para cuando exista una API pública estable.",
+   "evidence": [
+    {
+     "start": 56679,
+     "end": 56770,
+     "quote": "carece de transacciones read-modify-write, cursores, cancelación y errores por categoría."
+    },
+    {
+     "start": 57182,
+     "end": 57270,
+     "quote": "genérico sobre `TxnEngine` de `kerno-core`, con separación estricta de `kerno-storage`"
+    },
+    {
+     "start": 57655,
+     "end": 57808,
+     "quote": "La fachada pública única (`kerno`, opción 1) y la política de semver se deciden cuando exista una API pública estable; esta aceptación no las fija."
+    }
+   ],
+   "edited": true
+  },
+  {
+   "id": "f21",
+   "type": "trajectory",
+   "question": "¿Qué diferencia hay entre el resultado de la medición de salida de Fase 1 y la condición 1 que ADR-0001 fijó para el LSM?",
+   "reference_answer": "La condición 1 de ADR-0001 señala como caso a resolver el p99 de escritura en memoria de agentes (3,7× el del B+ tree). La medición de salida de la Fase 1 en la clase de VM de M0 no cumple T1, así que la condición 1 sigue sin cumplirse.",
+   "evidence": [
+    {
+     "start": 13490,
+     "end": 13579,
+     "quote": "(el p99 de escritura en memoria de agentes, 3,7× el del B+ tree, es el caso a resolver)."
+    },
+    {
+     "start": 17482,
+     "end": 17560,
+     "quote": "La medición de salida en la clase de VM de M0 **no cumple T1** (condición 1)"
+    }
+   ],
+   "edited": true
+  },
+  {
+   "id": "f22",
+   "type": "trajectory",
+   "question": "¿Cómo se relacionan el objetivo de 2× frente a redb de ADR-0012 y el resultado del B+ tree reportado en ADR-0001?",
+   "reference_answer": "ADR-0012 fija como objetivo orientativo quedar dentro de 2× del motor maduro de su familia, redb para CoW B+ tree. ADR-0001 indica que el B+ tree queda entre 0,55 y 0,8 veces redb en la mayoría de workloads, lo que está dentro de ese objetivo aunque por debajo de redb en casi todos los casos.",
+   "evidence": [
+    {
+     "start": 65177,
+     "end": 65374,
+     "quote": "el motor elegido debe quedar dentro de 2× del motor maduro de su misma familia (redb para CoW B+ tree, fjall para LSM) en los workloads de M0 a escala `medium`, y documentar dónde no lo consigue."
+    },
+    {
+     "start": 15338,
+     "end": 15509,
+     "quote": "el B+ tree, dentro del objetivo de 2× de redb de ADR-0012 (0,55–0,8× en la mayoría de workloads, a la par en memoria de agentes y por encima en inserción secuencial)"
+    }
+   ]
+  },
+  {
+   "id": "f23",
+   "type": "causal",
+   "question": "¿Por qué ADR-0014 rechaza archivar o borrar una unidad con relaciones vivas, y qué espacio deja para cambiar esa decisión?",
+   "reference_answer": "El rechazo impide que existan relaciones hacia unidades archivadas o borradas, así que la supresión física bajo ADR-0009 no tiene relaciones colgantes que tratar. El propietario lo aprobó como semántica explícita, relajable más adelante a cascada o a relación colgante marcada.",
+   "evidence": [
+    {
+     "start": 101308,
+     "end": 101499,
+     "quote": "Semántica aprobada por el propietario para unidades archivadas o borradas con relaciones vivas: **rechazo** de la operación (relajable más adelante a cascada o relación colgante marcada)."
+    },
+    {
+     "start": 99820,
+     "end": 100086,
+     "quote": "Una relación hacia una unidad suprimida queda sujeta a ADR-0009. Con el rechazo de E4-02 no puede existir una relación hacia una unidad archivada o borrada, por lo que la supresión física no tiene relaciones colgantes que tratar mientras se mantenga ese rechazo."
+    }
+   ],
+   "edited": true
+  },
+  {
+   "id": "f24",
+   "type": "evolution",
+   "question": "¿Cómo pasó ADR-0014 de propuesta a decisión aceptada?",
+   "reference_answer": "En E4-00 el ADR seguía propuesto y se esperaba que la decisión final saliera del prototipo de E4-02. El 2026-11-05 se aceptó la opción 2, registro de relación con índices de adyacencia transaccionales, con la evidencia del prototipo como base.",
+   "evidence": [
+    {
+     "start": 101241,
+     "end": 101307,
+     "quote": "Sigue *Propuesto*. La decisión final sale del prototipo de E4-02."
+    },
+    {
+     "start": 97363,
+     "end": 97494,
+     "quote": "**Opción 2: registro de relación más índices de adyacencia transaccionales**, aceptada el 2026-11-05 con la evidencia de E4-02."
+    }
+   ]
+  },
+  {
+   "id": "f25",
+   "type": "contrast",
+   "question": "¿En qué se diferencian la opción 1 y la opción 2 de ADR-0014 en coste de escritura y en acceso a vecinos?",
+   "reference_answer": "La opción 1, relaciones como unidades, tiene mínima superficie pero recorrer vecinos exige filtrar todas las relaciones. Las mediciones muestran que además escribe más por relación, porque hereda la maquinaria de la unidad, mientras la opción 2 escribe tres claves pequeñas y resuelve vecinos por rango.",
+   "evidence": [
+    {
+     "start": 85935,
+     "end": 86015,
+     "quote": "Mínima superficie; recorrer vecinos exige un filtro sobre todas las relaciones."
+    },
+    {
+     "start": 92392,
+     "end": 92582,
+     "quote": "La opción 1 escribe *más* porque cada relación hereda la maquinaria de la unidad (cabeza, `REV_META`, `REV_PAYLOAD` y miembro del `ChangeSet`); la opción 2 escribe tres claves pequeñas."
+    }
+   ]
+  },
+  {
+   "id": "f26",
+   "type": "causal",
+   "question": "¿Por qué los índices de adyacencia de relaciones no necesitan watermark, al contrario que los índices de unidades?",
+   "reference_answer": "ADR-0014 define los índices de adyacencia como primarios: se escriben en el mismo ChangeSet que el registro de la relación. ADR-0007 los mantiene transaccionales, mientras que los índices de unidades son derivados con estado y watermark. Como nunca quedan desfasados, no hace falta una marca de frescura.",
+   "evidence": [
+    {
+     "start": 100320,
+     "end": 100494,
+     "quote": "Los índices de adyacencia son **primarios** (se actualizan en el mismo `ChangeSet`, ADR-0007), no secundarios con estado de frescura: E4-03 no necesita watermark para ellos."
+    },
+    {
+     "start": 50414,
+     "end": 50504,
+     "quote": "Los índices de adyacencia de relaciones no cambian: son transaccionales (ADR-0014, I-21)."
+    }
+   ]
+  },
+  {
+   "id": "f27",
+   "type": "trajectory",
+   "question": "¿Cómo se traslada el término «conexión» desde la metáfora de ADR-0017 hasta la procedencia obligatoria de las relaciones en ADR-0014?",
+   "reference_answer": "ADR-0017 asigna el término «conexión» a Edge (ADR-0014) y exige que toda conexión inferida guarde origen y confianza y no se presente como declarada (I-39). ADR-0014 define Edge con procedencia entre sus campos, lo que permite cumplir ese requisito.",
+   "evidence": [
+    {
+     "start": 115101,
+     "end": 115141,
+     "quote": "Las «conexiones» son `Edge` (ADR-0014)"
+    },
+    {
+     "start": 85174,
+     "end": 85357,
+     "quote": "La Etapa 4 introduce relaciones tipadas (`Edge`) entre unidades: `edge_id`, `from_unit_id`, `to_unit_id`, `relation_type`, peso y validez temporal opcionales, procedencia y atributos."
+    },
+    {
+     "start": 116575,
+     "end": 116668,
+     "quote": "Toda «conexión» inferida guarda origen y confianza y no se presenta como declarada (I-39)."
+    }
+   ],
+   "edited": true
+  },
+  {
+   "id": "f28",
+   "type": "trajectory",
+   "question": "¿Cómo se trata la plasticidad en ADR-0017 y en ADR-0016, y por qué no puede mutar las unidades?",
+   "reference_answer": "ADR-0017 rechazó una unidad con estado dinámico propio, porque las lecturas mutarían datos y se mezclaría aprendizaje con contenido. ADR-0016 traslada la plasticidad a estado derivado separado: las lecturas no mutan datos de usuario y actualizar estadísticas solo escribe en el almacén derivado.",
+   "evidence": [
+    {
+     "start": 115370,
+     "end": 115507,
+     "quote": "Rechazada en la propuesta: haría que las lecturas muten datos (spec §2) y mezclaría aprendizaje operacional con contenido (spec §10)."
+    },
+    {
+     "start": 113265,
+     "end": 113450,
+     "quote": "Las lecturas no mutan datos de usuario (spec §2); registrar observaciones o actualizar estadísticas desde una lectura escribe solo en el almacén derivado y nunca bloquea al escritor."
+    }
+   ]
+  },
+  {
+   "id": "f29",
+   "type": "trajectory",
+   "question": "¿Cómo se traslada la exigencia de privacidad de ADR-0015 a la trazabilidad de las optimizaciones de ADR-0016?",
+   "reference_answer": "ADR-0015 sustituye los literales por marcadores tipados antes de calcular una huella BLAKE3 con clave local no exportada, y ningún literal aparece, tampoco en diagnostic. ADR-0016 hereda esa regla: el registro de decisiones sobre optimizaciones sigue las reglas de privacidad de ADR-0015, sin literales ni contenido.",
+   "evidence": [
+    {
+     "start": 106035,
+     "end": 106203,
+     "quote": "Los literales se sustituyen por marcadores tipados antes de calcular la huella; la huella usa BLAKE3 con clave local no exportada, con algoritmo y versión registrados."
+    },
+    {
+     "start": 112337,
+     "end": 112420,
+     "quote": "El registro sigue las reglas de privacidad de ADR-0015 (sin literales ni contenido)"
+    },
+    {
+     "start": 104164,
+     "end": 104204,
+     "quote": "Ninguno aparece, tampoco en `diagnostic`"
+    }
+   ],
+   "edited": true
+  },
+  {
+   "id": "f30",
+   "type": "trajectory",
+   "question": "¿Cómo evolucionó la situación de U6 entre el cierre de la Etapa 3 y la re-medición de ADR-0014, y qué se decidió sobre ella?",
+   "reference_answer": "U6 incumplía al cierre de la Etapa 3 y sigue incumpliendo (K-E3-9) con y sin relaciones tras la re-medición. Se decidió repetir U6 con varias pasadas, con y sin relaciones, cuando se aborde K-E3-9.",
+   "evidence": [
+    {
+     "start": 95969,
+     "end": 96057,
+     "quote": "U6 sigue incumpliendo (K-E3-9), con y sin relaciones, igual que al cierre de la Etapa 3."
+    },
+    {
+     "start": 101036,
+     "end": 101109,
+     "quote": "Repetir U6 (varias pasadas, con y sin relaciones) cuando se aborde K-E3-9"
+    }
+   ],
+   "edited": true
+  }
+ ]
+}

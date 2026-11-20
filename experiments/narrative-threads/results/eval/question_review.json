@@ -1,0 +1,1385 @@
+{
+ "a-kerno-SAD.txt": {
+  "a01": {
+   "id": "a01",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The evidence shows the pending-then-resolved arc. The 'basarse en evidencia' wording overreaches, so the reference now follows the quoted text.",
+   "reference_answer": "Al principio la selección del motor físico quedaba pendiente de ADR-0001 y no debía basarse solo en la popularidad ni en resultados publicados por terceros. La 0.2.0 la da por resuelta: LSM nivelado (ADR-0001), Aceptado el 2026-10-28 junto con el protocolo de commit y recuperación (ADR-0002) y las reglas de versionado e integridad (ADR-0003).",
+   "reviewer": "claude-opus-5-5"
+  },
+  "a02": {
+   "id": "a02",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "Three passages support the candidate status, the dependency on ADR-0013 and the requirement to approve before user databases are created.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "a03": {
+   "id": "a03",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "Both sides of the contrast are quoted: the exclusion in the first version and the controls a future server will need.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "a04": {
+   "id": "a04",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The measure-first principle and the exact-search baseline are in separate passages and together justify the answer.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "a05": {
+   "id": "a05",
+   "decision": "drop",
+   "evidence_justifies": false,
+   "reason": "There is only one passage, on the hybrid model. Nothing supports the ADR-0004 proposal or the full-copy-only implementation in Etapa 3.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "a06": {
+   "id": "a06",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The evidence does not mention the question about transactions or the 'own ChangeSet' detail, so those are removed.",
+   "reference_answer": "ADR-0007 (consistencia y reconstrucción de índices) aparece primero como Pendiente. Después, el propietario decide el 2026-11-05 mantener los índices como derivados hasta que un workload con escrituras intercaladas justifique mantenerlos dentro de cada ChangeSet.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "a07": {
+   "id": "a07",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The consistency rule and the beta blocking criterion are both quoted.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "a08": {
+   "id": "a08",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "Three passages trace the open question, the IdentifierCodec abstraction and the initial policy.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "a09": {
+   "id": "a09",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The reference wrongly suggests that the RFC limits Kerno's ordering. It is reworded to reflect both passages correctly.",
+   "reference_answer": "RFC 9562 define UUIDv7 y su campo temporal, que aporta un orden temporal aproximado. En Kerno ese orden no es el transaccional: el orden de commits se representa mediante una secuencia monotónica asignada por la base.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "a10": {
+   "id": "a10",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The prohibition and the principle of using established libraries are both quoted.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "a11": {
+   "id": "a11",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "Three passages trace the durability guarantee through the commit rule, M0 and the beta criteria.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "a12": {
+   "id": "a12",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The multi-process claim is not in the evidence and has been removed.",
+   "reference_answer": "Un único escritor activo por base de datos y varios lectores concurrentes dentro del mismo proceso.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "a13": {
+   "id": "a13",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The claim about the CLI is not in the evidence and has been removed.",
+   "reference_answer": "Kerno se ejecuta embebido en el proceso consumidor y expone una biblioteca Rust. No hay servidor ni autenticación de red en el MVP.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "a14": {
+   "id": "a14",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The proposal, the rule in §8.3 and the Etapa 3 implementation are all quoted.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "a15": {
+   "id": "a15",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The original reasoning was circular. The new reference rests on the retention-policy difference stated in the evidence.",
+   "reference_answer": "El documento se propone separar el journal de recuperación del historial permanente de revisiones y de la auditoría porque, aunque estos sistemas pueden compartir secuencias de commit o metadatos, no deben compartir implícitamente la misma política de retención.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "a16": {
+   "id": "a16",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The evidence does not show 'Etapa 3' or that ADR-0008 is pending, so the reference keeps only what is quoted.",
+   "reference_answer": "La política de borrado debe aplicarse también a vectores, chunks, índices y colas pendientes. Sin embargo, la supresión física (ADR-0009) y la diferencia estructural (ADR-0008) quedan fuera, y ADR-0009 (supresión, retención y backups) sigue Pendiente.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "a17": {
+   "id": "a17",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The evidence does not name the crates that exist, so the names are removed.",
+   "reference_answer": "La estructura propuesta es lógica y no obliga a crear nueve crates desde el primer día. En la 0.2.0, los crates de la lista que no se han creado siguen siendo la propuesta de la 0.1.0 y no existen.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "a18": {
+   "id": "a18",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "Both the planned exit for Fase 1 and its status in 0.2.0 are quoted.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "a19": {
+   "id": "a19",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "Three passages support the causal chain: ADRs before codifying, ADR-0001 before freezing the format, the core after M0.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "a20": {
+   "id": "a20",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "What is promised and what is not are each quoted.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "a21": {
+   "id": "a21",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The future EXPLAIN and the Etapa 5 explain functions are both quoted.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "a22": {
+   "id": "a22",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The 'sección 10' reference and the baseline claim are not in the evidence and have been removed.",
+   "reference_answer": "La evolución prevista es búsqueda textual (p. ej. BM25), búsqueda vectorial y filtros estructurados. El plan de fases lo concreta con vectores exactos, un adaptador de embeddings y un ranking híbrido inicial.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "a23": {
+   "id": "a23",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The evidence does not show 'definición explícita' or the Etapa 4 attribution, so both are removed.",
+   "reference_answer": "Porque cada índice consume disco, memoria y trabajo de mantenimiento. En consecuencia, ningún índice se crea sin un workload que lo justifique.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "a24": {
+   "id": "a24",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "Both the Fase 0 prototypes and the frozen spikes are quoted.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "a25": {
+   "id": "a25",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The methodology rule and the accepted non-compliances without lowered thresholds are both quoted.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "a26": {
+   "id": "a26",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The core's scope and the M0 criterion of no mandatory dependency are both quoted.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "a27": {
+   "id": "a27",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "Three passages show SQL excluded consistently through the document.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "a28": {
+   "id": "a28",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "A single passage states the answer directly.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "a29": {
+   "id": "a29",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The heading states the 1–2 week duration.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "a30": {
+   "id": "a30",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The claim that Fase 1 surpassed the 0.1.0 text in detail is not in the evidence and has been removed.",
+   "reference_answer": "Cuando un ADR cambia algo del documento, se publica una nueva versión del SAD en lugar de editar la anterior en silencio. Todo lo que no figura entre los cambios de la 0.2.0 conserva el texto de la 0.1.0; por ejemplo, los crates no creados siguen siendo la propuesta de la 0.1.0.",
+   "reviewer": "claude-opus-5-5"
+  }
+ },
+ "b-arxiv-2609.00063v1.txt": {
+  "b01": {
+   "id": "b01",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "Evidence gives 11/17 and says the mix keeps evaluation meaningful and assesses causal-claim evaluation; it doesn't mention rejecting versus accepting claims.",
+   "reference_answer": "11 of the 17 hypotheses are supported, which leaves 6 unsupported. The authors say this mix keeps the evaluation meaningful and allows an effective assessment of an LLM's ability to evaluate causal claims.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "b02": {
+   "id": "b02",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The passage states 1,067 points and what each covers.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "b03": {
+   "id": "b03",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The claim that the other models were chosen for API and free-tier access is not in the evidence.",
+   "reference_answer": "GPT-4o. Its responses were collected manually because it does not offer a free tier.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "b04": {
+   "id": "b04",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The passage gives 17% and says all other LLMs fail.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "b05": {
+   "id": "b05",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The paper attributes the result to model size. The no-retrieval statement also covers the DeepSeek models, so the 'weak grounding' synthesis goes too far.",
+   "reference_answer": "The authors say Mistral and Qwen are the smallest models (about 12B and 30B parameters), which likely explains their low specificity (0.17) and low share of real papers. Separately, both models state that they do not retrieve external documents or search the web, and that they answer from internal knowledge.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "b06": {
+   "id": "b06",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "Both the rationale and the observed failure are stated.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "b07": {
+   "id": "b07",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The first passage lists all three justifications directly.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "b08": {
+   "id": "b08",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "Both passages directly support the contrast.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "b09": {
+   "id": "b09",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The first passage states the volume-versus-validity contrast.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "b10": {
+   "id": "b10",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "Both the reasoning and the counts are supported.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "b11": {
+   "id": "b11",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The claims 'larger models generally performed better' and 'models differ in which metrics they excel at' are not in the evidence.",
+   "reference_answer": "Not reliably. Gemini 2.5 Pro (an estimated 128–140B parameters) has the highest real-paper (0.58) and correct-URL (0.44) rates, but DeepSeek-R1, with only 37B active parameters, also performs well (0.54 real papers). The authors state that model size alone does not fully explain performance.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "b12": {
+   "id": "b12",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "Three passages trace the staged procedure.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "b13": {
+   "id": "b13",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "Both steps are stated.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "b14": {
+   "id": "b14",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The claim that the agreed dataset is used for all evaluations is not in the evidence.",
+   "reference_answer": "Two annotators independently label the entire set of LLM responses. Where they disagree, the responses are re-examined to verify their validity and reach a final consensus.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "b15": {
+   "id": "b15",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "Both passages come from the methods. Nothing from the introduction is given, so I reframed this as a factual question.",
+   "question": "Where do the 17 hypotheses come from, and how is their validity established?",
+   "reference_answer": "They come from prior work (Adhikari et al., 2025) that analyzed ICD-10 diagnosis codes associated with repeat ER visits among diabetic patients. Four expert clinicians validated them, which provides ground truth.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "b16": {
+   "id": "b16",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The 'recommends caution' statement is not in the cited passages.",
+   "reference_answer": "The abstract says LLMs show strong recall but perform poorly at providing valid articles and evidence and at rejecting unsupported hypotheses. The conclusion repeats this: LLMs sometimes do well at identifying true causal relationships but consistently struggle to reject unsupported claims and to reference real, traceable evidence, and they often hallucinate citations.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "b17": {
+   "id": "b17",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The cited methods passage only states that the verdict is assessed independently of evidence. The hallucination rationale appears in the RQ2 passage.",
+   "reference_answer": "The methods first assess whether the model's verdict matches the clinician ground truth, independent of any evidence it gives. The RQ2 section explains why the evidence is evaluated separately: a model may correctly label a hypothesis as true while hallucinating or misrepresenting article metadata.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "b18": {
+   "id": "b18",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The cited passages do not mention low specificity.",
+   "reference_answer": "Most models reach a recall of 1.0, so they correctly identify all true hypotheses, while GPT-4o's recall is only 0.54. The conclusion agrees that LLMs sometimes do well at identifying true causal relationships, but it says they consistently struggle to reject unsupported claims.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "b19": {
+   "id": "b19",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The 'potential as assistants' framing is not in this question's evidence.",
+   "reference_answer": "The introduction stresses caution in high-stakes settings such as medicine and law, and the need to assess the limitations of relying on LLMs. The conclusion makes this concrete: LLMs should be used with caution for causal verification and should not be relied on as autonomous tools for evidence-based biomedical reasoning.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "b20": {
+   "id": "b20",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "Both passages directly support the contrast.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "b21": {
+   "id": "b21",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The first passage is from the evaluation design, not the introduction.",
+   "question": "How does the paper's concern with hallucination move from its evaluation design to its conclusion?",
+   "reference_answer": "The evaluation design checks for real articles, valid DOIs, accurate abstracts and relevant quotes to tell whether the LLM grounds its reasoning in evidence rather than generating hallucinated claims. The conclusion reports that LLMs struggle to reference real, traceable evidence and often produce hallucinated citations.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "b22": {
+   "id": "b22",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The 'central finding about grounding' claim is not supported.",
+   "reference_answer": "The introduction notes that prior causal-LLM studies did not consider LLMs' retrieval capabilities for providing evidence. The results address this gap: GPT-4o states that it retrieves and analyzes external scientific documents, and Llama-4-Maverick reports retrieving several external documents from various databases.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "b23": {
+   "id": "b23",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "There is no quote evidence, and the claimed progression is invented.",
+   "question": "What do the results show about LLMs' ability to provide correct sources and real abstracts?",
+   "reference_answer": "Even when papers are provided, LLMs often fail to supply correct sources, either because they hallucinate citations or cannot extract information from real papers. Real abstracts are extremely limited and appear only once, for Llama-4-Maverick.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "b24": {
+   "id": "b24",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The causal link is speculative, so the answer should only note consistency.",
+   "reference_answer": "Gemini Pro states that it can provide titles, DOI links and summaries of scientific literature from the web. Gemini 2.5 Pro also has the highest real-paper (0.58) and correct-URL (0.44) rates, which is consistent with its claimed retrieval ability.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "b25": {
+   "id": "b25",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "Mistral's poor evidence output is not in the cited passages.",
+   "question": "How does Mistral's described search approach relate to its statement about retrieval?",
+   "reference_answer": "Mistral does keyword searches through databases such as PubMed, Web of Science and Google Scholar, but it mainly gives illustrative example papers without strong causal analysis. It also states that it does not retrieve external documents or search the web, and that it answers from internal knowledge.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "b26": {
+   "id": "b26",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "Both passages support the link.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "b27": {
+   "id": "b27",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "Both passages are explicit.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "b28": {
+   "id": "b28",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The paper does not explicitly tie Llama's performance to its reasoning in this evidence.",
+   "reference_answer": "Llama follows a clean two-phase search: a broad initial search, then a refined search with tighter filters that attends to the biology behind the hypothesis. Llama-4-Maverick also has the highest F1 (0.88), specificity (0.50) and correct-conclusion rate (0.82).",
+   "reviewer": "claude-opus-5-5"
+  },
+  "b29": {
+   "id": "b29",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "'Architecture or training' is not in the evidence.",
+   "reference_answer": "In the search-process section, the authors say LLM performance reflects the level of reasoning shown in their searches. In the later model-size discussion, they say model size alone does not fully explain performance, which leaves room for factors such as reasoning.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "b30": {
+   "id": "b30",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "Both the search behavior and the poor output are supported.",
+   "reviewer": "claude-opus-5-5"
+  }
+ },
+ "c-gutenberg-244.txt": {
+  "c01": {
+   "id": "c01",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "question": "How does Watson's opinion of Sherlock Holmes change between his early private judgement and his later remark about Holmes's detective work?",
+   "reference_answer": "At first Watson privately thinks Holmes may be clever but is certainly very conceited. Later he tells Holmes that he has brought detection as near an exact science as it will ever be. His view moves from irritation to admiration.",
+   "reason": "The two quotes support conceit turning to admiration. The 'exact science' line comes early, not at the end, and 'absurd theories' is not in the evidence.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "c02": {
+   "id": "c02",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "Holmes warns that it is a capital mistake to theorize before you have all the evidence, because it biases the judgment. After the pill result he says he ought to know that when a fact seems opposed to a long train of deductions, it always turns out to bear another interpretation. Of the two pills, one was deadly poison and the other harmless.",
+   "reason": "Both quotes support the answer. The dog detail and the 'more faith' wording are not in the evidence, so I removed them.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "c03": {
+   "id": "c03",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "Watson says he saw his comrades hacked to pieces at Maiwand without losing his nerve. During the case, though, his nerves, which were steady enough on the battlefield, tingle as he thinks about the affair. His battlefield composure does not hold up against the mystery.",
+   "reason": "The two quotes support the contrast. The detail about the dead man's face is not in the evidence.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "c04": {
+   "id": "c04",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "Holmes's dismissal of 'Miss Rachel' and the murderer's New York explanation together support the answer.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "c05": {
+   "id": "c05",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "At Lauriston Gardens a woman's wedding ring is found, which makes Lestrade think a woman was involved. The ring had been taken from Lucy's finger after her death, and at the end the murderer holds Lucy's marriage ring in front of Drebber's eyes.",
+   "reason": "The bait advertisement and the murderer going back for the ring are not in the evidence. The three quotes support the reduced answer.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "c06": {
+   "id": "c06",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "Ferrier had always privately resolved never to let his daughter marry a Mormon. After the two young suitors come to press their claim, he declares that he would sooner see her in her grave than married to either of them. His private resolve becomes open defiance.",
+   "reason": "Both quotes support this. The detail that he said it to the suitors themselves and the claim that he stayed silent in public are not in the evidence.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "c07": {
+   "id": "c07",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "In the garden the Mormon watchers pass on the sign 'Nine to seven!'. At the mountain pass the sentinel challenges the fugitives with 'Nine from seven', the same kind of countersign Hope had overheard, which he uses to get them past the guard.",
+   "reason": "Both quotes show the countersign in the two places. The exact reply phrases are not in the evidence, so I removed them.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "c08": {
+   "id": "c08",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The early remark about organisation and the later organised corps sent to cab proprietors support the answer.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "c09": {
+   "id": "c09",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The music reflecting his thoughts and the later melancholy late-night playing support the link between the violin and his moods.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "c10": {
+   "id": "c10",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "question": "How were the pills Hope used prepared, and what did Holmes's test of them show?",
+   "reference_answer": "Hope worked the alkaloid into small soluble pills and put each poisoned pill in a box with a similar pill made without the poison. Holmes's test showed that of the two pills in the box, one was deadly poison and the other entirely harmless.",
+   "reason": "The York College, the choice given to the victims and Lestrade's role are not in the evidence. The two quotes support the reduced answer.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "c11": {
+   "id": "c11",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "question": "How does Holmes use the phrase 'study in scarlet' early in the case and again at the end, and how does its tone change?",
+   "reference_answer": "Early on Holmes calls the case the finest study he ever came across, 'a study in scarlet'. At the end he says bitterly that the result of all their Study in Scarlet is to get the detectives a testimonial. The phrase turns from enthusiasm into an ironic joke about who gets the credit.",
+   "reason": "The original question was confused, and the 'scarlet thread' image is not in the evidence. The two quotes support the reworded version.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "c12": {
+   "id": "c12",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "Part of the account is taken from what is recorded in Dr. Watson's Journal. At the end Watson says he has all the facts in his journal and that the public shall know them.",
+   "reason": "Both quotes support Watson's role as recorder. The parts about him as a curious lodger and the newspaper praise are not in the evidence.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "c13": {
+   "id": "c13",
+   "decision": "drop",
+   "evidence_justifies": false,
+   "reason": "There is only one quote. Holmes's early remarks about Lestrade and Gregson are missing, so the trajectory is unsupported.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "c14": {
+   "id": "c14",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "After Ferrier's death Hope feels that only thorough and complete retribution, brought by his own hand, can ease his grief. In his confession he refines this: there is no satisfaction in vengeance unless the offender has time to realize who is striking him and why.",
+   "reason": "Both quotes support this. The 'officer of justice' claim is not in the evidence.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "c15": {
+   "id": "c15",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "The threatening note says twenty-nine days are given for amendment. Later the figure 2 appears on the wall of Ferrier's house, meaning the next day is the last of the allotted time. The shrinking count builds the pressure toward their flight.",
+   "reason": "The month given by Brigham Young and the specific numbers 28 and 27 are not in the evidence. The note and the figure 2 are.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "c16": {
+   "id": "c16",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "Holmes sniffed the dead man's lips at the scene and detected a slightly sour smell. From this he concluded that the man had had poison forced on him.",
+   "reason": "The look of horror and the absence of wounds are not in the evidence. The sniffing and sour smell are.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "c17": {
+   "id": "c17",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "The Cleveland reply told Holmes that Drebber had applied for the protection of the law against an old rival in love named Jefferson Hope, who was then in Europe. Drebber had earlier recognized Hope in the street and read murder in his eyes. This made Hope the obvious suspect.",
+   "reason": "Both quotes support this. Hope being detained is not in the evidence.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "c18": {
+   "id": "c18",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "Lucy is offered a choice between the sons of Stangerson and Drebber. She is later forced into a hateful marriage, and after that and her father's terrible death she pines away and dies within a month.",
+   "reason": "The two quotes support the causal chain. Brigham Young as the speaker and the marriage being to Drebber specifically are not explicit in the evidence.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "c19": {
+   "id": "c19",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "Holmes says the writing was simply a ruse to divert the inquiry into a wrong channel. The murderer says that what had puzzled the New Yorkers would puzzle the Londoners, so he printed the word on the wall in his own blood. Both treat it as a deliberate false trail.",
+   "reason": "The point about the German lettering and the mention of socialists are not in the evidence. The two quotes support the reduced answer.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "c20": {
+   "id": "c20",
+   "decision": "drop",
+   "evidence_justifies": false,
+   "reason": "There is no evidence.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "c21": {
+   "id": "c21",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "The papers blame political refugees and revolutionists because of the German name, the lack of any other motive and the inscription. Holmes notes that robbery was not the object, since nothing was taken, and asks whether the motive was politics or a woman.",
+   "reason": "Both quotes support the contrast. The 'deliberate, methodical' killing is not in the evidence.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "c22": {
+   "id": "c22",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "Holmes presses Gregson to telegraph again about whatever circumstance the whole case hinges on. Holmes himself telegraphs Cleveland and limits his enquiry to the circumstances of Enoch Drebber's marriage, a narrow and decisive question.",
+   "reason": "Gregson's specific Stangerson enquiry is not in the evidence. Holmes's pressing of Gregson and his own focused telegram are.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "c23": {
+   "id": "c23",
+   "decision": "drop",
+   "evidence_justifies": false,
+   "reason": "A contrast question needs more than one source, and the Echo response is missing.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "c24": {
+   "id": "c24",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The early physical description and the later conclusion about the jarveys support the answer.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "c25": {
+   "id": "c25",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "Gregson first announces that they have the man under lock and key. After the second crime it is accepted that young Charpentier could not have been involved in that second affair, which undermines Gregson's suspect.",
+   "reason": "Lestrade's report and the claim that 'suspects shift to Stangerson' are not supported. Stangerson was a victim, not a suspect.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "c26": {
+   "id": "c26",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "Hope's difficult problem was how to get Drebber to the Brixton Road house. He had almost decided to take him out into the country and confront him in some deserted lane when Drebber himself solved the problem for him.",
+   "reason": "The drunkenness and gin palace details are not in the evidence. The two quotes support the rest.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "c27": {
+   "id": "c27",
+   "decision": "drop",
+   "evidence_justifies": false,
+   "reason": "There is no evidence.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "c28": {
+   "id": "c28",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "Watson was struck on the shoulder by a Jezail bullet, which shattered the bone and grazed the subclavian artery.",
+   "reason": "The quote supports the wound and the weapon. Maiwand is not in this quote.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "c29": {
+   "id": "c29",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "The little girl is about five years old.",
+   "reason": "The quote states her age. The Alkali Plain and adoption details are not in the evidence.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "c30": {
+   "id": "c30",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The quote states 221B, Baker Street.",
+   "reviewer": "claude-opus-5-5"
+  }
+ },
+ "d-gutenberg-2701.txt": {
+  "d01": {
+   "id": "d01",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "All three passages back the shift from suspicion to bosom friendship.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "d02": {
+   "id": "d02",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "Starbuck values courage only as a useful, practical thing and will have no man in his boat who is not afraid of a whale. Stubb, by contrast, is happy-go-lucky and takes perils as they come with an indifferent air, calm even in the most dangerous moments of the chase; what he thought of death itself, there is no telling.",
+   "reason": "The evidence doesn't say Starbuck is a superstitious Quaker, so that claim is removed; the rest is supported.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "d03": {
+   "id": "d03",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "Peleg links the moodiness to the lost leg and stump pains, and the deck scene shows the lasting woe.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "d04": {
+   "id": "d04",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "Ishmael at first does not like Queequeg's (Yojo's) plan for choosing the ship at all. Yet after boarding the Pequod he decides it is the very ship for them, and after signing the papers he has no doubt that the Pequod is the ship Yojo provided.",
+   "reason": "The evidence doesn't say Ishmael wanted Queequeg's judgment instead, so that detail is removed.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "d05": {
+   "id": "d05",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "During the outfitting Peleg roars at Bildad and curses his advice. At the parting, Bildad grasps Peleg's hand and gazes at him, and a tear twinkles in Peleg's eye, so the hostility gives way to fondness.",
+   "reason": "The fiery-pit warning and an explicit threat are not in the evidence, so they are removed.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "d06": {
+   "id": "d06",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "After the wharf meeting Ishmael and Queequeg dismiss Elijah as a humbug trying to be a bugbear. When Elijah later asks plainly whether they saw men going toward the ship, Ishmael is struck by the matter-of-fact question and answers seriously that he thought he saw four or five men.",
+   "reason": "The evidence doesn't show Ishmael becoming unsettled, so the answer now sticks to what the text shows.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "d07": {
+   "id": "d07",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "On the quarter-deck Ahab blames the white whale for taking his leg and vows to chase him around the world, a personal grievance. Later the narrator says Ahab piled onto the whale's hump all the rage and hate of his whole race from Adam down. The grievance grows into a totalizing obsession.",
+   "reason": "The claim about bodily woes and the world's malice is not in the evidence and is dropped.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "d08": {
+   "id": "d08",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "On the quarter-deck Ahab waves off Starbuck's point about the Nantucket market, saying his vengeance will fetch a great premium. Privately, though, he decides he will not take away the men's hopes of cash, because cash they scorn now could later mutiny in them and cashier Ahab. His public scorn for profit is contradicted by his private calculation.",
+   "reason": "The answer is reworded to match the cash passage.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "d09": {
+   "id": "d09",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "By announcing the voyage's private purpose (to chase the white whale), Ahab laid himself open to the charge of usurpation. So he saw that he must still largely stay true to the Pequod's natural, nominal whaling purpose.",
+   "reason": "The porpoise and crew-refusal details are not in the evidence and are removed.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "d10": {
+   "id": "d10",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "It starts as a reward: Ahab holds up a sixteen-dollar Spanish gold ounce for the crew. It becomes a ritual pact when Ahab has the harpooneers drink and swear 'Death to Moby Dick!'",
+   "reason": "The nailing, the cheering and the socket details are not in the evidence, so the answer is trimmed to what is quoted.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "d11": {
+   "id": "d11",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "question": "According to the text, which ship was cruising in the Pacific Ocean in 1820, who was her captain, and where was he from?",
+   "reference_answer": "The ship Essex, Captain Pollard, of Nantucket.",
+   "reason": "The sinking by a whale is not in the evidence, so the question and answer now ask only for what the passage states.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "d12": {
+   "id": "d12",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The dinner passage and the Dusk passages together show deference turning into rebellious obedience.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "d13": {
+   "id": "d13",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "The hanging head first seems to Ahab's view like the Sphynx's in the desert. Later the narrator puts the whale's brow before the reader with 'Read it if you can,' and calls the sperm whale physiognomically a Sphinx whose brain, to the phrenologist, is an unsquarable circle.",
+   "reason": "The demand that the head speak and the 'outworks' detail are not in the evidence and are removed.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "d14": {
+   "id": "d14",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "First, whale-lines stand for the silent perils all men live with, like halters around the neck. In the monkey-rope scene the line becomes an 'elongated Siamese ligature' uniting Ishmael and Queequeg. Finally the idea of being fastened or free is applied to the globe and to the reader, who is both a Loose-Fish and a Fast-Fish.",
+   "reason": "The answer is trimmed to what the three passages actually say.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "d15": {
+   "id": "d15",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "On the night of the feast, thousands of sharks swarm and feast on the dead whale's fatness. Later the narrator recasts the scene as a doleful, mocking funeral, with sea-vultures in pious mourning and air-sharks in black.",
+   "reason": "The 'vultureism' reflection is not in the evidence and is removed.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "d16": {
+   "id": "d16",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "Both passages are present and support the contrast.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "d17": {
+   "id": "d17",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "The ship was already strained from carrying the two whale heads. Then the sinking body dragged her over sideways. Starbuck, who was in charge, held on to the body so resolutely that the ship would have capsized had it kept holding on.",
+   "reason": "The fasteners breaking is not in the quoted evidence, so it is removed.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "d18": {
+   "id": "d18",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "Stubb first wonders whether the old man has thought of it and decides it's worth trying. He then plans with the Guernsey-man, who as interpreter would tell the French captain whatever he pleased as if from Stubb. Finally Stubb pretends to cast off, the Frenchman sails away, and the Pequod slips in between him and Stubb's whale.",
+   "reason": "Finding the ambergris and any later order to desist are not in the evidence, so those are removed.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "d19": {
+   "id": "d19",
+   "decision": "drop",
+   "evidence_justifies": false,
+   "reason": "No passage shows Pip's later bond with Ahab, so the trajectory is only half-supported.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "d20": {
+   "id": "d20",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "At Queequeg's bidding, the carpenter is ordered to make what he asks for (his coffin). Later Queequeg hints at using his coffin, and it is proposed as the life-buoy, to which Starbuck cries in shock, 'A life-buoy of a coffin!'",
+   "reason": "The sea-chest, the carving and the lack of a light cask are not in the evidence, so the answer is trimmed.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "d21": {
+   "id": "d21",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "Starbuck remembers that Ahab once pointed that very loaded musket at him and would have shot him, and this pushes him toward using it on Ahab. After wrestling inwardly 'with an angel', he puts the musket back in its rack and leaves.",
+   "reason": "The fear of doom and the 'no lawful way' reasoning are not in the evidence, so the answer sticks to what is shown.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "d22": {
+   "id": "d22",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "Ahab turns away from the Rachel's captain with averted face and goes below, an unconditional rejection of his earnest plea. Later, on the calm sea, Ahab drops a tear into the sea, and the narrator says the whole Pacific does not hold such wealth as that one drop.",
+   "reason": "The talk of his wife and child is not in the evidence and is removed.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "d23": {
+   "id": "d23",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "Ahab first asks Perth for a harpoon that a thousand yoke of fiends could not part. It is baptized 'in nomine diaboli'. Later Ahab holds it up and declares that he holds the whale's death in his hand, its barbs tempered in blood and by lightning.",
+   "reason": "The horseshoe stubs and the Delight are not in the evidence, so the answer is aligned to the passages.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "d24": {
+   "id": "d24",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "The mariners, however wanton, revere the doubloon as the white whale's talisman. Later Ahab claims it, declaring 'the doubloon is mine, Fate reserved the doubloon for me.'",
+   "reason": "The guarding from theft and the offer to whoever kills the whale are not in the evidence, so they are removed.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "d25": {
+   "id": "d25",
+   "decision": "drop",
+   "evidence_justifies": false,
+   "reason": "Only one passage is given, and it doesn't show Ahab's earlier reaction, so the trajectory isn't supported.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "d26": {
+   "id": "d26",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "Ahab's 'Fates' lieutenant' line and Starbuck's 'disobey my God' line support the contrast.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "d27": {
+   "id": "d27",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "On the third day Starbuck begs Ahab to give up, saying Moby Dick does not seek him and it is Ahab who madly seeks the whale. Ahab keeps going, and as disaster strikes the ship Starbuck cries, 'Oh, Ahab, Ahab, lo, thy work,' blaming the destruction on Ahab's persistence.",
+   "reason": "The details of the ramming are not in the evidence, so the answer rests on Starbuck's warning and his final cry.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "d28": {
+   "id": "d28",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "After the first wreck Ahab orders the rest of the spare boats lowered and rigged and the boats' crews mustered to keep chasing. On the third day he sends his mates back to the ship, telling them to repair the useless boats if they can, and saying that if not, Ahab alone is enough to die.",
+   "reason": "The Parsee detail is not in this evidence and is removed.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "d29": {
+   "id": "d29",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reference_answer": "Starbuck first protests in God's name that Ahab will never capture the whale, calling the chase worse than devil's madness. At the last he pleads emotionally — 'Oh, my captain, my captain! … go not' — pointing to his own tears as a sign of how deeply he means it.",
+   "reason": "The swamping warning and the claim that Ahab refused both times are not in the evidence, so they are removed.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "d30": {
+   "id": "d30",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "Ahab's 'no coffin… hemp only' line, the line catching his neck, and Ishmael buoyed by the coffin all support the reversal.",
+   "reviewer": "claude-opus-5-5"
+  }
+ },
+ "e-arxiv-2606.05658v1.txt": {
+  "e01": {
+   "id": "e01",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The introduction and findings passages support both parts of the answer.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "e02": {
+   "id": "e02",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The cap of two iterations and the judgment that reflection is costly without reliable gains are both quoted.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "e03": {
+   "id": "e03",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The abstract's framing of the two datasets and the contrasting outcomes in the conclusion are both supported.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "e04": {
+   "id": "e04",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The 21 s to 48 s figures are not in the evidence, so the answer now uses only the quoted claims.",
+   "reference_answer": "The tradeoff analysis notes that every agentic addition increases response time, with reflection on MuSiQue approaching a sixfold slowdown that is likely unacceptable in real-time DevOps use. Future work then calls for orchestration to become explicitly cost-aware because of these large latency penalties.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "e05": {
+   "id": "e05",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The learning-based selection proposal is not in the cited evidence, so the answer stops at the limitation.",
+   "reference_answer": "In the strategy distribution results, the authors argue the decomposition trigger is conservative, since many complex MuSiQue queries (49% remain complex-RAG) are not routed to decomposition. In the limitations, they identify the cause as decomposition and reflection being triggered by static, heuristic rules.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "e06": {
+   "id": "e06",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The specific fixes (more coherent sub-queries, preserved dependencies) are not in the cited passages, so the answer is reduced to what is quoted.",
+   "reference_answer": "The results show decomposition broadens coverage but fragments the contextual signal that ranking depends on, harming precision on multi-hop queries. Future work states that the decomposition strategy can be refined to address this precision loss on multi-hop data.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "e07": {
+   "id": "e07",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "Both passages are quoted and support the answer.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "e08": {
+   "id": "e08",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The Least-to-Most link and the proposed refinements are both quoted.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "e09": {
+   "id": "e09",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "Chunking appears in related work and the recall–precision tradeoff appears in the method, both quoted.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "e10": {
+   "id": "e10",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "Knowledge graphs and symbolic engines are not in the cited evidence, so they are removed from the answer.",
+   "reference_answer": "Related work notes that Toolformer showed models can learn to call external tools and that ReAct interleaves reasoning and actions. Future work proposes, for DevOps, querying live monitoring systems or ticketing APIs so responses reflect the current system state rather than static documentation alone.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "e11": {
+   "id": "e11",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The local, privacy-first stack and the live-system proposal are both quoted.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "e12": {
+   "id": "e12",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The MuSiQue description and its use as a contrast in future work are both quoted.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "e13": {
+   "id": "e13",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "Hallucination as motivation and as an evaluator axis are both quoted.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "e14": {
+   "id": "e14",
+   "decision": "drop",
+   "evidence_justifies": false,
+   "reason": "There is only one evidence passage, and the 0.917 figure and MuSiQue reflection claims are unsupported.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "e15": {
+   "id": "e15",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The classifier and indexing passages both describe filtering before ranking.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "e16": {
+   "id": "e16",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The Orchestrator passage does not say 'rule-based', so the answer is adjusted.",
+   "reference_answer": "Related work says Adaptive-RAG routes queries to strategies by predicted question difficulty. The Orchestrator routes queries based on the classifier output and triggers decomposition when required, and future work proposes learning-based strategy selection that predicts the optimal reasoning strategy from query features.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "e17": {
+   "id": "e17",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The cited abstract passage speaks of contrasting results, not explicit gains, so the wording is aligned with it.",
+   "reference_answer": "No. The abstract describes contrasting results showing agentic enhancements are not universally beneficial, and on MuSiQue ranking metrics collapse under decomposition (MRR falls from 0.469 to 0.102, Success@5 from 1.0 to 0.063) even though citation accuracy reaches 1.0 and topic coverage rises.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "e18": {
+   "id": "e18",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The +0.04 gain from decomposition and the 0.870 to 0.781 drop from reflection are both quoted.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "e19": {
+   "id": "e19",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The two quoted passages show 'without reliable gains' versus 'marginal gains'.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "e20": {
+   "id": "e20",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The routing description and the statement that reflection is post-hoc rather than a routing mechanism are both quoted.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "e21": {
+   "id": "e21",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The predetermined sequence versus runtime control flow contrast is supported.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "e22": {
+   "id": "e22",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The conservative trigger and the rule-based heuristics are both quoted.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "e23": {
+   "id": "e23",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The quantized local inference and the environment-dependent caveat are both quoted.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "e24": {
+   "id": "e24",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The high-stakes DevOps setting and the sixfold-slowdown judgment are both quoted.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "e25": {
+   "id": "e25",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "'Conservative' is not in the cited evidence, so it is removed.",
+   "reference_answer": "The method defines a workflow that detects multi-hop structure, generates ordered sub-queries, retrieves for each, and aggregates the answers. The authors later flag the triggering policy as a high-value target for future optimization.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "e26": {
+   "id": "e26",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The open question in the introduction and the lesson in the conclusion are both quoted.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "e27": {
+   "id": "e27",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The abstract and future-work passages both call for cost-aware orchestration.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "e28": {
+   "id": "e28",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The 600-token chunks with 100-token overlap are directly stated.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "e29": {
+   "id": "e29",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "80 documents, about 10,000 words and six types are directly stated.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "e30": {
+   "id": "e30",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The cap of two iterations and its reason are directly stated.",
+   "reviewer": "claude-opus-5-5"
+  }
+ },
+ "f-kerno-adrs.txt": {
+  "f01": {
+   "id": "f01",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The claim about CoW sync points and deferred page reuse is not in the evidence. Trimmed to what the quotes support.",
+   "reference_answer": "ADR-0001 dice que Kerno quiere ofrecer un modo de durabilidad relajada sin comprometer la consistencia (ADR-0002), y que ese requisito pesa en la elección. En un LSM esa garantía sale del propio diseño del WAL, lo que favorece al LSM frente al B+ tree.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "f02": {
+   "id": "f02",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "Operational simplicity and open/close are not in the evidence. The latency tails and short range reads are.",
+   "reference_answer": "El B+ tree gana en colas de latencia a escala medium cuando la compactación del LSM coincide con escritura sostenida (memoria de agentes 3,7×, actualizaciones secuenciales 3,0×, inserción secuencial 2,1×, commit de LiveSpec 1,3×) y en lecturas cortas de rangos pequeños. Aun así se descarta, porque los casos de referencia de Kerno (Cauce, memoria de agentes, Revision Engine) son intensivos en escritura.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "f03": {
+   "id": "f03",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The 8× figure is not in the evidence.",
+   "reference_answer": "En un CoW cada commit reescribe la ruta raíz-hoja de cada hoja tocada más metadatos, con uno o dos fsync, así que el techo de commits durables queda por debajo del LSM. En el LSM las revisiones son escrituras secuenciales en WAL/memtable, que son baratas, a costa de una lectura de historial algo más lenta.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "f04": {
+   "id": "f04",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The 'señal orientativa' conclusion is not in the quotes. Trimmed to the acknowledged maturity confound.",
+   "reference_answer": "ADR-0001 admite que las razones LSM/B+ incluyen también diferencias de madurez (riesgo R-S1). ADR-0012 lo repite como limitación: los prototipos tienen días de desarrollo, y sus diferencias frente a redb/fjall miden también madurez, no solo arquitectura. Por tanto, la ventaja medida no prueba por sí sola la superioridad de una arquitectura.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "f05": {
+   "id": "f05",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The date and the 'forma abierta' claim are unsupported. The core change is supported.",
+   "reference_answer": "Se propuso un modelo mixto por definición de índice. Al aceptarse, se fijó así: el índice primario es consistente con el commit, y los secundarios son derivados asíncronos con estado (ready/building/stale/failed) y watermark de secuencia.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "f06": {
+   "id": "f06",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The date and the measured-workload condition are not in the evidence.",
+   "reference_answer": "E4-03 implementó los índices de unidades como derivados con frescura explícita, porque el acta y la invariante I-23 exigían estado y watermark. El propietario aprobó la implementación de E4-03/E4-04: IDX_PRIMARY e IDX_TYPE siguen siendo derivados, solo los escribe rebuild_index, y tras una escritura query usa la ruta de referencia hasta la siguiente reconstrucción (I-32).",
+   "reviewer": "claude-opus-5-5"
+  },
+  "f07": {
+   "id": "f07",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The loss of a Sync commit is not stated in the evidence.",
+   "reference_answer": "Se detectó que la primera trama de cada WAL llevaba synced_len = 0 porque W-1 no sincronizaba la cabecera. Se cerró el 2026-10-31 (M1 de la revisión adversarial): el escritor sincroniza la cabecera en W-1, y WAL-R6 rechaza cualquier trama válida bajo una cabecera rota.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "f08": {
+   "id": "f08",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The ordering of the CRC check before the version check is not in the evidence.",
+   "reference_answer": "Incompatible señala una versión o característica desconocida, que no es daño, y no debe presentarse como Corruption. Corruption señala daño. El diseño garantiza que un daño aleatorio nunca se presente como Incompatible y que una incompatibilidad nunca se presente como daño.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "f09": {
+   "id": "f09",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The rejection after the freeze is not in the evidence. Reframed around what the quotes say.",
+   "question": "¿Por qué el borrador del formato v1 necesitaba marcar sus bases antes de la congelación, y qué se podía hacer con sus decisiones hasta entonces?",
+   "reference_answer": "Sin marca, una base creada con el borrador podría abrirse tras la congelación y leerse mal. Hasta la congelación, cada decisión podía revertirse cambiando el borrador y regenerando los vectores (v1.md §15).",
+   "reviewer": "claude-opus-5-5"
+  },
+  "f10": {
+   "id": "f10",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "Minor unsupported claim about the accepted rules removed.",
+   "reference_answer": "ADR-0003 parte de que M0 no congeló ningún formato: los prototipos solo estaban versionados por magic y un número de versión. El formato concreto se congela al cerrar la Fase 1, y el bit DRAFT se retiró en la congelación del 2026-10-31.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "f11": {
+   "id": "f11",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The reservation, the incompat bit, no migration needed and ADR-0006 conditioning ADR-0003 are all supported.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "f12": {
+   "id": "f12",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The evidence shows the dependencies but not explicitly that ADR-0006 is pending. Question reframed.",
+   "question": "¿De qué ADR depende ADR-0009 y cómo lo condiciona ADR-0006?",
+   "reference_answer": "ADR-0009 depende de ADR-0001, ADR-0004 y ADR-0006. ADR-0006 condiciona el borrado criptográfico de ADR-0009, además de las cabeceras de ADR-0003 y las claves de ADR-0005, así que la supresión queda ligada a la decisión de cifrado.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "f13": {
+   "id": "f13",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The initial question is not in the evidence. Kept the hybrid proposal versus full copy.",
+   "reference_answer": "El SAD contemplaba un híbrido con límite de profundidad (opción 3), pero se decidió copia completa: cada revisión guarda su carga útil entera, sin deltas hasta que los benchmarks los justifiquen. El híbrido queda como evolución futura, sujeta a medición y a un ADR nuevo.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "f14": {
+   "id": "f14",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "All three steps are supported by quotes from different ADRs.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "f15": {
+   "id": "f15",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "Only one quote, and it does not mention the random token. Question narrowed to what is supported.",
+   "question": "¿Por qué el codec por defecto de ADR-0005 permite cerrar ADR-0006 más adelante?",
+   "reference_answer": "Porque el camino crítico por defecto no contiene material criptográfico, así que ADR-0006 puede cerrarse después sin bloquear las fases 1–3.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "f16": {
+   "id": "f16",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "ADR-0011 being pending is not in the evidence.",
+   "reference_answer": "En M0, el workload agent_memory almacenó embeddings de 768 × f32 (3 KiB) como valores normales y midió escritura, lectura y espacio en ambos candidatos. ADR-0018 exige aplicar el contrato de derivados a los índices de la Etapa 4 y a las optimizaciones de la Etapa 6 antes de los embeddings de la Etapa 8.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "f17": {
+   "id": "f17",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "Both the proposal and the removal of the exception are quoted.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "f18": {
+   "id": "f18",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "'Única optimización reversible' and the comparison with the disabled mode are unsupported.",
+   "reference_answer": "La opción 3 tiene mayor superficie de errores, y la especificación prohíbe cambios de esquema autónomos sin política explícita. Por eso se propone la opción 2, sujeta a las garantías G1–G7.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "f19": {
+   "id": "f19",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "'Recurre ante cualquier duda' is unsupported.",
+   "reference_answer": "La Etapa 5 dejó el planificador determinista, la ruta de referencia y la prueba diferencial planificador/referencia en CI. ADR-0016 exige que la ruta de referencia se mantenga, se compile y se pruebe en CI aunque no se use en producción, como condición de equivalencia.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "f20": {
+   "id": "f20",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The crate name and 'contrato de comparación' are not in the evidence.",
+   "reference_answer": "El trait Engine del spike carecía de transacciones read-modify-write, cursores, cancelación y errores por categoría. ADR-0010 aceptó una capa genérica sobre TxnEngine de kerno-core, con separación estricta de kerno-storage, y dejó la fachada pública única y la política de semver para cuando exista una API pública estable.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "f21": {
+   "id": "f21",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "'Incumplimientos documentados' is unsupported.",
+   "reference_answer": "La condición 1 de ADR-0001 señala como caso a resolver el p99 de escritura en memoria de agentes (3,7× el del B+ tree). La medición de salida de la Fase 1 en la clase de VM de M0 no cumple T1, así que la condición 1 sigue sin cumplirse.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "f22": {
+   "id": "f22",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The 2× target and the 0,55–0,8× result are both quoted.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "f23": {
+   "id": "f23",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "'Sin cambiar el formato' and E4-00 are not in the quotes.",
+   "reference_answer": "El rechazo impide que existan relaciones hacia unidades archivadas o borradas, así que la supresión física bajo ADR-0009 no tiene relaciones colgantes que tratar. El propietario lo aprobó como semántica explícita, relajable más adelante a cascada o a relación colgante marcada.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "f24": {
+   "id": "f24",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "The proposed status and the acceptance date with E4-02 evidence are both quoted.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "f25": {
+   "id": "f25",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "Both the neighbour-access and write-cost contrasts are quoted.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "f26": {
+   "id": "f26",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "Primary/transactional adjacency indices versus watermark are supported from two places.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "f27": {
+   "id": "f27",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "The provenance enum values and validation by writer/decoder are not quoted.",
+   "reference_answer": "ADR-0017 asigna el término «conexión» a Edge (ADR-0014) y exige que toda conexión inferida guarde origen y confianza y no se presente como declarada (I-39). ADR-0014 define Edge con procedencia entre sus campos, lo que permite cumplir ese requisito.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "f28": {
+   "id": "f28",
+   "decision": "keep",
+   "evidence_justifies": true,
+   "reason": "Both the rejection and the derived-store rule are quoted.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "f29": {
+   "id": "f29",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "G7 and sentinels are not clearly supported. Trimmed.",
+   "reference_answer": "ADR-0015 sustituye los literales por marcadores tipados antes de calcular una huella BLAKE3 con clave local no exportada, y ningún literal aparece, tampoco en diagnostic. ADR-0016 hereda esa regla: el registro de decisiones sobre optimizaciones sigue las reglas de privacidad de ADR-0015, sin literales ni contenido.",
+   "reviewer": "claude-opus-5-5"
+  },
+  "f30": {
+   "id": "f30",
+   "decision": "edit",
+   "evidence_justifies": true,
+   "reason": "Thresholds and 'una pasada no basta' are unsupported.",
+   "reference_answer": "U6 incumplía al cierre de la Etapa 3 y sigue incumpliendo (K-E3-9) con y sin relaciones tras la re-medición. Se decidió repetir U6 con varias pasadas, con y sin relaciones, cuando se aborde K-E3-9.",
+   "reviewer": "claude-opus-5-5"
+  }
+ }
+}

@@ -1,0 +1,672 @@
+{
+ "document": "a-kerno-SAD.txt",
+ "sha256": "87e8b9d383e5838fe4aa731956fbeebd5e5fa961c1655379b6e34b5cf826774c",
+ "status": "draft: pending human review",
+ "prompt_version": "q1",
+ "alias": "haiku",
+ "windows": [
+  {
+   "index": 0,
+   "start": 0,
+   "end": 51865,
+   "asked": 30,
+   "call_id": "questions:q1:a-kerno-SAD.txt:w0",
+   "model_ids": [
+    "claude-haiku-5-5"
+   ],
+   "charged_usd": 0.02915521
+  }
+ ],
+ "questions": [
+  {
+   "id": "a01",
+   "window": 0,
+   "type": "evolution",
+   "question": "How did the choice of physical storage engine move from an open comparison proposal to a decided outcome?",
+   "reference_answer": "ADR-0001 began as a proposal to compare one prototype of each engine family under equal workloads, and §7.1 states the choice was pending. The 0.2.0 status note later records LSM nivelado as resolved and Accepted on 2026-10-28.",
+   "evidence": [
+    {
+     "start": 33422,
+     "end": 33561
+    },
+    {
+     "start": 17625,
+     "end": 17745
+    },
+    {
+     "start": 9493,
+     "end": 9937
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "a02",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the plan make the storage decision gate the start of core implementation, from Phase 0 to the closing action list?",
+   "reference_answer": "Phase 0 is defined as resolving storage uncertainty before the format is frozen. M0 completion requires ADR-0001 to select an approach, and the closing action list says core persistent implementation starts only after M0 is closed.",
+   "evidence": [
+    {
+     "start": 39319,
+     "end": 39402
+    },
+    {
+     "start": 44606,
+     "end": 44706
+    },
+    {
+     "start": 49303,
+     "end": 49388
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "a03",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How did the revision design move from the planned snapshot-and-delta model to what the Stage 3 implementation actually built?",
+   "reference_answer": "§8.3 says a hybrid of full snapshots and structural deltas would be evaluated. The §8 status dated 2026-11-04 says the build uses full-copy revisions only, deltas were not implemented, and restore still creates a new revision.",
+   "evidence": [
+    {
+     "start": 20776,
+     "end": 20854
+    },
+    {
+     "start": 19368,
+     "end": 19643
+    },
+    {
+     "start": 40780,
+     "end": 40827
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "a04",
+   "window": 0,
+   "type": "contrast",
+   "question": "Does the built revision system match the ADR-0004 proposal it was meant to implement?",
+   "reference_answer": "Only partly. ADR-0004 proposed snapshot plus delta with a depth limit and restore as a new revision, and it is still listed as pending. The §8 status confirms restore creates a new revision but says the build uses full copies only, with deltas not implemented.",
+   "evidence": [
+    {
+     "start": 34824,
+     "end": 34916
+    },
+    {
+     "start": 34990,
+     "end": 35147
+    },
+    {
+     "start": 19368,
+     "end": 19643
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "a05",
+   "window": 0,
+   "type": "contrast",
+   "question": "How do the retention rules for the recovery journal and for versioned history differ, and does the document let them share a policy?",
+   "reference_answer": "The recovery journal is kept only as long as the protocol requires, while versioned history keeps revisions within a configured retention window. §7.3 says the systems may share commit sequences or metadata but do not implicitly share a retention policy.",
+   "evidence": [
+    {
+     "start": 18996,
+     "end": 19132
+    },
+    {
+     "start": 21454,
+     "end": 21552
+    },
+    {
+     "start": 10464,
+     "end": 10578
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "a06",
+   "window": 0,
+   "type": "causal",
+   "question": "Why is the recovery journal kept separate from the permanent revision history, and what follows for its retention?",
+   "reference_answer": "The document separates them because WAL, revisions and audit are different mechanisms with different lifecycles, and the journal must not become a permanent history. As a consequence the journal is retained only for the time the recovery protocol needs, while revisions follow their own policy.",
+   "evidence": [
+    {
+     "start": 10464,
+     "end": 10578
+    },
+    {
+     "start": 20031,
+     "end": 20215
+    },
+    {
+     "start": 7823,
+     "end": 7896
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "a07",
+   "window": 0,
+   "type": "evolution",
+   "question": "How did the policy for derived index consistency move from the original ADR-0007 proposal to the 2026-11-05 owner decision?",
+   "reference_answer": "ADR-0007 first proposed a primary index consistent with the commit, critical secondary indexes in a clear atomic boundary, and costly indexes with freshness state. The 2026-11-05 owner decision keeps derived indexes outside each ChangeSet until a workload with interleaved writes justifies moving them inside.",
+   "evidence": [
+    {
+     "start": 36263,
+     "end": 36437
+    },
+    {
+     "start": 24953,
+     "end": 25076
+    },
+    {
+     "start": 22670,
+     "end": 22843
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "a08",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the rule against creating indexes automatically carry through to the single secondary index built in Stage 4?",
+   "reference_answer": "§9.1 says indexes are not created automatically, each one costs disk, memory and maintenance, and its definition must be explicit. The 2026-11-05 status says Stage 4 built only the primary index and one ordered secondary index, IDX_TYPE, justified by a measured workload, and that no index is created without a workload.",
+   "evidence": [
+    {
+     "start": 24707,
+     "end": 24917
+    },
+    {
+     "start": 21862,
+     "end": 22188
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "a09",
+   "window": 0,
+   "type": "causal",
+   "question": "Why does a query fall back to the reference path when an index is stale, failing, or wrong?",
+   "reference_answer": "§9.2 requires a documented strategy for a stale index and forbids pretending freshness. The 2026-11-06 planner applies that rule: when an index fails or answers badly, the query is answered by the reference path and the event is logged.",
+   "evidence": [
+    {
+     "start": 25326,
+     "end": 25540
+    },
+    {
+     "start": 23217,
+     "end": 23400
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "a10",
+   "window": 0,
+   "type": "causal",
+   "question": "Why can a deletion not be reflected instantly everywhere, and why must the embedding policy still reach derived data?",
+   "reference_answer": "Backups, indexes, embeddings, caches and snapshots are secondary copies, so the document does not promise instant removal from each one. Because derived artifacts keep copies, the embedding lifecycle requires deletion to reach vectors, chunks, indexes and pending queues, and ADR-0009 requires an end-to-end test of what is removed and when.",
+   "evidence": [
+    {
+     "start": 21671,
+     "end": 21796
+    },
+    {
+     "start": 26780,
+     "end": 26871
+    },
+    {
+     "start": 37263,
+     "end": 37414
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "a11",
+   "window": 0,
+   "type": "trajectory",
+   "question": "Tracing the embedding design from the core principles to Phase 5, where do vector storage and embedding generation sit?",
+   "reference_answer": "D-08 and §10.1 keep embedding generation out of the core: the engine stores vectors and exposes search contracts, while external adapters produce embeddings. Phase 5 then delivers exact vectors and an embedding adapter as the first implementation step.",
+   "evidence": [
+    {
+     "start": 7994,
+     "end": 8078
+    },
+    {
+     "start": 25993,
+     "end": 26150
+    },
+    {
+     "start": 41454,
+     "end": 41497
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "a12",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the stance on approximate vector search develop from the general measurement principle to the ANN decision?",
+   "reference_answer": "Principle 8 says structures such as HNSW are justified only by workloads and metrics. §10.4 makes exact vector search the baseline that approximate indexes must be measured against, and ADR-0011 restates that ANN is used only with evidence.",
+   "evidence": [
+    {
+     "start": 10862,
+     "end": 10981
+    },
+    {
+     "start": 27246,
+     "end": 27404
+    },
+    {
+     "start": 38018,
+     "end": 38152
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "a13",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the public identifier question move from the internal UUIDv7 choice to the open codec decision and its authorization limits?",
+   "reference_answer": "§5.2 fixes the internal_id as UUIDv7 and states that an opaque identifier does not replace authorization. ADR-0005 remains a draft, the public identifier strategy stays open in §2.2, and §11.2 says guessing difficulty does not grant authorization.",
+   "evidence": [
+    {
+     "start": 13223,
+     "end": 13279
+    },
+    {
+     "start": 35229,
+     "end": 35302
+    },
+    {
+     "start": 28093,
+     "end": 28168
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "a14",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the treatment of a network server change from the initial scope to the future security requirements?",
+   "reference_answer": "The first version is an embedded library and local CLI with no network server (D-02). §1.4 lists a server as a non-goal, while §11.1 says a future server would need its own authentication, TLS, tenant isolation and administration.",
+   "evidence": [
+    {
+     "start": 7518,
+     "end": 7583
+    },
+    {
+     "start": 6813,
+     "end": 6869
+    },
+    {
+     "start": 27695,
+     "end": 27815
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "a15",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How do the rules for recording actor and context in revisions connect to the limits placed on audit content?",
+   "reference_answer": "§8.2 allows an actor or reason in a revision when policy permits and says missing context is valid rather than invented. §11.4 bars automatic recording of full document content, secrets, tokens or personal payloads and gives audit its own limits and retention.",
+   "evidence": [
+    {
+     "start": 20662,
+     "end": 20736
+    },
+    {
+     "start": 28713,
+     "end": 28825
+    },
+    {
+     "start": 28826,
+     "end": 28903
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "a16",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the document move from its privacy principle to its explicit refusal to promise legal compliance?",
+   "reference_answer": "§1.2 commits to explicit security and privacy capabilities without promising automatic compliance with any law. §1.4 lists legal conformity of any application as a non-goal, and §11.5 says normative profiles map controls and tests but do not equal legal certification.",
+   "evidence": [
+    {
+     "start": 6018,
+     "end": 6129
+    },
+    {
+     "start": 7271,
+     "end": 7358
+    },
+    {
+     "start": 29180,
+     "end": 29318
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "a17",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the benchmark methodology carry from M0 and the Phase 1 exit measurement into the Phase 6 comparisons?",
+   "reference_answer": "ADR-0012 proposes reproducible benchmarks on the same machine with equivalent durability, and it was applied in M0 and in the Phase 1 exit measurement. Phase 6 then schedules comparative benchmarks against SQLite and reference engines under the same method.",
+   "evidence": [
+    {
+     "start": 38300,
+     "end": 38442
+    },
+    {
+     "start": 43949,
+     "end": 44034
+    },
+    {
+     "start": 41828,
+     "end": 41887
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "a18",
+   "window": 0,
+   "type": "contrast",
+   "question": "The benchmark method says targets come after the baseline, so how were the Stage 3 benchmark misses handled?",
+   "reference_answer": "§17.4 forbids setting a speed threshold before the baseline is measured and asks for targets to be defined after results are known. The §8 status records two Stage 3 misses that the owner accepted on 2026-11-04 without lowering thresholds, so they stand as documented breaches rather than renegotiated targets.",
+   "evidence": [
+    {
+     "start": 44405,
+     "end": 44523
+    },
+    {
+     "start": 19909,
+     "end": 20011
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "a19",
+   "window": 0,
+   "type": "contrast",
+   "question": "Does the document agree with itself about which crates currently exist?",
+   "reference_answer": "No, not fully. The §14 status says three product crates exist (kerno-core, kerno-testkit, kerno-storage) and that the rest of the list does not exist. The §8 status, dated 2026-11-04, places the Revision Engine in kerno-units, which §14 does not mention.",
+   "evidence": [
+    {
+     "start": 32129,
+     "end": 32435
+    },
+    {
+     "start": 32436,
+     "end": 32508
+    },
+    {
+     "start": 19222,
+     "end": 19300
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "a20",
+   "window": 0,
+   "type": "causal",
+   "question": "Why does §14 still describe the proposed crate layout even though the Phase 1 build differs from it?",
+   "reference_answer": "The maintenance rule is that later decisions are recorded in ADRs and a new document version is published instead of silently editing this one. The 0.2.0 change list covers only what it names, so anything else keeps the 0.1.0 text, and the crate layout in §14 stays as the proposal until a new version changes it.",
+   "evidence": [
+    {
+     "start": 1114,
+     "end": 1313
+    },
+    {
+     "start": 1314,
+     "end": 1553
+    },
+    {
+     "start": 32436,
+     "end": 32508
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "a21",
+   "window": 0,
+   "type": "causal",
+   "question": "Why must each derived index expose a visible state, and how does that connect to the beta release gate?",
+   "reference_answer": "§9.2 requires derived indexes to expose a visible state (ready, building, stale, failed) so consumers are not misled about freshness. §18.3 bars a beta release while an index-versus-source discrepancy is hidden from the consumer, so the visible state is what keeps such a discrepancy from being concealed.",
+   "evidence": [
+    {
+     "start": 25077,
+     "end": 25261
+    },
+    {
+     "start": 47149,
+     "end": 47472
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "a22",
+   "window": 0,
+   "type": "local",
+   "question": "What date is given for version 0.1.0 of the document?",
+   "reference_answer": "27 de octubre de 2026 (the document header gives 29 de octubre de 2026 for version 0.2.0).",
+   "evidence": [
+    {
+     "start": 132,
+     "end": 184
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "a23",
+   "window": 0,
+   "type": "local",
+   "question": "How many product crates does the §14 status say exist, and what are they?",
+   "reference_answer": "Three: kerno-core, kerno-testkit and kerno-storage. The other crates in the proposed list are described as not existing.",
+   "evidence": [
+    {
+     "start": 32129,
+     "end": 32435
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "a24",
+   "window": 0,
+   "type": "local",
+   "question": "How many writers may be active per database under the agreed concurrency model, and how many readers?",
+   "reference_answer": "One active writer per database, with several concurrent readers inside the same process.",
+   "evidence": [
+    {
+     "start": 11800,
+     "end": 11837
+    },
+    {
+     "start": 11840,
+     "end": 11894
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "a25",
+   "window": 0,
+   "type": "evolution",
+   "question": "How did the M0 storage prototypes change from the Phase 0 deliverable to their status in the 0.2.0 repository?",
+   "reference_answer": "Phase 0 planned small comparable prototypes for B+ tree copy-on-write and LSM, explicitly not production engines. By 0.2.0 they are kept in spikes/storage/, with spike-btree and spike-lsm frozen as the performance baseline and spike-bench as the test bench.",
+   "evidence": [
+    {
+     "start": 39508,
+     "end": 39623
+    },
+    {
+     "start": 32509,
+     "end": 32668
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "a26",
+   "window": 0,
+   "type": "evolution",
+   "question": "How did the freeze condition for the physical format change from ADR-0003's acceptance to the current status of format v1?",
+   "reference_answer": "ADR-0003 was accepted on 2026-10-28, but its entry says the concrete format is frozen only when ADR-0013 is accepted. Format v1 therefore remains a candidate for freezing, and §20 still requires approving the format and commit semantics before creating user databases.",
+   "evidence": [
+    {
+     "start": 34342,
+     "end": 34486
+    },
+    {
+     "start": 49212,
+     "end": 49299
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "a27",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the rule that derived data never replace source content carry into the requirement that rebuilt indexes match a fresh index?",
+   "reference_answer": "Principle 3 says indexes, embeddings and other derivatives never replace the source content. ADR-0007 requires rebuilt indexes to give results equivalent to a new index over the same data, and §10.3 requires a rebuild to draw on source embeddings that are still valid.",
+   "evidence": [
+    {
+     "start": 10233,
+     "end": 10339
+    },
+    {
+     "start": 36438,
+     "end": 36551
+    },
+    {
+     "start": 26874,
+     "end": 26967
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "a28",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the deletion policy move from the history lifecycle to the Phase 4 deliverables?",
+   "reference_answer": "§8.4 says the history lifecycle must consider personal data, backups, indexes, embeddings, caches and snapshots. ADR-0009 proposes explicit per-collection policies and backup expiry documentation, and Phase 4 schedules export, suppression and backups.",
+   "evidence": [
+    {
+     "start": 21554,
+     "end": 21670
+    },
+    {
+     "start": 37101,
+     "end": 37262
+    },
+    {
+     "start": 41196,
+     "end": 41231
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "a29",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the concurrency model move from the confirmed one-writer decision to the Phase 2 read-isolation work?",
+   "reference_answer": "D-03 confirms one writer and several concurrent readers in one process. §4.2 leaves the reads' isolation model to an ADR, and Phase 2 schedules concurrent read isolation after the core persistence phase.",
+   "evidence": [
+    {
+     "start": 7595,
+     "end": 7663
+    },
+    {
+     "start": 11897,
+     "end": 11987
+    },
+    {
+     "start": 40538,
+     "end": 40575
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  },
+  {
+   "id": "a30",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the requirement that restore be a tested operation become a condition for a beta release?",
+   "reference_answer": "§12 says a backup restore must be a tested operation rather than a promise based only on a copy file. §18.3 bars a beta while there is an untested recovery path, and Phase 6 schedules fuzzing and extended failure tests before the beta.",
+   "evidence": [
+    {
+     "start": 29921,
+     "end": 30053
+    },
+    {
+     "start": 47149,
+     "end": 47472
+    },
+    {
+     "start": 41697,
+     "end": 41736
+    }
+   ],
+   "evidence_rejected": 0,
+   "needs_review": false
+  }
+ ],
+ "rejected_quotes": 0,
+ "model_ids": [
+  "claude-haiku-5-5"
+ ]
+}

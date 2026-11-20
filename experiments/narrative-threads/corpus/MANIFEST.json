@@ -1,0 +1,141 @@
+{
+  "hash": "sha256 of the UTF-8 file bytes",
+  "acquired": "2026-11-07",
+  "documents": [
+    {
+      "id": "a",
+      "type": "technical / architectural",
+      "file": "a-kerno-SAD.txt",
+      "url": "https://github.com/ (this repository) docs/architecture/SAD.md at b088ce81ec095e573a4b961a0501f9919224ccfb",
+      "title": "Kerno — Software Architecture Document (docs/architecture/SAD.md)",
+      "author": "Kerno project",
+      "licence": "This repository's own documentation",
+      "licence_evidence": "Owner-authorised: the experiment brief allows this repository's own docs.",
+      "version": "git commit b088ce81ec095e573a4b961a0501f9919224ccfb",
+      "source": {
+        "kind": "repo",
+        "commit": "b088ce81ec095e573a4b961a0501f9919224ccfb",
+        "paths": [
+          "docs/architecture/SAD.md"
+        ]
+      },
+      "acquired": "2026-11-07",
+      "bytes": 51866,
+      "words": 7174,
+      "sha256": "87e8b9d383e5838fe4aa731956fbeebd5e5fa961c1655379b6e34b5cf826774c"
+    },
+    {
+      "id": "b",
+      "type": "research with hypotheses and evidence",
+      "file": "b-arxiv-2609.00063v1.txt",
+      "url": "https://arxiv.org/abs/2609.00063v1",
+      "title": "Medical Causal Hypothesis Verification with Large Language Models",
+      "author": "Safiyyah Ahmed, Abrar Ansari, Md Aminul Islam, Elena Zheleva",
+      "licence": "CC BY 4.0",
+      "licence_evidence": "https://arxiv.org/abs/2609.00063v1 links https://creativecommons.org/licenses/by/4.0/ as the article licence (checked 2026-11-07). Attribution: the authors listed here; changes: HTML converted to plain text (math kept as its LaTeX alt text, figures dropped).",
+      "version": "arXiv 2609.00063v1 (HTML rendering https://arxiv.org/html/2609.00063v1)",
+      "source": {
+        "kind": "arxiv-html",
+        "html": "https://arxiv.org/html/2609.00063v1"
+      },
+      "acquired": "2026-11-07",
+      "bytes": 27779,
+      "words": 4203,
+      "sha256": "463a3f35b466c7f95b90cb0a42c30547e4eb8281fe4fa4ccc66c43476a3209dc"
+    },
+    {
+      "id": "c",
+      "type": "narrative with flashbacks (Part II is a long flashback to Utah that resolves Part I's clues)",
+      "file": "c-gutenberg-244.txt",
+      "url": "https://www.gutenberg.org/cache/epub/244/pg244.txt",
+      "title": "A Study in Scarlet",
+      "author": "Arthur Conan Doyle",
+      "licence": "Public domain in the USA",
+      "licence_evidence": "https://www.gutenberg.org/ebooks/244 states 'Public domain in the USA' (checked 2026-11-07); the Project Gutenberg licence header and footer are stripped, only the book text between the START/END markers is kept.",
+      "version": "Project Gutenberg eBook #244, released 1995-04-01, file most recently updated 2026-09-06",
+      "source": {
+        "kind": "gutenberg"
+      },
+      "acquired": "2026-11-07",
+      "bytes": 244166,
+      "words": 43427,
+      "sha256": "6810564e981523ea439b7b2008bb318379cb649951c1b3c8e1e5b9cc26de4840"
+    },
+    {
+      "id": "d",
+      "type": "long (>100k words) with recurring themes",
+      "file": "d-gutenberg-2701.txt",
+      "url": "https://www.gutenberg.org/cache/epub/2701/pg2701.txt",
+      "title": "Moby Dick; Or, The Whale",
+      "author": "Herman Melville",
+      "licence": "Public domain in the USA",
+      "licence_evidence": "https://www.gutenberg.org/ebooks/2701 states 'Public domain in the USA' (checked 2026-11-07); the Project Gutenberg licence header and footer are stripped, only the book text between the START/END markers is kept.",
+      "version": "Project Gutenberg eBook #2701, released 2001-07-01, file most recently updated 2026-10-09",
+      "source": {
+        "kind": "gutenberg"
+      },
+      "acquired": "2026-11-07",
+      "bytes": 1234330,
+      "words": 212796,
+      "sha256": "6e2084a6a9e597062bb3e22b1727dfc037c6bc4d23c4f61eae366bddc11accc3"
+    },
+    {
+      "id": "e",
+      "type": "comparative, alternatives and contradictions",
+      "file": "e-arxiv-2606.05658v1.txt",
+      "url": "https://arxiv.org/abs/2606.05658v1",
+      "title": "Agent-Orchestrated Adaptive RAG: A Comparative Study on Structured and Multi-Hop Retrieval",
+      "author": "Devinder Kaur, Anuj Maharjan, Richard Molyet",
+      "licence": "CC BY 4.0",
+      "licence_evidence": "https://arxiv.org/abs/2606.05658v1 links https://creativecommons.org/licenses/by/4.0/ as the article licence (checked 2026-11-07). Attribution: the authors listed here; changes: HTML converted to plain text (math kept as its LaTeX alt text, figures dropped).",
+      "version": "arXiv 2606.05658v1 (HTML rendering https://arxiv.org/html/2606.05658v1)",
+      "source": {
+        "kind": "arxiv-html",
+        "html": "https://arxiv.org/html/2606.05658v1"
+      },
+      "acquired": "2026-11-07",
+      "bytes": 39282,
+      "words": 5457,
+      "sha256": "b34a463b403739f234ea082fd61b029210b9817584aaa3aed7b95e23cb755efa"
+    },
+    {
+      "id": "f",
+      "type": "several proposals and conclusions (ADRs that cite each other)",
+      "file": "f-kerno-adrs.txt",
+      "url": "this repository, docs/adr/0001..0018 at b088ce81ec095e573a4b961a0501f9919224ccfb",
+      "title": "Kerno Architecture Decision Records 0001-0018, concatenated in number order",
+      "author": "Kerno project",
+      "licence": "This repository's own documentation",
+      "licence_evidence": "Owner-authorised: the brief names Kerno's docs/adr/ concatenated as acceptable for (f).",
+      "version": "git commit b088ce81ec095e573a4b961a0501f9919224ccfb",
+      "source": {
+        "kind": "repo",
+        "commit": "b088ce81ec095e573a4b961a0501f9919224ccfb",
+        "paths": [
+          "docs/adr/0001-motor-de-almacenamiento.md",
+          "docs/adr/0002-transacciones-y-durabilidad.md",
+          "docs/adr/0003-formato-fisico-y-versionado.md",
+          "docs/adr/0004-historial-de-revisiones.md",
+          "docs/adr/0005-identificadores-publicos.md",
+          "docs/adr/0006-cifrado-y-gestion-de-claves.md",
+          "docs/adr/0007-consistencia-de-indices.md",
+          "docs/adr/0008-serializacion-documental-y-hashes.md",
+          "docs/adr/0009-supresion-retencion-y-backups.md",
+          "docs/adr/0010-api-publica-y-crates.md",
+          "docs/adr/0011-vectores-y-recuperacion-hibrida.md",
+          "docs/adr/0012-metodologia-de-benchmarks.md",
+          "docs/adr/0013-formato-v1-y-protocolo-del-motor.md",
+          "docs/adr/0014-representacion-fisica-de-relaciones.md",
+          "docs/adr/0015-privacidad-de-la-observabilidad.md",
+          "docs/adr/0016-adaptacion-e-invalidacion.md",
+          "docs/adr/0017-semantica-de-la-unidad-neuronal.md",
+          "docs/adr/0018-versionado-y-reconstruccion-de-derivados.md"
+        ]
+      },
+      "acquired": "2026-11-07",
+      "bytes": 120497,
+      "words": 18675,
+      "sha256": "b6c12d5c539eb674f9e1b357fafbd1e8ce57e7c4b250ee3c82445a4e389c1035"
+    }
+  ]
+}

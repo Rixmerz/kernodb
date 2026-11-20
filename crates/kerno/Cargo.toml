@@ -1,0 +1,25 @@
+[package]
+name = "kerno"
+description = "Kerno: an embedded database of units, revisions and relations, behind one entry point"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["database", "embedded", "storage", "memory", "ai"]
+categories = ["database-implementations"]
+# The crate meant for crates.io; the workspace default stays `publish = false`, so only
+# this one and its three dependencies are publishable. A lib only: `kerno-cli` already
+# builds a binary called `kerno`, and the two never share a package.
+publish = true
+
+[dependencies]
+kerno-core.workspace = true
+kerno-storage.workspace = true
+kerno-units.workspace = true
+
+[dev-dependencies]
+# `raw_commit` damages stored bytes for the `verify` test.
+kerno-units = { workspace = true, features = ["test-support"] }

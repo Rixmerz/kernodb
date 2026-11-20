@@ -1,0 +1,675 @@
+{
+ "document": "e-arxiv-2606.05658v1.txt",
+ "sha256": "b34a463b403739f234ea082fd61b029210b9817584aaa3aed7b95e23cb755efa",
+ "status": "draft: pending human review",
+ "prompt_version": "q3",
+ "alias": "haiku",
+ "windows": [
+  {
+   "index": 0,
+   "start": 0,
+   "end": 39281,
+   "asked": 30,
+   "call_id": "questions:q3:e-arxiv-2606.05658v1.txt:w0",
+   "model_ids": [
+    "claude-haiku-5-5"
+   ],
+   "charged_usd": 0.02186041
+  }
+ ],
+ "questions": [
+  {
+   "id": "e01",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the paper's view of query decomposition change from its introduction to its closing summary of findings?",
+   "reference_answer": "Decomposition is introduced as a way to break a complex query into sub-questions, gather evidence for each, and refine the answer. The findings conclude that it helps in structured domains with clean chained relationships but is not universally beneficial and degrades ranking precision on harder multi-hop data.",
+   "evidence": [
+    {
+     "start": 3110,
+     "end": 3308,
+     "quote": "Instead of a single retrieve-then-generate step, an agentic system can decompose a complex query into sub-questions, gather evidence for each, and refine its answer through self-reflection [11, 12]."
+    },
+    {
+     "start": 25019,
+     "end": 25224,
+     "quote": "Decomposition helps in structured domains where chained reasoning maps cleanly onto well-defined relationships, but it is not universally beneficial and degrades ranking precision on harder multi-hop data."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "e02",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the paper move from describing the reflection loop's design to judging its results?",
+   "reference_answer": "Reflection is designed as a bounded loop capped at two iterations to control cost and latency. The results section then judges that, as designed, reflection imposes a large computational cost without reliable quality gains.",
+   "evidence": [
+    {
+     "start": 14403,
+     "end": 14541,
+     "quote": "To bound cost and latency, the reflection loop is capped at two iterations, balancing potential quality gains against responsiveness [46]."
+    },
+    {
+     "start": 22104,
+     "end": 22233,
+     "quote": "These results indicate that, as currently designed, reflection imposes a large computational cost without reliable quality gains."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "e03",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How is the two-dataset framing set up in the abstract and carried through to the conclusion?",
+   "reference_answer": "The abstract introduces the DevOps knowledge base and MuSiQue as complementary datasets. The conclusion restates the contrasting outcomes for each: decomposition improves the structured domain but reduces ranking precision on multi-hop data, while reflection gives marginal gains at substantial latency cost.",
+   "evidence": [
+    {
+     "start": 956,
+     "end": 1100,
+     "quote": "We evaluate the system across two complementary datasets: a domain-specific DevOps knowledge base and the multi-hop reasoning benchmark MuSiQue."
+    },
+    {
+     "start": 27244,
+     "end": 27519,
+     "quote": "Across a structured DevOps corpus and the multi-hop MuSiQue benchmark, query decomposition improved retrieval quality in the structured domain but reduced ranking precision in the multi-hop setting, and reflection delivered marginal quality gains at substantial latency cost."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "e04",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does latency develop from a measured cost of decomposition into a design requirement for future work?",
+   "reference_answer": "In the decomposition results, latency on DevOps more than doubles from 21 s to 48 s. The tradeoff analysis generalizes this to every agentic addition, with reflection on MuSiQue approaching a sixfold slowdown. Future work then calls for orchestration to become explicitly cost-aware.",
+   "evidence": [
+    {
+     "start": 24450,
+     "end": 24624,
+     "quote": "Accuracy vs. latency: every agentic addition increases response time, with reflection on MuSiQue approaching a sixfold slowdown—likely unacceptable in real-time DevOps use."
+    },
+    {
+     "start": 28195,
+     "end": 28312,
+     "quote": "Given the large latency penalties measured for agentic components, orchestration should become explicitly cost-aware."
+    }
+   ],
+   "evidence_rejected": 1,
+   "unlocated_quotes": [
+    "The cost is latency, which more than doubles from 21 s to 48 s."
+   ],
+   "needs_review": false
+  },
+  {
+   "id": "e05",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the paper's treatment of the decomposition trigger move from an observed result to a proposed target for improvement?",
+   "reference_answer": "In the strategy distribution results, the authors argue the decomposition trigger is conservative, since many complex MuSiQue queries are not routed to decomposition. In the limitations, they attribute this to static heuristic rules, and future work proposes learning-based strategy selection.",
+   "evidence": [
+    {
+     "start": 23891,
+     "end": 24173,
+     "quote": "Third, the comparatively small share of decomposed queries—even on MuSiQue, where 49% of queries remain in the complex-RAG category—suggests that the decomposition trigger is conservative and that not all complex queries that could benefit are actually routed for decomposition."
+    },
+    {
+     "start": 27685,
+     "end": 27796,
+     "quote": "A central limitation we observed is that decomposition and reflection are triggered by static, heuristic rules."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "e06",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the precision-versus-coverage problem with decomposition move from the results to the proposed fixes?",
+   "reference_answer": "The results show decomposition broadens topic coverage but fragments the contextual signal that ranking depends on, lowering precision on multi-hop queries. The future-work section then proposes more coherent sub-queries and preserved inter-task dependencies to address this precision loss.",
+   "evidence": [
+    {
+     "start": 20970,
+     "end": 21123,
+     "quote": "Decomposition therefore broadens coverage but fragments the contextual signal that ranking depends on, harming precision in genuinely multi-hop settings."
+    },
+    {
+     "start": 28693,
+     "end": 28796,
+     "quote": "The current decomposition strategy can be refined to address the precision loss seen on multi-hop data."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "e07",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the paper's concern about the small size of its DevOps corpus evolve from the limitations section to future work?",
+   "reference_answer": "The limitations section says the 80-document corpus is modest in scale, so absolute metric values should be read as indicative rather than definitive. Future work calls for evaluation at larger scale, with much larger corpora, noisy queries, and concurrent load.",
+   "evidence": [
+    {
+     "start": 25596,
+     "end": 25950,
+     "quote": "First, the DevOps knowledge base is modest in scale (80 documents, roughly 10,000 words) and was generated with LLM assistance before manual validation; while it is designed to emulate realistic structural heterogeneity, results on a larger production corpus may differ, and the absolute metric values should be read as indicative rather than definitive."
+    },
+    {
+     "start": 30138,
+     "end": 30297,
+     "quote": "Finally, the system should be evaluated at larger scale and under realistic conditions, including noisy queries, much larger corpora, and concurrent user load."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "e08",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the decomposition strategy's link to Least-to-Most prompting connect to the refinements proposed in the conclusion?",
+   "reference_answer": "The related work says decomposition aligns closely with Least-to-Most prompting, which solves simpler sub-problems in order. The later refinements aim to keep dependencies between sub-tasks and to move beyond flat sub-query lists toward structured reasoning representations.",
+   "evidence": [
+    {
+     "start": 9788,
+     "end": 9991,
+     "quote": "Least-to-Most prompting [48] decomposes a hard problem into a sequence of simpler sub-problems solved in order, an approach that aligns closely with the query decomposition strategy adopted in this work."
+    },
+    {
+     "start": 28797,
+     "end": 29141,
+     "quote": "Promising directions include generating more semantically coherent sub-queries, explicitly preserving contextual dependencies between sub-tasks so that ranking signal is not fragmented, and integrating structured reasoning representations such as knowledge or reasoning graphs to capture inter-step relationships that flat sub-query lists miss."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "e09",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the role of chunking shift from the related-work survey to the paper's own pipeline argument?",
+   "reference_answer": "The related work lists chunking strategies as one of the advanced RAG improvements for context selection. The method section argues that segmentation involves a recall–precision tradeoff and that poor segmentation can split the evidence needed for a multi-hop reasoning chain.",
+   "evidence": [
+    {
+     "start": 7197,
+     "end": 7350,
+     "quote": "Advanced RAG counters this with query rewriting and expansion [33], re-ranking of candidates, and chunking strategies that improve context selection [8]."
+    },
+    {
+     "start": 15983,
+     "end": 16229,
+     "quote": "Segmentation involves a recall–precision tradeoff: larger chunks improve semantic completeness while smaller chunks sharpen retrieval specificity, and improper segmentation can isolate evidence needed to reconstruct a multi-hop reasoning chain."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "e10",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the idea of tool use move from the related-work discussion to the future-work proposals?",
+   "reference_answer": "Related work notes that Toolformer showed models can learn to call external tools, and that ReAct interleaves reasoning and actions. The future-work section proposes extending the framework with knowledge graphs, live APIs, and symbolic engines, such as querying live DevOps monitoring or ticketing systems.",
+   "evidence": [
+    {
+     "start": 8866,
+     "end": 9114,
+     "quote": "The ReAct framework [12] formalized the interleaving of reasoning traces and actions, Toolformer [42] showed that models can learn to call external tools, and Self-RAG [11] introduced learned reflection signals for selective retrieval and critique."
+    },
+    {
+     "start": 29904,
+     "end": 30092,
+     "quote": "In a DevOps context this could mean querying live monitoring systems or ticketing APIs, enabling responses grounded in the current state of a system rather than static documentation alone."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "e11",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the fully local, privacy-first design choice relate to the later proposal to query live systems?",
+   "reference_answer": "The contributions state the system is built on a fully local, privacy-first inference stack. The future-work section proposes querying live monitoring systems and ticketing APIs, which would take the DevOps system beyond static, locally stored documentation.",
+   "evidence": [
+    {
+     "start": 3671,
+     "end": 3898,
+     "quote": "We implement a complete Agent-Orchestrated Adaptive RAG system composed of a Query Classifier, a Query Decomposer, an Answer Evaluator, and a central Orchestrator, built on a fully local, privacy-first inference stack [13, 14]."
+    },
+    {
+     "start": 29904,
+     "end": 30092,
+     "quote": "In a DevOps context this could mean querying live monitoring systems or ticketing APIs, enabling responses grounded in the current state of a system rather than static documentation alone."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "e12",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How is MuSiQue characterized in the related work, and how does that framing return in the future-work section?",
+   "reference_answer": "Related work says MuSiQue was built so that answering requires evidence integration across independent documents and resists single-hop shortcuts. The future-work section uses this contrast to propose learning when decomposition helps (DevOps) and when it harms ranking (MuSiQue).",
+   "evidence": [
+    {
+     "start": 10341,
+     "end": 10535,
+     "quote": "MuSiQue [15] was deliberately constructed by composing single-hop questions so that answering requires genuine evidence integration across independent documents and resists single-hop shortcuts."
+    },
+    {
+     "start": 27948,
+     "end": 28163,
+     "quote": "Reinforcement learning or meta-learning could be used to balance quality against efficiency directly, learning when decomposition genuinely helps—as in the DevOps domain—and when it harms ranking, as on MuSiQue."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "e13",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does hallucination move from being the motivation for RAG to a criterion inside the answer evaluator?",
+   "reference_answer": "The introduction names factual hallucination as one of two persistent LLM limitations that RAG addresses. The method section later makes hallucination detection one of the four axes the Answer Evaluator critiques.",
+   "evidence": [
+    {
+     "start": 1897,
+     "end": 2159,
+     "quote": "Large Language Models (LLMs) have shown strong capabilities in natural language understanding and generation, yet they remain constrained by two persistent limitations: factual hallucination and an inability to access knowledge beyond their training data [1, 2]."
+    },
+    {
+     "start": 13988,
+     "end": 14218,
+     "quote": "The Answer Evaluator Agent adds a self-reflective layer that critiques generated responses along four axes: relevance to the query, citation accuracy, support (grounding in retrieved context), and hallucination detection [11, 49]."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "e14",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does citation accuracy change across the abstract, the decomposition results, and the reflection results?",
+   "reference_answer": "The abstract says reflection improves citation accuracy at a substantial latency cost. Decomposition raises DevOps citation accuracy to 0.917, while on MuSiQue reflection gives only a slight citation gain alongside a falling overall score.",
+   "evidence": [
+    {
+     "start": 1101,
+     "end": 1477,
+     "quote": "Using metrics that include overall score, citation accuracy, mean reciprocal rank, and topic coverage, we find that query decomposition yields consistent gains in the structured domain (overall score +0.04 , MRR +0.17 on DevOps) but degrades ranking precision on the multi-hop benchmark, while the reflection mechanism improves citation accuracy at a substantial latency cost."
+    }
+   ],
+   "evidence_rejected": 1,
+   "unlocated_quotes": [
+    "On MuSiQue, overall score also falls (0.721 to 0.666) and recall and MRR both decline; citation accuracy improves slightly, but latency increases roughly sixfold, from 17 s to 104 s."
+   ],
+   "needs_review": false
+  },
+  {
+   "id": "e15",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does metadata-aware filtering appear first in the query classifier description and then in the indexing details?",
+   "reference_answer": "The classifier section says it categorizes requests into document types to enable metadata-aware filtering before similarity ranking. The indexing section explains that chunks are stored with metadata and attribute constraints are applied before ranking to narrow the candidate space.",
+   "evidence": [
+    {
+     "start": 12904,
+     "end": 13051,
+     "quote": "The Query Classifier Agent categorizes each incoming request into document types, enabling metadata-aware filtering before similarity ranking [45]."
+    },
+    {
+     "start": 16231,
+     "end": 16508,
+     "quote": "Each chunk is embedded with the BGE encoder and indexed in FAISS together with its metadata, enabling hybrid filtering in which attribute constraints (for example, restricting to runbooks or incident reports) are applied before similarity ranking to narrow the candidate space."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "e16",
+   "window": 0,
+   "type": "trajectory",
+   "question": "How does the idea of routing by question difficulty from related work reappear in the Orchestrator and later in future work?",
+   "reference_answer": "Related work says Adaptive-RAG routes queries to strategies by predicted difficulty. The Orchestrator routes by classifier output using rule-based logic, and future work proposes replacing these rules with learning-based strategy selection from query features.",
+   "evidence": [
+    {
+     "start": 9115,
+     "end": 9313,
+     "quote": "Corrective RAG [43] added an explicit retrieval-correction step, and Adaptive-RAG [44] routed queries to retrieval strategies of differing complexity based on predicted question difficulty [45, 46]."
+    },
+    {
+     "start": 12289,
+     "end": 12467,
+     "quote": "The Orchestrator is the central controller. It routes queries based on the classifier output, triggers decomposition when required, and manages the evaluation–reflection cycle."
+    },
+    {
+     "start": 27797,
+     "end": 27947,
+     "quote": "Future work can replace these with learning-based strategy selection, in which the system predicts the optimal reasoning strategy from query features."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "e17",
+   "window": 0,
+   "type": "contrast",
+   "question": "Does the decomposition effect hold the same direction in the structured and multi-hop datasets?",
+   "reference_answer": "No. The abstract reports gains for decomposition in the structured DevOps domain, but on MuSiQue the ranking metrics collapse (MRR falls from 0.469 to 0.102) even though citation accuracy and topic coverage rise.",
+   "evidence": [
+    {
+     "start": 1478,
+     "end": 1644,
+     "quote": "These contrasting results show that agentic enhancements are not universally beneficial and must be applied selectively according to query and domain characteristics."
+    },
+    {
+     "start": 20785,
+     "end": 20969,
+     "quote": "Although citation accuracy reaches 1.0 and topic coverage rises sharply (0.609 to 0.859), ranking-based metrics collapse: MRR falls from 0.469 to 0.102 and Success@5 from 1.0 to 0.063."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "e18",
+   "window": 0,
+   "type": "contrast",
+   "question": "How do decomposition and reflection differ in their effect on DevOps overall score?",
+   "reference_answer": "Decomposition raises the DevOps overall score (the abstract reports gains in the structured domain). Reflection lowers it, with overall score falling from 0.870 to 0.781, no gain in recall or ranking, and latency roughly doubling.",
+   "evidence": [
+    {
+     "start": 1204,
+     "end": 1477,
+     "quote": "we find that query decomposition yields consistent gains in the structured domain (overall score +0.04 , MRR +0.17 on DevOps) but degrades ranking precision on the multi-hop benchmark, while the reflection mechanism improves citation accuracy at a substantial latency cost."
+    },
+    {
+     "start": 21787,
+     "end": 21916,
+     "quote": "On DevOps, overall score actually decreases from 0.870 to 0.781 with no gain in recall or ranking, while latency roughly doubles."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "e19",
+   "window": 0,
+   "type": "contrast",
+   "question": "Does the conclusion describe reflection's quality gains the same way as the results section does?",
+   "reference_answer": "Not exactly. The results section says reflection gives no reliable quality gains as designed, while the conclusion describes reflection as delivering marginal quality gains at substantial latency cost, a softer characterization.",
+   "evidence": [
+    {
+     "start": 22104,
+     "end": 22233,
+     "quote": "These results indicate that, as currently designed, reflection imposes a large computational cost without reliable quality gains."
+    },
+    {
+     "start": 27244,
+     "end": 27519,
+     "quote": "Across a structured DevOps corpus and the multi-hop MuSiQue benchmark, query decomposition improved retrieval quality in the structured domain but reduced ranking precision in the multi-hop setting, and reflection delivered marginal quality gains at substantial latency cost."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "e20",
+   "window": 0,
+   "type": "contrast",
+   "question": "Is reflection treated as a routing decision by the orchestrator in the same way as decomposition?",
+   "reference_answer": "No. The orchestrator is described as routing each query to the agents it needs, but the strategy results show reflection does not change routing; it is a post-hoc corrective step applied after the same routing distribution.",
+   "evidence": [
+    {
+     "start": 11381,
+     "end": 11471,
+     "quote": "A central Orchestrator routes each query, invoking only the agents a given query requires."
+    },
+    {
+     "start": 23251,
+     "end": 23455,
+     "quote": "Notably, the distribution is identical between the decomposition-enabled and full-agentic configurations, confirming that reflection operates as a post-hoc corrective step rather than a routing mechanism."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "e21",
+   "window": 0,
+   "type": "contrast",
+   "question": "How do Naive RAG and the proposed agentic pipeline differ in controlling their retrieval flow?",
+   "reference_answer": "Naive RAG is a fixed single-pass procedure, which works for isolated lookups but struggles with multi-document reasoning. The agentic pipeline determines its control flow at runtime, using intermediate outputs to decide subsequent actions.",
+   "evidence": [
+    {
+     "start": 2789,
+     "end": 2953,
+     "quote": "This works well for isolated factual lookups, but it struggles with queries that require reasoning across several documents or chaining intermediate results [7, 8]."
+    },
+    {
+     "start": 8094,
+     "end": 8315,
+     "quote": "Whereas a Naive pipeline executes a predetermined sequence, an agentic system determines its control flow at runtime, using intermediate outputs to guide subsequent actions and invoking external tools only as needed [39]."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "e22",
+   "window": 0,
+   "type": "causal",
+   "question": "Why is decomposition adopted for so few MuSiQue queries despite many queries being complex?",
+   "reference_answer": "The authors attribute it to a conservative decomposition trigger, and to rule-based heuristics in the orchestrator, so many complex queries that could benefit are not routed to decomposition. The observed distribution therefore reflects these specific rules rather than an optimal policy.",
+   "evidence": [
+    {
+     "start": 23891,
+     "end": 24173,
+     "quote": "Third, the comparatively small share of decomposed queries—even on MuSiQue, where 49% of queries remain in the complex-RAG category—suggests that the decomposition trigger is conservative and that not all complex queries that could benefit are actually routed for decomposition."
+    },
+    {
+     "start": 26461,
+     "end": 26629,
+     "quote": "Fourth, the orchestrator’s routing relies on rule-based heuristics, so the observed strategy distributions reflect those specific rules rather than an optimal policy."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "e23",
+   "window": 0,
+   "type": "causal",
+   "question": "Why are the reported latency figures described as relative trends rather than absolute timings?",
+   "reference_answer": "The generator is a 4-bit quantized Llama model run locally, and the latency was measured in that environment. Because the figures are environment-dependent, they capture relative trends across configurations rather than portable absolute timings.",
+   "evidence": [
+    {
+     "start": 17283,
+     "end": 17405,
+     "quote": "The generative core is Meta’s Llama-3.1-8B-Instruct, quantized to 4-bit GGUF for local inference via llama.cpp [13, 14]."
+    },
+    {
+     "start": 26630,
+     "end": 26821,
+     "quote": "Finally, latency figures are environment-dependent and were measured under local quantized inference; they capture relative trends across configurations rather than portable absolute timings."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "e24",
+   "window": 0,
+   "type": "causal",
+   "question": "Why does the paper stress latency so strongly for the DevOps setting?",
+   "reference_answer": "DevOps and SRE are high-stakes settings where the speed and correctness of documentation lookup can determine incident resolution time. The authors therefore judge a reflection slowdown of about sixfold as likely unacceptable in real-time DevOps use.",
+   "evidence": [
+    {
+     "start": 2160,
+     "end": 2441,
+     "quote": "These limitations are especially consequential in high-stakes operational settings such as DevOps and Site Reliability Engineering (SRE), where the correct interpretation of technical documentation can be the difference between rapid incident resolution and prolonged downtime [3]."
+    },
+    {
+     "start": 24450,
+     "end": 24624,
+     "quote": "Accuracy vs. latency: every agentic addition increases response time, with reflection on MuSiQue approaching a sixfold slowdown—likely unacceptable in real-time DevOps use."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "e25",
+   "window": 0,
+   "type": "evolution",
+   "question": "How does the proposed decomposition trigger move from its design to the authors' final judgment on it?",
+   "reference_answer": "The method defines a workflow that detects multi-hop structure and generates ordered sub-queries. The results later show the trigger is conservative, and the authors flag the triggering policy as a high-value target for future optimization.",
+   "evidence": [
+    {
+     "start": 13574,
+     "end": 13946,
+     "quote": "The workflow is: (i) detect multi-hop structure, flagging queries that involve multiple entities or chained dependencies; (ii) generate ordered sub-queries such that earlier results can inform later retrieval; (iii) retrieve independently for each sub-query; and (iv) aggregate the intermediate answers into a single coherent response that aligns with the original intent."
+    },
+    {
+     "start": 24174,
+     "end": 24263,
+     "quote": "This points directly to triggering policy as a high-value target for future optimization."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "e26",
+   "window": 0,
+   "type": "evolution",
+   "question": "How does the open question posed in the introduction get answered in the conclusion?",
+   "reference_answer": "The introduction says it is unclear how agentic enhancements behave across domains that differ in structure and reasoning demand, since most studies use one domain. The conclusion answers that such enhancements must be applied selectively and with explicit cost awareness rather than uniformly.",
+   "evidence": [
+    {
+     "start": 3309,
+     "end": 3549,
+     "quote": "Interest in this direction has grown quickly, but most studies evaluate agentic RAG on a single domain or benchmark. As a result, it remains unclear how these enhancements behave across domains that differ in structure and reasoning demand."
+    },
+    {
+     "start": 27520,
+     "end": 27649,
+     "quote": "The clear lesson is that agentic enhancements must be applied selectively and with explicit cost awareness rather than uniformly."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "e27",
+   "window": 0,
+   "type": "evolution",
+   "question": "How does the call for cost-aware orchestration develop from the abstract to the future-work section?",
+   "reference_answer": "The abstract argues for adaptive, cost-aware orchestration rather than uniformly aggressive reasoning pipelines. Future work makes this concrete, noting that the large latency penalties of agentic components mean orchestration should become explicitly cost-aware.",
+   "evidence": [
+    {
+     "start": 1645,
+     "end": 1756,
+     "quote": "Our findings argue for adaptive, cost-aware orchestration rather than uniformly aggressive reasoning pipelines."
+    },
+    {
+     "start": 28195,
+     "end": 28312,
+     "quote": "Given the large latency penalties measured for agentic components, orchestration should become explicitly cost-aware."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "e28",
+   "window": 0,
+   "type": "local",
+   "question": "What chunking configuration is used for the DevOps knowledge base?",
+   "reference_answer": "Documents are segmented into 600-token chunks with a 100-token overlap, using a token-based semantic chunking strategy.",
+   "evidence": [
+    {
+     "start": 15600,
+     "end": 15713,
+     "quote": "Documents are segmented with a token-based semantic chunking strategy: 600-token chunks with a 100-token overlap."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "e29",
+   "window": 0,
+   "type": "local",
+   "question": "How large is the DevOps knowledge base and how many documentation types does it span?",
+   "reference_answer": "The knowledge base comprises 80 documents, approximately 10,000 words, spanning six documentation types.",
+   "evidence": [
+    {
+     "start": 17995,
+     "end": 18281,
+     "quote": "The DevOps knowledge base comprises 80 documents (approximately 10,000 words) spanning six documentation types—Standard, Architecture, Runbooks, Incidents, Postmortem, and Onboarding—generated with LLM assistance and validated manually to reflect realistic organizational knowledge."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  },
+  {
+   "id": "e30",
+   "window": 0,
+   "type": "local",
+   "question": "What is the maximum number of reflection iterations, and why is it capped?",
+   "reference_answer": "The reflection loop is capped at two iterations to bound cost and latency while balancing potential quality gains against responsiveness.",
+   "evidence": [
+    {
+     "start": 14403,
+     "end": 14541,
+     "quote": "To bound cost and latency, the reflection loop is capped at two iterations, balancing potential quality gains against responsiveness [46]."
+    }
+   ],
+   "evidence_rejected": 0,
+   "unlocated_quotes": [],
+   "needs_review": false
+  }
+ ],
+ "rejected_quotes": 2,
+ "model_ids": [
+  "claude-haiku-5-5"
+ ]
+}
