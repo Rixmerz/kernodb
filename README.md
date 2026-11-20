@@ -47,6 +47,8 @@ Stages follow the [roadmap](docs/roadmap/README.md):
 | Document | Content |
 |---|---|
 | [Getting started](docs/getting-started.md) | Install the `kerno` crate, open a database, store and retrieve memory in five minutes, and three runnable examples (agent memory, chat history, document store) |
+| [Python bindings](bindings/python/README.md) | Install from PyPI, concepts, API, errors, performance advice and limits for the `kernodb` package |
+| [Kerno vs SQLite from Python](docs/testing/python-vs-sqlite.md) | The same workloads on both engines, the profile of the write path, and the improvement paths |
 | [SAD](docs/architecture/SAD.md) | Reference architecture and implementation plan (version 0.3.0) |
 | [ADR index](docs/adr/README.md) | Architecture decisions and their status |
 | [ADR-0001](docs/adr/0001-storage-engine.md) | Storage engine: decision (leveled LSM tree) and M0 evidence |

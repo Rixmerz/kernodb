@@ -31,6 +31,9 @@ jobs:
           - { target: x86_64-apple-darwin, os: macos-15-intel }
           - { target: aarch64-apple-darwin, os: macos-latest }
           - { target: x86_64-pc-windows-msvc, os: windows-latest, experimental: true }
+          # musl (Alpine, slim containers): built in the musllinux container, tested in Alpine.
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest, musl: true }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm, musl: true }
     defaults:
       run:
         shell: bash
@@ -44,9 +47,17 @@ jobs:
           working-directory: bindings/python
           target: ${{ matrix.target }}
           # Linux wheels are built in the manylinux container; ignored elsewhere.
-          manylinux: auto
+          manylinux: ${{ matrix.musl && 'musllinux_1_2' || 'auto' }}
           args: --release --locked --out dist
+      - name: Install the wheel and run the tests (Alpine)
+        if: matrix.musl
+        run: |
+          docker run --rm -v "$PWD/bindings/python:/w" -w /w python:3.12-alpine sh -euc '
+            pip install pytest
+            pip install --no-index --find-links dist kernodb
+            python -m pytest tests'
       - name: Install the wheel and run the tests
+        if: ${{ !matrix.musl }}
         run: |
           set -euo pipefail
           python -m pip install pytest

@@ -41,6 +41,12 @@ create_exception!(
     "The unit still has live relations; unrelate them or use cascade."
 );
 create_exception!(_kerno, PrunedError, KernoError, "Retention removed the revision asked for.");
+create_exception!(
+    _kerno,
+    SchemaError,
+    KernoError,
+    "The type's schema refused the document (or the payload is not a document)."
+);
 
 fn engine_error(e: kerno::Error) -> PyErr {
     use kerno::Error as E;
@@ -58,6 +64,7 @@ fn engine_error(e: kerno::Error) -> PyErr {
         E::InvalidArgument(_) | E::ChangeSetTooLarge { .. } => InvalidArgumentError::new_err(msg),
         E::UnitHasRelations { .. } => HasRelationsError::new_err(msg),
         E::Pruned { .. } => PrunedError::new_err(msg),
+        E::SchemaViolation { .. } => SchemaError::new_err(msg),
         _ => KernoError::new_err(msg),
     }
 }
@@ -726,5 +733,6 @@ fn _kerno(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("PayloadTooLargeError", m.py().get_type::<PayloadTooLargeError>())?;
     m.add("HasRelationsError", m.py().get_type::<HasRelationsError>())?;
     m.add("PrunedError", m.py().get_type::<PrunedError>())?;
+    m.add("SchemaError", m.py().get_type::<SchemaError>())?;
     Ok(())
 }

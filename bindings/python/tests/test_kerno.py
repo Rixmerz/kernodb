@@ -207,8 +207,10 @@ def test_documents_schema_index_find_and_execute(tmp_path):
         db.store_document("sym", {"qname": "m.g", "lines": 9})
         assert [u.id for u in db.find("sym", "qname", "m.f")] == [a]
         assert db.read_document(a) == {"qname": "m.f", "lines": 3}
-        with pytest.raises(kerno.KernoError):
+        with pytest.raises(kerno.SchemaError):
             db.store_document("sym", {"qname": "m.f"})  # unique
+        with pytest.raises(kerno.SchemaError):
+            db.update(a, b"not a document")
         res = db.execute("FIND sym AS s WHERE s.lines > 5")
         assert res["aliases"] == ["s"] and len(res["rows"]) == 1
 
