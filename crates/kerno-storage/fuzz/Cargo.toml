@@ -1,0 +1,127 @@
+[package]
+name = "kerno-storage-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# Its own workspace root: the fuzz crate is outside the Kerno workspace, so
+# the workspace's build, MSRV and CI never see it (nightly only, see README).
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+kerno-core = { path = "../../kerno-core" }
+kerno-storage = { path = ".." }
+kerno-testkit = { path = "../../kerno-testkit" }
+
+[profile.release]
+debug = 1
+
+
+[[bin]]
+name = "varint"
+path = "fuzz_targets/varint.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "header"
+path = "fuzz_targets/header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "commit"
+path = "fuzz_targets/commit.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "frame"
+path = "fuzz_targets/frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "data_block"
+path = "fuzz_targets/data_block.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "filter_block"
+path = "fuzz_targets/filter_block.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rangedel_block"
+path = "fuzz_targets/rangedel_block.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "props_block"
+path = "fuzz_targets/props_block.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "index_block"
+path = "fuzz_targets/index_block.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "footer"
+path = "fuzz_targets/footer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "record"
+path = "fuzz_targets/record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wal"
+path = "fuzz_targets/wal.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sst"
+path = "fuzz_targets/sst.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "manifest"
+path = "fuzz_targets/manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "open"
+path = "fuzz_targets/open.rs"
+test = false
+doc = false
+bench = false

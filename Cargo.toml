@@ -1,0 +1,56 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/kerno-core",
+    "crates/kerno-testkit",
+    "crates/kerno-storage",
+    "crates/kerno-units",
+    "crates/kerno-mcp",
+    "crates/kerno-cli",
+    "crates/kerno",
+    "crates/kerno-server",
+    "crates/kerno-backup",
+    # Examples on the kerno facade are members so the workspace tests run them; agent-memory stays
+    # outside with its own lock file.
+    "examples/chat-history",
+    "examples/document-store",
+    "spikes/storage/spike-core",
+    "spikes/storage/spike-btree",
+    "spikes/storage/spike-lsm",
+    "spikes/storage/spike-bench",
+]
+# The Python extension is built by maturin, not cargo: it links libpython and carries its own lockfile.
+exclude = ["bindings/python"]
+
+[workspace.package]
+version = "1.0.0-alpha.1"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Rixmerz/kernodb"
+homepage = "https://github.com/Rixmerz/kernodb"
+
+[workspace.dependencies]
+kerno-core = { path = "crates/kerno-core", version = "1.0.0-alpha.1" }
+kerno-testkit = { path = "crates/kerno-testkit" }
+kerno-storage = { path = "crates/kerno-storage", version = "1.0.0-alpha.1" }
+kerno-units = { path = "crates/kerno-units", version = "1.0.0-alpha.1" }
+kerno = { path = "crates/kerno", version = "1.0.0-alpha.1" }
+kerno-backup = { path = "crates/kerno-backup" }
+spike-core = { path = "spikes/storage/spike-core" }
+spike-btree = { path = "spikes/storage/spike-btree" }
+spike-lsm = { path = "spikes/storage/spike-lsm" }
+crc32c = "0.6"
+# Pinned exactly (ADR-0008): a change of version is a reviewed change.
+blake3 = { version = "=1.8.7", default-features = false, features = ["std"] }
+parking_lot = "0.12"
+quick_cache = "0.6"
+crossbeam-skiplist = "0.1"
+proptest = { version = "1", default-features = false, features = ["std"] }
+
+[profile.release]
+debug = 1
+
+[profile.test]
+opt-level = 1

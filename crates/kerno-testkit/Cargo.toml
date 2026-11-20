@@ -1,0 +1,14 @@
+[package]
+name = "kerno-testkit"
+description = "Shared test harness, simulated VFS and reference engine for Kerno storage engines"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+kerno-core.workspace = true
+crc32c.workspace = true
+parking_lot.workspace = true
