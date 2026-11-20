@@ -1,0 +1,81 @@
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.05s
+     Running tests/assoc_baseline.rs (target/release/deps/assoc_baseline-870bfa40b8e9810b)
+
+running 1 test
+assoc-eval baselines: corpus 2000 units, 3958 relations; 64 queries; cut 10
+query      class       B0 R@10  B0 nDCG@10  B1 R@10  B1 nDCG@10
+MH-01      multi_hop     0.000       0.000    0.444       0.373
+MH-02      multi_hop     0.000       0.000    0.556       0.543
+MH-03      multi_hop     0.000       0.000    1.000       0.552
+MH-04      multi_hop     0.000       0.000    0.400       0.203
+MH-05      multi_hop     0.000       0.000    0.556       0.529
+MH-06      multi_hop     0.000       0.000    0.556       0.490
+MH-07      multi_hop     0.000       0.000    1.000       0.552
+MH-08      multi_hop     0.000       0.000    0.600       0.410
+MH-09      multi_hop     0.000       0.000    0.556       0.524
+MH-10      multi_hop     0.000       0.000    0.556       0.501
+MH-11      multi_hop     0.000       0.000    1.000       0.552
+MH-12      multi_hop     0.000       0.000    0.600       0.384
+MH-13      multi_hop     0.000       0.000    0.556       0.513
+MH-14      multi_hop     0.000       0.000    0.556       0.524
+MH-15      multi_hop     0.000       0.000    1.000       0.552
+MH-16      multi_hop     0.000       0.000    0.600       0.369
+TM-01      temporal      0.000       0.000    0.600       0.448
+TM-02      temporal      0.000       0.000    0.667       0.487
+TM-03      temporal      0.000       0.000    0.600       0.461
+TM-04      temporal      0.000       0.000    0.667       0.508
+TM-05      temporal      0.000       0.000    0.625       0.532
+TM-06      temporal      0.000       0.000    0.667       0.507
+TM-07      temporal      0.000       0.000    0.667       0.528
+TM-08      temporal      0.000       0.000    0.667       0.492
+TM-09      temporal      0.000       0.000    0.667       0.508
+TM-10      temporal      0.000       0.000    0.667       0.474
+TM-11      temporal      0.000       0.000    0.600       0.496
+TM-12      temporal      0.000       0.000    0.571       0.503
+TM-13      temporal      0.000       0.000    0.600       0.448
+TM-14      temporal      0.000       0.000    0.667       0.479
+TM-15      temporal      0.000       0.000    0.667       0.512
+TM-16      temporal      0.000       0.000    0.667       0.508
+CB-01      combined      0.000       0.000    0.800       0.542
+CB-02      combined      0.000       0.000    0.750       0.526
+CB-03      combined      0.000       0.000    0.800       0.520
+CB-04      combined      0.000       0.000    0.714       0.548
+CB-05      combined      0.000       0.000    0.750       0.543
+CB-06      combined      0.000       0.000    0.750       0.504
+CB-07      combined      0.000       0.000    0.750       0.504
+CB-08      combined      0.000       0.000    0.714       0.535
+CB-09      combined      0.000       0.000    0.800       0.525
+CB-10      combined      0.000       0.000    0.750       0.543
+CB-11      combined      0.000       0.000    0.750       0.526
+CB-12      combined      0.000       0.000    0.750       0.504
+CB-13      combined      0.000       0.000    0.800       0.520
+CB-14      combined      0.000       0.000    0.800       0.525
+CB-15      combined      0.000       0.000    0.750       0.504
+CB-16      combined      0.000       0.000    0.750       0.504
+PV-RE-1    provenance    0.000       0.000    1.000       0.605
+PV-RE-2    provenance    0.000       0.000    1.000       0.525
+PV-RE-3    provenance    0.000       0.000    1.000       0.624
+PV-RE-4    provenance    0.000       0.000    1.000       0.525
+PV-SS-1    provenance    0.000       0.000    1.000       0.431
+PV-SS-2    provenance    0.000       0.000    1.000       0.387
+PV-SS-3    provenance    0.000       0.000    1.000       0.431
+PV-SS-4    provenance    0.000       0.000    1.000       0.500
+PV-AC-1    provenance    0.000       0.000    0.750       0.526
+PV-AC-2    provenance    0.000       0.000    0.714       0.518
+PV-AC-3    provenance    0.000       0.000    0.714       0.544
+PV-AC-4    provenance    0.000       0.000    0.800       0.542
+PV-SR-1    provenance    0.000       0.000    0.600       0.368
+PV-SR-2    provenance    0.000       0.000    0.750       0.543
+PV-SR-3    provenance    0.000       0.000    0.750       0.543
+PV-SR-4    provenance    0.000       0.000    0.750       0.543
+summary (mean over the queries)
+scope        queries  B0 R@10  B0 nDCG@10  B1 R@10  B1 nDCG@10
+overall           64   0.000       0.000    0.731       0.500
+multi_hop         16   0.000       0.000    0.658       0.473
+temporal          16   0.000       0.000    0.641       0.493
+provenance        16   0.000       0.000    0.864       0.510
+combined          16   0.000       0.000    0.761       0.523
+test baselines_over_the_frozen_set ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.28s
+

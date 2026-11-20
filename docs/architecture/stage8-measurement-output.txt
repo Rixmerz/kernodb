@@ -1,0 +1,261 @@
+$ cargo test -p kerno-units --release --test derived_measure -- --nocapture --exact quality_over_the_frozen_set
+
+running 1 test
+MANIFEST: corpus.txt, vectors.txt and queries.txt match
+== engine emulated_log
+load: 2000 units, 5062 relations, 300 change sets; 2000 vectors persisted, reopened and served
+queries: 100 translated and run on the reference, indexed and planner paths; planner fallbacks: 0
+queries that carry a query vector, by class (the only ones the vector signal can be computed on):
+  vector_neighbourhood    25 of  25
+  temporal                 0 of  25
+  provenance               0 of  25
+  combined                 0 of  25
+Q1  exact vector search over the persisted vectors against brute force (cosine), cut 10
+  recall@10 against the reference, mean over 25 queries: 1.000; identical lists in the same order: 25
+Q1  recall@10 = 1.000, computed on the 25 queries with a vector: 1.000 -> met
+Q5  unjudged units in the top 10, per arm (excluded from the metrics and counted here)
+  simple  100 queries,  708 positions,    0 unjudged (0.0 %) -> met
+  ranked  100 queries,  708 positions,    8 unjudged (1.1 %) -> met
+  vector   25 queries,  250 positions,    0 unjudged (0.0 %) -> met
+  hybrid   25 queries,   95 positions,    0 unjudged (0.0 %) -> met
+  brute    25 queries,  250 positions,    0 unjudged (0.0 %) -> met
+    simple  vector_neighbourhood    25 queries,   95 positions,    0 unjudged
+    simple  temporal                25 queries,  243 positions,    0 unjudged
+    simple  provenance              25 queries,  124 positions,    0 unjudged
+    simple  combined                25 queries,  246 positions,    0 unjudged
+    ranked  vector_neighbourhood    25 queries,   95 positions,    0 unjudged
+    ranked  temporal                25 queries,  243 positions,    5 unjudged
+    ranked  provenance              25 queries,  124 positions,    2 unjudged
+    ranked  combined                25 queries,  246 positions,    1 unjudged
+Q5  at most 10 % unjudged in the top 10 of every arm: met
+means (cut 10; unjudged units excluded): arm, scope, queries, recall@10, nDCG@10
+  simple  all-100                100    0.925    0.928
+  simple  with-vector-25          25    1.000    1.000
+  simple  vector_neighbourhood    25    1.000    1.000
+  simple  temporal                25    0.932    0.962
+  simple  provenance              25    0.892    0.852
+  simple  combined                25    0.876    0.896
+  ranked  all-100                100    0.927    0.933
+  ranked  with-vector-25          25    1.000    1.000
+  ranked  vector_neighbourhood    25    1.000    1.000
+  ranked  temporal                25    0.912    0.932
+  ranked  provenance              25    0.885    0.839
+  ranked  combined                25    0.911    0.960
+  vector  all-100                 25    1.000    0.708
+  vector  with-vector-25          25    1.000    0.708
+  vector  vector_neighbourhood    25    1.000    0.708
+  hybrid  all-100                 25    1.000    1.000
+  hybrid  with-vector-25          25    1.000    1.000
+  hybrid  vector_neighbourhood    25    1.000    1.000
+  brute   all-100                 25    1.000    0.708
+  brute   with-vector-25          25    1.000    0.708
+  brute   vector_neighbourhood    25    1.000    0.708
+Q2  nDCG@10 with the vector signal (hybrid), overall >= 0.80, computed on the 25 queries with a vector: 1.000 -> met
+Q3  recall@10 with the vector signal (hybrid), overall >= 0.90, computed on the 25 queries with a vector: 1.000 -> met
+Q4  nDCG@10 with the signal >= without it - 0.01 (without = the ranked arm with the signal off):
+      overall (25 queries with a vector): 1.000 vs 1.000 - 0.01 = 0.990 -> met
+      vector_neighbourhood (the same 25 queries): 1.000 vs 0.990 -> met
+      temporal               not measurable: 0 of 25 queries carry a query vector, so the signal cannot be applied
+      provenance             not measurable: 0 of 25 queries carry a query vector, so the signal cannot be applied
+      combined               not measurable: 0 of 25 queries carry a query vector, so the signal cannot be applied
+Q4  met on the scopes that can be computed; NOT closed: 3 of 4 classes are not measurable
+Q4  secondary reading (without = the simple order), overall: 1.000 vs 1.000 - 0.01 = 0.990 -> met
+Q6  not measured: it applies only if the ranking is proposed as the default later, and is not a closure criterion of Stage 8
+P3  after 286 source changes in 29 change sets: 2400 derived data, 400 expected stale, 400 stale, the rest ready: true
+P3  after reopening: 286 persisted data stale, 286 expected, 1714 served ready, 0 demoted by open
+P3  the stale entries are exactly the derived data of the changed sources: met
+P4  286 rebuilt vectors: identity, descriptor, vector and entry byte for byte equal to a fresh build: 286; stale left after the rebuild: 0
+P4  rebuilt = built anew, byte for byte: met
+P4  rebuild of 286 stale vectors, one change set each: 1493.7 ms in total
+P4  build from scratch of the same 286 vectors: 1170.1 ms in total
+== engine kerno_db
+load: 2000 units, 5062 relations, 300 change sets; 2000 vectors persisted, reopened and served
+queries: 100 translated and run on the reference, indexed and planner paths; planner fallbacks: 0
+queries that carry a query vector, by class (the only ones the vector signal can be computed on):
+  vector_neighbourhood    25 of  25
+  temporal                 0 of  25
+  provenance               0 of  25
+  combined                 0 of  25
+Q1  exact vector search over the persisted vectors against brute force (cosine), cut 10
+  recall@10 against the reference, mean over 25 queries: 1.000; identical lists in the same order: 25
+Q1  recall@10 = 1.000, computed on the 25 queries with a vector: 1.000 -> met
+Q5  unjudged units in the top 10, per arm (excluded from the metrics and counted here)
+  simple  100 queries,  708 positions,    0 unjudged (0.0 %) -> met
+  ranked  100 queries,  708 positions,    8 unjudged (1.1 %) -> met
+  vector   25 queries,  250 positions,    0 unjudged (0.0 %) -> met
+  hybrid   25 queries,   95 positions,    0 unjudged (0.0 %) -> met
+  brute    25 queries,  250 positions,    0 unjudged (0.0 %) -> met
+    simple  vector_neighbourhood    25 queries,   95 positions,    0 unjudged
+    simple  temporal                25 queries,  243 positions,    0 unjudged
+    simple  provenance              25 queries,  124 positions,    0 unjudged
+    simple  combined                25 queries,  246 positions,    0 unjudged
+    ranked  vector_neighbourhood    25 queries,   95 positions,    0 unjudged
+    ranked  temporal                25 queries,  243 positions,    5 unjudged
+    ranked  provenance              25 queries,  124 positions,    2 unjudged
+    ranked  combined                25 queries,  246 positions,    1 unjudged
+Q5  at most 10 % unjudged in the top 10 of every arm: met
+means (cut 10; unjudged units excluded): arm, scope, queries, recall@10, nDCG@10
+  simple  all-100                100    0.925    0.928
+  simple  with-vector-25          25    1.000    1.000
+  simple  vector_neighbourhood    25    1.000    1.000
+  simple  temporal                25    0.932    0.962
+  simple  provenance              25    0.892    0.852
+  simple  combined                25    0.876    0.896
+  ranked  all-100                100    0.927    0.933
+  ranked  with-vector-25          25    1.000    1.000
+  ranked  vector_neighbourhood    25    1.000    1.000
+  ranked  temporal                25    0.912    0.932
+  ranked  provenance              25    0.885    0.839
+  ranked  combined                25    0.911    0.960
+  vector  all-100                 25    1.000    0.708
+  vector  with-vector-25          25    1.000    0.708
+  vector  vector_neighbourhood    25    1.000    0.708
+  hybrid  all-100                 25    1.000    1.000
+  hybrid  with-vector-25          25    1.000    1.000
+  hybrid  vector_neighbourhood    25    1.000    1.000
+  brute   all-100                 25    1.000    0.708
+  brute   with-vector-25          25    1.000    0.708
+  brute   vector_neighbourhood    25    1.000    0.708
+Q2  nDCG@10 with the vector signal (hybrid), overall >= 0.80, computed on the 25 queries with a vector: 1.000 -> met
+Q3  recall@10 with the vector signal (hybrid), overall >= 0.90, computed on the 25 queries with a vector: 1.000 -> met
+Q4  nDCG@10 with the signal >= without it - 0.01 (without = the ranked arm with the signal off):
+      overall (25 queries with a vector): 1.000 vs 1.000 - 0.01 = 0.990 -> met
+      vector_neighbourhood (the same 25 queries): 1.000 vs 0.990 -> met
+      temporal               not measurable: 0 of 25 queries carry a query vector, so the signal cannot be applied
+      provenance             not measurable: 0 of 25 queries carry a query vector, so the signal cannot be applied
+      combined               not measurable: 0 of 25 queries carry a query vector, so the signal cannot be applied
+Q4  met on the scopes that can be computed; NOT closed: 3 of 4 classes are not measurable
+Q4  secondary reading (without = the simple order), overall: 1.000 vs 1.000 - 0.01 = 0.990 -> met
+Q6  not measured: it applies only if the ranking is proposed as the default later, and is not a closure criterion of Stage 8
+P3  after 286 source changes in 29 change sets: 2400 derived data, 400 expected stale, 400 stale, the rest ready: true
+P3  after reopening: 286 persisted data stale, 286 expected, 1714 served ready, 0 demoted by open
+P3  the stale entries are exactly the derived data of the changed sources: met
+P4  286 rebuilt vectors: identity, descriptor, vector and entry byte for byte equal to a fresh build: 286; stale left after the rebuild: 0
+P4  rebuilt = built anew, byte for byte: met
+P4  rebuild of 286 stale vectors, one change set each: 19.2 ms in total
+P4  build from scratch of the same 286 vectors: 11.8 ms in total
+engines: emulated_log and kerno_db report identical figures (63 lines)
+test quality_over_the_frozen_set ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 10.61s
+
+
+$ cargo run --release -p kerno-units --example derived_bench -- --runs 4 --reps 12 --dir <scratch>  (invocation 1 of 3)
+# load: 20000 units, 50962 relations, 3000 change sets, 25 vector queries; load time 2.3 s; reopen 158.2 ms; one-time read of 20000 served vectors into a set 11.4 ms
+measure,run,arm,pairs,p50_ms,p99_ms,loadavg_before,loadavg_after
+P2,1,persisted,512,1.7790,2.9917,1.91 1.05 0.42,1.91 1.05 0.42
+P2,1,memory,512,1.7730,2.8333,1.91 1.05 0.42,1.91 1.05 0.42
+# run 1 P2: persisted/memory p50 = 1.003, p99 = 1.056
+P1,1,with_descriptor,512,0.1897,0.4996,1.91 1.05 0.42,1.91 1.05 0.42
+P1,1,without_descriptor,512,0.1555,0.4089,1.91 1.05 0.42,1.91 1.05 0.42
+# run 1 P1: with/without p50 = 1.220, p99 = 1.222
+P2,2,persisted,512,1.7997,2.9297,1.91 1.05 0.42,1.84 1.05 0.42
+P2,2,memory,512,1.7926,3.8759,1.91 1.05 0.42,1.84 1.05 0.42
+# run 2 P2: persisted/memory p50 = 1.004, p99 = 0.756
+P1,2,with_descriptor,512,0.1954,0.5404,1.84 1.05 0.42,1.84 1.05 0.42
+P1,2,without_descriptor,512,0.1629,0.4637,1.84 1.05 0.42,1.84 1.05 0.42
+# run 2 P1: with/without p50 = 1.199, p99 = 1.165
+P2,3,persisted,512,1.7546,2.7299,1.84 1.05 0.42,1.77 1.04 0.43
+P2,3,memory,512,1.7464,2.5566,1.84 1.05 0.42,1.77 1.04 0.43
+# run 3 P2: persisted/memory p50 = 1.005, p99 = 1.068
+P1,3,with_descriptor,512,0.1776,0.4473,1.77 1.04 0.43,1.77 1.04 0.43
+P1,3,without_descriptor,512,0.1518,0.3987,1.77 1.04 0.43,1.77 1.04 0.43
+# run 3 P1: with/without p50 = 1.170, p99 = 1.122
+P2,4,persisted,512,1.7853,2.1136,1.77 1.04 0.43,1.77 1.04 0.43
+P2,4,memory,512,1.7724,2.0090,1.77 1.04 0.43,1.77 1.04 0.43
+# run 4 P2: persisted/memory p50 = 1.007, p99 = 1.052
+P1,4,with_descriptor,512,0.1837,0.4472,1.77 1.04 0.43,1.77 1.04 0.43
+P1,4,without_descriptor,512,0.1484,0.3805,1.77 1.04 0.43,1.77 1.04 0.43
+# run 4 P1: with/without p50 = 1.238, p99 = 1.175
+# P1 (acta §6.3): p50 with / without descriptor <= 1.50 in every run
+#   run 1: 0.1897 ms / 0.1555 ms = 1.220 -> within
+#   run 2: 0.1954 ms / 0.1629 ms = 1.199 -> within
+#   run 3: 0.1776 ms / 0.1518 ms = 1.170 -> within
+#   run 4: 0.1837 ms / 0.1484 ms = 1.238 -> within
+# P1: 0 of 4 runs above the ceiling -> met
+# P2 (acta §6.3): p50 persisted / in memory <= 1.10 in every run
+#   run 1: 1.7790 ms / 1.7730 ms = 1.003 -> within
+#   run 2: 1.7997 ms / 1.7926 ms = 1.004 -> within
+#   run 3: 1.7546 ms / 1.7464 ms = 1.005 -> within
+#   run 4: 1.7853 ms / 1.7724 ms = 1.007 -> within
+# P2: 0 of 4 runs above the ceiling -> met
+
+$ cargo run --release -p kerno-units --example derived_bench -- --runs 4 --reps 12 --dir <scratch>  (invocation 2 of 3)
+# load: 20000 units, 50962 relations, 3000 change sets, 25 vector queries; load time 2.6 s; reopen 161.7 ms; one-time read of 20000 served vectors into a set 10.2 ms
+measure,run,arm,pairs,p50_ms,p99_ms,loadavg_before,loadavg_after
+P2,1,persisted,512,1.7489,2.9735,1.66 1.04 0.43,1.66 1.04 0.43
+P2,1,memory,512,1.7507,2.9592,1.66 1.04 0.43,1.66 1.04 0.43
+# run 1 P2: persisted/memory p50 = 0.999, p99 = 1.005
+P1,1,with_descriptor,512,0.2250,0.4816,1.66 1.04 0.43,1.60 1.04 0.44
+P1,1,without_descriptor,512,0.1884,0.4091,1.66 1.04 0.43,1.60 1.04 0.44
+# run 1 P1: with/without p50 = 1.194, p99 = 1.177
+P2,2,persisted,512,1.7862,2.9366,1.60 1.04 0.44,1.60 1.04 0.44
+P2,2,memory,512,1.7881,2.9590,1.60 1.04 0.44,1.60 1.04 0.44
+# run 2 P2: persisted/memory p50 = 0.999, p99 = 0.992
+P1,2,with_descriptor,512,0.2006,0.4715,1.60 1.04 0.44,1.60 1.04 0.44
+P1,2,without_descriptor,512,0.1655,0.4138,1.60 1.04 0.44,1.60 1.04 0.44
+# run 2 P1: with/without p50 = 1.212, p99 = 1.139
+P2,3,persisted,512,1.8985,3.0310,1.60 1.04 0.44,1.56 1.04 0.44
+P2,3,memory,512,1.9195,3.0651,1.60 1.04 0.44,1.56 1.04 0.44
+# run 3 P2: persisted/memory p50 = 0.989, p99 = 0.989
+P1,3,with_descriptor,512,0.1927,0.4656,1.56 1.04 0.44,1.56 1.04 0.44
+P1,3,without_descriptor,512,0.1617,0.4129,1.56 1.04 0.44,1.56 1.04 0.44
+# run 3 P1: with/without p50 = 1.192, p99 = 1.128
+P2,4,persisted,512,1.8049,3.3752,1.56 1.04 0.44,1.56 1.04 0.44
+P2,4,memory,512,1.8006,3.2161,1.56 1.04 0.44,1.56 1.04 0.44
+# run 4 P2: persisted/memory p50 = 1.002, p99 = 1.049
+P1,4,with_descriptor,512,0.1815,0.4176,1.56 1.04 0.44,1.51 1.04 0.44
+P1,4,without_descriptor,512,0.1478,0.3560,1.56 1.04 0.44,1.51 1.04 0.44
+# run 4 P1: with/without p50 = 1.228, p99 = 1.173
+# P1 (acta §6.3): p50 with / without descriptor <= 1.50 in every run
+#   run 1: 0.2250 ms / 0.1884 ms = 1.194 -> within
+#   run 2: 0.2006 ms / 0.1655 ms = 1.212 -> within
+#   run 3: 0.1927 ms / 0.1617 ms = 1.192 -> within
+#   run 4: 0.1815 ms / 0.1478 ms = 1.228 -> within
+# P1: 0 of 4 runs above the ceiling -> met
+# P2 (acta §6.3): p50 persisted / in memory <= 1.10 in every run
+#   run 1: 1.7489 ms / 1.7507 ms = 0.999 -> within
+#   run 2: 1.7862 ms / 1.7881 ms = 0.999 -> within
+#   run 3: 1.8985 ms / 1.9195 ms = 0.989 -> within
+#   run 4: 1.8049 ms / 1.8006 ms = 1.002 -> within
+# P2: 0 of 4 runs above the ceiling -> met
+
+$ cargo run --release -p kerno-units --example derived_bench -- --runs 4 --reps 12 --dir <scratch>  (invocation 3 of 3)
+# load: 20000 units, 50962 relations, 3000 change sets, 25 vector queries; load time 2.6 s; reopen 155.9 ms; one-time read of 20000 served vectors into a set 11.0 ms
+measure,run,arm,pairs,p50_ms,p99_ms,loadavg_before,loadavg_after
+P2,1,persisted,512,1.8196,2.9285,1.39 1.02 0.44,1.36 1.02 0.44
+P2,1,memory,512,1.9757,3.0667,1.39 1.02 0.44,1.36 1.02 0.44
+# run 1 P2: persisted/memory p50 = 0.921, p99 = 0.955
+P1,1,with_descriptor,512,0.1810,0.4063,1.36 1.02 0.44,1.36 1.02 0.44
+P1,1,without_descriptor,512,0.1554,0.3233,1.36 1.02 0.44,1.36 1.02 0.44
+# run 1 P1: with/without p50 = 1.165, p99 = 1.257
+P2,2,persisted,512,1.7877,2.9688,1.36 1.02 0.44,1.33 1.02 0.45
+P2,2,memory,512,1.9404,3.1745,1.36 1.02 0.44,1.33 1.02 0.45
+# run 2 P2: persisted/memory p50 = 0.921, p99 = 0.935
+P1,2,with_descriptor,512,0.1496,0.3654,1.33 1.02 0.45,1.33 1.02 0.45
+P1,2,without_descriptor,512,0.1239,0.3262,1.33 1.02 0.45,1.33 1.02 0.45
+# run 2 P1: with/without p50 = 1.208, p99 = 1.120
+P2,3,persisted,512,1.7883,3.1869,1.33 1.02 0.45,1.33 1.02 0.45
+P2,3,memory,512,1.9405,3.3493,1.33 1.02 0.45,1.33 1.02 0.45
+# run 3 P2: persisted/memory p50 = 0.922, p99 = 0.952
+P1,3,with_descriptor,512,0.2298,0.3398,1.33 1.02 0.45,1.33 1.02 0.45
+P1,3,without_descriptor,512,0.1960,0.3034,1.33 1.02 0.45,1.33 1.02 0.45
+# run 3 P1: with/without p50 = 1.172, p99 = 1.120
+P2,4,persisted,512,1.8190,3.2292,1.33 1.02 0.45,1.30 1.02 0.45
+P2,4,memory,512,1.9729,3.1477,1.33 1.02 0.45,1.30 1.02 0.45
+# run 4 P2: persisted/memory p50 = 0.922, p99 = 1.026
+P1,4,with_descriptor,512,0.1687,0.5979,1.30 1.02 0.45,1.30 1.02 0.45
+P1,4,without_descriptor,512,0.1391,0.4893,1.30 1.02 0.45,1.30 1.02 0.45
+# run 4 P1: with/without p50 = 1.213, p99 = 1.222
+# P1 (acta §6.3): p50 with / without descriptor <= 1.50 in every run
+#   run 1: 0.1810 ms / 0.1554 ms = 1.165 -> within
+#   run 2: 0.1496 ms / 0.1239 ms = 1.208 -> within
+#   run 3: 0.2298 ms / 0.1960 ms = 1.172 -> within
+#   run 4: 0.1687 ms / 0.1391 ms = 1.213 -> within
+# P1: 0 of 4 runs above the ceiling -> met
+# P2 (acta §6.3): p50 persisted / in memory <= 1.10 in every run
+#   run 1: 1.8196 ms / 1.9757 ms = 0.921 -> within
+#   run 2: 1.7877 ms / 1.9404 ms = 0.921 -> within
+#   run 3: 1.7883 ms / 1.9405 ms = 0.922 -> within
+#   run 4: 1.8190 ms / 1.9729 ms = 0.922 -> within
+# P2: 0 of 4 runs above the ceiling -> met
