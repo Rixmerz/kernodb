@@ -50,6 +50,12 @@ before a close is there the next time you `kerno.open` the same path.
 | `db.relate(from_id, to_id, relation_type)` | the relation's id |
 | `db.related(id, direction="out", relation_type=None)` | `list[Relation]` (`id`, `from_id`, `to_id`, `relation_type`) |
 | `db.query(unit_type=None, schema_version=None)` | `list[Unit]`, every active unit that matches, in id order |
+| `db.update(id, payload)` | `None`; adds a revision, the earlier ones stay in the history |
+| `db.delete(id)` / `db.unrelate(relation_id)` | `None`; a delete leaves a tombstone revision |
+| `db.commit(ops)` | ids of the stored units; ops are `("store", type, payload)`, `("update", id, payload)`, `("delete", id)`, `("unrelate", rel_id)`, committed as one change set |
+| `db.history(id, limit=100, with_payload=False)` | `list[Revision]` (`revision`, `kind`, `commit_seq`, `created_at`, `lifecycle`, `content_hash`, `payload`), newest first |
+| `db.read_as_of(id, commit_seq)` | the `Revision` in force at that commit, or `None` before creation |
+| `db.verify()` | `dict` with `clean`, `commit_seq`, `units`, `revisions`, `relations`, `findings` |
 | `db.close()` | `None`; closing twice is harmless |
 
 Errors: engine failures (invalid unit type, unknown unit in `relate`, a directory already held

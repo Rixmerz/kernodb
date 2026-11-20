@@ -104,3 +104,41 @@ def test_stubs_ship_with_the_package() -> None:
     package = Path(kerno.__file__).parent
     assert (package / "py.typed").exists()
     assert (package / "__init__.pyi").exists()
+
+
+def test_update_keeps_history_and_as_of(tmp_path):
+    with kerno.open(tmp_path / "db") as db:
+        a = db.store("note", "v1")
+        db.update(a, "v2")
+        hist = db.history(a, with_payload=True)
+        assert [r.kind for r in hist] == ["update", "create"]
+        assert [r.payload for r in hist] == [b"v2", b"v1"]
+        assert db.read(a).revision == 2
+        old = db.read_as_of(a, hist[1].commit_seq)
+        assert old.payload == b"v1"
+        assert db.read_as_of(a, 0) is None
+        assert hist[0].content_hash != hist[1].content_hash
+
+
+def test_commit_batch_and_delete(tmp_path):
+    with kerno.open(tmp_path / "db") as db:
+        a = db.store("note", "a")
+        b = db.store("note", "b")
+        rel = db.relate(a, b, "next")
+        new = db.commit([("store", "note", b"c"), ("update", a, "a2"), ("unrelate", rel), ("delete", b)])
+        assert len(new) == 1 and db.read(new[0]).payload == b"c"
+        assert db.read(a).payload == b"a2"
+        assert db.read(b).lifecycle == "deleted"
+        assert db.related(a) == []
+        assert db.history(b)[0].kind == "delete"
+        with pytest.raises(ValueError):
+            db.commit([("bogus",)])
+
+
+def test_verify_reports_clean(tmp_path):
+    with kerno.open(tmp_path / "db") as db:
+        a = db.store("note", "x")
+        db.update(a, "y")
+        report = db.verify()
+        assert report["clean"] is True
+        assert report["units"] == 1 and report["revisions"] == 2

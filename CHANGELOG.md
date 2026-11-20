@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Python packages use the PEP 440 spelling of the same version (`1.0.0a1` is `1.0.0-alpha.1`).
 
+## [Unreleased]
+
+### Added
+
+- **Python bindings**: `Database.update`, `delete`, `unrelate`, `commit` (an atomic batch of store/update/delete/unrelate ops), `history` and `read_as_of` (returning the new `kerno.Revision`), and `verify` (the units-layer integrity report as a dict). Driven by the experimental LiveSpec backend, which keeps one revisioned unit per indexed symbol.
+
 ## [1.0.0-alpha.1] - 2026-11-20
 
 First public alpha. The on-disk format v1 is frozen (ADR-0013); the API and the wire protocols may still change before 1.0. Expect breaking fixes between alpha releases until the open items below are closed.
