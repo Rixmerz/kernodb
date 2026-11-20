@@ -20,7 +20,7 @@ The alpha is published with the pre-release version `1.0.0-alpha.1`. Each regist
 | Package | Registry | Install |
 |---|---|---|
 | `kernodb` (with `kernodb-core`, `kernodb-storage`, `kernodb-units`) | crates.io | `cargo add kernodb@1.0.0-alpha.1` (imported as `kerno`) |
-| `kernodb` (Node.js bindings) | npm | `npm install kernodb@alpha` |
+| `@rixmerz/kernodb` (Node.js bindings) | npm | `npm install @rixmerz/kernodb@alpha` |
 | `kernodb` (Python bindings, imported as `kerno`) | PyPI | `pip install --pre kernodb` |
 
 The HTTP clients (`kerno-client`) and the LangChain, LlamaIndex and Vercel AI SDK integrations live in this repository but are not published in this alpha; install them from source. The release steps and the package list are in [the release checklist](docs/release/1.0.0-alpha.1-checklist.md). The quick start is in [the `kerno` crate README](crates/kerno/README.md).

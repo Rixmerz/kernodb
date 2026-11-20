@@ -14,7 +14,7 @@ the package.
 You need Node 20 or later. The package includes a native addon (napi-rs).
 
 ```sh
-npm install kernodb@alpha      # or: pnpm add kernodb@alpha
+npm install @rixmerz/kernodb@alpha      # or: pnpm add @rixmerz/kernodb@alpha
 ```
 
 ## Quickstart (five minutes)
@@ -22,7 +22,7 @@ npm install kernodb@alpha      # or: pnpm add kernodb@alpha
 Save this as `memory.mjs` and run `node memory.mjs`:
 
 ```js
-import { open } from 'kernodb'
+import { open } from '@rixmerz/kernodb'
 
 // 1. Open a database in a directory (created when missing).
 const db = open('./memory-db')

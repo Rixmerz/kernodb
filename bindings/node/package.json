@@ -1,5 +1,5 @@
 {
-  "name": "kernodb",
+  "name": "@rixmerz/kernodb",
   "version": "1.0.0-alpha.1",
   "description": "Kerno, an embedded database of units, revisions and relations, for Node.js",
   "keywords": ["database", "embedded", "memory", "ai", "napi-rs"],
@@ -12,6 +12,7 @@
   "main": "index.js",
   "types": "index.d.ts",
   "files": ["index.js", "index.d.ts", "LICENSE-MIT", "LICENSE-APACHE"],
+  "publishConfig": { "access": "public" },
   "engines": { "node": ">= 20" },
   "packageManager": "pnpm@10.15.1",
   "napi": {
@@ -29,7 +30,7 @@
     "build:debug": "napi build --platform",
     "test": "tsc --noEmit && node --test \"__test__/*.test.mts\"",
     "artifacts": "napi artifacts",
-    "prepublishOnly": "napi prepublish -t npm"
+    "prepublishOnly": "napi prepublish -t npm --no-gh-release"
   },
   "devDependencies": {
     "@napi-rs/cli": "^3.0.0",

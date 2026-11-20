@@ -1,14 +1,19 @@
 name: npm package
 
-# Builds the `kernodb` Node.js native module (bindings/node) for every target
+# Builds the `@rixmerz/kernodb` Node.js native module (bindings/node) for every target
 # in its package.json `napi.targets`, and runs the tests on each runner. A `v*`
-# tag also publishes the per-platform packages and `kernodb` to npm, with
+# tag also publishes the per-platform packages and `@rixmerz/kernodb` to npm, with
 # provenance, once the owner approves the `npm` environment. Steps:
 # docs/release.md.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish to npm (re-runs a release's npm step without a new tag)"
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -65,8 +70,8 @@ jobs:
   publish:
     name: publish to npm
     needs: build
-    # Only a tag publishes; workflow_dispatch only builds and tests.
-    if: startsWith(github.ref, 'refs/tags/v')
+    # A tag publishes; workflow_dispatch publishes only when asked to.
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
     runs-on: ubuntu-latest
     # The environment requires the owner's approval before this job starts.
     environment: npm
@@ -105,3 +110,5 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: "true"
+          # Scoped packages are private by default; the platform packages too.
+          NPM_CONFIG_ACCESS: public
