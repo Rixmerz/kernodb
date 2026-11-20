@@ -44,10 +44,10 @@
 //! [`crate::verify`] tell it from a unit whose entries were lost (UNIT-49).
 //!
 //! `ponytail:` these records do not raise the layer mark: that needs a new
-//! `LAYER_VERSION_*` in `codec.rs` and `docs/file-format/units-v6.md`, which
+//! `LAYER_VERSION_*` in `codec.rs` and its own file-format document, which
 //! this change did not touch. A build older than this one reads the keys as
-//! "a newer layer" (UNIT-2) in `verify_units`. Upgrade path: layer version 6
-//! written with the first `STATS`, like the count records of layer 5.
+//! "a newer layer" (UNIT-2) in `verify_units`. Upgrade path: layer version 7
+//! (6 is taken by schemas, `docs/file-format/units-v6.md`) written with the first `STATS`, like the count records of layer 5.
 //!
 //! `ponytail:` a query reads the whole posting list of each of its terms and
 //! scores every unit in it (no top-k pruning); fine up to ~10^5 postings per

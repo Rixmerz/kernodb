@@ -474,7 +474,9 @@ fn stats_counts_units_and_relations_by_type_and_names_the_versions_and_files() {
     assert_eq!(json["relations"]["total"], 2);
     assert_eq!(json["relations"]["by_type"], serde_json::json!({ "blocks": 1, "cites": 1 }));
     assert_eq!(json["index"]["state"], "Ready");
-    assert_eq!(json["layer_version"], kerno_units::codec::MAX_LAYER_VERSION);
+    // The layer the fixture was written at (units and relations: live-unit counts),
+    // not the newest this build can write.
+    assert_eq!(json["layer_version"], kerno_units::codec::LAYER_VERSION_TYPE_COUNTS);
     assert_eq!(json["format_versions"], serde_json::json!([1]));
     assert_eq!(json["last_seq"], json["index"]["watermark"]);
     let on_disk = files_of(&t.db());
@@ -493,7 +495,7 @@ fn stats_counts_units_and_relations_by_type_and_names_the_versions_and_files() {
         "cites: 1",
         "primary Ready",
         "MANIFEST",
-        &format!("layer version {}", kerno_units::codec::MAX_LAYER_VERSION),
+        &format!("layer version {}", kerno_units::codec::LAYER_VERSION_TYPE_COUNTS),
     ] {
         assert!(text.contains(needle), "{needle}\n{text}");
     }

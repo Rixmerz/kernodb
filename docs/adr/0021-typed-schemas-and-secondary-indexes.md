@@ -2,10 +2,10 @@
 
 | Field | Value |
 |---|---|
-| Status | **Proposed**, implemented in Phase C of the [roadmap](../../ROADMAP.md). It adds record families to the on-disk format (without a layer bump, see Option 4), so it waits for the owner's acceptance like the other format changes did |
+| Status | **Proposed**, implemented in Phase C of the [roadmap](../../ROADMAP.md). It adds record families to the on-disk format (with layer 6, see Option 4), so it waits for the owner's acceptance like the other format changes did |
 | Date | 2026-11-18 |
 | Deciders | Project owner (pending) |
-| Related to | [ADR-0007](0007-index-consistency-and-rebuilding.md) (index consistency; this ADR departs from its owner decision for one family of indexes, see [Decision](#decision)); [ADR-0014](0014-physical-representation-of-relations.md) (adjacency indexes, transactional); [ADR-0003](0003-physical-format-and-versioning.md) (versioning); [ADR-0013](0013-format-v1-and-engine-protocol.md) (engine format v1, frozen, not edited); [units-v5](../file-format/units-v5.md) (count records, the precedent for a layer bump; not edited); invariants I-21, I-23, I-24 |
+| Related to | [ADR-0007](0007-index-consistency-and-rebuilding.md) (index consistency; this ADR departs from its owner decision for one family of indexes, see [Decision](#decision)); [ADR-0014](0014-physical-representation-of-relations.md) (adjacency indexes, transactional); [ADR-0003](0003-physical-format-and-versioning.md) (versioning); [ADR-0013](0013-format-v1-and-engine-protocol.md) (engine format v1, frozen, not edited); [units-v5](../file-format/units-v5.md) (count records, the precedent for a layer bump; not edited); [units-v6](../file-format/units-v6.md) (the layer 6 mark); invariants I-21, I-23, I-24 |
 
 ## Context
 
@@ -57,24 +57,25 @@ engine batch (and counted against its limits). A type with no schema pays one po
 
 ### 4. Layer mark
 
-1. **No bump** (chosen for this change, see the risk below), as the full-text index did (its `ponytail:` says so).
-2. Layer version 6, written in the transaction of the first `SCHEMA` record, as layer 5 was for the count records.
-   It is the better design: a build that does not know schemas would refuse the database instead of writing units
-   that skip validation and leave stale entries behind. It was built first and **removed**, because
-   `cargo test -p kerno-cli --test cli` (`stats_counts_units_and_relations_by_type_and_names_the_versions_and_files`)
-   asserts that the `layer_version` of an ordinary database equals `MAX_LAYER_VERSION`, which a layer 6 that only a
-   schema writes makes false (`left: 5, right: 6`), and `kerno-cli` is outside the surface of this change.
+1. No bump. Rejected: a build that predates schemas would open the database and write units without validating
+   them (the risk described below), as the full-text index does today (its `ponytail:` says so).
+2. **Layer version 6, written in the transaction of the first `SCHEMA` record, as layer 5 was for the count records**
+   (chosen). A build that does not know schemas refuses the database instead of writing units that skip validation
+   and leave stale entries behind. A first version of this change built it and removed it, because
+   `stats_counts_units_and_relations_by_type_and_names_the_versions_and_files` in `kerno-cli` compared
+   `layer_version` with `MAX_LAYER_VERSION` (`left: 5, right: 6`), and `kerno-cli` was outside that change's surface.
+   The bump and the test fix now land together.
 
-**Risk this leaves, for the owner.** Without the bump, a build that predates this change opens a database that has a
-schema without complaint, reports the new keys as UNIT-2 in `verify_units`, and **writes units without validating
-them or maintaining their entries**. Nothing is lost and nothing is unrecoverable: this build's `verify_units` finds
-every such write (UNIT-50, UNIT-51), and rewriting the unit through this build repairs its entries. Closing the risk
-is a few lines in `codec.rs` and `db.rs` (a `LAYER_VERSION_SCHEMAS = 6` raised by the first `SCHEMA` record, as layer 5
-is) plus that `kerno-cli` test comparing against the layer a database was written at rather than `MAX_LAYER_VERSION`. The full-text index names the same layer 6 as its own upgrade path, so one bump can carry both.
+**Risk this left, resolved.** With no bump, a build that predates schemas would have opened a database with a
+schema without complaint and written units without validating them or maintaining their entries. Option 2 closes it:
+`LAYER_VERSION_SCHEMAS = 6` is raised by the first `SCHEMA` record and `MAX_LAYER_VERSION` is 6, so a build that knows
+only layers up to 5 refuses a layer 6 database (`IncompatibleLayer`, UNIT-16) and writes nothing. The `kerno-cli` test
+now compares `layer_version` with the layer its fixture was written at (5). Layer 6 is now taken by schemas: the
+full-text index, which named layer 6 as its own upgrade path, would need layer 7.
 
 ## Decision
 
-**Typed schemas and user indexes are transactional records that do not raise the layer mark**, defined as follows. The key and
+**Typed schemas and user indexes are transactional records that raise the layer mark to 6**, defined as follows. The key and
 value layouts below are normative; they are pinned byte for byte by `record_layout_is_pinned` in
 `crates/kerno-units/tests/schema.rs`.
 
@@ -120,12 +121,14 @@ The records live outside the `Key` enum of `codec.rs`, like layers 3, 4, 5 and t
 
 ### Layer mark and compatibility
 
-* The layer mark is **not** raised: a database that defines a schema stays at the layer it had, and
-  `MAX_LAYER_VERSION` is unchanged (see Option 4 for why, and the risk it leaves).
-* A database with no schema is byte-for-byte what it was; a write of any unit pays one point read of the schema key,
-  which misses when the type has none.
-* A build that predates this change reads `0x78` and `0x79` as "a newer layer" (UNIT-2) in `verify_units`, and does not
-  maintain them when it writes.
+* The layer mark is raised to `LAYER_VERSION_SCHEMAS = 6` **in the transaction of the first `SCHEMA` record** (a
+  change set dropped before commit leaves it where it was) and is never lowered. Whoever rewrites the mark keeps its
+  `history_policy`. Layer 6 includes everything in 5. `MAX_LAYER_VERSION` is 6. See
+  [units-v6](../file-format/units-v6.md).
+* A database with no schema is byte-for-byte what it was, mark included; a write of any unit pays one point read of
+  the schema key, which misses when the type has none.
+* A build that knows only layers up to 5 refuses a layer 6 database when it opens it (`IncompatibleLayer`, UNIT-16,
+  `found_layer_version = 6`), as it refuses any newer layer, and writes nothing.
 * A database written before this change is not migrated; opening writes nothing.
 
 ### Behaviour
@@ -169,7 +172,8 @@ The records live outside the `Key` enum of `codec.rs`, like layers 3, 4, 5 and t
   change set usable; uniqueness through update, archive, unarchive, delete and two creates in one change set; the index
   equals a scan of the payloads after every kind of write; ranges in value order with every bound kind; backfill and
   refusal of a definition; `create_index` and `drop_index`; no schema record without a definition and a definition
-  that leaves the layer mark where it was;
+  that raises the layer mark to 6 in its own change set (dropped before commit it stays at 5), and a database
+  without schema that keeps its layer;
   each way the entries can be wrong is a finding, and the read path refuses an entry that lies; the layout above.
 * `crates/kerno-units/tests/schema_crash.rs`: a crash before every mutating I/O operation of a scenario that defines
   a schema, writes, adds an index to existing units, archives, unarchives, deletes and drops an index, with both crash
@@ -209,6 +213,6 @@ The records live outside the `Key` enum of `codec.rs`, like layers 3, 4, 5 and t
 
 ## Follow-up
 
-* Owner decision on accepting this format change, and on closing the risk of Option 4 with a layer bump once the
-  `kerno-cli` test is updated.
+* Owner decision on accepting this format change. The layer bump (Option 4) is done; the risk it closes is resolved.
+* The full-text index names layer 6 as its upgrade path; layer 6 is taken, so that bump becomes layer 7.
 * A measured workload before adding per-index counts, schema evolution or composite indexes.

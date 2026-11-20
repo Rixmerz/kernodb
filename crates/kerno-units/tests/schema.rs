@@ -337,7 +337,8 @@ fn a_definition_backfills_or_refuses<E: Target>() {
     assert!(stored(&db, 0x78).is_empty());
     // It fits now.
     define(&db);
-    assert_eq!(layer_version(&db), layer, "a schema does not move the layer mark");
+    assert_eq!(layer_version(&db), 6, "the first schema raises the layer mark to 6");
+    assert_eq!(layer, 5);
     assert_eq!(found(&db, "age", &FieldValue::Int(1)), vec![a]);
     assert!(found(&db, "age", &FieldValue::Int(2)).is_empty(), "the archived unit has no entry");
     clean(&db, "backfilled");
@@ -380,15 +381,25 @@ fn create_and_drop_index<E: Target>() {
 }
 
 /// A database that never defines a schema is what it was before: no record of
-/// the family. Defining one leaves the layer mark where it was.
+/// the family and the layer mark stays where it was. Defining one raises the
+/// mark to 6 in the change set that carries it, and aborting that change set
+/// leaves the mark at 5.
 fn without_a_schema_nothing_changes<E: Target>() {
     let db = open::<E>();
     one(&db, |cs| cs.create(new_unit("blob", vec![1, 2, 3]))).unwrap();
     let layer = layer_version(&db);
     assert!(stored(&db, 0x78).is_empty() && stored(&db, 0x79).is_empty());
+    assert_eq!(layer, 5);
     clean(&db, "no schema");
+    let before = raw(&db);
+    let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
+    cs.define_schema(ACCT, acct_fields()).unwrap();
+    drop(cs);
+    assert_eq!(raw(&db), before, "an aborted definition leaves the database as it was");
+    assert_eq!(layer_version(&db), 5);
     define(&db);
-    assert_eq!(layer_version(&db), layer);
+    assert_eq!(layer_version(&db), 6);
+    clean(&db, "layer 6");
     // A schema change set with no unit is an `Index` change set.
     let cs = db.snapshot().unwrap().change_set(db.snapshot().unwrap().seq()).unwrap();
     assert_eq!(cs.expect("the change set").purpose, Purpose::Index);

@@ -36,7 +36,7 @@ It depends on ADR-0002 (commit sequence as watermark).
 
 ## Decision
 
-Pending. No assumption of this ADR should be coded in a way that is hard to reverse until it is accepted.
+Accepted: see the decision recorded below, in "Decision (2026-11-04)".
 
 ## Decision (2026-11-04)
 

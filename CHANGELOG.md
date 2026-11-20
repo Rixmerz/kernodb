@@ -24,6 +24,7 @@ First public alpha. The on-disk format v1 is frozen (ADR-0013); the API and the 
 - **30-hour fuzz run pending**: the long fuzzing campaign (30 hours in total) has not been completed.
 - **External evaluations INT-07 and INT-13 pending**: they need people outside the project.
 - **CLA under legal review**: the contributor licence agreement is a draft until a lawyer has reviewed it.
+- **Schemas experimental**: typed schemas and secondary indexes (ADR-0021) are experimental; their on-disk records may change before 1.0, and a database that defines a schema needs this release or newer to be opened.
 - Nothing is published until the owner runs the steps in the release checklist.
 
 [1.0.0-alpha.1]: https://github.com/Rixmerz/kernodb/releases/tag/v1.0.0-alpha.1

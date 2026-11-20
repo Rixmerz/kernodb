@@ -2,3 +2,5 @@
 *.kerno-tmp
 /bench-data
 /.claude/worktrees/
+.fresh-dev/
+.mcp-docs/

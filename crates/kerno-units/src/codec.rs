@@ -59,8 +59,12 @@ pub const LAYER_VERSION_REL_COUNTS: u32 = 4;
 /// `layer_version` of a database that holds a live-unit count record
 /// (`0x73`, `docs/file-format/units-v5.md`).
 pub const LAYER_VERSION_TYPE_COUNTS: u32 = 5;
+/// `layer_version` of a database that holds a schema record (`0x78`,
+/// ADR-0021, `docs/file-format/units-v6.md`). It is written by the transaction
+/// that writes the first one, never before and never lowered.
+pub const LAYER_VERSION_SCHEMAS: u32 = 6;
 /// The newest `layer_version` this build reads and writes.
-pub const MAX_LAYER_VERSION: u32 = LAYER_VERSION_TYPE_COUNTS;
+pub const MAX_LAYER_VERSION: u32 = LAYER_VERSION_SCHEMAS;
 /// The `LAYER_META` name of the layer mark (design §2.6).
 pub const LAYER_MARK_NAME: &str = "layer";
 /// Length limits of §1.2.

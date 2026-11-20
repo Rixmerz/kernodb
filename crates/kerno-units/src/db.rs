@@ -76,9 +76,9 @@ use kerno_core::{Durability, MAX_VALUE_LEN};
 use crate::clock::{Clock, SystemClock, UnitIdSource, UuidV7Source};
 use crate::codec::{
     Adjacency, ChangeSetRecord, CsMember, Key, LAYER_MARK_NAME, LAYER_VERSION, LAYER_VERSION_DERIVED,
-    LAYER_VERSION_PUBLIC_IDS, LAYER_VERSION_REL_COUNTS, LAYER_VERSION_TYPE_COUNTS, LayerMeta, MAX_CHANGESET_FIELD_LEN,
-    MAX_LAYER_VERSION, MAX_MEMBER_COUNT, MAX_METADATA_LEN, MAX_REV_REF_LEN, MAX_UNIT_TYPE_LEN, RelationRecord,
-    RevisionMeta, TAG_REL_IN, TAG_REL_OUT, UnitHead, valid_relation_type,
+    LAYER_VERSION_PUBLIC_IDS, LAYER_VERSION_REL_COUNTS, LAYER_VERSION_SCHEMAS, LAYER_VERSION_TYPE_COUNTS, LayerMeta,
+    MAX_CHANGESET_FIELD_LEN, MAX_LAYER_VERSION, MAX_MEMBER_COUNT, MAX_METADATA_LEN, MAX_REV_REF_LEN, MAX_UNIT_TYPE_LEN,
+    RelationRecord, RevisionMeta, TAG_REL_IN, TAG_REL_OUT, UnitHead, valid_relation_type,
 };
 use crate::error::{DecodeError, UnitError};
 use crate::payload::{ContentHash, MAX_PAYLOAD_LEN, PAYLOAD_CODEC_OPAQUE, verify_payload};
@@ -1687,7 +1687,11 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         });
         // The mark goes to version 2 in the transaction of the first derived
         // record, and no writer lowers it (ADR-0020 §S3.4, §S3.5).
-        let wants = if self.count_live.iter().any(|k| k.first() == Some(&crate::type_count::TAG_TYPE_COUNT)) {
+        // A schema definition writes the first `0x78` record: layer 6, which
+        // includes everything below it (`schema_ops` counts definitions only).
+        let wants = if self.schema_ops > 0 {
+            LAYER_VERSION_SCHEMAS
+        } else if self.count_live.iter().any(|k| k.first() == Some(&crate::type_count::TAG_TYPE_COUNT)) {
             LAYER_VERSION_TYPE_COUNTS
         } else if !self.count_live.is_empty() {
             LAYER_VERSION_REL_COUNTS

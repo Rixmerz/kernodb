@@ -84,9 +84,8 @@ fn main() -> Result<(), kerno::Error> {
 ```
 
 A type has one schema for good (indexes can be added with `Db::create_index` and dropped with
-`Db::drop_index`). Defining a schema does not raise the layer mark: do not write to such a database with
-a build that predates schemas, which would not validate or index what it writes (`verify_units` reports
-it). The format and its limits are in
+`Db::drop_index`). The first schema raises the layer mark to 6, so a build that predates schemas
+refuses to open the database instead of writing records it would not validate or index. The format and its limits are in
 [ADR-0021](https://github.com/Rixmerz/kernodb/blob/main/docs/adr/0021-typed-schemas-and-secondary-indexes.md).
 
 ## Verifying integrity

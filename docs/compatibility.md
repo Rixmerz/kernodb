@@ -36,7 +36,7 @@ has the first two; an export file has the third.
 | Axis | Today | Spec | Where the version lives |
 |---|---|---|---|
 | Engine (physical) format | `format_version = 1`, **frozen** since 2026-10-31 ([ADR-0013](adr/0013-format-v1-and-engine-protocol.md)) | [file-format/v1.md](file-format/v1.md) | header of every file, plus feature bits |
-| Units layer (logical) | `layer_version` 1 to 5 | [units-v1](file-format/units-v1.md) to [units-v5](file-format/units-v5.md) | `LAYER_META` record `layer` |
+| Units layer (logical) | `layer_version` 1 to 6 | [units-v1](file-format/units-v1.md) to [units-v6](file-format/units-v6.md) | `LAYER_META` record `layer` |
 | Export | `format_version = 1`, **frozen** | [file-format/export-v1.md](file-format/export-v1.md) | export header |
 
 Derived data (vectors, summaries, indexes) has no promise of its own: it is

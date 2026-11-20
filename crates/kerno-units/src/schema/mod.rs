@@ -54,11 +54,10 @@
 //!   bytes with each `0x00` written `0x00 0xFF`, then `0x00 0x00`. A range of
 //!   keys is therefore the units in `(value, unit id)` order.
 //!
-//! These records do not raise the layer mark (see ADR-0021: a bump would change
-//! what `MAX_LAYER_VERSION` means to `kerno stats`, which this change may not
-//! touch); a build that predates them reads the keys as "a newer layer"
-//! (UNIT-2) in `verify_units`, and anything it writes to a typed unit is found
-//! by UNIT-50 and UNIT-51 afterwards. `0x77` stays unassigned. An indexed `Text` or `Bytes` value whose encoding
+//! The first `0x78` record raises the layer mark to 6 in its own transaction
+//! (`LAYER_VERSION_SCHEMAS`, ADR-0021, `docs/file-format/units-v6.md`), so a
+//! build that predates schemas refuses the database (UNIT-16) instead of
+//! writing typed units unchecked. `0x77` stays unassigned. An indexed `Text` or `Bytes` value whose encoding
 //! exceeds [`MAX_INDEXED_VALUE_LEN`] bytes is refused, so a key always fits the
 //! engine's key limit.
 //!
