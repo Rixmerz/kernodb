@@ -21,7 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
-- Faster batches: a change set caches the adjacency counts it already read and the units it already found active (both invalidated by its own writes). On 9,000 relations among 300 units, 82 → 72 ms.
+- Faster batches: a change set caches the units it already found active (invalidated by its own writes) and keeps the adjacency counts in memory, writing each count record once at commit instead of once per relation. On 9,000 relations among 300 units, 82 → 63 ms; relation batches went from 10.9x to 5.9x the time of SQLite.
 
 ### Fixed
 

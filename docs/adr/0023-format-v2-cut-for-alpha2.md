@@ -77,7 +77,7 @@ The measurements of 2026-11-20 found the costs that the format itself decides:
 | Step | State |
 |---|---|
 | 3.1 Keyword index opt-in | **done** on the branch: workspace green (1,757 tests without `kernodb-storage`), Python 29 |
-| 3.2 Relation writes | pending |
+| 3.2 Relation writes | **done**: adjacency counts are kept in the change set and written once per change set at commit (no byte of the records changes). 9,000 relations among 300 units: 82 → 63 ms with the earlier caches; vs SQLite in a batch 10.9x → 5.9x. The rest is the three records per edge (REL, out, in), which the two-way adjacency needs |
 | 3.3 Space per revision | pending |
 | 3.4 Change-set limit | configurable; default unchanged pending 3.2 |
 | 2 Refusing marks below 7 | **done**, legacy tests and fixtures removed |

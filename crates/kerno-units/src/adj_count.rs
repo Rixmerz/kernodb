@@ -286,17 +286,33 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
 
     fn apply_count(&mut self, step: CountStep) -> Result<(), UnitError> {
         match step {
+            // The record is written once, at commit (`flush_counts`): a change set
+            // that adds many relations of one unit writes its count once, not once
+            // per relation (ADR-0023, step 3.2). Within the change set the cache is
+            // the count, and only `plan_count` reads it.
             CountStep::Put(k, n) => {
-                self.write(&Write::Put(k.clone(), encode_value(n)))?;
                 self.count_cache.insert(k.clone(), n);
+                self.count_dirty.insert(k.clone());
                 self.count_live.insert(k);
             }
             CountStep::Delete(k) => {
-                self.write(&Write::Delete(k.clone()))?;
                 self.count_cache.insert(k.clone(), 0);
+                self.count_dirty.insert(k.clone());
                 self.count_live.remove(&k);
             }
             CountStep::Nothing => {}
+        }
+        Ok(())
+    }
+
+    /// Writes every count this change set changed, once each: a count of 0 deletes
+    /// the record. Called by `commit` before anything else is decided.
+    pub(crate) fn flush_counts(&mut self) -> Result<(), UnitError> {
+        for k in std::mem::take(&mut self.count_dirty) {
+            match self.count_cache.get(&k).copied().unwrap_or(0) {
+                0 => self.write(&Write::Delete(k))?,
+                n => self.write(&Write::Put(k, encode_value(n)))?,
+            }
         }
         Ok(())
     }

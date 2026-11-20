@@ -578,6 +578,7 @@ impl<E: TxnEngine> UnitDb<E> {
             token_ops: 0,
             count_live: BTreeSet::new(),
             count_cache: std::collections::HashMap::new(),
+            count_dirty: BTreeSet::new(),
             active_known: std::collections::HashSet::new(),
             schema_ops: 0,
             type_option_ops: 0,
@@ -1010,6 +1011,8 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     /// counts the entries again). Only `plan_count` / `apply_count` write
     /// these records, so the cache cannot go stale within the change set.
     pub(crate) count_cache: std::collections::HashMap<Vec<u8>, u64>,
+    /// Count keys changed and not written yet: `flush_counts` writes them at commit.
+    pub(crate) count_dirty: BTreeSet<Vec<u8>>,
     /// Units `require_active` found `Active` in this change set. Every write
     /// goes through [`ChangeSet::write`], which drops a unit from here when
     /// it writes or deletes its `UNIT_HEAD` (and clears it on a range
@@ -1695,6 +1698,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
     /// without operations writes nothing and returns the current sequence.
     pub fn commit(mut self) -> Result<CommitInfo, UnitError> {
         self.txn()?;
+        self.flush_counts()?;
         let durable = self.db.cfg.engine.durability == Durability::Sync;
         if self.members.is_empty()
             && !self.maintenance
