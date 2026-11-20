@@ -142,3 +142,99 @@ def test_verify_reports_clean(tmp_path):
         report = db.verify()
         assert report["clean"] is True
         assert report["units"] == 1 and report["revisions"] == 2
+
+
+def test_relations_inside_a_batch_and_detailed_commit(tmp_path):
+    with kerno.open(tmp_path / "db") as db:
+        a = db.store("n", "a")
+        out = db.commit(
+            [("store", "n", "b"), ("store", "n", "c"), ("relate", 0, 1, "next"), ("relate", a, 0, "next")],
+            detailed=True,
+        )
+        assert len(out["units"]) == 2 and len(out["relations"]) == 2
+        assert out["commit_seq"] == db.last_commit_seq()
+        assert db.related(a)[0].to_id == out["units"][0]
+        with pytest.raises(kerno.InvalidArgumentError):
+            db.commit([("relate", a, 7, "next")])
+
+
+def test_unique_relate_and_cascade_delete(tmp_path):
+    with kerno.open(tmp_path / "db") as db:
+        a, b = db.store("n", "a"), db.store("n", "b")
+        r1 = db.relate(a, b, "r", unique=True)
+        assert db.relate(a, b, "r", unique=True) == r1
+        db.relate(b, a, "r")
+        with pytest.raises(kerno.HasRelationsError):
+            db.delete(a)
+        db.commit([("delete_cascade", a), ("delete_cascade", b)])
+        assert db.read(a).lifecycle == "deleted" and db.related(b) == []
+
+
+def test_update_if_changed_and_restore_with_provenance(tmp_path):
+    with kerno.open(tmp_path / "db") as db:
+        a = db.store("n", "v1")
+        assert db.update(a, "v1", if_changed=True) is False
+        assert db.read(a).revision == 1
+        assert db.update(a, "v2", if_changed=True) is True
+        db.commit([("restore", a, 1)], reason="rollback", actor="tester")
+        assert db.read(a).payload == b"v1"
+        db.commit([("archive", a)])
+        assert db.read(a).lifecycle == "archived"
+        db.commit([("unarchive", a)])
+        assert db.read(a).lifecycle == "active"
+
+
+def test_missing_ids_and_future_sequences_do_not_raise(tmp_path):
+    with kerno.open(tmp_path / "db") as db:
+        a = db.store("n", "v1")
+        assert db.history("0" * 32) == []
+        assert db.read_as_of("0" * 32, 1) is None
+        assert db.read_as_of(a, 10**12).payload == b"v1"
+        with pytest.raises(kerno.NotFoundError):
+            db.update("0" * 32, "x")
+        with pytest.raises(kerno.PayloadTooLargeError):
+            db.store("n", b"x" * (2 << 20))
+        assert issubclass(kerno.NotFoundError, kerno.KernoError)
+
+
+def test_documents_schema_index_find_and_execute(tmp_path):
+    with kerno.open(tmp_path / "db") as db:
+        db.define_schema(
+            "sym",
+            [{"name": "qname", "type": "text", "required": True, "unique": True}, {"name": "lines", "type": "int"}],
+        )
+        a = db.store_document("sym", {"qname": "m.f", "lines": 3})
+        db.store_document("sym", {"qname": "m.g", "lines": 9})
+        assert [u.id for u in db.find("sym", "qname", "m.f")] == [a]
+        assert db.read_document(a) == {"qname": "m.f", "lines": 3}
+        with pytest.raises(kerno.KernoError):
+            db.store_document("sym", {"qname": "m.f"})  # unique
+        res = db.execute("FIND sym AS s WHERE s.lines > 5")
+        assert res["aliases"] == ["s"] and len(res["rows"]) == 1
+
+
+def test_locked_and_read_only(tmp_path):
+    path = tmp_path / "db"
+    with kerno.open(path) as db:
+        db.store("n", "a")
+        with pytest.raises(kerno.LockedError):
+            kerno.open(path)
+    with kerno.open(path, read_only=True) as ro:
+        assert len(ro.query("n")) == 1
+        with pytest.raises(kerno.KernoError):
+            ro.store("n", "b")
+
+
+def test_verify_reports_storage_corruption(tmp_path):
+    path = tmp_path / "db"
+    with kerno.open(path) as db:
+        db.commit([("store", "c", "payload-%d" % i * 20) for i in range(2000)])
+    sst = max(path.glob("*.sst"), key=lambda f: f.stat().st_size)
+    data = bytearray(sst.read_bytes())
+    data[len(data) // 2] ^= 0xFF
+    sst.write_bytes(bytes(data))
+    with kerno.open(path) as db:
+        report = db.verify()
+        assert report["clean"] is False and "corruption" in report["storage_error"]
+        with pytest.raises(kerno.CorruptionError):
+            db.query("c")

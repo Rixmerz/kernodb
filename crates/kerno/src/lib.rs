@@ -212,17 +212,21 @@
 //! choose otherwise.
 
 use std::borrow::Borrow;
+use std::collections::HashSet;
 use std::ops::Bound;
 use std::path::Path;
 
 use kerno_core::vfs::StdVfs;
 use kerno_storage::KernoDb;
-use kerno_units::{ChangeMeta, NewUnit, RelationProvenance, UnitConfig, UnitDb, UnitUpdate};
+use kerno_units::{
+    AsOf, ChangeMeta, CommitSeq, NewUnit, RelationProvenance, RevNo, UnitAt, UnitConfig, UnitDb, UnitUpdate,
+};
 
 pub use kerno_core::Durability;
 pub use kerno_storage as storage;
 pub use kerno_storage::{AccessMode, Config};
 pub use kerno_units as units;
+pub use kerno_units::CompactReport;
 pub use kerno_units::{
     AssocDirection, AssocQuery, Direction, Document, FieldDef, FieldType, FieldValue, HybridHit, HybridQuery,
     HybridWeights, LegRanks, Lifecycle, NearestUnits, Query, QueryPlan, QueryResult, Relation, RelationId, Schema,
@@ -236,12 +240,54 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// interpret it.
 const SCHEMA_VERSION: u32 = 1;
 
+/// One end of a relation added by [`Batch::relate`]: a unit that exists already, or the unit
+/// stored by the `n`-th [`Batch::store`] of the same batch (counting from 0).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Endpoint {
+    Unit(UnitId),
+    Stored(usize),
+}
+
+impl From<UnitId> for Endpoint {
+    fn from(id: UnitId) -> Self {
+        Endpoint::Unit(id)
+    }
+}
+
+/// Who and why, recorded with every revision of a commit ([`Db::commit_with`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommitMeta {
+    /// At most 1024 bytes.
+    pub reason: Option<String>,
+    /// At most 256 bytes.
+    pub actor: Option<Vec<u8>>,
+    /// At most 256 bytes.
+    pub source: Option<Vec<u8>>,
+}
+
+/// What [`Db::commit_with`] wrote.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Committed {
+    /// The units the batch stored, in the order it stored them.
+    pub units: Vec<UnitId>,
+    /// The relations the batch created (or, for a unique relate, found), in order.
+    pub relations: Vec<RelationId>,
+    /// Updates skipped because the payload was already the current one.
+    pub unchanged: usize,
+    /// The sequence of the commit; `None` when nothing was written.
+    pub commit_seq: Option<u64>,
+}
+
 /// One step of a [`Batch`].
 enum Op {
     Store { unit_type: String, payload: Vec<u8> },
-    Update { id: UnitId, payload: Vec<u8> },
-    Delete { id: UnitId },
+    Update { id: UnitId, payload: Vec<u8>, if_changed: bool },
+    Delete { id: UnitId, cascade: bool },
     Unrelate { edge: RelationId },
+    Relate { from: Endpoint, to: Endpoint, relation_type: String, unique: bool },
+    Archive { id: UnitId },
+    Unarchive { id: UnitId },
+    Restore { id: UnitId, from: u64 },
 }
 
 /// Several writes that [`Db::commit`] applies as one commit: all of them or none.
@@ -270,13 +316,66 @@ impl Batch {
 
     /// Adds a replacement of the payload of `id`, as [`Db::update`] would.
     pub fn update(&mut self, id: UnitId, payload: impl Into<Vec<u8>>) -> &mut Self {
-        self.ops.push(Op::Update { id, payload: payload.into() });
+        self.ops.push(Op::Update { id, payload: payload.into(), if_changed: false });
+        self
+    }
+
+    /// Like [`Batch::update`], but writes no revision when `payload` is already the unit's
+    /// current payload ([`Committed::unchanged`] counts it).
+    pub fn update_if_changed(&mut self, id: UnitId, payload: impl Into<Vec<u8>>) -> &mut Self {
+        self.ops.push(Op::Update { id, payload: payload.into(), if_changed: true });
         self
     }
 
     /// Adds the deletion of `id`, as [`Db::delete`] would.
     pub fn delete(&mut self, id: UnitId) -> &mut Self {
-        self.ops.push(Op::Delete { id });
+        self.ops.push(Op::Delete { id, cascade: false });
+        self
+    }
+
+    /// Adds the deletion of `id` and, first, of every relation that starts or ends at it, in
+    /// the same commit. A relation reached from two deleted units is removed once.
+    pub fn delete_cascade(&mut self, id: UnitId) -> &mut Self {
+        self.ops.push(Op::Delete { id, cascade: true });
+        self
+    }
+
+    /// Adds a declared relation from `from` to `to`. Either end can be a unit stored earlier in
+    /// this batch ([`Endpoint::Stored`]).
+    pub fn relate(&mut self, from: impl Into<Endpoint>, to: impl Into<Endpoint>, relation_type: &str) -> &mut Self {
+        let (from, to) = (from.into(), to.into());
+        self.ops.push(Op::Relate { from, to, relation_type: relation_type.to_owned(), unique: false });
+        self
+    }
+
+    /// Like [`Batch::relate`], but reuses a relation of the same type between the same units
+    /// when one exists (in the database or earlier in the batch) instead of adding a parallel one.
+    pub fn relate_unique(
+        &mut self,
+        from: impl Into<Endpoint>,
+        to: impl Into<Endpoint>,
+        relation_type: &str,
+    ) -> &mut Self {
+        let (from, to) = (from.into(), to.into());
+        self.ops.push(Op::Relate { from, to, relation_type: relation_type.to_owned(), unique: true });
+        self
+    }
+
+    /// Adds the archiving of an active unit (a revision that keeps its payload).
+    pub fn archive(&mut self, id: UnitId) -> &mut Self {
+        self.ops.push(Op::Archive { id });
+        self
+    }
+
+    /// Adds the unarchiving of an archived unit.
+    pub fn unarchive(&mut self, id: UnitId) -> &mut Self {
+        self.ops.push(Op::Unarchive { id });
+        self
+    }
+
+    /// Adds a revision of `id` that copies revision `from` (later revisions stay in the history).
+    pub fn restore(&mut self, id: UnitId, from: u64) -> &mut Self {
+        self.ops.push(Op::Restore { id, from });
         self
     }
 
@@ -398,28 +497,169 @@ impl Db {
     /// [`Db::unrelate`]), and `InvalidArgument` when two operations name the same unit or the
     /// batch is larger than the layer's change-set limit.
     pub fn commit(&self, batch: impl Borrow<Batch>) -> Result<Vec<UnitId>> {
-        let mut changes = self.units.begin_changeset(ChangeMeta::default())?;
-        let mut stored = Vec::new();
-        for op in &batch.borrow().ops {
+        Ok(self.commit_with(batch, &CommitMeta::default())?.units)
+    }
+
+    /// [`Db::commit`] with provenance recorded on every revision it writes, and a full report:
+    /// stored units, created relations, skipped unchanged updates and the commit sequence.
+    ///
+    /// # Errors
+    ///
+    /// As [`Db::commit`]; `InvalidArgument` for an [`Endpoint::Stored`] that names no earlier
+    /// store of the batch, or provenance fields over their limits.
+    pub fn commit_with(&self, batch: impl Borrow<Batch>, meta: &CommitMeta) -> Result<Committed> {
+        let ops = &batch.borrow().ops;
+        if ops.is_empty() {
+            return Ok(Committed::default());
+        }
+        let snap = self.units.snapshot()?;
+        let change_meta = ChangeMeta {
+            reason: meta.reason.clone(),
+            actor: meta.actor.clone(),
+            source: meta.source.clone(),
+            ..ChangeMeta::default()
+        };
+        let mut changes = self.units.begin_changeset(change_meta)?;
+        let mut out = Committed::default();
+        let mut unrelated: HashSet<RelationId> = HashSet::new();
+        let mut related: Vec<(UnitId, UnitId, String, RelationId)> = Vec::new();
+        let mut wrote = false;
+        let resolve = |e: Endpoint, stored: &[UnitId]| -> Result<UnitId> {
+            match e {
+                Endpoint::Unit(id) => Ok(id),
+                Endpoint::Stored(n) => stored.get(n).copied().ok_or_else(|| {
+                    Error::InvalidArgument(format!("Endpoint::Stored({n}) names no earlier store of the batch"))
+                }),
+            }
+        };
+        for op in ops {
             match op {
-                Op::Store { unit_type, payload } => stored.push(changes.create(NewUnit {
-                    unit_type: unit_type.clone(),
-                    schema_version: SCHEMA_VERSION,
-                    metadata: Vec::new(),
-                    payload: payload.clone(),
-                })?),
-                Op::Update { id, payload } => {
+                Op::Store { unit_type, payload } => {
+                    out.units.push(changes.create(NewUnit {
+                        unit_type: unit_type.clone(),
+                        schema_version: SCHEMA_VERSION,
+                        metadata: Vec::new(),
+                        payload: payload.clone(),
+                    })?);
+                    wrote = true;
+                }
+                Op::Update { id, payload, if_changed } => {
+                    if *if_changed {
+                        let current = changes.get_unit(*id)?;
+                        if current.as_ref().and_then(|u| u.payload.as_deref()) == Some(payload.as_slice()) {
+                            out.unchanged += 1;
+                            continue;
+                        }
+                    }
                     let upd = UnitUpdate { payload: payload.clone(), schema_version: None, metadata: None };
                     changes.update(*id, upd, None)?;
+                    wrote = true;
                 }
-                Op::Delete { id } => {
+                Op::Delete { id, cascade } => {
+                    if *cascade {
+                        let mut edges = snap.relations_of(*id, Direction::Out, None)?;
+                        edges.extend(snap.relations_of(*id, Direction::In, None)?);
+                        for r in edges {
+                            if unrelated.insert(r.id) {
+                                changes.delete_relation(r.id)?;
+                            }
+                        }
+                        for (from, to, _, edge) in &related {
+                            if (from == id || to == id) && unrelated.insert(*edge) {
+                                changes.delete_relation(*edge)?;
+                            }
+                        }
+                    }
                     changes.delete(*id, None)?;
+                    wrote = true;
                 }
-                Op::Unrelate { edge } => changes.delete_relation(*edge)?,
+                Op::Unrelate { edge } => {
+                    if unrelated.insert(*edge) {
+                        changes.delete_relation(*edge)?;
+                        wrote = true;
+                    }
+                }
+                Op::Relate { from, to, relation_type, unique } => {
+                    let (from, to) = (resolve(*from, &out.units)?, resolve(*to, &out.units)?);
+                    if *unique {
+                        let in_batch = related
+                            .iter()
+                            .find(|(f, t, ty, e)| {
+                                *f == from && *t == to && ty == relation_type && !unrelated.contains(e)
+                            })
+                            .map(|r| r.3);
+                        let existing = match in_batch {
+                            Some(e) => Some(e),
+                            None => snap
+                                .relations_of(from, Direction::Out, Some(relation_type))
+                                .unwrap_or_default()
+                                .into_iter()
+                                .find(|r| r.to == to && !unrelated.contains(&r.id))
+                                .map(|r| r.id),
+                        };
+                        if let Some(edge) = existing {
+                            out.relations.push(edge);
+                            continue;
+                        }
+                    }
+                    let edge = changes.create_relation(from, to, relation_type, RelationProvenance::Declared)?;
+                    related.push((from, to, relation_type.clone(), edge));
+                    out.relations.push(edge);
+                    wrote = true;
+                }
+                Op::Archive { id } => {
+                    changes.archive(*id, None)?;
+                    wrote = true;
+                }
+                Op::Unarchive { id } => {
+                    changes.unarchive(*id, None)?;
+                    wrote = true;
+                }
+                Op::Restore { id, from } => {
+                    changes.restore(*id, RevNo(*from), None)?;
+                    wrote = true;
+                }
             }
         }
-        changes.commit()?;
-        Ok(stored)
+        if wrote {
+            out.commit_seq = Some(changes.commit_seq().0);
+            changes.commit()?;
+        }
+        Ok(out)
+    }
+
+    /// The sequence of the last commit: the point an as-of read of "now" uses. 0 for an empty
+    /// database.
+    ///
+    /// # Errors
+    ///
+    /// The engine fails.
+    pub fn last_commit_seq(&self) -> Result<u64> {
+        Ok(self.units.snapshot()?.seq().0)
+    }
+
+    /// The state of `id` once commit `commit_seq` committed. A sequence after the last commit
+    /// reads the current state (it is clamped, not refused).
+    ///
+    /// # Errors
+    ///
+    /// The engine fails or finds the unit corrupt.
+    pub fn read_as_of(&self, id: UnitId, commit_seq: u64) -> Result<UnitAt> {
+        let snap = self.units.snapshot()?;
+        let at = commit_seq.min(snap.seq().0);
+        snap.unit_as_of(id, AsOf::Seq(CommitSeq(at)))
+    }
+
+    /// Compacts the revision ranges so that what retention removed leaves the live files, and
+    /// returns the stored bytes before and after. Deleting a unit keeps its history (and its
+    /// payloads) until a retention policy drops them: compaction alone frees nothing that
+    /// history still holds.
+    ///
+    /// # Errors
+    ///
+    /// The engine fails.
+    pub fn compact(&self) -> Result<kerno_units::CompactReport> {
+        self.units.compact()
     }
 
     /// Stores a new unit of type `unit_type` whose payload is `document`, like
@@ -597,12 +837,17 @@ impl Db {
     /// schedule; [`units::UnitDb::rebuild_index`] repairs what it reports about the type index.
     /// See the [crate documentation](crate#verifying-integrity).
     ///
-    /// A damaged store is a finding in the report, not an `Err`; call
+    /// A damaged units layer is a finding in the report, not an `Err`; call
     /// [`VerifyReport::is_clean`] or [`VerifyReport::into_result`].
+    ///
+    /// Damage below the units layer is different: a storage block that fails its checksum (a
+    /// torn or altered `.sst`, a damaged `MANIFEST`) stops the scan, and this returns that
+    /// `Err` (`Error::Storage` holding `Corruption`). [`Error::is_corruption`] tells the two
+    /// apart; `kerno-cli verify` checks the storage files themselves.
     ///
     /// # Errors
     ///
-    /// The engine fails or the database is poisoned.
+    /// The engine fails, the database is poisoned, or a storage block is corrupt.
     pub fn verify(&self) -> Result<VerifyReport> {
         self.units.verify_units()
     }

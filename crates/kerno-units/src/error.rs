@@ -282,6 +282,12 @@ impl UnitError {
     pub fn is_locked(&self) -> bool {
         matches!(self, UnitError::Storage(kerno_core::Error::Locked))
     }
+
+    /// Whether stored bytes failed validation (a checksum, a structure rule): damage, not a
+    /// refusal of the request.
+    pub fn is_corruption(&self) -> bool {
+        matches!(self, UnitError::Storage(kerno_core::Error::Corruption(_)))
+    }
 }
 
 impl std::error::Error for UnitError {

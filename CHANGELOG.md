@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **`kerno` facade**: `Batch::relate` / `relate_unique` (an end can be a unit stored earlier in the same batch, `Endpoint::Stored`), `delete_cascade`, `update_if_changed`, `archive`, `unarchive`, `restore`; `Db::commit_with` (provenance — reason, actor, source — and a `Committed` report with relations, skipped updates and the commit sequence), `Db::last_commit_seq`, `Db::read_as_of` (a sequence past the last commit reads now instead of failing), `Db::compact`. `UnitError::is_corruption`.
+- **Python bindings, second round** (from the LiveSpec integration feedback, #2): every op above in `commit`, `update(if_changed=)`, `delete(cascade=)`, `relate(unique=)`, `last_commit_seq`, `compact`, schemas, indexes, documents, `find`, `execute`, `open(read_only=)`, and typed exceptions (`NotFoundError`, `LockedError`, `CorruptionError`, ... all subclasses of `KernoError`). `history` of an unknown id returns `[]` and `read_as_of` returns `None`, like `read`.
+
+### Fixed
+
+- `Db::verify` documented that a damaged store is a finding, not an `Err`; storage-level corruption (a block CRC mismatch, a damaged MANIFEST) is returned as an `Err`. The rustdoc now says so, and the Python `verify()` reports it as `clean: False` with `storage_error` instead of raising.
 - **Python bindings**: `Database.update`, `delete`, `unrelate`, `commit` (an atomic batch of store/update/delete/unrelate ops), `history` and `read_as_of` (returning the new `kerno.Revision`), and `verify` (the units-layer integrity report as a dict). Driven by the experimental LiveSpec backend, which keeps one revisioned unit per indexed symbol.
 
 ## [1.0.0-alpha.1] - 2026-11-20

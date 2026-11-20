@@ -7,17 +7,118 @@
 use std::path::PathBuf;
 use std::sync::RwLock;
 
-use kerno::units::{AsOf, CommitSeq, HistoryQuery, RevisionKind, UnitAt};
-use kerno::{Batch, Db, Direction, Lifecycle, RelationId, UnitFilter, UnitId};
+use kerno::units::{HistoryQuery, RevisionKind, UnitAt};
+use kerno::{
+    AccessMode, Batch, CommitMeta, Config, Db, Direction, Document, Endpoint, FieldDef, FieldType, FieldValue,
+    Lifecycle, RelationId, UnitFilter, UnitId,
+};
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict};
+use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString};
 
 create_exception!(_kerno, KernoError, PyException, "Any failure reported by the Kerno engine.");
+create_exception!(_kerno, NotFoundError, KernoError, "No unit, relation or revision with that id.");
+create_exception!(_kerno, DeletedError, KernoError, "The unit is deleted (or not in the lifecycle the call needs).");
+create_exception!(_kerno, LockedError, KernoError, "Another handle or process holds the database directory.");
+create_exception!(
+    _kerno,
+    CorruptionError,
+    KernoError,
+    "Stored bytes failed validation (a checksum or a structure rule)."
+);
+create_exception!(
+    _kerno,
+    InvalidArgumentError,
+    KernoError,
+    "The engine refused an argument (a type name, a limit, a batch)."
+);
+create_exception!(_kerno, PayloadTooLargeError, KernoError, "The payload is larger than the limit (1 MiB by default).");
+create_exception!(
+    _kerno,
+    HasRelationsError,
+    KernoError,
+    "The unit still has live relations; unrelate them or use cascade."
+);
+create_exception!(_kerno, PrunedError, KernoError, "Retention removed the revision asked for.");
 
 fn engine_error(e: kerno::Error) -> PyErr {
-    KernoError::new_err(e.to_string())
+    use kerno::Error as E;
+    let msg = e.to_string();
+    if e.is_locked() {
+        return LockedError::new_err(msg);
+    }
+    if e.is_corruption() {
+        return CorruptionError::new_err(msg);
+    }
+    match e {
+        E::NotFound { .. } | E::RelationNotFound { .. } | E::RevisionNotFound { .. } => NotFoundError::new_err(msg),
+        E::Deleted { .. } => DeletedError::new_err(msg),
+        E::PayloadTooLarge { .. } => PayloadTooLargeError::new_err(msg),
+        E::InvalidArgument(_) | E::ChangeSetTooLarge { .. } => InvalidArgumentError::new_err(msg),
+        E::UnitHasRelations { .. } => HasRelationsError::new_err(msg),
+        E::Pruned { .. } => PrunedError::new_err(msg),
+        _ => KernoError::new_err(msg),
+    }
+}
+
+fn is_not_found(e: &kerno::Error) -> bool {
+    matches!(e, kerno::Error::NotFound { .. })
+}
+
+/// A Python value as a document field: bool, int, float, str or bytes.
+fn to_field(v: &Bound<'_, PyAny>) -> PyResult<FieldValue> {
+    if v.is_instance_of::<PyBool>() {
+        Ok(FieldValue::Bool(v.extract()?))
+    } else if v.is_instance_of::<PyInt>() {
+        Ok(FieldValue::Int(v.extract()?))
+    } else if v.is_instance_of::<PyFloat>() {
+        Ok(FieldValue::Float(v.extract()?))
+    } else if v.is_instance_of::<PyString>() {
+        Ok(FieldValue::Text(v.extract()?))
+    } else if let Ok(b) = v.extract::<Vec<u8>>() {
+        Ok(FieldValue::Bytes(b))
+    } else {
+        Err(PyValueError::new_err(format!("unsupported field value: {v}")))
+    }
+}
+
+fn to_document(d: &Bound<'_, PyDict>) -> PyResult<Document> {
+    let mut doc = Document::new();
+    for (k, v) in d.iter() {
+        doc = doc.with(k.extract::<String>()?, to_field(&v)?);
+    }
+    Ok(doc)
+}
+
+fn field_to_py<'py>(py: Python<'py>, v: &FieldValue) -> PyResult<Bound<'py, PyAny>> {
+    Ok(match v {
+        FieldValue::Bool(b) => PyBool::new(py, *b).to_owned().into_any(),
+        FieldValue::Int(i) => i.into_pyobject(py)?.into_any(),
+        FieldValue::Float(f) => f.into_pyobject(py)?.into_any(),
+        FieldValue::Text(t) => t.into_pyobject(py)?.into_any(),
+        FieldValue::Bytes(b) => PyBytes::new(py, b).into_any(),
+    })
+}
+
+fn field_type(name: &str) -> PyResult<FieldType> {
+    Ok(match name {
+        "bool" => FieldType::Bool,
+        "int" => FieldType::Int,
+        "float" => FieldType::Float,
+        "text" | "str" => FieldType::Text,
+        "bytes" => FieldType::Bytes,
+        other => return Err(PyValueError::new_err(format!("unknown field type {other:?}"))),
+    })
+}
+
+/// A relation end in a batch: a unit id (hex), or the index of an earlier "store" op.
+fn endpoint(v: &Bound<'_, PyAny>) -> PyResult<Endpoint> {
+    if let Ok(n) = v.extract::<usize>() {
+        Ok(Endpoint::Stored(n))
+    } else {
+        Ok(Endpoint::Unit(UnitId(parse_id(&v.extract::<String>()?)?)))
+    }
 }
 
 fn parse_id(hex: &str) -> PyResult<[u8; 16]> {
@@ -39,7 +140,6 @@ enum Payload {
     Text(String),
     Bytes(Vec<u8>),
 }
-
 
 fn lifecycle_name(l: Lifecycle) -> &'static str {
     match l {
@@ -213,9 +313,27 @@ impl Database {
 
     /// Relates unit `from_id` to unit `to_id` with a relation of `relation_type`; returns the
     /// relation's id.
-    fn relate(&self, py: Python<'_>, from_id: &str, to_id: &str, relation_type: &str) -> PyResult<String> {
+    /// With `unique=True`, an existing relation of that type between the two units is reused.
+    #[pyo3(signature = (from_id, to_id, relation_type, unique=false))]
+    fn relate(
+        &self,
+        py: Python<'_>,
+        from_id: &str,
+        to_id: &str,
+        relation_type: &str,
+        unique: bool,
+    ) -> PyResult<String> {
         let (from, to) = (UnitId(parse_id(from_id)?), UnitId(parse_id(to_id)?));
-        self.with_db(py, |db| Ok(db.relate(from, to, relation_type).map_err(engine_error)?.to_string()))
+        self.with_db(py, |db| {
+            let mut b = Batch::new();
+            if unique {
+                b.relate_unique(from, to, relation_type);
+            } else {
+                b.relate(from, to, relation_type);
+            }
+            let done = db.commit_with(&b, &CommitMeta::default()).map_err(engine_error)?;
+            Ok(RelationId::to_string(&done.relations[0]))
+        })
     }
 
     /// The relations that start at (`direction="out"`) or end at (`"in"`) `id`, optionally of one
@@ -255,18 +373,132 @@ impl Database {
         self.with_db(py, |db| Ok(db.query(&filter).map_err(engine_error)?.into_iter().map(Unit::from).collect()))
     }
 
-
     /// Replaces the payload of `id`, adding a revision; the earlier ones stay in its history.
-    fn update(&self, py: Python<'_>, id: &str, payload: Payload) -> PyResult<()> {
+    /// With `if_changed=True`, an identical payload writes nothing. Returns whether a revision
+    /// was written.
+    #[pyo3(signature = (id, payload, if_changed=false))]
+    fn update(&self, py: Python<'_>, id: &str, payload: Payload, if_changed: bool) -> PyResult<bool> {
         let id = UnitId(parse_id(id)?);
         let bytes = into_bytes(payload);
-        self.with_db(py, |db| db.update(id, bytes).map_err(engine_error))
+        self.with_db(py, |db| {
+            let mut b = Batch::new();
+            if if_changed {
+                b.update_if_changed(id, bytes);
+            } else {
+                b.update(id, bytes);
+            }
+            Ok(db.commit_with(&b, &CommitMeta::default()).map_err(engine_error)?.unchanged == 0)
+        })
     }
 
-    /// Deletes `id` with a tombstone revision; its history is kept.
-    fn delete(&self, py: Python<'_>, id: &str) -> PyResult<()> {
+    /// Deletes `id` with a tombstone revision; its history is kept. With `cascade=True` its
+    /// relations are removed first, in the same commit.
+    #[pyo3(signature = (id, cascade=false))]
+    fn delete(&self, py: Python<'_>, id: &str, cascade: bool) -> PyResult<()> {
         let id = UnitId(parse_id(id)?);
-        self.with_db(py, |db| db.delete(id).map_err(engine_error))
+        self.with_db(py, |db| {
+            let mut b = Batch::new();
+            if cascade {
+                b.delete_cascade(id);
+            } else {
+                b.delete(id);
+            }
+            db.commit(&b).map(|_| ()).map_err(engine_error)
+        })
+    }
+
+    /// The sequence of the last commit (0 for an empty database): the point to pass to
+    /// `read_as_of` for "now".
+    fn last_commit_seq(&self, py: Python<'_>) -> PyResult<u64> {
+        self.with_db(py, |db| db.last_commit_seq().map_err(engine_error))
+    }
+
+    /// Compacts the revision ranges; returns `{"before": bytes, "after": bytes}`. History keeps
+    /// deleted units' payloads, so this frees only what a retention policy dropped.
+    fn compact<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let r = self.with_db(py, |db| db.compact().map_err(engine_error))?;
+        let d = PyDict::new(py);
+        d.set_item("before", r.stored_bytes_before)?;
+        d.set_item("after", r.stored_bytes_after)?;
+        Ok(d)
+    }
+
+    /// Gives `unit_type` a schema. `fields` is a list of dicts: `name`, `type` ("bool", "int",
+    /// "float", "text", "bytes"), and optional `required`, `unique`, `indexed` booleans.
+    fn define_schema(&self, py: Python<'_>, unit_type: &str, fields: Vec<Bound<'_, PyDict>>) -> PyResult<()> {
+        let mut defs = Vec::new();
+        for f in &fields {
+            let name: String =
+                f.get_item("name")?.ok_or_else(|| PyValueError::new_err("field without name"))?.extract()?;
+            let ty: String =
+                f.get_item("type")?.ok_or_else(|| PyValueError::new_err("field without type"))?.extract()?;
+            let flag =
+                |k: &str| -> PyResult<bool> { Ok(f.get_item(k)?.map(|v| v.is_truthy()).transpose()?.unwrap_or(false)) };
+            let mut def = FieldDef::new(name, field_type(&ty)?);
+            if flag("required")? {
+                def = def.required();
+            }
+            if flag("unique")? {
+                def = def.unique();
+            }
+            if flag("indexed")? {
+                def = def.indexed();
+            }
+            defs.push(def);
+        }
+        self.with_db(py, |db| db.define_schema(unit_type, defs).map_err(engine_error))
+    }
+
+    /// Indexes `field` of `unit_type` (it must be in the type's schema).
+    fn create_index(&self, py: Python<'_>, unit_type: &str, field: &str) -> PyResult<()> {
+        self.with_db(py, |db| db.create_index(unit_type, field).map_err(engine_error))
+    }
+
+    /// Stores a document (a dict of bool/int/float/str/bytes); a schema, if any, validates it.
+    fn store_document(&self, py: Python<'_>, unit_type: &str, document: Bound<'_, PyDict>) -> PyResult<String> {
+        let doc = to_document(&document)?;
+        self.with_db(py, |db| Ok(db.store_document(unit_type, &doc).map_err(engine_error)?.to_string()))
+    }
+
+    /// Replaces the payload of `id` with a document.
+    fn update_document(&self, py: Python<'_>, id: &str, document: Bound<'_, PyDict>) -> PyResult<()> {
+        let id = UnitId(parse_id(id)?);
+        let doc = to_document(&document)?;
+        self.with_db(py, |db| db.update_document(id, &doc).map_err(engine_error))
+    }
+
+    /// The payload of `id` decoded as a document dict, or `None` for an unknown or deleted unit.
+    fn read_document<'py>(&self, py: Python<'py>, id: &str) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let id = UnitId(parse_id(id)?);
+        let unit = self.with_db(py, |db| db.get(id).map_err(engine_error))?;
+        let Some(payload) = unit.and_then(|u| u.payload) else { return Ok(None) };
+        let doc = Document::decode(&payload).map_err(engine_error)?;
+        let d = PyDict::new(py);
+        for (k, v) in doc.iter() {
+            d.set_item(k, field_to_py(py, v)?)?;
+        }
+        Ok(Some(d))
+    }
+
+    /// The active units of `unit_type` whose indexed `field` equals `value`.
+    fn find(&self, py: Python<'_>, unit_type: &str, field: &str, value: Bound<'_, PyAny>) -> PyResult<Vec<Unit>> {
+        let v = to_field(&value)?;
+        self.with_db(py, |db| {
+            Ok(db.find(unit_type, field, &v).map_err(engine_error)?.into_iter().map(Unit::from).collect())
+        })
+    }
+
+    /// Runs a query of the Kerno query language; returns `{"aliases": [...], "rows": [[Unit]]}`.
+    fn execute<'py>(&self, py: Python<'py>, query: &str) -> PyResult<Bound<'py, PyDict>> {
+        let r = self.with_db(py, |db| db.execute(query).map_err(engine_error))?;
+        let d = PyDict::new(py);
+        d.set_item("aliases", r.aliases)?;
+        let rows = PyList::empty(py);
+        for row in r.rows {
+            rows.append(row.into_iter().map(Unit::from).collect::<Vec<_>>())?;
+        }
+        d.set_item("rows", rows)?;
+        Ok(d)
     }
 
     /// Removes the relation `relation_id`.
@@ -276,10 +508,27 @@ impl Database {
     }
 
     /// Commits `ops` atomically, as one change set. Each op is a tuple:
-    /// `("store", unit_type, payload)`, `("update", id, payload)`, `("delete", id)` or
-    /// `("unrelate", relation_id)`. Returns the ids of the stored units, in order.
-    fn commit(&self, py: Python<'_>, ops: Vec<Bound<'_, pyo3::types::PyTuple>>) -> PyResult<Vec<String>> {
+    /// `("store", unit_type, payload)`, `("update", id, payload)`, `("update_if_changed", id,
+    /// payload)`, `("delete", id)`, `("delete_cascade", id)`, `("unrelate", relation_id)`,
+    /// `("relate", from, to, type)`, `("relate_unique", from, to, type)`, `("archive", id)`,
+    /// `("unarchive", id)` or `("restore", id, revision)`. A relation end is a unit id or the
+    /// index (0-based) of an earlier "store" op of the batch. `reason`, `actor` and `source` are
+    /// recorded with every revision. Returns the ids of the stored units, or with
+    /// `detailed=True` a dict: `units`, `relations`, `unchanged`, `commit_seq`.
+    #[pyo3(signature = (ops, reason=None, actor=None, source=None, detailed=false))]
+    fn commit<'py>(
+        &self,
+        py: Python<'py>,
+        ops: Vec<Bound<'py, pyo3::types::PyTuple>>,
+        reason: Option<String>,
+        actor: Option<Payload>,
+        source: Option<Payload>,
+        detailed: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
         let mut batch = Batch::new();
+        let id_at = |op: &Bound<'py, pyo3::types::PyTuple>, i: usize| -> PyResult<UnitId> {
+            Ok(UnitId(parse_id(&op.get_item(i)?.extract::<String>()?)?))
+        };
         for op in &ops {
             let name: String = op.get_item(0)?.extract()?;
             match (name.as_str(), op.len()) {
@@ -289,24 +538,57 @@ impl Database {
                     batch.store(&t, into_bytes(p));
                 }
                 ("update", 3) => {
-                    let id: String = op.get_item(1)?.extract()?;
                     let p: Payload = op.get_item(2)?.extract()?;
-                    batch.update(UnitId(parse_id(&id)?), into_bytes(p));
+                    batch.update(id_at(op, 1)?, into_bytes(p));
+                }
+                ("update_if_changed", 3) => {
+                    let p: Payload = op.get_item(2)?.extract()?;
+                    batch.update_if_changed(id_at(op, 1)?, into_bytes(p));
                 }
                 ("delete", 2) => {
-                    let id: String = op.get_item(1)?.extract()?;
-                    batch.delete(UnitId(parse_id(&id)?));
+                    batch.delete(id_at(op, 1)?);
+                }
+                ("delete_cascade", 2) => {
+                    batch.delete_cascade(id_at(op, 1)?);
                 }
                 ("unrelate", 2) => {
                     let id: String = op.get_item(1)?.extract()?;
                     batch.unrelate(RelationId(parse_id(&id)?));
                 }
+                ("relate", 4) | ("relate_unique", 4) => {
+                    let (f, t) = (endpoint(&op.get_item(1)?)?, endpoint(&op.get_item(2)?)?);
+                    let ty: String = op.get_item(3)?.extract()?;
+                    if name == "relate" {
+                        batch.relate(f, t, &ty);
+                    } else {
+                        batch.relate_unique(f, t, &ty);
+                    }
+                }
+                ("archive", 2) => {
+                    batch.archive(id_at(op, 1)?);
+                }
+                ("unarchive", 2) => {
+                    batch.unarchive(id_at(op, 1)?);
+                }
+                ("restore", 3) => {
+                    let rev: u64 = op.get_item(2)?.extract()?;
+                    batch.restore(id_at(op, 1)?, rev);
+                }
                 _ => return Err(PyValueError::new_err(format!("unknown or malformed batch op: {op}"))),
             }
         }
-        self.with_db(py, move |db| {
-            Ok(db.commit(&batch).map_err(engine_error)?.into_iter().map(|id| id.to_string()).collect())
-        })
+        let meta = CommitMeta { reason, actor: actor.map(into_bytes), source: source.map(into_bytes) };
+        let done = self.with_db(py, move |db| db.commit_with(&batch, &meta).map_err(engine_error))?;
+        let units: Vec<String> = done.units.iter().map(ToString::to_string).collect();
+        if !detailed {
+            return Ok(units.into_pyobject(py)?.into_any());
+        }
+        let d = PyDict::new(py);
+        d.set_item("units", units)?;
+        d.set_item("relations", done.relations.iter().map(RelationId::to_string).collect::<Vec<_>>())?;
+        d.set_item("unchanged", done.unchanged)?;
+        d.set_item("commit_seq", done.commit_seq)?;
+        Ok(d.into_any())
     }
 
     /// The newest `limit` revisions of `id`, newest first. `with_payload` reads and verifies
@@ -318,20 +600,23 @@ impl Database {
             return Err(PyValueError::new_err("limit must be at least 1"));
         }
         let q = HistoryQuery { with_payload, ..HistoryQuery::latest(limit) };
-        self.with_db(py, |db| {
-            Ok(db.unit_db().history(id, q).map_err(engine_error)?.into_iter().map(Revision::from).collect())
+        self.with_db(py, |db| match db.unit_db().history(id, q) {
+            Ok(revs) => Ok(revs.into_iter().map(Revision::from).collect()),
+            Err(e) if is_not_found(&e) => Ok(Vec::new()),
+            Err(e) => Err(engine_error(e)),
         })
     }
 
     /// The revision of `id` in force once commit `commit_seq` committed, with its payload;
-    /// `None` when the unit did not exist yet. A deleted unit returns its tombstone.
+    /// `None` when the unit did not exist yet (or never did). A deleted unit returns its
+    /// tombstone. A sequence after the last commit reads the current state.
     fn read_as_of(&self, py: Python<'_>, id: &str, commit_seq: u64) -> PyResult<Option<Revision>> {
         let id = UnitId(parse_id(id)?);
-        self.with_db(py, |db| match db.unit_db().unit_as_of(id, AsOf::Seq(CommitSeq(commit_seq))).map_err(engine_error)? {
+        self.with_db(py, |db| match db.read_as_of(id, commit_seq).map_err(engine_error)? {
             UnitAt::Absent => Ok(None),
             UnitAt::Present(r) | UnitAt::DeletedAt(r) => Ok(Some(Revision::from(r))),
             UnitAt::Pruned { oldest } => {
-                Err(KernoError::new_err(format!("revision pruned by retention; oldest kept is {}", oldest.0)))
+                Err(PrunedError::new_err(format!("revision pruned by retention; oldest kept is {}", oldest.0)))
             }
         })
     }
@@ -339,8 +624,19 @@ impl Database {
     /// Checks every record of the units layer: `{"clean", "commit_seq", "units", "revisions",
     /// "relations", "findings"}`. A damaged store is reported, not raised.
     fn verify<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let report = self.with_db(py, |db| db.verify().map_err(engine_error))?;
         let d = PyDict::new(py);
+        let report = match self.with_db(py, |db| Ok(db.verify()))? {
+            Ok(r) => r,
+            Err(e) if e.is_corruption() => {
+                // Storage-level damage stops the scan: report it, as the doc promises.
+                d.set_item("clean", false)?;
+                d.set_item("storage_error", e.to_string())?;
+                d.set_item("findings", vec![e.to_string()])?;
+                d.set_item("findings_omitted", 0)?;
+                return Ok(d);
+            }
+            Err(e) => return Err(engine_error(e)),
+        };
         d.set_item("clean", report.is_clean())?;
         d.set_item("commit_seq", report.seq.0)?;
         d.set_item("units", report.counts.units)?;
@@ -371,9 +667,27 @@ impl Database {
 }
 
 /// Opens the database in `path`, creating it when `path` holds none.
+///
+/// `read_only=True` opens without writing anything to the directory (it still holds the
+/// directory's lock: one handle at a time).
 #[pyfunction]
-fn open(py: Python<'_>, path: PathBuf) -> PyResult<Database> {
-    let db = py.detach(|| Db::open(path)).map_err(engine_error)?;
+#[pyo3(signature = (path, read_only=false))]
+fn open(py: Python<'_>, path: PathBuf, read_only: bool) -> PyResult<Database> {
+    let db = py
+        .detach(|| {
+            if read_only {
+                let config = Config {
+                    access: AccessMode::ReadOnly,
+                    create_if_missing: false,
+                    allow_unverified_platform: true,
+                    ..Config::default()
+                };
+                Db::open_with(path, config)
+            } else {
+                Db::open(path)
+            }
+        })
+        .map_err(engine_error)?;
     Ok(Database { db: RwLock::new(Some(db)) })
 }
 
@@ -385,5 +699,13 @@ fn _kerno(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Relation>()?;
     m.add_class::<Revision>()?;
     m.add("KernoError", m.py().get_type::<KernoError>())?;
+    m.add("NotFoundError", m.py().get_type::<NotFoundError>())?;
+    m.add("DeletedError", m.py().get_type::<DeletedError>())?;
+    m.add("LockedError", m.py().get_type::<LockedError>())?;
+    m.add("CorruptionError", m.py().get_type::<CorruptionError>())?;
+    m.add("InvalidArgumentError", m.py().get_type::<InvalidArgumentError>())?;
+    m.add("PayloadTooLargeError", m.py().get_type::<PayloadTooLargeError>())?;
+    m.add("HasRelationsError", m.py().get_type::<HasRelationsError>())?;
+    m.add("PrunedError", m.py().get_type::<PrunedError>())?;
     Ok(())
 }
