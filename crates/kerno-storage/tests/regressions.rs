@@ -720,6 +720,7 @@ mod nested_new_directory {
     /// Skipped where permission bits are not enforced (a process with
     /// CAP_DAC_OVERRIDE or CAP_DAC_READ_SEARCH, such as root): run it there
     /// with `setpriv --bounding-set=-dac_override,-dac_read_search`.
+    #[cfg(unix)]
     #[test]
     fn execute_only_ancestor_on_the_real_file_system() {
         use std::fs;
