@@ -1,0 +1,28 @@
+39.49 44.45 39.68 80/1637 96695
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.78s
+     Running `target/release/examples/unit_bench --only R1 --dir target/bench-scratch`
+# unit_bench mode=full relations=false indexes=false seed=0xe309 dir=target/bench-scratch engine=KernoDb options=Options { durability: Sync, cache_bytes: 67108864, write_buffer_bytes: 8388608 } vfs=StdVfs rounds=5
+## R1 recovery: kill -9 with N MiB of WAL unflushed, then open and read (5 repetitions)
+raw R1 size_mib=1 rep=0 wal_bytes=1072404 open_ms=130.8 open_and_first_read_ms=130.9
+raw R1 size_mib=1 rep=1 wal_bytes=1072404 open_ms=127.5 open_and_first_read_ms=127.5
+raw R1 size_mib=1 rep=2 wal_bytes=1072404 open_ms=90.5 open_and_first_read_ms=90.5
+raw R1 size_mib=1 rep=3 wal_bytes=1072404 open_ms=85.5 open_and_first_read_ms=85.5
+raw R1 size_mib=1 rep=4 wal_bytes=1072404 open_ms=102.0 open_and_first_read_ms=102.1
+raw R1 1 MiB open + first read: n=5 p50_ms=102.0937 p99_ms=130.8595 max_ms=130.8595 mean_ms=107.3054
+raw R1 size_mib=64 rep=0 wal_bytes=67292363 open_ms=2520.0 open_and_first_read_ms=2520.1
+raw R1 size_mib=64 rep=1 wal_bytes=67292363 open_ms=2194.5 open_and_first_read_ms=2194.6
+raw R1 size_mib=64 rep=2 wal_bytes=67292363 open_ms=3478.6 open_and_first_read_ms=3478.6
+raw R1 size_mib=64 rep=3 wal_bytes=67292363 open_ms=2346.9 open_and_first_read_ms=2346.9
+raw R1 size_mib=64 rep=4 wal_bytes=67292363 open_ms=2953.4 open_and_first_read_ms=2953.4
+raw R1 64 MiB open + first read: n=5 p50_ms=2520.0983 p99_ms=3478.6155 max_ms=3478.6155 mean_ms=2698.7342
+raw R1 size_mib=256 rep=0 wal_bytes=268633210 open_ms=14401.7 open_and_first_read_ms=14405.6
+raw R1 size_mib=256 rep=1 wal_bytes=268633210 open_ms=12261.3 open_and_first_read_ms=12261.4
+raw R1 size_mib=256 rep=2 wal_bytes=268633210 open_ms=8395.5 open_and_first_read_ms=8395.6
+raw R1 size_mib=256 rep=3 wal_bytes=268633210 open_ms=1810.7 open_and_first_read_ms=1810.7
+raw R1 size_mib=256 rep=4 wal_bytes=268633210 open_ms=1567.4 open_and_first_read_ms=1567.5
+raw R1 256 MiB open + first read: n=5 p50_ms=8395.5708 p99_ms=14405.5914 max_ms=14405.5914 mean_ms=7688.1533
+verdict R1: INFO 1 MiB: p50 102.1 ms, max 130.9 ms (open alone p50 102.0 ms); 64 MiB: p50 2520.1 ms, max 3478.6 ms (open alone p50 2520.0 ms); 256 MiB: p50 8395.6 ms, max 14405.6 ms (open alone p50 8395.5 ms)
+time R1: 240.3 s
+# summary
+R1 INFO 1 MiB: p50 102.1 ms, max 130.9 ms (open alone p50 102.0 ms); 64 MiB: p50 2520.1 ms, max 3478.6 ms (open alone p50 2520.0 ms); 256 MiB: p50 8395.6 ms, max 14405.6 ms (open alone p50 8395.5 ms)
+49.12 52.69 44.51 6/1396 112097

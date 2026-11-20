@@ -1,0 +1,24 @@
+5.95 6.60 12.42 4/2211 2129866
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.10s
+     Running `target/release/examples/unit_bench --only U5,T1 --dir target/bench-scratch`
+# unit_bench mode=full relations=false indexes=false seed=0xe309 dir=target/bench-scratch engine=KernoDb options=Options { durability: Sync, cache_bytes: 67108864, write_buffer_bytes: 8388608 } vfs=StdVfs rounds=5
+## U5: stored bytes per revision after N updates
+raw U5: units=100 revisions_per_unit=100 revisions=10000 payload=100 stored_units=3153146 stored_plain=1274165 per_revision=315.3 per_plain_key=127.4 dir_units=3153354 dir_plain=1274390 dir_empty_units=178 dir_empty_plain=178 disk_per_revision=315.3 disk_per_plain_key=127.4
+verdict U5: INFO 10000 revisions of 100 B: 315.3 B/revision vs 127.4 B per plain key (+187.9 B, 2.475x); on disk after close 315.3 B/revision vs 127.4 B per plain key (2.475x)
+raw U5: units=100 revisions_per_unit=100 revisions=10000 payload=1024 stored_units=12577305 stored_plain=10679854 per_revision=1257.7 per_plain_key=1068.0 dir_units=12577579 dir_plain=10680128 dir_empty_units=178 dir_empty_plain=178 disk_per_revision=1257.7 disk_per_plain_key=1068.0
+verdict U5: INFO 10000 revisions of 1024 B: 1257.7 B/revision vs 1068.0 B per plain key (+189.7 B, 1.178x); on disk after close 1257.7 B/revision vs 1068.0 B per plain key (1.178x)
+raw U5: units=100 revisions_per_unit=100 revisions=10000 payload=16384 stored_units=166802760 stored_plain=164837710 per_revision=16680.3 per_plain_key=16483.8 dir_units=166804243 dir_plain=164838852 dir_empty_units=178 dir_empty_plain=178 disk_per_revision=16680.4 disk_per_plain_key=16483.9
+verdict U5: INFO 10000 revisions of 16384 B: 16680.3 B/revision vs 16483.8 B per plain key (+196.5 B, 1.012x); on disk after close 16680.4 B/revision vs 16483.9 B per plain key (1.012x)
+time U5: 10.0 s
+## T1 as-of: unit_as_of at a depth of 10, 100 and 1000 revisions (1 KiB payloads)
+raw T1 unit_as_of depth 10: n=25000 p50_ms=0.0091 p99_ms=0.0141 max_ms=0.1675 mean_ms=0.0096
+raw T1 unit_as_of depth 100: n=25000 p50_ms=0.0130 p99_ms=0.0181 max_ms=0.3909 mean_ms=0.0132
+raw T1 unit_as_of depth 1000: n=25000 p50_ms=0.0189 p99_ms=0.0282 max_ms=0.1811 mean_ms=0.0196
+verdict T1: INFO unit_as_of p50/p99: depth 10 0.0091/0.0141 ms, depth 100 0.0130/0.0181 ms, depth 1000 0.0189/0.0282 ms (report)
+time T1: 3.7 s
+# summary
+U5 INFO 10000 revisions of 100 B: 315.3 B/revision vs 127.4 B per plain key (+187.9 B, 2.475x); on disk after close 315.3 B/revision vs 127.4 B per plain key (2.475x)
+U5 INFO 10000 revisions of 1024 B: 1257.7 B/revision vs 1068.0 B per plain key (+189.7 B, 1.178x); on disk after close 1257.7 B/revision vs 1068.0 B per plain key (1.178x)
+U5 INFO 10000 revisions of 16384 B: 16680.3 B/revision vs 16483.8 B per plain key (+196.5 B, 1.012x); on disk after close 16680.4 B/revision vs 16483.9 B per plain key (1.012x)
+T1 INFO unit_as_of p50/p99: depth 10 0.0091/0.0141 ms, depth 100 0.0130/0.0181 ms, depth 1000 0.0189/0.0282 ms (report)
+4.99 6.36 12.25 1/2219 2130258

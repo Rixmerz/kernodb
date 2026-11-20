@@ -1,0 +1,89 @@
+42.26 51.10 44.08 6/1380 112455
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.05s
+     Running `target/release/examples/unit_bench --only U6 --medians --dir target/bench-scratch`
+# unit_bench mode=full relations=false indexes=false seed=0xe309 dir=target/bench-scratch engine=KernoDb options=Options { durability: Sync, cache_bytes: 67108864, write_buffer_bytes: 8388608 } vfs=StdVfs rounds=5
+## U6: run_retention (KeepLast(1), RetentionBudget { max_units: 1000, max_ops: 10000 }) with 2 writer(s) of 1 KiB updates and 1 reader
+raw U6 low load (1 writer, no reader) write: n=2199 p50_ms=1.0162 p99_ms=4.9284 max_ms=62.0917 mean_ms=1.3636
+raw U6 low load throughput_ops_s=732.9
+raw U6 round 0 control: 44.19s 18643 writes
+raw U6 round 0: before_a 3.00s 1200 writes, before_b 3.00s 1389 writes, during 44.19s 16395 writes
+raw U6 round 1 control: 38.28s 17749 writes
+raw U6 round 1: before_a 3.00s 1464 writes, before_b 3.00s 1516 writes, during 38.28s 18229 writes
+raw U6 round 2 control: 34.65s 16176 writes
+raw U6 round 2: before_a 3.00s 1565 writes, before_b 3.00s 1608 writes, during 34.65s 16563 writes
+raw U6 round 3 control: 34.07s 16356 writes
+raw U6 round 3: before_a 3.00s 1200 writes, before_b 3.00s 1313 writes, during 34.07s 14525 writes
+raw U6 round 4 control: 29.94s 12569 writes
+raw U6 round 4: before_a 3.00s 1624 writes, before_b 3.00s 1091 writes, during 29.94s 13159 writes
+raw U6 round 5 control: 50.50s 19627 writes
+raw U6 round 5: before_a 3.00s 2197 writes, before_b 3.00s 1353 writes, during 50.50s 16832 writes
+raw U6 round 6 control: 35.59s 15247 writes
+raw U6 round 6: before_a 3.00s 1098 writes, before_b 3.00s 1302 writes, during 35.59s 15998 writes
+raw U6 before_a write: n=10348 p50_ms=3.3913 p99_ms=17.5743 max_ms=217.3100 mean_ms=4.0612
+raw U6 before_a read: n=8063694 p50_ms=0.0024 p99_ms=0.0051 max_ms=0.3713 mean_ms=0.0026
+raw U6 before_a write_throughput_ops_s=492.8 secs=21.00
+raw U6 before_b write: n=9572 p50_ms=3.5859 p99_ms=22.1369 max_ms=402.7880 mean_ms=4.3974
+raw U6 before_b read: n=7504268 p50_ms=0.0026 p99_ms=0.0050 max_ms=0.6043 mean_ms=0.0028
+raw U6 before_b write_throughput_ops_s=455.8 secs=21.00
+raw U6 during write: n=111701 p50_ms=3.7147 p99_ms=20.6264 max_ms=603.1151 mean_ms=4.7833
+raw U6 during read: n=77171132 p50_ms=0.0030 p99_ms=0.0092 max_ms=9.8241 mean_ms=0.0034
+raw U6 during write_throughput_ops_s=418.0 secs=267.21
+raw U6 retention: calls=77 revisions_pruned=1634722 units_retained=70700 secs=267.213 revisions_per_s=6118 units_per_s=265
+raw U6 control (no retention, as long as during) write: n=116367 p50_ms=3.6771 p99_ms=20.4872 max_ms=398.8050 mean_ms=4.5924
+raw U6 control read: n=95691531 p50_ms=0.0025 p99_ms=0.0056 max_ms=3.8452 mean_ms=0.0028
+raw U6 control write_throughput_ops_s=435.5 secs=267.21
+verdict U6: FAIL budget 1000 units/10000 ops: write p99 during 20.626 ms vs before 22.137 ms (0.93x; low load 4.928 ms); throughput during 418.0 ops/s vs before 455.8 ops/s (0.92x); read p99 during 0.0092 ms vs before 0.0051 ms (1.80x); retention 6118 revisions/s
+raw U6 median round 0: during/control throughput 0.879 write_p99 1.057 read_p99 1.881; before_a/before_b spread throughput 0.136 write_p99 0.001 read_p99 0.125
+raw U6 median round 1: during/control throughput 1.027 write_p99 0.901 read_p99 1.150; before_a/before_b spread throughput 0.034 write_p99 0.189 read_p99 0.038
+raw U6 median round 2: during/control throughput 1.024 write_p99 0.881 read_p99 1.246; before_a/before_b spread throughput 0.027 write_p99 0.284 read_p99 0.090
+raw U6 median round 3: during/control throughput 0.888 write_p99 1.154 read_p99 0.894; before_a/before_b spread throughput 0.086 write_p99 0.580 read_p99 0.069
+raw U6 median round 4: during/control throughput 1.047 write_p99 0.894 read_p99 1.127; before_a/before_b spread throughput 0.328 write_p99 0.357 read_p99 0.097
+raw U6 median round 5: during/control throughput 0.858 write_p99 1.052 read_p99 2.093; before_a/before_b spread throughput 0.384 write_p99 0.547 read_p99 0.067
+raw U6 median round 6: during/control throughput 1.049 write_p99 1.060 read_p99 1.117; before_a/before_b spread throughput 0.157 write_p99 0.240 read_p99 0.222
+verdict U6m: FAIL budget 1000 units/10000 ops, median of 7 rounds of during/control: throughput 1.024 (noise 0.136, fails below 0.864); write p99 1.052 (noise 0.284, fails above 1.284); read p99 1.150 (noise 0.090, fails above 1.100); fixed 0.98/1.10 rule: PASS
+## U6: run_retention (KeepLast(1), RetentionBudget { max_units: 25, max_ops: 100 }) with 2 writer(s) of 1 KiB updates and 1 reader
+raw U6 low load (1 writer, no reader) write: n=1422 p50_ms=1.8273 p99_ms=11.6642 max_ms=25.3776 mean_ms=2.1089
+raw U6 low load throughput_ops_s=473.9
+raw U6 round 0 control: 48.04s 18001 writes
+raw U6 round 0: before_a 3.00s 1359 writes, before_b 3.00s 1157 writes, during 48.04s 22050 writes
+raw U6 round 1 control: 45.11s 20039 writes
+raw U6 round 1: before_a 3.00s 1125 writes, before_b 3.00s 1379 writes, during 45.11s 19463 writes
+raw U6 round 2 control: 46.23s 20684 writes
+raw U6 round 2: before_a 3.00s 1391 writes, before_b 3.00s 964 writes, during 46.23s 20223 writes
+raw U6 round 3 control: 48.41s 19690 writes
+raw U6 round 3: before_a 3.00s 1477 writes, before_b 3.00s 1390 writes, during 48.41s 20963 writes
+raw U6 round 4 control: 44.56s 20691 writes
+raw U6 round 4: before_a 3.00s 1285 writes, before_b 3.00s 1258 writes, during 44.56s 18897 writes
+raw U6 round 5 control: 50.77s 22431 writes
+raw U6 round 5: before_a 3.00s 1412 writes, before_b 3.00s 1466 writes, during 50.77s 23408 writes
+raw U6 round 6 control: 46.72s 19907 writes
+raw U6 round 6: before_a 3.00s 1211 writes, before_b 3.00s 995 writes, during 46.72s 21003 writes
+raw U6 before_a write: n=9260 p50_ms=3.6544 p99_ms=25.4170 max_ms=196.3983 mean_ms=4.5408
+raw U6 before_a read: n=8086429 p50_ms=0.0023 p99_ms=0.0051 max_ms=0.1043 mean_ms=0.0026
+raw U6 before_a write_throughput_ops_s=440.9 secs=21.00
+raw U6 before_b write: n=8609 p50_ms=3.8184 p99_ms=19.7807 max_ms=234.6214 mean_ms=4.9130
+raw U6 before_b read: n=7410410 p50_ms=0.0026 p99_ms=0.0059 max_ms=1.0770 mean_ms=0.0028
+raw U6 before_b write_throughput_ops_s=409.9 secs=21.00
+raw U6 during write: n=146007 p50_ms=3.7289 p99_ms=19.0757 max_ms=417.5972 mean_ms=4.5167
+raw U6 during read: n=98686510 p50_ms=0.0030 p99_ms=0.0074 max_ms=1.7744 mean_ms=0.0033
+raw U6 during write_throughput_ops_s=442.7 secs=329.83
+raw U6 retention: calls=2828 revisions_pruned=1686528 units_retained=70700 secs=329.832 revisions_per_s=5113 units_per_s=214
+raw U6 control (no retention, as long as during) write: n=141443 p50_ms=3.7117 p99_ms=19.1926 max_ms=366.6565 mean_ms=4.6625
+raw U6 control read: n=113705945 p50_ms=0.0026 p99_ms=0.0061 max_ms=2.7219 mean_ms=0.0029
+raw U6 control write_throughput_ops_s=428.8 secs=329.83
+verdict U6: FAIL budget 25 units/100 ops: write p99 during 19.076 ms vs before 25.417 ms (0.75x; low load 11.664 ms); throughput during 442.7 ops/s vs before 409.9 ops/s (1.08x); read p99 during 0.0074 ms vs before 0.0059 ms (1.26x); retention 5113 revisions/s
+raw U6 median round 0: during/control throughput 1.225 write_p99 1.119 read_p99 1.376; before_a/before_b spread throughput 0.149 write_p99 0.444 read_p99 0.126
+raw U6 median round 1: during/control throughput 0.971 write_p99 0.854 read_p99 1.016; before_a/before_b spread throughput 0.184 write_p99 0.480 read_p99 0.237
+raw U6 median round 2: during/control throughput 0.978 write_p99 1.082 read_p99 1.273; before_a/before_b spread throughput 0.307 write_p99 0.486 read_p99 0.076
+raw U6 median round 3: during/control throughput 1.065 write_p99 0.918 read_p99 1.249; before_a/before_b spread throughput 0.059 write_p99 0.212 read_p99 0.213
+raw U6 median round 4: during/control throughput 0.913 write_p99 1.041 read_p99 1.189; before_a/before_b spread throughput 0.021 write_p99 0.261 read_p99 0.251
+raw U6 median round 5: during/control throughput 1.044 write_p99 0.951 read_p99 1.251; before_a/before_b spread throughput 0.037 write_p99 0.429 read_p99 0.079
+raw U6 median round 6: during/control throughput 1.055 write_p99 0.953 read_p99 1.104; before_a/before_b spread throughput 0.178 write_p99 0.364 read_p99 0.066
+verdict U6m: FAIL budget 25 units/100 ops, median of 7 rounds of during/control: throughput 1.044 (noise 0.149, fails below 0.851); write p99 0.953 (noise 0.429, fails above 1.429); read p99 1.249 (noise 0.126, fails above 1.126); fixed 0.98/1.10 rule: PASS
+time U6: 1381.4 s
+# summary
+U6 FAIL budget 1000 units/10000 ops: write p99 during 20.626 ms vs before 22.137 ms (0.93x; low load 4.928 ms); throughput during 418.0 ops/s vs before 455.8 ops/s (0.92x); read p99 during 0.0092 ms vs before 0.0051 ms (1.80x); retention 6118 revisions/s
+U6m FAIL budget 1000 units/10000 ops, median of 7 rounds of during/control: throughput 1.024 (noise 0.136, fails below 0.864); write p99 1.052 (noise 0.284, fails above 1.284); read p99 1.150 (noise 0.090, fails above 1.100); fixed 0.98/1.10 rule: PASS
+U6 FAIL budget 25 units/100 ops: write p99 during 19.076 ms vs before 25.417 ms (0.75x; low load 11.664 ms); throughput during 442.7 ops/s vs before 409.9 ops/s (1.08x); read p99 during 0.0074 ms vs before 0.0059 ms (1.26x); retention 5113 revisions/s
+U6m FAIL budget 25 units/100 ops, median of 7 rounds of during/control: throughput 1.044 (noise 0.149, fails below 0.851); write p99 0.953 (noise 0.429, fails above 1.429); read p99 1.249 (noise 0.126, fails above 1.126); fixed 0.98/1.10 rule: PASS
+5.49 6.36 14.59 2/1571 176481

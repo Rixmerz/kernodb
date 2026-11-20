@@ -1,0 +1,320 @@
+$ cargo test -p kerno-units --all-features --release --test hybrid_measure -- --nocapture --exact hybrid_quality_over_the_second_frozen_set
+commit: 16ed9f2
+
+running 1 test
+T-E10-R  MANIFEST: corpus.txt, vectors.txt and queries.txt match
+== engine emulated_log
+load: 2000 units, 5062 relations, 300 change sets; 2000 vectors persisted, reopened and served; 2000 indexed in HNSW
+queries: 100 run through the hybrid query, the reference path and brute force
+T-E10-V1  queries that carry a query vector, by class (at least 25 each)
+  vector_neighbourhood    25
+  temporal                25
+  provenance              25
+  combined                25
+T-E10-Q1  exact arm against brute force (cosine), cut 10
+  recall@10 against the reference: smallest 1.000, mean 1.000 over 100 queries; identical lists in the same order: 100
+HNSW recall@10 against brute force: smallest 1.000, mean 1.000; identical lists: 100 of 100
+seed unit present in the ann top 10: 96 of 100
+T-E10-Q5  unjudged units in the top 10, per arm and per class (excluded from the metrics and counted here)
+  graph     all-100                 706 positions,    0 unjudged (0.0 %) -> met
+  graph     vector_neighbourhood     94 positions,    0 unjudged (0.0 %) -> met
+  graph     temporal                238 positions,    0 unjudged (0.0 %) -> met
+  graph     provenance              124 positions,    0 unjudged (0.0 %) -> met
+  graph     combined                250 positions,    0 unjudged (0.0 %) -> met
+  ann       all-100                1000 positions,    0 unjudged (0.0 %) -> met
+  ann       vector_neighbourhood    250 positions,    0 unjudged (0.0 %) -> met
+  ann       temporal                250 positions,    0 unjudged (0.0 %) -> met
+  ann       provenance              250 positions,    0 unjudged (0.0 %) -> met
+  ann       combined                250 positions,    0 unjudged (0.0 %) -> met
+  exact     all-100                1000 positions,    0 unjudged (0.0 %) -> met
+  exact     vector_neighbourhood    250 positions,    0 unjudged (0.0 %) -> met
+  exact     temporal                250 positions,    0 unjudged (0.0 %) -> met
+  exact     provenance              250 positions,    0 unjudged (0.0 %) -> met
+  exact     combined                250 positions,    0 unjudged (0.0 %) -> met
+  fused     all-100                1000 positions,    2 unjudged (0.2 %) -> met
+  fused     vector_neighbourhood    250 positions,    0 unjudged (0.0 %) -> met
+  fused     temporal                250 positions,    0 unjudged (0.0 %) -> met
+  fused     provenance              250 positions,    2 unjudged (0.8 %) -> met
+  fused     combined                250 positions,    0 unjudged (0.0 %) -> met
+  ranked    all-100                 706 positions,    5 unjudged (0.7 %) -> met
+  ranked    vector_neighbourhood     94 positions,    0 unjudged (0.0 %) -> met
+  ranked    temporal                238 positions,    0 unjudged (0.0 %) -> met
+  ranked    provenance              124 positions,    1 unjudged (0.8 %) -> met
+  ranked    combined                250 positions,    4 unjudged (1.6 %) -> met
+  brute     all-100                1000 positions,    0 unjudged (0.0 %) -> met
+  brute     vector_neighbourhood    250 positions,    0 unjudged (0.0 %) -> met
+  brute     temporal                250 positions,    0 unjudged (0.0 %) -> met
+  brute     provenance              250 positions,    0 unjudged (0.0 %) -> met
+  brute     combined                250 positions,    0 unjudged (0.0 %) -> met
+  keyword   all-100                1000 positions,  727 unjudged (72.7 %) -> not met
+  keyword   vector_neighbourhood    250 positions,  204 unjudged (81.6 %) -> not met
+  keyword   temporal                250 positions,  162 unjudged (64.8 %) -> not met
+  keyword   provenance              250 positions,  194 unjudged (77.6 %) -> not met
+  keyword   combined                250 positions,  167 unjudged (66.8 %) -> not met
+  fused_kg  all-100                1000 positions,  405 unjudged (40.5 %) -> not met
+  fused_kg  vector_neighbourhood    250 positions,  156 unjudged (62.4 %) -> not met
+  fused_kg  temporal                250 positions,   50 unjudged (20.0 %) -> not met
+  fused_kg  provenance              250 positions,  139 unjudged (55.6 %) -> not met
+  fused_kg  combined                250 positions,   60 unjudged (24.0 %) -> not met
+  fused_all all-100                1000 positions,  271 unjudged (27.1 %) -> not met
+  fused_all vector_neighbourhood    250 positions,  108 unjudged (43.2 %) -> not met
+  fused_all temporal                250 positions,   34 unjudged (13.6 %) -> not met
+  fused_all provenance              250 positions,   97 unjudged (38.8 %) -> not met
+  fused_all combined                250 positions,   32 unjudged (12.8 %) -> not met
+means (cut 10; unjudged units excluded): arm, scope, queries, recall@10, nDCG@10
+  graph     all-100                100   0.9096   0.9014
+  graph     vector_neighbourhood    25   1.0000   1.0000
+  graph     temporal                25   0.9451   0.9815
+  graph     provenance              25   0.8092   0.7518
+  graph     combined                25   0.8839   0.8726
+  ann       all-100                100   0.5086   0.4216
+  ann       vector_neighbourhood    25   1.0000   0.7018
+  ann       temporal                25   0.3597   0.3483
+  ann       provenance              25   0.3273   0.2674
+  ann       combined                25   0.3473   0.3687
+  exact     all-100                100   0.5086   0.4216
+  exact     vector_neighbourhood    25   1.0000   0.7018
+  exact     temporal                25   0.3597   0.3483
+  exact     provenance              25   0.3273   0.2674
+  exact     combined                25   0.3473   0.3687
+  fused     all-100                100   0.8874   0.8963
+  fused     vector_neighbourhood    25   1.0000   0.9971
+  fused     temporal                25   0.8313   0.8891
+  fused     provenance              25   0.9083   0.7958
+  fused     combined                25   0.8098   0.9034
+  ranked    all-100                100   0.9121   0.9087
+  ranked    vector_neighbourhood    25   1.0000   1.0000
+  ranked    temporal                25   0.9472   0.9707
+  ranked    provenance              25   0.8152   0.7154
+  ranked    combined                25   0.8861   0.9488
+  brute     all-100                100   0.5086   0.4216
+  brute     vector_neighbourhood    25   1.0000   0.7018
+  brute     temporal                25   0.3597   0.3483
+  brute     provenance              25   0.3273   0.2674
+  brute     combined                25   0.3473   0.3687
+  keyword   all-100                100   0.2635   0.2521
+  keyword   vector_neighbourhood    25   0.2333   0.2386
+  keyword   temporal                25   0.3323   0.3038
+  keyword   provenance              25   0.1783   0.1496
+  keyword   combined                25   0.3099   0.3163
+  fused_kg  all-100                100   0.8861   0.8807
+  fused_kg  vector_neighbourhood    25   1.0000   0.9654
+  fused_kg  temporal                25   0.8801   0.8706
+  fused_kg  provenance              25   0.8700   0.8118
+  fused_kg  combined                25   0.7945   0.8751
+  fused_all all-100                100   0.9561   0.9273
+  fused_all vector_neighbourhood    25   1.0000   0.9696
+  fused_all temporal                25   0.9628   0.9352
+  fused_all provenance              25   0.9295   0.8361
+  fused_all combined                25   0.9322   0.9684
+primary arm: fused = HNSW + graph (weights 1/1/1, k 60, 100 candidates per leg, cut 10)
+  Q4 as written  fused - graph (without the vector signal) >= -0.01, overall and per class:
+    all-100                -0.0051 -> met
+    vector_neighbourhood   -0.0029 -> met
+    temporal               -0.0924 -> not met
+    provenance             +0.0440 -> met
+    combined               +0.0308 -> met
+  T-E10-S1  fused - exact, overall >= 0.02: +0.4748 -> met
+  T-E10-S2  vector_neighbourhood   fused - exact >= -0.01: +0.2952 -> met
+  T-E10-S2  temporal               fused - exact >= -0.01: +0.5408 -> met
+  T-E10-S2  provenance             fused - exact >= -0.01: +0.5284 -> met
+  T-E10-S2  combined               fused - exact >= -0.01: +0.5346 -> met
+  T-E10-Q2  fused nDCG@10 >= 0.80: 0.8963
+  T-E10-Q3  fused recall@10 >= 0.90: 0.8874
+  T-E10-V2  exact nDCG@10 <= 0.96: 0.4216
+second reading of S1 and S2 (without signal = the ranked arm, no vectors), informational:
+  T-E10-S1  overall >= 0.02: -0.0124 -> not met
+  T-E10-S2  vector_neighbourhood   >= -0.01: -0.0029 -> met
+  T-E10-S2  temporal               >= -0.01: -0.0816 -> not met
+  T-E10-S2  provenance             >= -0.01: +0.0804 -> met
+  T-E10-S2  combined               >= -0.01: -0.0455 -> not met
+verdicts, primary arm:
+  Q4 all-100: met
+  Q4 vector_neighbourhood: met
+  Q4 temporal: not met
+  Q4 provenance: met
+  Q4 combined: met
+  T-E10-S1: met
+  T-E10-S2: met
+  T-E10-Q2: met (floor of acta 9 §5, not in the headline)
+  T-E10-Q3: not met (floor of acta 9 §5, not in the headline)
+  T-E10-Q5: met
+  T-E10-V1: met
+  T-E10-V2: met
+  T-E10-Q1: met
+secondary arms (keyword text = the seed unit's label, a declared derivation; informational):
+  Q4 as written  fused_all - fused_kg >= -0.01: all-100 +0.0466 -> met
+    vector_neighbourhood   +0.0042 -> met
+    temporal               +0.0646 -> met
+    provenance             +0.0243 -> met
+    combined               +0.0933 -> met
+  T-E10-S1  fused_all - exact >= 0.02: +0.5058 -> met
+  T-E10-S2  vector_neighbourhood   >= -0.01: +0.2678 -> met
+  T-E10-S2  temporal               >= -0.01: +0.5869 -> met
+  T-E10-S2  provenance             >= -0.01: +0.5687 -> met
+  T-E10-S2  combined               >= -0.01: +0.5997 -> met
+  T-E10-Q2  fused_all nDCG@10 >= 0.80: 0.9273 -> met
+  T-E10-Q3  fused_all recall@10 >= 0.90: 0.9561 -> met
+  T-E10-Q5  over keyword, fused_kg, fused_all x 5 scopes: not met
+criterion Q4 on E8-10: not demonstrated
+first query VN-01 (vector_neighbourhood): fused list [365, 1849, 210, 1519, 1180, 1554, 1498, 1873, 1459, 54]
+== engine kerno_db
+load: 2000 units, 5062 relations, 300 change sets; 2000 vectors persisted, reopened and served; 2000 indexed in HNSW
+queries: 100 run through the hybrid query, the reference path and brute force
+T-E10-V1  queries that carry a query vector, by class (at least 25 each)
+  vector_neighbourhood    25
+  temporal                25
+  provenance              25
+  combined                25
+T-E10-Q1  exact arm against brute force (cosine), cut 10
+  recall@10 against the reference: smallest 1.000, mean 1.000 over 100 queries; identical lists in the same order: 100
+HNSW recall@10 against brute force: smallest 1.000, mean 1.000; identical lists: 100 of 100
+seed unit present in the ann top 10: 96 of 100
+T-E10-Q5  unjudged units in the top 10, per arm and per class (excluded from the metrics and counted here)
+  graph     all-100                 706 positions,    0 unjudged (0.0 %) -> met
+  graph     vector_neighbourhood     94 positions,    0 unjudged (0.0 %) -> met
+  graph     temporal                238 positions,    0 unjudged (0.0 %) -> met
+  graph     provenance              124 positions,    0 unjudged (0.0 %) -> met
+  graph     combined                250 positions,    0 unjudged (0.0 %) -> met
+  ann       all-100                1000 positions,    0 unjudged (0.0 %) -> met
+  ann       vector_neighbourhood    250 positions,    0 unjudged (0.0 %) -> met
+  ann       temporal                250 positions,    0 unjudged (0.0 %) -> met
+  ann       provenance              250 positions,    0 unjudged (0.0 %) -> met
+  ann       combined                250 positions,    0 unjudged (0.0 %) -> met
+  exact     all-100                1000 positions,    0 unjudged (0.0 %) -> met
+  exact     vector_neighbourhood    250 positions,    0 unjudged (0.0 %) -> met
+  exact     temporal                250 positions,    0 unjudged (0.0 %) -> met
+  exact     provenance              250 positions,    0 unjudged (0.0 %) -> met
+  exact     combined                250 positions,    0 unjudged (0.0 %) -> met
+  fused     all-100                1000 positions,    2 unjudged (0.2 %) -> met
+  fused     vector_neighbourhood    250 positions,    0 unjudged (0.0 %) -> met
+  fused     temporal                250 positions,    0 unjudged (0.0 %) -> met
+  fused     provenance              250 positions,    2 unjudged (0.8 %) -> met
+  fused     combined                250 positions,    0 unjudged (0.0 %) -> met
+  ranked    all-100                 706 positions,    5 unjudged (0.7 %) -> met
+  ranked    vector_neighbourhood     94 positions,    0 unjudged (0.0 %) -> met
+  ranked    temporal                238 positions,    0 unjudged (0.0 %) -> met
+  ranked    provenance              124 positions,    1 unjudged (0.8 %) -> met
+  ranked    combined                250 positions,    4 unjudged (1.6 %) -> met
+  brute     all-100                1000 positions,    0 unjudged (0.0 %) -> met
+  brute     vector_neighbourhood    250 positions,    0 unjudged (0.0 %) -> met
+  brute     temporal                250 positions,    0 unjudged (0.0 %) -> met
+  brute     provenance              250 positions,    0 unjudged (0.0 %) -> met
+  brute     combined                250 positions,    0 unjudged (0.0 %) -> met
+  keyword   all-100                1000 positions,  727 unjudged (72.7 %) -> not met
+  keyword   vector_neighbourhood    250 positions,  204 unjudged (81.6 %) -> not met
+  keyword   temporal                250 positions,  162 unjudged (64.8 %) -> not met
+  keyword   provenance              250 positions,  194 unjudged (77.6 %) -> not met
+  keyword   combined                250 positions,  167 unjudged (66.8 %) -> not met
+  fused_kg  all-100                1000 positions,  405 unjudged (40.5 %) -> not met
+  fused_kg  vector_neighbourhood    250 positions,  156 unjudged (62.4 %) -> not met
+  fused_kg  temporal                250 positions,   50 unjudged (20.0 %) -> not met
+  fused_kg  provenance              250 positions,  139 unjudged (55.6 %) -> not met
+  fused_kg  combined                250 positions,   60 unjudged (24.0 %) -> not met
+  fused_all all-100                1000 positions,  271 unjudged (27.1 %) -> not met
+  fused_all vector_neighbourhood    250 positions,  108 unjudged (43.2 %) -> not met
+  fused_all temporal                250 positions,   34 unjudged (13.6 %) -> not met
+  fused_all provenance              250 positions,   97 unjudged (38.8 %) -> not met
+  fused_all combined                250 positions,   32 unjudged (12.8 %) -> not met
+means (cut 10; unjudged units excluded): arm, scope, queries, recall@10, nDCG@10
+  graph     all-100                100   0.9096   0.9014
+  graph     vector_neighbourhood    25   1.0000   1.0000
+  graph     temporal                25   0.9451   0.9815
+  graph     provenance              25   0.8092   0.7518
+  graph     combined                25   0.8839   0.8726
+  ann       all-100                100   0.5086   0.4216
+  ann       vector_neighbourhood    25   1.0000   0.7018
+  ann       temporal                25   0.3597   0.3483
+  ann       provenance              25   0.3273   0.2674
+  ann       combined                25   0.3473   0.3687
+  exact     all-100                100   0.5086   0.4216
+  exact     vector_neighbourhood    25   1.0000   0.7018
+  exact     temporal                25   0.3597   0.3483
+  exact     provenance              25   0.3273   0.2674
+  exact     combined                25   0.3473   0.3687
+  fused     all-100                100   0.8874   0.8963
+  fused     vector_neighbourhood    25   1.0000   0.9971
+  fused     temporal                25   0.8313   0.8891
+  fused     provenance              25   0.9083   0.7958
+  fused     combined                25   0.8098   0.9034
+  ranked    all-100                100   0.9121   0.9087
+  ranked    vector_neighbourhood    25   1.0000   1.0000
+  ranked    temporal                25   0.9472   0.9707
+  ranked    provenance              25   0.8152   0.7154
+  ranked    combined                25   0.8861   0.9488
+  brute     all-100                100   0.5086   0.4216
+  brute     vector_neighbourhood    25   1.0000   0.7018
+  brute     temporal                25   0.3597   0.3483
+  brute     provenance              25   0.3273   0.2674
+  brute     combined                25   0.3473   0.3687
+  keyword   all-100                100   0.2635   0.2521
+  keyword   vector_neighbourhood    25   0.2333   0.2386
+  keyword   temporal                25   0.3323   0.3038
+  keyword   provenance              25   0.1783   0.1496
+  keyword   combined                25   0.3099   0.3163
+  fused_kg  all-100                100   0.8861   0.8807
+  fused_kg  vector_neighbourhood    25   1.0000   0.9654
+  fused_kg  temporal                25   0.8801   0.8706
+  fused_kg  provenance              25   0.8700   0.8118
+  fused_kg  combined                25   0.7945   0.8751
+  fused_all all-100                100   0.9561   0.9273
+  fused_all vector_neighbourhood    25   1.0000   0.9696
+  fused_all temporal                25   0.9628   0.9352
+  fused_all provenance              25   0.9295   0.8361
+  fused_all combined                25   0.9322   0.9684
+primary arm: fused = HNSW + graph (weights 1/1/1, k 60, 100 candidates per leg, cut 10)
+  Q4 as written  fused - graph (without the vector signal) >= -0.01, overall and per class:
+    all-100                -0.0051 -> met
+    vector_neighbourhood   -0.0029 -> met
+    temporal               -0.0924 -> not met
+    provenance             +0.0440 -> met
+    combined               +0.0308 -> met
+  T-E10-S1  fused - exact, overall >= 0.02: +0.4748 -> met
+  T-E10-S2  vector_neighbourhood   fused - exact >= -0.01: +0.2952 -> met
+  T-E10-S2  temporal               fused - exact >= -0.01: +0.5408 -> met
+  T-E10-S2  provenance             fused - exact >= -0.01: +0.5284 -> met
+  T-E10-S2  combined               fused - exact >= -0.01: +0.5346 -> met
+  T-E10-Q2  fused nDCG@10 >= 0.80: 0.8963
+  T-E10-Q3  fused recall@10 >= 0.90: 0.8874
+  T-E10-V2  exact nDCG@10 <= 0.96: 0.4216
+second reading of S1 and S2 (without signal = the ranked arm, no vectors), informational:
+  T-E10-S1  overall >= 0.02: -0.0124 -> not met
+  T-E10-S2  vector_neighbourhood   >= -0.01: -0.0029 -> met
+  T-E10-S2  temporal               >= -0.01: -0.0816 -> not met
+  T-E10-S2  provenance             >= -0.01: +0.0804 -> met
+  T-E10-S2  combined               >= -0.01: -0.0455 -> not met
+verdicts, primary arm:
+  Q4 all-100: met
+  Q4 vector_neighbourhood: met
+  Q4 temporal: not met
+  Q4 provenance: met
+  Q4 combined: met
+  T-E10-S1: met
+  T-E10-S2: met
+  T-E10-Q2: met (floor of acta 9 §5, not in the headline)
+  T-E10-Q3: not met (floor of acta 9 §5, not in the headline)
+  T-E10-Q5: met
+  T-E10-V1: met
+  T-E10-V2: met
+  T-E10-Q1: met
+secondary arms (keyword text = the seed unit's label, a declared derivation; informational):
+  Q4 as written  fused_all - fused_kg >= -0.01: all-100 +0.0466 -> met
+    vector_neighbourhood   +0.0042 -> met
+    temporal               +0.0646 -> met
+    provenance             +0.0243 -> met
+    combined               +0.0933 -> met
+  T-E10-S1  fused_all - exact >= 0.02: +0.5058 -> met
+  T-E10-S2  vector_neighbourhood   >= -0.01: +0.2678 -> met
+  T-E10-S2  temporal               >= -0.01: +0.5869 -> met
+  T-E10-S2  provenance             >= -0.01: +0.5687 -> met
+  T-E10-S2  combined               >= -0.01: +0.5997 -> met
+  T-E10-Q2  fused_all nDCG@10 >= 0.80: 0.9273 -> met
+  T-E10-Q3  fused_all recall@10 >= 0.90: 0.9561 -> met
+  T-E10-Q5  over keyword, fused_kg, fused_all x 5 scopes: not met
+criterion Q4 on E8-10: not demonstrated
+first query VN-01 (vector_neighbourhood): fused list [365, 1849, 210, 1519, 1180, 1554, 1498, 1873, 1459, 54]
+engines: emulated_log and kerno_db report identical figures (154 lines)
+test hybrid_quality_over_the_second_frozen_set ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 7.82s
+

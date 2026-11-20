@@ -1,0 +1,46 @@
+# 2026-11-14T14:59:45-03:00  14:59:45 up 14:05,  1 user,  load average: 2.66, 3.68, 4.69
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.03s
+     Running `target/release/examples/derived_bench2 --runs 4 --reps 12 --dir /home/rixmerz/Personal/Projects/kernodb/target/idle-scratch/bench2`
+# load: 20000 units, 50962 relations, 3000 change sets, 25 vector queries; load time 5.1 s; reopen 164.9 ms; one-time read of 20000 served vectors into a set 8.1 ms
+measure,run,arm,pairs,p50_ms,p99_ms,loadavg_before,loadavg_after
+P2,1,persisted,512,1.8857,2.9268,2.68 3.67 4.68,2.79 3.67 4.68
+P2,1,memory,512,1.8836,2.7375,2.68 3.67 4.68,2.79 3.67 4.68
+# run 1 P2: persisted/memory p50 = 1.001, p99 = 1.069
+P1,1,with_descriptor,512,0.7327,1.0492,2.79 3.67 4.68,2.79 3.67 4.68
+P1,1,without_descriptor,512,0.7087,1.0376,2.79 3.67 4.68,2.79 3.67 4.68
+# run 1 P1: with/without p50 = 1.034, p99 = 1.011
+P2,2,persisted,512,1.8258,2.4669,2.79 3.67 4.68,2.89 3.68 4.67
+P2,2,memory,512,1.8215,2.3000,2.79 3.67 4.68,2.89 3.68 4.67
+# run 2 P2: persisted/memory p50 = 1.002, p99 = 1.073
+P1,2,with_descriptor,512,0.8444,1.3204,2.89 3.68 4.67,2.89 3.68 4.67
+P1,2,without_descriptor,512,0.8201,1.2366,2.89 3.68 4.67,2.89 3.68 4.67
+# run 2 P1: with/without p50 = 1.030, p99 = 1.068
+P2,3,persisted,512,1.7486,2.5185,2.89 3.68 4.67,3.06 3.70 4.68
+P2,3,memory,512,1.7407,2.4635,2.89 3.68 4.67,3.06 3.70 4.68
+# run 3 P2: persisted/memory p50 = 1.005, p99 = 1.022
+P1,3,with_descriptor,512,0.8563,1.2564,3.06 3.70 4.68,3.06 3.70 4.68
+P1,3,without_descriptor,512,0.8303,1.1623,3.06 3.70 4.68,3.06 3.70 4.68
+# run 3 P1: with/without p50 = 1.031, p99 = 1.081
+P2,4,persisted,512,1.9143,2.9093,3.06 3.70 4.68,3.06 3.70 4.68
+P2,4,memory,512,1.9085,2.8037,3.06 3.70 4.68,3.06 3.70 4.68
+# run 4 P2: persisted/memory p50 = 1.003, p99 = 1.038
+P1,4,with_descriptor,512,0.8754,1.5758,3.06 3.70 4.68,2.97 3.67 4.66
+P1,4,without_descriptor,512,0.8430,1.3337,3.06 3.70 4.68,2.97 3.67 4.66
+# run 4 P1: with/without p50 = 1.038, p99 = 1.182
+# P1 (acta §6.3): p50 with / without descriptor <= 1.50 in every run
+#   run 1: 0.7327 ms / 0.7087 ms = 1.034 -> within
+#   run 2: 0.8444 ms / 0.8201 ms = 1.030 -> within
+#   run 3: 0.8563 ms / 0.8303 ms = 1.031 -> within
+#   run 4: 0.8754 ms / 0.8430 ms = 1.038 -> within
+# P1: 0 of 4 runs above the ceiling -> met
+# P2 (acta §6.3): p50 persisted / in memory <= 1.10 in every run
+#   run 1: 1.8857 ms / 1.8836 ms = 1.001 -> within
+#   run 2: 1.8258 ms / 1.8215 ms = 1.002 -> within
+#   run 3: 1.7486 ms / 1.7407 ms = 1.005 -> within
+#   run 4: 1.9143 ms / 1.9085 ms = 1.003 -> within
+# P2: 0 of 4 runs above the ceiling -> met
+
+real	0m21.071s
+user	0m14.321s
+sys	0m1.985s
+p1p2-timing exit=0

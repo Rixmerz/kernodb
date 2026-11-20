@@ -1,0 +1,13 @@
+42.26 51.10 44.08 3/1382 112363
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.05s
+     Running `target/release/examples/unit_bench --only U2 --dir target/bench-scratch`
+# unit_bench mode=full relations=false indexes=false seed=0xe309 dir=target/bench-scratch engine=KernoDb options=Options { durability: Sync, cache_bytes: 67108864, write_buffer_bytes: 8388608 } vfs=StdVfs rounds=5
+## U2: history(id, latest(100)) metadata only vs scan of 100 keys of 100 B
+raw U2 history: n=25000 p50_ms=0.0153 p99_ms=0.0454 max_ms=0.0845 mean_ms=0.0161
+raw U2 scan: n=25000 p50_ms=0.0150 p99_ms=0.0237 max_ms=0.0684 mean_ms=0.0155
+raw U2 history_page (informative): n=25000 p50_ms=0.0136 p99_ms=0.0194 max_ms=0.0592 mean_ms=0.0140
+verdict U2: FAIL p99 history 0.0454 ms / scan 0.0237 ms = 1.91x (threshold <= 1.5x); history_page 0.0194 ms = 0.82x (informative)
+time U2: 1.9 s
+# summary
+U2 FAIL p99 history 0.0454 ms / scan 0.0237 ms = 1.91x (threshold <= 1.5x); history_page 0.0194 ms = 0.82x (informative)
+42.26 51.10 44.08 6/1380 112449

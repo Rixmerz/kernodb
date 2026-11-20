@@ -1,0 +1,32 @@
+$ cargo test -p kerno-units --all-features --release --test hybrid_gated_measure -- --nocapture --exact gated_fusion_on_fresh_seeds
+commit: c7898cd
+
+running 1 test
+== dev seed 7001
+T-E10-V1  queries that carry a query vector, by class (at least 25 each)
+  T-E10-V2  exact nDCG@10 <= 0.96: 0.4486
+  T-E10-V1: met
+  T-E10-V2: met
+criterion Q4 on dev seed 7001: demonstrated
+  rrf    gain over graph: all-100 +0.0155  vn -0.0015  temporal -0.0859  provenance +0.1079  combined +0.0416
+  gated  gain over graph: all-100 +0.0676  vn +0.0000  temporal +0.0147  provenance +0.1495  combined +0.1064
+== dev seed 7002
+T-E10-V1  queries that carry a query vector, by class (at least 25 each)
+  T-E10-V2  exact nDCG@10 <= 0.96: 0.4528
+  T-E10-V1: met
+  T-E10-V2: met
+criterion Q4 on dev seed 7002: demonstrated
+  rrf    gain over graph: all-100 -0.0051  vn -0.0031  temporal -0.0833  provenance +0.0545  combined +0.0114
+  gated  gain over graph: all-100 +0.0469  vn +0.0000  temporal +0.0131  provenance +0.0995  combined +0.0749
+== dev seed 7003
+T-E10-V1  queries that carry a query vector, by class (at least 25 each)
+  T-E10-V2  exact nDCG@10 <= 0.96: 0.4260
+  T-E10-V1: met
+  T-E10-V2: met
+criterion Q4 on dev seed 7003: demonstrated
+  rrf    gain over graph: all-100 -0.0149  vn -0.0031  temporal -0.1004  provenance +0.0043  combined +0.0397
+  gated  gain over graph: all-100 +0.0350  vn +0.0000  temporal +0.0063  provenance +0.0452  combined +0.0886
+test gated_fusion_on_fresh_seeds ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 41.12s
+

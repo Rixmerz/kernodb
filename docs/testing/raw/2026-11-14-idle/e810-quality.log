@@ -1,0 +1,188 @@
+# 2026-11-14T14:59:39-03:00  14:59:39 up 14:05,  1 user,  load average: 2.63, 3.69, 4.70
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.03s
+     Running tests/derived_measure2.rs (target/release/deps/derived_measure2-ec03a317debf10b8)
+
+running 1 test
+T-E10-R  MANIFEST: corpus.txt, vectors.txt and queries.txt match
+== engine emulated_log
+load: 2000 units, 5062 relations, 300 change sets; 2000 vectors persisted, reopened and served
+queries: 100 translated and run on the reference, indexed and planner paths; planner fallbacks: 0
+T-E10-V1  queries that carry a query vector, by class (at least 25 each)
+  vector_neighbourhood    25
+  temporal                25
+  provenance              25
+  combined                25
+T-E10-Q1  exact vector search over the persisted vectors against brute force (cosine), cut 10
+  recall@10 against the reference: smallest 1.000, mean 1.000 over 100 queries; identical lists in the same order: 100
+T-E10-Q5  unjudged units in the top 10, per arm and per class (excluded from the metrics and counted here)
+  simple  all-100                 706 positions,    0 unjudged (0.0 %) -> met
+  simple  vector_neighbourhood     94 positions,    0 unjudged (0.0 %) -> met
+  simple  temporal                238 positions,    0 unjudged (0.0 %) -> met
+  simple  provenance              124 positions,    0 unjudged (0.0 %) -> met
+  simple  combined                250 positions,    0 unjudged (0.0 %) -> met
+  ranked  all-100                 706 positions,    5 unjudged (0.7 %) -> met
+  ranked  vector_neighbourhood     94 positions,    0 unjudged (0.0 %) -> met
+  ranked  temporal                238 positions,    0 unjudged (0.0 %) -> met
+  ranked  provenance              124 positions,    1 unjudged (0.8 %) -> met
+  ranked  combined                250 positions,    4 unjudged (1.6 %) -> met
+  vector  all-100                1000 positions,    0 unjudged (0.0 %) -> met
+  vector  vector_neighbourhood    250 positions,    0 unjudged (0.0 %) -> met
+  vector  temporal                250 positions,    0 unjudged (0.0 %) -> met
+  vector  provenance              250 positions,    0 unjudged (0.0 %) -> met
+  vector  combined                250 positions,    0 unjudged (0.0 %) -> met
+  hybrid  all-100                 706 positions,    4 unjudged (0.6 %) -> met
+  hybrid  vector_neighbourhood     94 positions,    0 unjudged (0.0 %) -> met
+  hybrid  temporal                238 positions,    1 unjudged (0.4 %) -> met
+  hybrid  provenance              124 positions,    1 unjudged (0.8 %) -> met
+  hybrid  combined                250 positions,    2 unjudged (0.8 %) -> met
+  brute   all-100                1000 positions,    0 unjudged (0.0 %) -> met
+  brute   vector_neighbourhood    250 positions,    0 unjudged (0.0 %) -> met
+  brute   temporal                250 positions,    0 unjudged (0.0 %) -> met
+  brute   provenance              250 positions,    0 unjudged (0.0 %) -> met
+  brute   combined                250 positions,    0 unjudged (0.0 %) -> met
+means (cut 10; unjudged units excluded): arm, scope, queries, recall@10, nDCG@10
+  simple  all-100                100   0.9096   0.9014
+  simple  vector_neighbourhood    25   1.0000   1.0000
+  simple  temporal                25   0.9451   0.9815
+  simple  provenance              25   0.8092   0.7518
+  simple  combined                25   0.8839   0.8726
+  ranked  all-100                100   0.9121   0.9087
+  ranked  vector_neighbourhood    25   1.0000   1.0000
+  ranked  temporal                25   0.9472   0.9707
+  ranked  provenance              25   0.8152   0.7154
+  ranked  combined                25   0.8861   0.9488
+  vector  all-100                100   0.5086   0.4216
+  vector  vector_neighbourhood    25   1.0000   0.7018
+  vector  temporal                25   0.3597   0.3483
+  vector  provenance              25   0.3273   0.2674
+  vector  combined                25   0.3473   0.3687
+  hybrid  all-100                100   0.9594   0.9738
+  hybrid  vector_neighbourhood    25   1.0000   1.0000
+  hybrid  temporal                25   0.9837   0.9988
+  hybrid  provenance              25   0.9139   0.8986
+  hybrid  combined                25   0.9398   0.9978
+  brute   all-100                100   0.5086   0.4216
+  brute   vector_neighbourhood    25   1.0000   0.7018
+  brute   temporal                25   0.3597   0.3483
+  brute   provenance              25   0.3273   0.2674
+  brute   combined                25   0.3473   0.3687
+thresholds of acta 9 §5, primary reading (without signal = the vector-only arm):
+  T-E10-V2  nDCG@10 without signal, overall <= 0.96: 0.4216
+  T-E10-Q2  nDCG@10 with signal, overall >= 0.80: 0.9738
+  T-E10-Q3  recall@10 with signal, overall >= 0.90: 0.9594
+  T-E10-S1  nDCG@10 with signal - without signal, overall >= 0.02: +0.5522
+  T-E10-S2  vector_neighbourhood   with - without >= -0.01: +0.2982 -> met
+  T-E10-S2  temporal               with - without >= -0.01: +0.6505 -> met
+  T-E10-S2  provenance             with - without >= -0.01: +0.6312 -> met
+  T-E10-S2  combined               with - without >= -0.01: +0.6291 -> met
+second reading (without signal = the ranked arm with the vector signal off), informational:
+  T-E10-S1  overall >= 0.02: +0.0651 -> met
+  T-E10-S2  vector_neighbourhood   >= -0.01: +0.0000 -> met
+  T-E10-S2  temporal               >= -0.01: +0.0281 -> met
+  T-E10-S2  provenance             >= -0.01: +0.1832 -> met
+  T-E10-S2  combined               >= -0.01: +0.0490 -> met
+verdicts, primary reading:
+  T-E10-V1: met
+  T-E10-V2: met
+  T-E10-Q1: met
+  T-E10-Q2: met
+  T-E10-Q3: met
+  T-E10-S1: met
+  T-E10-S2: met
+  T-E10-Q5: met
+== engine kerno_db
+load: 2000 units, 5062 relations, 300 change sets; 2000 vectors persisted, reopened and served
+queries: 100 translated and run on the reference, indexed and planner paths; planner fallbacks: 0
+T-E10-V1  queries that carry a query vector, by class (at least 25 each)
+  vector_neighbourhood    25
+  temporal                25
+  provenance              25
+  combined                25
+T-E10-Q1  exact vector search over the persisted vectors against brute force (cosine), cut 10
+  recall@10 against the reference: smallest 1.000, mean 1.000 over 100 queries; identical lists in the same order: 100
+T-E10-Q5  unjudged units in the top 10, per arm and per class (excluded from the metrics and counted here)
+  simple  all-100                 706 positions,    0 unjudged (0.0 %) -> met
+  simple  vector_neighbourhood     94 positions,    0 unjudged (0.0 %) -> met
+  simple  temporal                238 positions,    0 unjudged (0.0 %) -> met
+  simple  provenance              124 positions,    0 unjudged (0.0 %) -> met
+  simple  combined                250 positions,    0 unjudged (0.0 %) -> met
+  ranked  all-100                 706 positions,    5 unjudged (0.7 %) -> met
+  ranked  vector_neighbourhood     94 positions,    0 unjudged (0.0 %) -> met
+  ranked  temporal                238 positions,    0 unjudged (0.0 %) -> met
+  ranked  provenance              124 positions,    1 unjudged (0.8 %) -> met
+  ranked  combined                250 positions,    4 unjudged (1.6 %) -> met
+  vector  all-100                1000 positions,    0 unjudged (0.0 %) -> met
+  vector  vector_neighbourhood    250 positions,    0 unjudged (0.0 %) -> met
+  vector  temporal                250 positions,    0 unjudged (0.0 %) -> met
+  vector  provenance              250 positions,    0 unjudged (0.0 %) -> met
+  vector  combined                250 positions,    0 unjudged (0.0 %) -> met
+  hybrid  all-100                 706 positions,    4 unjudged (0.6 %) -> met
+  hybrid  vector_neighbourhood     94 positions,    0 unjudged (0.0 %) -> met
+  hybrid  temporal                238 positions,    1 unjudged (0.4 %) -> met
+  hybrid  provenance              124 positions,    1 unjudged (0.8 %) -> met
+  hybrid  combined                250 positions,    2 unjudged (0.8 %) -> met
+  brute   all-100                1000 positions,    0 unjudged (0.0 %) -> met
+  brute   vector_neighbourhood    250 positions,    0 unjudged (0.0 %) -> met
+  brute   temporal                250 positions,    0 unjudged (0.0 %) -> met
+  brute   provenance              250 positions,    0 unjudged (0.0 %) -> met
+  brute   combined                250 positions,    0 unjudged (0.0 %) -> met
+means (cut 10; unjudged units excluded): arm, scope, queries, recall@10, nDCG@10
+  simple  all-100                100   0.9096   0.9014
+  simple  vector_neighbourhood    25   1.0000   1.0000
+  simple  temporal                25   0.9451   0.9815
+  simple  provenance              25   0.8092   0.7518
+  simple  combined                25   0.8839   0.8726
+  ranked  all-100                100   0.9121   0.9087
+  ranked  vector_neighbourhood    25   1.0000   1.0000
+  ranked  temporal                25   0.9472   0.9707
+  ranked  provenance              25   0.8152   0.7154
+  ranked  combined                25   0.8861   0.9488
+  vector  all-100                100   0.5086   0.4216
+  vector  vector_neighbourhood    25   1.0000   0.7018
+  vector  temporal                25   0.3597   0.3483
+  vector  provenance              25   0.3273   0.2674
+  vector  combined                25   0.3473   0.3687
+  hybrid  all-100                100   0.9594   0.9738
+  hybrid  vector_neighbourhood    25   1.0000   1.0000
+  hybrid  temporal                25   0.9837   0.9988
+  hybrid  provenance              25   0.9139   0.8986
+  hybrid  combined                25   0.9398   0.9978
+  brute   all-100                100   0.5086   0.4216
+  brute   vector_neighbourhood    25   1.0000   0.7018
+  brute   temporal                25   0.3597   0.3483
+  brute   provenance              25   0.3273   0.2674
+  brute   combined                25   0.3473   0.3687
+thresholds of acta 9 §5, primary reading (without signal = the vector-only arm):
+  T-E10-V2  nDCG@10 without signal, overall <= 0.96: 0.4216
+  T-E10-Q2  nDCG@10 with signal, overall >= 0.80: 0.9738
+  T-E10-Q3  recall@10 with signal, overall >= 0.90: 0.9594
+  T-E10-S1  nDCG@10 with signal - without signal, overall >= 0.02: +0.5522
+  T-E10-S2  vector_neighbourhood   with - without >= -0.01: +0.2982 -> met
+  T-E10-S2  temporal               with - without >= -0.01: +0.6505 -> met
+  T-E10-S2  provenance             with - without >= -0.01: +0.6312 -> met
+  T-E10-S2  combined               with - without >= -0.01: +0.6291 -> met
+second reading (without signal = the ranked arm with the vector signal off), informational:
+  T-E10-S1  overall >= 0.02: +0.0651 -> met
+  T-E10-S2  vector_neighbourhood   >= -0.01: +0.0000 -> met
+  T-E10-S2  temporal               >= -0.01: +0.0281 -> met
+  T-E10-S2  provenance             >= -0.01: +0.1832 -> met
+  T-E10-S2  combined               >= -0.01: +0.0490 -> met
+verdicts, primary reading:
+  T-E10-V1: met
+  T-E10-V2: met
+  T-E10-Q1: met
+  T-E10-Q2: met
+  T-E10-Q3: met
+  T-E10-S1: met
+  T-E10-S2: met
+  T-E10-Q5: met
+engines: emulated_log and kerno_db report identical figures (85 lines)
+test quality_over_the_second_frozen_set ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 5.73s
+
+
+real	0m5.788s
+user	0m5.680s
+sys	0m0.080s
+e810-quality exit=0

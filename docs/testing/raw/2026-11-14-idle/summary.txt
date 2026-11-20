@@ -1,0 +1,61 @@
+install-mcp exit=0
+install-cli exit=0
+build-tests exit=0
+build-bench2 exit=0
+build-unitbench exit=0
+build-spike exit=0
+fuzz-build done
+e810-quality exit=0
+p1p2-timing exit=0
+unit-bench exit=0
+m0-bench STOPPED (load from another project's task #2146)
+waiting for #2146 and a quiet machine since 2026-11-14T15:45:30-03:00
+m0-bench exit=0
+fuzz-commit-60 exit=0
+fuzz-data_block-60 exit=0
+fuzz-filter_block-60 exit=0
+fuzz-footer-60 exit=0
+fuzz-frame-60 exit=0
+fuzz-header-60 exit=0
+fuzz-index_block-60 exit=0
+fuzz-manifest-60 exit=0
+fuzz-open-60 exit=0
+fuzz-props_block-60 exit=0
+fuzz-rangedel_block-60 exit=0
+fuzz-record-60 exit=0
+fuzz-sst-60 exit=0
+fuzz-varint-60 exit=0
+fuzz-wal-60 exit=0
+fuzz-wal-1800 exit=0
+fuzz-manifest-1800 exit=0
+fuzz-open-1800 exit=0
+fuzz/artifacts/commit/:
+
+fuzz/artifacts/data_block/:
+
+fuzz/artifacts/filter_block/:
+
+fuzz/artifacts/footer/:
+
+fuzz/artifacts/frame/:
+
+fuzz/artifacts/header/:
+
+fuzz/artifacts/index_block/:
+
+fuzz/artifacts/manifest/:
+
+fuzz/artifacts/open/:
+
+fuzz/artifacts/props_block/:
+
+fuzz/artifacts/rangedel_block/:
+
+fuzz/artifacts/record/:
+
+fuzz/artifacts/sst/:
+
+fuzz/artifacts/varint/:
+
+fuzz/artifacts/wal/:
+ALL DONE 2026-11-14T23:15:22-03:00
