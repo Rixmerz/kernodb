@@ -73,6 +73,9 @@ impl ChatHistory {
         if db.schema(SESSION)?.is_none() {
             db.define_schema(SESSION, vec![FieldDef::new("name", FieldType::Text).unique().required()])?;
         }
+        // The keyword index is opt-in per type (ADR-0023): the turns are what search reads.
+        db.set_fulltext(USER_TURN, true)?;
+        db.set_fulltext(ASSISTANT_TURN, true)?;
         Ok(ChatHistory { db })
     }
 

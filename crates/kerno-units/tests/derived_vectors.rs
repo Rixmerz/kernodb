@@ -18,15 +18,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 use std::sync::Arc;
 
-use harness::units::{Dump, Target, open_units, raw, to_legacy, try_to_legacy};
+use harness::units::{Dump, Target, open_units, raw};
 use kerno_core::contract::{Options, Snapshot};
 use kerno_storage::KernoDb;
 use kerno_testkit::emulated::Emulated;
 use kerno_testkit::reference::LogEngine;
 use kerno_testkit::vfs::{CrashKind, OpKind, SimVfs, assert_dir_unchanged};
 use kerno_units::codec::{
-    Key, LAYER_VERSION, LAYER_VERSION_DERIVED, LayerMeta, MAX_LAYER_VERSION, Record, TAG_DERIVED_DESC, TAG_DERIVED_SRC,
-    TAG_DERIVED_VEC,
+    Key, LAYER_VERSION_DERIVED, LayerMeta, MAX_LAYER_VERSION, TAG_DERIVED_DESC, TAG_DERIVED_SRC, TAG_DERIVED_VEC,
 };
 use kerno_units::vector_store::{
     DerivedDecodeError, DerivedKey, DerivedRule, VectorDescriptor, VectorState, decode_src_entry, decode_vector,
@@ -871,59 +870,6 @@ fn vector_hash_mismatch_is_not_served<E: Target>() {
 
 // ----------------------------------------------- T6, T7: old readers, no writes
 
-fn layer1_reader_refuses_derived_fixture<E: Target>() {
-    let disk = SimVfs::new(6);
-    fixture::<E>(&disk, b"hello");
-    let db = open_db::<E>(&disk);
-    let pairs = raw(&db);
-    let mark = pairs.iter().find(|(k, _)| k == &Key::LayerMeta { name: "layer".into() }.encode().unwrap()).unwrap();
-    // The reader of layer 1 reads the mark first and refuses it: UNIT-16, with the version found.
-    let e = LayerMeta::decode(&mark.1).unwrap_err();
-    assert_eq!((e.rule, e.found_layer_version), (UnitRule::Unit16, Some(5)));
-    assert_eq!(e.class(), ErrorClass::IncompatibleLayer);
-    let as_error: UnitError = e.into();
-    assert!(matches!(as_error, UnitError::IncompatibleLayer { found: 5, supported: 1 }), "{as_error:?}");
-    assert_eq!(LAYER_VERSION, 1);
-    // And every other derived record is unknown to it: nothing is misread.
-    let mut derived = 0;
-    for (k, v) in &pairs {
-        if (0x60..=0x62).contains(&k[0]) {
-            derived += 1;
-            let e = Record::decode(k, v).unwrap_err();
-            assert_eq!((e.rule, e.class()), (UnitRule::Unit2, ErrorClass::IncompatibleLayer));
-        }
-        if k[0] == 0x30 {
-            // The change set of the vector has purpose 5, outside the table of layer 1.
-            if let Err(e) = Record::decode(k, v) {
-                assert_eq!(e.rule, UnitRule::Unit13);
-            }
-        }
-    }
-    assert_eq!(derived, 3);
-    // This build reads the mark.
-    assert_eq!(LayerMeta::decode_upto(&mark.1, MAX_LAYER_VERSION).unwrap().layer_version, 5);
-    db.close().unwrap();
-}
-
-/// A database that holds no vector is of layer 1 and the reader of layer 1
-/// opens it (the other half of the declaration).
-fn a_database_without_vectors_stays_at_version_1<E: Target>() {
-    let disk = SimVfs::new(7);
-    let (dd, _) = open_dd::<E>(&disk);
-    let u = make(&dd, b"x");
-    edit(&dd, u, b"y");
-    dd.close().unwrap();
-    let db = open_db::<E>(&disk);
-    assert_eq!(mark_version(&db), Some(5));
-    let mark = get_raw(&db, &Key::LayerMeta { name: "layer".into() }.encode().unwrap()).unwrap();
-    // A layer 1 reader no longer opens it: the first unit raised the mark to the layer of the live counts.
-    assert_eq!(LayerMeta::decode_upto(&mark, MAX_LAYER_VERSION).unwrap().layer_version, 5);
-    assert_eq!(derived_keys(&db), 0);
-    db.set_policy("doc", HistoryPolicy::Audit, ChangeMeta::default()).unwrap();
-    assert_eq!(mark_version(&db), Some(5), "no vector: still the layer of the live counts");
-    db.close().unwrap();
-}
-
 fn open_derived_fixture_writes_nothing<E: Target>() {
     let disk = SimVfs::new(8);
     let (u, _) = fixture::<E>(&disk, b"hello");
@@ -961,7 +907,6 @@ fn first_vector_scenario<E: Target>(disk: &SimVfs) -> Option<()> {
             ChangeMeta::default(),
         )
         .ok()?;
-    try_to_legacy(&db, 1).ok()?;
     db.close().ok()?;
     let db = open_units::<E>(disk.as_vfs(), &sweep_cfg()).ok()?;
     let (dd, _) = DerivedDb::open_persisted(db).ok()?;
@@ -980,9 +925,9 @@ fn check_mark_atomic<E: Target>(image: &SimVfs, ctx: &str) {
     let n = [TAG_DERIVED_DESC, TAG_DERIVED_VEC, TAG_DERIVED_SRC].map(|t| scan_tag(&db, t).len());
     let mark = mark_version(&db);
     match n {
-        // 5 only between the unit's own commit and the undo that leaves it as before layer 5.
-        [0, 0, 0] => assert!(matches!(mark, None | Some(1 | 5)), "{ctx}: no derived key but the mark is {mark:?}"),
-        [1, 1, 1] => assert_eq!(mark, Some(2), "{ctx}: derived keys with the mark {mark:?}"),
+        // Every database is at the cut version from its first commit (ADR-0023).
+        [0, 0, 0] => assert!(matches!(mark, None | Some(7)), "{ctx}: no derived key but the mark is {mark:?}"),
+        [1, 1, 1] => assert_eq!(mark, Some(7), "{ctx}: derived keys with the mark {mark:?}"),
         other => panic!("{ctx}: descriptor, vector and entry are not all there or all absent: {other:?}"),
     }
     clean(&db, ctx);
@@ -1097,120 +1042,12 @@ fn a_failed_first_vector_writes_no_derived_key_and_no_mark<E: Target>() {
     let n = derived_keys(&db);
     // The unit's own change set committed first, so the mark is at 5 either way; the
     // derived keys are all there (3) or none.
-    assert_eq!(mark_version(&db), Some(5));
+    assert_eq!(mark_version(&db), Some(7));
     assert!(n == 0 || n == 3, "{n} derived keys");
     clean(&db, "after the failed first vector");
 }
 
 // ----------------------------------------- T9: the mark never goes down
-
-fn mark_never_lowers<E: Target>() {
-    let disk = SimVfs::new(9);
-    let (u, id) = fixture::<E>(&disk, b"hello");
-    let db = open_units::<E>(disk.as_vfs(), &cfg_at(100)).unwrap();
-    assert_eq!(mark_version(&db), Some(5));
-    // set_policy, an update, an archive, a delete: none writes a lower version.
-    db.set_policy("doc", HistoryPolicy::Audit, ChangeMeta::default()).unwrap();
-    assert_eq!(mark_version(&db), Some(5));
-    let policy = get_raw(&db, &Key::LayerMeta { name: "policy/doc".into() }.encode().unwrap()).unwrap();
-    assert_eq!(
-        LayerMeta::decode_upto(&policy, MAX_LAYER_VERSION).unwrap().layer_version,
-        5,
-        "the policy record is not lower"
-    );
-    let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
-    cs.update(u, UnitUpdate { payload: b"x".to_vec(), schema_version: None, metadata: None }, None).unwrap();
-    cs.commit().unwrap();
-    assert_eq!(mark_version(&db), Some(5));
-    // The history policy of the mark is kept when a later change set raises the version.
-    db.create_unit(
-        NewUnit { unit_type: "other".into(), schema_version: 1, metadata: vec![], payload: vec![1] },
-        ChangeMeta::default(),
-    )
-    .unwrap();
-    let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
-    cs.delete(u, None).unwrap();
-    cs.commit().unwrap();
-    assert_eq!(derived_keys(&db), 0, "the delete took every derived record");
-    assert_eq!(mark_version(&db), Some(5), "a database that had a vector stays at version 5");
-    let _ = id;
-    db.close().unwrap();
-    // It reopens, and a vector written later needs no second raise.
-    let dd = DerivedDb::open_persisted(open_units::<E>(disk.as_vfs(), &cfg_at(200)).unwrap()).unwrap().0;
-    let v = make(&dd, b"again");
-    build(&dd, v);
-    dd.close().unwrap();
-    assert_eq!(mark_version(&open_db::<E>(&disk)), Some(5));
-}
-
-/// A vector written to a store from before layer 5 raises the mark from 1 to
-/// 2 in the transaction of its keys, keeps the mark's history policy, and
-/// moves no count (so the mark stops at 2).
-fn a_vector_on_a_store_from_before_layer_5_raises_the_mark_to_2<E: Target>() {
-    let disk = SimVfs::new(30);
-    let mut c = cfg();
-    c.default_policy = HistoryPolicy::Audit;
-    let db = open_units::<E>(disk.as_vfs(), &c).unwrap();
-    let (u, _) = db
-        .create_unit(
-            NewUnit { unit_type: "doc".into(), schema_version: 1, metadata: vec![], payload: b"p".to_vec() },
-            ChangeMeta::default(),
-        )
-        .unwrap();
-    to_legacy(&db, 1);
-    db.close().unwrap();
-    assert_eq!(mark_version(&open_units::<E>(disk.as_vfs(), &c).unwrap()), Some(1));
-    let (dd, _) = DerivedDb::open_persisted(open_units::<E>(disk.as_vfs(), &c).unwrap()).unwrap();
-    dd.build_vector(u, &recipe(1, "model-a"), ChangeMeta::default(), &vcompute).unwrap();
-    dd.close().unwrap();
-    let db = open_units::<E>(disk.as_vfs(), &c).unwrap();
-    assert_eq!(mark_version(&db), Some(2));
-    assert_eq!(derived_keys(&db), 3);
-    assert_eq!(db.policy("anything").unwrap(), HistoryPolicy::Audit);
-    clean(&db, "a vector on a store from before layer 5");
-}
-
-/// The first change set of a new database that already persists a vector
-/// writes the mark at version 5 (its unit is counted), and keeps the
-/// configured policy.
-fn a_new_database_with_a_first_vector_starts_at_version_2<E: Target>() {
-    let disk = SimVfs::new(10);
-    let mut c = cfg();
-    c.default_policy = HistoryPolicy::Audit;
-    let db = open_units::<E>(disk.as_vfs(), &c).unwrap();
-    let (dd, _) = DerivedDb::open_persisted(db).unwrap();
-    let mut cs = dd.begin_changeset(ChangeMeta::default()).unwrap();
-    let u = cs
-        .create(NewUnit { unit_type: "doc".into(), schema_version: 1, metadata: vec![], payload: b"p".to_vec() })
-        .unwrap();
-    let id = cs.put_vector(&spec(u, 1, b"p")).unwrap();
-    cs.commit().unwrap();
-    assert_eq!(dd.state(&id), Some(DerivedState::Ready));
-    dd.close().unwrap();
-    let db = open_units::<E>(disk.as_vfs(), &c).unwrap();
-    assert_eq!(mark_version(&db), Some(5));
-    assert_eq!(db.policy("anything").unwrap(), HistoryPolicy::Audit);
-    clean(&db, "new database");
-    // An upgrade of an existing database keeps its policy too.
-    let disk2 = SimVfs::new(11);
-    let db = open_units::<E>(disk2.as_vfs(), &c).unwrap();
-    let (first, _) = db
-        .create_unit(
-            NewUnit { unit_type: "doc".into(), schema_version: 1, metadata: vec![], payload: b"p".to_vec() },
-            ChangeMeta::default(),
-        )
-        .unwrap();
-    db.close().unwrap();
-    let mut other = cfg();
-    other.default_policy = HistoryPolicy::None;
-    let db = open_units::<E>(disk2.as_vfs(), &other).unwrap();
-    let (dd, _) = DerivedDb::open_persisted(db).unwrap();
-    dd.build_vector(first, &recipe(1, "model-a"), ChangeMeta::default(), &vcompute).unwrap();
-    dd.close().unwrap();
-    let db = open_units::<E>(disk2.as_vfs(), &other).unwrap();
-    assert_eq!(mark_version(&db), Some(5));
-    assert_eq!(db.policy("doc").unwrap(), HistoryPolicy::Audit, "the policy of the old mark, not the new config's");
-}
 
 // ----------------------------------- T13, T14, T15, T16: reopen and loss
 
@@ -1495,56 +1332,6 @@ fn reopen_after_source_change_is_stale<E: Target>() {
     assert_eq!(VectorDescriptor::decode(&get_raw(&db, &desc_key(id)).unwrap()).unwrap().state, VectorState::Stale);
 }
 
-/// DV-11 and DV-14, and the damaged mark.
-fn a_version_1_mark_with_derived_keys_and_a_dead_source_are_damage<E: Target>() {
-    let disk = SimVfs::new(34);
-    let (_, id) = fixture::<E>(&disk, b"hello");
-    let db = open_db::<E>(&disk);
-    let mark_key = Key::LayerMeta { name: "layer".into() }.encode().unwrap();
-    put_raw(
-        &db,
-        &mark_key,
-        &LayerMeta { layer_version: 1, history_policy: HistoryPolicy::Versioned }.encode().unwrap(),
-    );
-    assert!(rules(&db).contains("DV-11"));
-    db.close().unwrap();
-    let (dd, report) = open_dd::<E>(&disk);
-    assert_eq!(report.served, 0);
-    assert_eq!(dd.state(&id), None, "nothing is loaded from a database of version 1");
-    assert!(report.findings.iter().any(|f| f.rule == DerivedRule::Dv(11)));
-    assert_eq!(dd.repair_derived(ChangeMeta::default()).unwrap().writes, 0, "a mark cannot be repaired from here");
-    dd.close().unwrap();
-
-    // DV-14: the derived keys of a unit that was deleted, put back.
-    let disk = SimVfs::new(35);
-    let (u, id) = fixture::<E>(&disk, b"hello");
-    let db = open_db::<E>(&disk);
-    let saved: Vec<(Vec<u8>, Vec<u8>)> = [desc_key(id), vec_key(id), src_key(u, 1, id)]
-        .into_iter()
-        .map(|k| {
-            let v = get_raw(&db, &k).unwrap();
-            (k, v)
-        })
-        .collect();
-    let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
-    cs.delete(u, None).unwrap();
-    cs.commit().unwrap();
-    assert_eq!(derived_keys(&db), 0);
-    for (k, v) in &saved {
-        put_raw(&db, k, v);
-    }
-    assert!(rules(&db).contains("DV-14"));
-    db.close().unwrap();
-    let (dd, report) = open_dd::<E>(&disk);
-    assert_eq!(dd.state(&id), None);
-    assert!(report.findings.iter().any(|f| f.rule == DerivedRule::Dv(14)), "{report:?}");
-    assert!(dd.repair_derived(ChangeMeta::default()).unwrap().writes > 0);
-    dd.close().unwrap();
-    let db = open_db::<E>(&disk);
-    assert_eq!(derived_keys(&db), 0);
-    clean(&db, "after removing the derived data of a dead unit");
-}
-
 // ------------------------------------- T17, T18, T20: deletion and archive
 
 fn delete_hides_derived_at_once<E: Target>() {
@@ -1642,7 +1429,7 @@ fn retention_purges_the_derived_data_of_a_purged_revision<E: Target>() {
     assert!(get_raw(&db, &vec_key(old)).is_none() && get_raw(&db, &src_key(u, 1, old)).is_none());
     assert!(get_raw(&db, &desc_key(current)).is_some(), "the datum of the retained revision stays");
     assert_eq!(derived_keys(&db), 3);
-    assert_eq!(mark_version(&db), Some(5));
+    assert_eq!(mark_version(&db), Some(7));
     clean(&db, "after retention");
     db.close().unwrap();
     let (dd, report) = open_dd::<E>(&disk);
@@ -2056,10 +1843,9 @@ fn v1_units<E: Target>(disk: &SimVfs, payloads: &[&[u8]]) -> Vec<UnitId> {
     let ids = payloads.iter().map(|p| make(&dd, p)).collect();
     dd.close().unwrap();
     let db = open_db::<E>(disk);
-    to_legacy(&db, 1);
     db.close().unwrap();
     let db = open_db::<E>(disk);
-    assert_eq!(mark_version(&db), Some(1));
+    assert_eq!(mark_version(&db), Some(7));
     ids
 }
 
@@ -2080,7 +1866,7 @@ fn cs_persist_then_update<E: Target>() {
     dd.close().unwrap();
     let db = open_db::<E>(&disk);
     assert_eq!(persisted_states(&db), vec![(u, VectorState::Stale)]);
-    assert_eq!(mark_version(&db), Some(2), "the vector raised 1 to 2; an update moves no count");
+    assert_eq!(mark_version(&db), Some(7), "the vector raised 1 to 2; an update moves no count");
     drop(db);
     check_no_ready_on_an_old_source::<E>(&disk, "persist then update");
 }
@@ -2125,7 +1911,7 @@ fn cs_delete_then_persist<E: Target>() {
     dd.close().unwrap();
     let db = open_db::<E>(&disk);
     assert_eq!(derived_keys(&db), 0);
-    assert_eq!(mark_version(&db), Some(5), "nothing derived was written: the delete's count raised the mark to 5");
+    assert_eq!(mark_version(&db), Some(7), "nothing derived was written: the delete's count raised the mark to 5");
     clean(&db, "delete then persist");
 }
 
@@ -2183,19 +1969,13 @@ macro_rules! engines {
                 $e;
                 t03_identity_mismatch_is_dv10_and_not_loaded,
                 vector_hash_mismatch_is_not_served,
-                layer1_reader_refuses_derived_fixture,
-                a_database_without_vectors_stays_at_version_1,
                 open_derived_fixture_writes_nothing,
                 a_commit_that_fails_marks_nothing,
                 a_failed_first_vector_writes_no_derived_key_and_no_mark,
-                mark_never_lowers,
-                a_new_database_with_a_first_vector_starts_at_version_2,
-                a_vector_on_a_store_from_before_layer_5_raises_the_mark_to_2,
                 rebuilt_equals_fresh,
                 derived_loss_leaves_units_unchanged,
                 reopen_refuses_or_stales_each_damage_case,
                 reopen_after_source_change_is_stale,
-                a_version_1_mark_with_derived_keys_and_a_dead_source_are_damage,
                 delete_hides_derived_at_once,
                 snapshot_keeps_derived_until_released,
                 archive_is_stale_delete_is_removed,

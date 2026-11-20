@@ -32,6 +32,7 @@ Rules:
 | [0019](0019-license-and-contributions.md) | License and contributions | **Accepted** (2026-11-11, by the project owner) |
 | [0020](0020-persistence-of-vectors-as-derivatives.md) | Vector persistence as derivatives | **Accepted** (2026-11-12, by delegation of the owner, revocable by them; condition of D2 met: E8-03 passed; [minutes of Stage 8](../architecture/stage8-record.md) §5.4 and D2). Replaces the persistence clause of ADR-0011, which is not edited |
 | [0021](0021-typed-schemas-and-secondary-indexes.md) | Typed schemas per unit type and user-defined secondary indexes | **Proposed** (2026-11-18, Phase C; implemented, new record families `0x78`/`0x79` with layer 6, pending the owner's acceptance) |
-| [0022](0022-per-type-fulltext-opt-out.md) | Per-type opt-out of the keyword index | **Proposed** (2026-11-20; implemented, new record family `0x77` with layer 7, pending the owner's acceptance) |
+| [0022](0022-per-type-fulltext-opt-out.md) | Per-type opt-out of the keyword index | **Superseded** by 0023 (the record stays, as an opt-in) |
+| [0023](0023-format-v2-cut-for-alpha2.md) | The format cut for 1.0.0-alpha.2: no legacy readers, keyword index opt-in | **Accepted in direction** (2026-11-20, owner); freeze after the measured steps |
 
 ADRs 0014–0018 come from the list in the [specification v0.2.0](../spec/architecture-specification-v0.2.0.md) §17; the full correspondence is in [`docs/spec/`](../spec/README.md).

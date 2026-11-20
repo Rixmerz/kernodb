@@ -433,9 +433,9 @@ impl Database {
         })
     }
 
-    /// Turns keyword (BM25) indexing of `unit_type` off or back on. Only while the type has no
-    /// active unit; the setting is stored in the database. Use it for types whose payloads are
-    /// text nobody searches by keyword (JSON, code): their writes get several times faster.
+    /// Turns keyword (BM25) indexing of `unit_type` on or off. It is off by default (ADR-0023);
+    /// the setting is stored in the database, and the type's active units are indexed (or
+    /// cleared) in the same commit.
     fn set_fulltext(&self, py: Python<'_>, unit_type: &str, enabled: bool) -> PyResult<()> {
         self.with_db(py, |db| db.set_fulltext(unit_type, enabled).map_err(engine_error))
     }

@@ -260,12 +260,13 @@ def test_max_batch_ops(tmp_path):
 
 
 def test_set_fulltext(tmp_path):
+    # The keyword index is off by default and turned on per type (ADR-0023); a type that
+    # already has units is reindexed (or cleared) in the same commit.
     with kerno.open(tmp_path / "db") as db:
-        db.set_fulltext("sym", False)
         db.store("sym", '{"qname": "m.f"}')
-        a = db.store("note", "hello")
-        with pytest.raises(kerno.InvalidArgumentError):
-            db.set_fulltext("note", False)  # has an active unit
-        db.delete(a)
+        db.store("note", "hello")
+        db.set_fulltext("note", True)
+        db.set_fulltext("note", True)  # same state: nothing written
+        assert db.verify()["clean"] is True
         db.set_fulltext("note", False)
         assert db.verify()["clean"] is True

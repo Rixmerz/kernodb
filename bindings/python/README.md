@@ -46,6 +46,7 @@ Leaving the `with` block closes the database; without it, call `db.close()`.
 
 ## Concepts
 
+- **Keyword index**: off by default; `set_fulltext(type, True)` turns it on for one type.
 - **Unit**: a record with an id (32 hex digits), a `unit_type` (1–64 bytes), a payload (up to
   1 MiB of bytes) and a lifecycle: `active`, `archived` or `deleted`.
 - **Revision**: every write to a unit (create, update, archive, unarchive, delete, restore) adds
@@ -137,7 +138,7 @@ never return wrong data.
 | `db.commit(ops, reason=None, actor=None, source=None, detailed=False)` | stored ids, or a dict with `detailed=True` |
 | `db.history(id, limit=100, with_payload=False)` | `list[Revision]` (`revision`, `kind`, `commit_seq`, `created_at`, `lifecycle`, `content_hash`, `payload`) |
 | `db.read_as_of(id, commit_seq)` | the `Revision` in force then, or `None` before creation. A sequence past the last commit reads now |
-| `db.set_fulltext(type, enabled)` | `None`. Keyword-index a type or not; only while it has no active unit |
+| `db.set_fulltext(type, enabled)` | `None`. Keyword-index a type (off by default); its active units follow in the same commit |
 | `db.last_commit_seq()` | the sequence of the last commit |
 | `db.define_schema(type, fields)` / `db.create_index(type, field)` | `None` |
 | `db.store_document(type, dict)` / `db.update_document(id, dict)` / `db.read_document(id)` | id / `None` / `dict` or `None` |
@@ -186,13 +187,11 @@ What makes the most difference:
 
 1. **Batch your writes.** One `commit([...])` is about 10x faster than the same writes one by
    one, because each commit syncs to disk.
-2. **Turn the keyword index off for types nobody searches by keyword.** Every payload that is
-   valid UTF-8 text is indexed for keyword search (BM25), automatically. For structured data
-   you only read back (JSON, code metadata), call `db.set_fulltext("my_type", False)` before
-   storing the first unit of the type: writes get 4–6x faster and the store about 3.5x smaller.
-   The setting is stored in the database, and it can change only while the type has no active
-   unit. (With 1.0.0a1, which lacks it, store such payloads as bytes that are not UTF-8,
-   for example `zlib.compress(...)`.)
+2. **The keyword index is opt-in.** Since 1.0.0-alpha.2 no type is indexed for keyword search
+   (BM25) unless you call `db.set_fulltext("my_type", True)`. Indexing costs writes several
+   times over and about 3.5x the disk, so turn it on only for the types you search by text.
+   The setting is stored in the database, and switching a type that already has units
+   indexes (or clears) them in the same commit.
 3. **Read relations in bulk** with `relations(type)` instead of `related(id)` per unit.
 4. **Mind the batch limit.** A commit holds 10,000 operations by default. Split larger work, or open with `max_batch_ops=` when it must be atomic.
 

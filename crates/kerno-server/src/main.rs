@@ -146,7 +146,7 @@ async fn run(argv: Vec<String>) -> Result<(), String> {
         return Ok(());
     };
     tracing_subscriber::fmt().json().with_writer(std::io::stderr).with_current_span(false).init();
-    let app = Arc::new(App::open(&args.store, args.backup.as_ref())?);
+    let app = Arc::new(App::open(&args.store, args.backup.as_ref(), &args.fulltext)?);
     let served = serve(&app, &args).await;
     // Every transport has stopped, so this is the last handle unless a handler thread is still
     // finishing; dropping it closes the databases too, only without a report.

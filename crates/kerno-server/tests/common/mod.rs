@@ -12,6 +12,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use serde_json::Value;
 
+/// The unit types the test suites keyword-index (the index is off by default, ADR-0023).
+pub const FULLTEXT_TYPES: &str = "note,user,team,t,doc";
+
 /// A fresh directory that is removed when the test ends, pass or fail. It lives under the system
 /// temp directory: a test runs with the crate as its working directory, and a database written
 /// there would end up in `git add -A`.
@@ -98,6 +101,10 @@ impl Server {
     pub fn launch(args: &[&str], log: Option<&Path>) -> Server {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_kerno-server"));
         cmd.env_remove("KERNO_SERVER_DB").args(["--listen", "127.0.0.1:0"]).args(args);
+        // The keyword index is off by default (ADR-0023): the suites search these types.
+        if !args.iter().any(|a| a.starts_with("--fulltext")) && !args.contains(&"hash-token") {
+            cmd.args(["--fulltext", FULLTEXT_TYPES]);
+        }
         let stderr = match log {
             Some(path) => Stdio::from(std::fs::File::create(path).unwrap()),
             None => Stdio::inherit(),

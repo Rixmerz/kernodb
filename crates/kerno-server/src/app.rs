@@ -31,14 +31,14 @@ pub struct App {
 impl App {
     /// Opens every database `store` names, each with its backups under `backup`'s location when
     /// there is one (a tenant's under its own name).
-    pub fn open(store: &Store, backup: Option<&Backup>) -> Result<Self, String> {
+    pub fn open(store: &Store, backup: Option<&Backup>, fulltext: &[String]) -> Result<Self, String> {
         let location: Option<Arc<dyn ObjectStore>> = backup
             .map(|b| {
                 kerno_backup::open_store(&b.url).map_err(|e| format!("cannot use the backup location {}: {e}", b.url))
             })
             .transpose()?;
         let open = |dir: &std::path::Path, tenant: &str| -> Result<Arc<Service>, String> {
-            let svc = Service::open(dir)?;
+            let svc = Service::open(dir, fulltext)?;
             Ok(Arc::new(match &location {
                 Some(loc) => svc.with_backups(Arc::new(Prefixed::new(Arc::clone(loc), tenant))),
                 None => svc,

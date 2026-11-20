@@ -66,10 +66,13 @@ pub struct Service {
 
 impl Service {
     /// Opens the database in `dir`, creating it when `dir` holds none.
-    pub fn open(dir: &Path) -> Result<Self, String> {
-        Db::open(dir)
-            .map(|db| Service { db, dir: dir.to_owned(), backups: None })
-            .map_err(|e| format!("cannot open the database in {}: {e}", dir.display()))
+    /// The keyword index of each type in `fulltext` is turned on (it is off by default, ADR-0023).
+    pub fn open(dir: &Path, fulltext: &[String]) -> Result<Self, String> {
+        let db = Db::open(dir).map_err(|e| format!("cannot open the database in {}: {e}", dir.display()))?;
+        for t in fulltext {
+            db.set_fulltext(t, true).map_err(|e| format!("cannot keyword-index type {t:?}: {e}"))?;
+        }
+        Ok(Service { db, dir: dir.to_owned(), backups: None })
     }
 
     /// Keeps the backups of this database in `store`: see [`Service::backup_tick`].

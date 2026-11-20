@@ -184,6 +184,7 @@ fn the_layers_stay_reachable_through_the_facade() {
 fn hybrid_search_fuses_text_hnsw_and_graph() {
     let dir = TempDir::new();
     let db = Db::open(dir.db().join("db")).unwrap();
+    db.set_fulltext("note", true).unwrap(); // opt-in per type (ADR-0023)
     let a = db.store("note", "rust borrow checker").unwrap();
     let b = db.store("note", "garbage collector").unwrap();
     let c = db.store("note", "rust ownership").unwrap();
@@ -369,6 +370,7 @@ fn keyword_hits(db: &Db, query: &str) -> Vec<kerno::UnitId> {
 fn update_replaces_the_payload_and_keeps_the_full_text_index_in_step() {
     let dir = TempDir::new();
     let db = Db::open(dir.db()).unwrap();
+    db.set_fulltext("note", true).unwrap(); // opt-in per type (ADR-0023)
     let id = db.store("note", "alpha bravo").unwrap();
     assert_eq!(keyword_hits(&db, "alpha"), [id]);
 
@@ -398,6 +400,7 @@ fn update_of_an_unknown_or_deleted_unit_is_refused() {
 fn delete_leaves_a_tombstone_and_drops_the_unit_from_queries_and_keyword_search() {
     let dir = TempDir::new();
     let db = Db::open(dir.db()).unwrap();
+    db.set_fulltext("note", true).unwrap(); // opt-in per type (ADR-0023)
     let keep = db.store("note", "shared words").unwrap();
     let gone = db.store("note", "shared words").unwrap();
 
@@ -450,6 +453,8 @@ fn update_document_checks_the_schema_and_a_refusal_changes_nothing() {
 fn a_batch_applies_every_operation_in_one_commit() {
     let dir = TempDir::new();
     let db = Db::open(dir.db()).unwrap();
+    db.set_fulltext("note", true).unwrap(); // opt-in per type (ADR-0023)
+    db.set_fulltext("topic", true).unwrap();
     let edited = db.store("note", "before").unwrap();
     let removed = db.store("note", "doomed").unwrap();
     let before = db.unit_db().raw_seq().unwrap();

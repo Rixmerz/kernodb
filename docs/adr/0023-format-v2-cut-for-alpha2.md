@@ -32,15 +32,19 @@ The measurements of 2026-11-20 found the costs that the format itself decides:
    layer mark is below the cut version). It does not migrate it. A user who has one exports it
    with the alpha.1 CLI (`kerno <dir> export`) and imports it with alpha.2 (`kerno import`).
 2. **The cut version of the units layer is 7.** A database created by alpha.2 writes the mark at
-   7 from its first commit. A mark below 7 is refused at open. Removing the legacy reader code
-   paths (the counts rebuilt for pre-layer-4 and pre-layer-5 data, and so on) is cleanup that
-   follows, step by step, with its tests. It does not change bytes.
+   7 from its first commit. A mark below 7 is refused at open (`LayerTooOld`). The tests and the
+   committed fixture directories that existed only for older marks were removed with it
+   (`derived-v2`, `public-ids-v3`, `rel-counts-v4`, `type-counts-v5`); the record vectors of
+   `v1/structs` stay, since those records are still the current ones.
 3. **What enters the cut** (each step measured against SQLite with
    `bindings/python/bench/vs_sqlite.py` before the next one starts):
    1. **Keyword index off by default, per type** (this step). The `0x77` type-options record
       of ADR-0022 changes meaning: bit 0 is `FULLTEXT`, and a type is indexed **only** when
-      its record has it. `Db::set_fulltext(type, true)` turns it on, while the type has no
-      active unit. `verify_units` expects index entries only for the types that have it.
+      its record has it. `Db::set_fulltext(type, true)` turns it on at any time: the type's
+      active units are indexed (or cleared) in the same change set, so it also works after an
+      import (export-v1 carries no type option, like schemas). `verify_units` expects index
+      entries only for the types that have it. Applications declare their types: the server
+      takes `--fulltext <types>`, and the examples turn on the types they search.
    2. **Relation writes**: decide whether the adjacency counts are written once per change set
       instead of once per edge, and measure what remains of the per-edge cost.
    3. **Space per revision**: compact the revision metadata, or compress SST blocks. Block
@@ -72,8 +76,8 @@ The measurements of 2026-11-20 found the costs that the format itself decides:
 
 | Step | State |
 |---|---|
-| 3.1 Keyword index opt-in | implemented on the branch (see CHANGELOG) |
+| 3.1 Keyword index opt-in | **done** on the branch: workspace green (1,757 tests without `kernodb-storage`), Python 29 |
 | 3.2 Relation writes | pending |
 | 3.3 Space per revision | pending |
 | 3.4 Change-set limit | configurable; default unchanged pending 3.2 |
-| 2 Refusing marks below 7 | implemented on the branch with step 3.1 |
+| 2 Refusing marks below 7 | **done**, legacy tests and fixtures removed |

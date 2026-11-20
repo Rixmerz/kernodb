@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | **Proposed**. Implemented on branch `ccr-5d0e38e9-1hmqh0`. It adds a record family to the on-disk format (with layer 7), so it waits for the owner's acceptance, like ADR-0021 |
+| Status | **Superseded by [ADR-0023](0023-format-v2-cut-for-alpha2.md)** (2026-11-20): the `0x77` record stays, but bit 0 now means `FULLTEXT` (opt-in), the option can change at any time (the type's units are reindexed in the same commit), and no database below layer 7 is opened |
 | Date | 2026-11-20 |
 | Deciders | Project owner (pending) |
 | Related to | [ADR-0021](0021-typed-schemas-and-secondary-indexes.md) (layer 6, the precedent for a record family per unit type); [ADR-0013](0013-format-v1-and-engine-protocol.md) (engine format v1, frozen, not edited); [units-v6](../file-format/units-v6.md) (not edited); [units-v7](../file-format/units-v7.md) (the layer 7 mark and the record); [Kerno vs SQLite from Python](../testing/python-vs-sqlite.md) (the measurement) |

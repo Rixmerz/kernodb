@@ -97,6 +97,9 @@ pub fn check_shape(key: &[u8], value: &[u8]) -> Result<(String, u8), DecodeError
     Ok((decode_key(key)?, decode_value(value)?))
 }
 
+/// `(unit, head key, head bytes, head payload key)` of one active unit.
+type ActiveHead = (crate::types::UnitId, Vec<u8>, Vec<u8>, Vec<u8>);
+
 impl<E: TxnEngine> ChangeSet<'_, E> {
     /// Whether the payloads of `unit_type` go in the keyword index, as this
     /// change set sees it.
@@ -151,10 +154,7 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
 
     /// `(unit, head key, head bytes, head payload key)` of every `Active` unit
     /// of `unit_type`, as this change set sees them (a scan of the heads).
-    fn active_heads_of(
-        &self,
-        unit_type: &str,
-    ) -> Result<Vec<(crate::types::UnitId, Vec<u8>, Vec<u8>, Vec<u8>)>, UnitError> {
+    fn active_heads_of(&self, unit_type: &str) -> Result<Vec<ActiveHead>, UnitError> {
         use crate::codec::{Key, TAG_UNIT_HEAD, UnitHead};
         use std::ops::Bound;
         const PAGE: usize = 512;

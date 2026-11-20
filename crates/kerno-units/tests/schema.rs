@@ -338,7 +338,7 @@ fn a_definition_backfills_or_refuses<E: Target>() {
     // It fits now.
     define(&db);
     assert_eq!(layer_version(&db), 7, "the first schema raises the layer mark to 6");
-    assert_eq!(layer, 5);
+    assert_eq!(layer, 7);
     assert_eq!(found(&db, "age", &FieldValue::Int(1)), vec![a]);
     assert!(found(&db, "age", &FieldValue::Int(2)).is_empty(), "the archived unit has no entry");
     clean(&db, "backfilled");
@@ -389,7 +389,7 @@ fn without_a_schema_nothing_changes<E: Target>() {
     one(&db, |cs| cs.create(new_unit("blob", vec![1, 2, 3]))).unwrap();
     let layer = layer_version(&db);
     assert!(stored(&db, 0x78).is_empty() && stored(&db, 0x79).is_empty());
-    assert_eq!(layer, 5);
+    assert_eq!(layer, 7);
     clean(&db, "no schema");
     let before = raw(&db);
     let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
