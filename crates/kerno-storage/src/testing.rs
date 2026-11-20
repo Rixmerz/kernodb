@@ -343,6 +343,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(target_os = "linux"), ignore = "Sync durability is refused off Linux")]
     fn inline_profile_runs_without_threads() {
         assert_eq!(Profiled::<Inline>::name(), "kerno-inline");
         let sim = SimVfs::new(1);

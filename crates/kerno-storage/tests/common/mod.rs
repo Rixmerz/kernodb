@@ -33,6 +33,7 @@ pub fn config(durability: Durability) -> Config {
         cache_bytes: 1 << 20,
         test: TestConfig { background: Background::Inline, db_id: Some(DB_ID) },
         close_budget: kerno_storage::CloseBudget::Unbounded,
+        allow_unverified_platform: true,
         ..Config::default()
     }
 }

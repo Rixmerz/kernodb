@@ -695,7 +695,7 @@ mod tests {
     #[test]
     fn engine_read_counters_use_several_slots() {
         let sim = SimVfs::new(9);
-        let cfg = Config::from(&Options::small_for_tests());
+        let cfg = Config { allow_unverified_platform: true, ..Config::from(&Options::small_for_tests()) };
         let db = KernoDb::open(sim.as_vfs(), Path::new("/db"), &cfg).unwrap();
         for chunk in 0..20u32 {
             let mut b = WriteBatch::new();
@@ -753,7 +753,7 @@ mod tests {
     #[test]
     fn read_only_access_never_creates_a_database() {
         let sim = SimVfs::new(1);
-        let cfg = Config { access: AccessMode::ReadOnly, ..Config::default() };
+        let cfg = Config { allow_unverified_platform: true, access: AccessMode::ReadOnly, ..Config::default() };
         match KernoDb::open(sim.as_vfs(), Path::new("/db"), &cfg) {
             Err(Error::InvalidArgument(m)) => assert!(m.contains("no database"), "{m}"),
             other => panic!("expected InvalidArgument, got {:?}", other.err()),
@@ -791,12 +791,13 @@ mod tests {
     fn create_if_missing_false_opens_an_existing_database() {
         let vfs = SimVfs::new(1).as_vfs();
         let dir = Path::new("/db");
-        let db = KernoDb::open(vfs.clone(), dir, &Config::default()).unwrap();
+        let db =
+            KernoDb::open(vfs.clone(), dir, &Config { allow_unverified_platform: true, ..Config::default() }).unwrap();
         let mut b = WriteBatch::new();
         b.put("k", "v");
         db.commit(&b).unwrap();
         db.close().unwrap();
-        let cfg = Config { create_if_missing: false, ..Config::default() };
+        let cfg = Config { allow_unverified_platform: true, create_if_missing: false, ..Config::default() };
         let db = KernoDb::open(vfs, dir, &cfg).unwrap();
         assert_eq!(db.snapshot().unwrap().get(b"k").unwrap().as_deref(), Some(&b"v"[..]));
         db.close().unwrap();
@@ -805,7 +806,7 @@ mod tests {
     #[test]
     fn create_if_missing_false_reports_damage_as_corruption() {
         let dir = Path::new("/db");
-        let no_create = Config { create_if_missing: false, ..Config::default() };
+        let no_create = Config { allow_unverified_platform: true, create_if_missing: false, ..Config::default() };
         // WAL or SST files without a MANIFEST are a damaged database, not a
         // missing one: the error must not depend on create_if_missing, and
         // the directory stays untouched.
@@ -816,7 +817,7 @@ mod tests {
                 other => panic!("expected Corruption, got {:?}", other.err()),
             };
             assert_eq!(sim.mutating_ops(), before);
-            match KernoDb::open(sim.as_vfs(), dir, &Config::default()) {
+            match KernoDb::open(sim.as_vfs(), dir, &Config { allow_unverified_platform: true, ..Config::default() }) {
                 Err(Error::Corruption(m)) => assert_eq!(m, msg),
                 other => panic!("expected Corruption, got {:?}", other.err()),
             }
@@ -825,7 +826,8 @@ mod tests {
         // A cleanly closed database (LOCK, MANIFEST, SSTs) without its MANIFEST.
         let sim = SimVfs::new(1);
         let vfs = sim.as_vfs();
-        let db = KernoDb::open(vfs.clone(), dir, &Config::default()).unwrap();
+        let db =
+            KernoDb::open(vfs.clone(), dir, &Config { allow_unverified_platform: true, ..Config::default() }).unwrap();
         let mut b = WriteBatch::new();
         b.put("k", "v");
         db.commit(&b).unwrap();
@@ -930,7 +932,12 @@ mod tests {
     #[test]
     fn max_immutable_memtables_bounds_pending_flushes() {
         let gate = Arc::new(SstGate { inner: SimVfs::new(1).as_vfs(), state: Mutex::default(), cv: Condvar::new() });
-        let cfg = Config { max_immutable_memtables: 1, write_buffer_bytes: 4 << 10, ..Config::default() };
+        let cfg = Config {
+            allow_unverified_platform: true,
+            max_immutable_memtables: 1,
+            write_buffer_bytes: 4 << 10,
+            ..Config::default()
+        };
         let db = KernoDb::open(gate.clone(), Path::new("/db"), &cfg).unwrap();
         // Every commit fills a memtable. Commit 1 fills the first one.
         // Commit 2 switches to a second one (the first waits for its flush,

@@ -1,6 +1,6 @@
 name: Python wheels
 
-# Builds the `kerno` Python package (bindings/python) as abi3-py39 wheels for
+# Builds the `kernodb` Python package (bindings/python) as abi3-py39 wheels for
 # every target below plus an sdist, and tests each wheel on its own runner. A
 # `v*` tag also offers the files to PyPI, through trusted publishing, once the
 # owner approves the `pypi` environment. Steps: docs/release.md.
@@ -50,7 +50,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install pytest
-          python -m pip install --no-index --find-links bindings/python/dist kerno
+          python -m pip install --no-index --find-links bindings/python/dist kernodb
           python -m pytest bindings/python/tests
       - uses: actions/upload-artifact@v4
         with:
