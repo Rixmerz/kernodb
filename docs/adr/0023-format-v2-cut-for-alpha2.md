@@ -78,6 +78,6 @@ The measurements of 2026-11-20 found the costs that the format itself decides:
 |---|---|
 | 3.1 Keyword index opt-in | **done** on the branch: workspace green (1,757 tests without `kernodb-storage`), Python 29 |
 | 3.2 Relation writes | **done**: adjacency counts are kept in the change set and written once per change set at commit (no byte of the records changes). 9,000 relations among 300 units: 82 → 63 ms with the earlier caches; vs SQLite in a batch 10.9x → 5.9x. The rest is the three records per edge (REL, out, in), which the two-way adjacency needs |
-| 3.3 Space per revision | pending |
+| 3.3 Space per revision | **done**: SST data blocks are LZ4-compressed when that makes them smaller (`incompat` bit `BLOCK_LZ4`, v1.md §4.4, `Config::block_compression`, on by default). The block encapsulation is unchanged, so **the engine stays format v1** with a new feature bit, as ADR-0013 allows. No `format_version` bump and no regenerated vectors. Measured: LiveSpec's history of the kernodb repository 66 → 35 MB, with the same index time; a small-payload revision 481 → 133 B. Revision metadata (`REV_META`, ~115 B) was left as is: compression already takes most of it |
 | 3.4 Change-set limit | configurable; default unchanged pending 3.2 |
 | 2 Refusing marks below 7 | **done**, legacy tests and fixtures removed |

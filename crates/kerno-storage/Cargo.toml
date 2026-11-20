@@ -22,6 +22,7 @@ crc32c.workspace = true
 parking_lot.workspace = true
 quick_cache.workspace = true
 crossbeam-skiplist.workspace = true
+lz4_flex.workspace = true
 
 [features]
 # parking_lot's deadlock detector for the handoff stress test

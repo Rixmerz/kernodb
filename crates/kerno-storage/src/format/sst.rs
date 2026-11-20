@@ -2,17 +2,13 @@
 //! SST-O1..O7, the per-block checks SST-R1..R3, the `verify()` checks
 //! SST-V1..V4 and the deterministic writer of §7.10.
 
-use super::block::{
-    BLOCK_TRAILER_LEN, DataBlockBuilder, Entry, MIN_DATA_BLOCK_PAYLOAD, append_block, decode_data_block, open_block,
-};
+use super::block::{BLOCK_TRAILER_LEN, DataBlockBuilder, Entry, MIN_DATA_BLOCK_PAYLOAD, append_block, open_block};
 use super::bloom;
 use super::coding::{Reader, le_u32, le_u64, put_bytes, put_u32, put_u64, put_varint};
 use super::crc::{crc_ctx, file_ctx};
 use super::filter::{Filter, decode_filter};
 use super::header::{FileKind, HEADER_LEN, Header, HeaderExpect, decode_header};
-use super::limits::{
-    MAX_BLOCK_SIZE, MAX_DATA_BLOCK_PAYLOAD, MAX_HEADER_LEN, MAX_KEY_LEN, MAX_META_PAYLOAD, MIN_BLOCK_SIZE,
-};
+use super::limits::{MAX_BLOCK_SIZE, MAX_HEADER_LEN, MAX_KEY_LEN, MAX_META_PAYLOAD, MIN_BLOCK_SIZE};
 use super::manifest::FileMeta;
 use super::props::{Props, check_props, decode_props};
 use super::rangedel::{Fragment, check_fragment_seqs, covering_seq, decode_rangedel, encode_rangedel};
@@ -158,7 +154,9 @@ pub fn check_index<B: AsRef<[u8]>>(index: &[IndexEntry<B>], data_end: u64, props
         if e.handle.offset != next {
             return o5("index entries are not contiguous from offset 96");
         }
-        if e.handle.len < MIN_DATA_BLOCK_LEN || e.handle.len > MAX_DATA_BLOCK_PAYLOAD + BLOCK_TRAILER_LEN as u64 {
+        if e.handle.len < MIN_DATA_BLOCK_LEN
+            || e.handle.len > super::block::MAX_STORED_DATA_PAYLOAD + BLOCK_TRAILER_LEN as u64
+        {
             return o5("data block length out of range");
         }
         if i > 0 && index[i - 1].last_key.as_ref() >= e.last_key.as_ref() {
@@ -339,15 +337,18 @@ pub fn check_fragments<B: AsRef<[u8]>>(fragments: &[Fragment<B>], props: &Props,
 /// key equals the index's; first key above the previous block's last key,
 /// or at least `smallest_key` for block 0) and SST-R3 (sequences within the
 /// table's range). `block` is exactly the block's bytes.
+///
+/// `payload` is the block's data-block payload, from
+/// [`data_block_payload`](super::block::data_block_payload) (which checks the
+/// encapsulation and decompresses).
 pub fn read_data_block<'a, B: AsRef<[u8]>>(
-    block: &'a [u8],
-    file_number: u64,
+    payload: &'a [u8],
     index: &[IndexEntry<B>],
     i: usize,
     props: &Props,
 ) -> Result<Vec<Entry<&'a [u8]>>> {
     let h = index[i].handle;
-    let entries = decode_data_block(block, file_number, h.offset)?;
+    let entries = super::block::parse_data_block(payload, h.offset)?;
     let r2 = |detail| Err(FormatError::corruption("SST-R2", h.offset, detail));
     let (first, last) = (entries[0].key, entries[entries.len() - 1].key);
     if last != index[i].last_key.as_ref() {
@@ -464,7 +465,9 @@ pub fn read_sst(file: &[u8], ex: &SstExpect<'_>) -> Result<(SstMeta, Vec<Entry>)
     let mut v = SstVerifier::new(&meta);
     for i in 0..meta.index.len() {
         let block = block_slice(file, meta.index[i].handle);
-        for e in read_data_block(block, ex.file_number, &meta.index, i, &meta.props)? {
+        let lz4 = meta.header.incompat & super::features::BLOCK_LZ4 != 0;
+        let payload = super::block::data_block_payload(block, ex.file_number, meta.index[i].handle.offset, lz4)?;
+        for e in read_data_block(&payload, &meta.index, i, &meta.props)? {
             v.observe(&e, meta.index[i].handle.offset)?;
             all.push(e.to_owned_entry());
         }
@@ -479,6 +482,8 @@ pub fn read_sst(file: &[u8], ex: &SstExpect<'_>) -> Result<(SstMeta, Vec<Entry>)
 /// With the same entries, file number, `db_id` and block size the bytes are
 /// identical.
 pub struct SstBuilder {
+    /// Data blocks are stored with a codec byte (§4.4).
+    lz4: bool,
     file_number: u64,
     block_size: u32,
     pending: Vec<u8>,
@@ -500,12 +505,26 @@ impl SstBuilder {
     ///
     /// If `block_size` is outside 512..=1 MiB: the table would be unreadable.
     pub fn new(db_id: [u8; 16], file_number: u64, block_size: u32) -> Self {
+        Self::with_compression(db_id, file_number, block_size, false)
+    }
+
+    /// [`SstBuilder::new`], with LZ4 data blocks when `lz4` is set (the header then has
+    /// `BLOCK_LZ4`, §4.4).
+    ///
+    /// # Panics
+    ///
+    /// As [`SstBuilder::new`].
+    pub fn with_compression(db_id: [u8; 16], file_number: u64, block_size: u32, lz4: bool) -> Self {
         assert!(
             (MIN_BLOCK_SIZE..=MAX_BLOCK_SIZE).contains(&block_size),
             "SST block_size {block_size} outside 512..=1 MiB (HDR-9)"
         );
-        let header = Header::sst(db_id, file_number, block_size);
+        let mut header = Header::sst(db_id, file_number, block_size);
+        if lz4 {
+            header.incompat |= super::features::BLOCK_LZ4;
+        }
         SstBuilder {
+            lz4,
             file_number,
             block_size,
             pending: header.encode().to_vec(),
@@ -560,7 +579,8 @@ impl SstBuilder {
     }
 
     fn close_block(&mut self) {
-        let payload = self.block.finish();
+        let raw = self.block.finish();
+        let payload = if self.lz4 { super::block::store_data_payload(&raw) } else { raw };
         let offset = self.len();
         append_block(&mut self.pending, &payload, self.file_number, offset);
         let handle = BlockHandle { offset, len: (payload.len() + BLOCK_TRAILER_LEN) as u64 };
@@ -636,6 +656,12 @@ pub fn file_meta(level: u8, number: u64, size: u64, p: &Props) -> FileMeta {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The entries of data block `i` of a table `SstBuilder::new` made (file number 7).
+    fn block_entries(block: &[u8], offset: u64, index: &[IndexEntry], i: usize, props: &Props) -> Vec<Entry> {
+        let payload = super::super::block::data_block_payload(block, 7, offset, false).unwrap();
+        read_data_block(&payload, index, i, props).unwrap().iter().map(Entry::to_owned_entry).collect()
+    }
     use crate::format::props::REASON_FLUSH;
     use crate::format::testing::Recording;
 
@@ -661,7 +687,7 @@ mod tests {
         let mut v = SstVerifier::new(&opened);
         for (i, e) in opened.index.iter().enumerate() {
             let block = &file[e.handle.offset as usize..(e.handle.offset + e.handle.len) as usize];
-            for entry in read_data_block(block, 7, &opened.index, i, &opened.props).unwrap() {
+            for entry in block_entries(block, e.handle.offset, &opened.index, i, &opened.props) {
                 v.observe(&entry, e.handle.offset).unwrap();
             }
         }
@@ -728,7 +754,7 @@ mod tests {
         let empty = SstMeta { filter: Filter::build(&[]), ..m.clone() };
         let mut v = SstVerifier::new(&empty);
         let block = m.index[2].handle;
-        let entries = read_data_block(block_slice(&file, block), 7, &m.index, 2, &m.props).unwrap();
+        let entries = block_entries(block_slice(&file, block), block.offset, &m.index, 2, &m.props);
         let e = v.observe(&entries[0], block.offset).unwrap_err();
         assert_eq!((e.rule, e.offset), ("SST-V3", block.offset));
         // SST-V4 (a newer fragment covers a point): the data block.
@@ -737,7 +763,7 @@ mod tests {
             ..m.clone()
         };
         let first = m.index[0].handle;
-        let entries = read_data_block(block_slice(&file, first), 7, &m.index, 0, &m.props).unwrap();
+        let entries = block_entries(block_slice(&file, first), first.offset, &m.index, 0, &m.props);
         let e = SstVerifier::new(&covering).observe(&entries[0], first.offset).unwrap_err();
         assert_eq!((e.rule, e.offset), ("SST-V4", first.offset));
         // SST-V1 (counts): the properties block.

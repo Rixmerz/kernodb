@@ -582,18 +582,32 @@ fn retention_every_point<E: Target>(kind: CrashKind, durability: Durability, per
 /// A `history_sim`-like workload (many revisions of few units, a few KiB
 /// each): retention to the last revision frees logically what `compact`
 /// then reclaims, once no snapshot needs it (I-05).
+/// `n` deterministic bytes that do not compress: the tables are LZ4-compressed (v1.md §4.4),
+/// and this test measures what the history takes on disk.
+fn noise(seed: u32, n: usize) -> Vec<u8> {
+    let mut x = (seed as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    (0..n)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as u8
+        })
+        .collect()
+}
+
 fn history_sim_reclaims_space() {
     let disk = SimVfs::new(64);
     let db = open::<KernoDb>(&disk, &cfg());
     let mut ids = Vec::new();
     for u in 0..8u8 {
-        let (id, _) = db.create_unit(new_unit("doc", &vec![u; 4096]), meta()).unwrap();
+        let (id, _) = db.create_unit(new_unit("doc", &noise(u32::from(u), 4096)), meta()).unwrap();
         ids.push(id);
     }
     for round in 0..24u8 {
         let mut cs = db.begin_changeset(meta()).unwrap();
         for (i, id) in ids.iter().enumerate() {
-            cs.update(*id, upd(&vec![round ^ i as u8; 4096]), None).unwrap();
+            cs.update(*id, upd(&noise(1000 + u32::from(round) * 16 + i as u32, 4096)), None).unwrap();
         }
         cs.commit().unwrap();
     }

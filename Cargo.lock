@@ -453,7 +453,7 @@ dependencies = [
  "flume",
  "log",
  "lsm-tree",
- "lz4_flex",
+ "lz4_flex 0.13.1",
  "tempfile",
  "xxhash-rust",
 ]
@@ -1030,6 +1030,7 @@ dependencies = [
  "kerno-testkit",
  "kernodb-core",
  "loom",
+ "lz4_flex 0.11.7",
  "parking_lot",
  "proptest",
  "quick_cache",
@@ -1199,7 +1200,7 @@ dependencies = [
  "enum_dispatch",
  "interval-heap",
  "log",
- "lz4_flex",
+ "lz4_flex 0.13.1",
  "quick_cache",
  "rustc-hash",
  "self_cell",
@@ -1208,6 +1209,12 @@ dependencies = [
  "varint-rs",
  "xxhash-rust",
 ]
+
+[[package]]
+name = "lz4_flex"
+version = "0.11.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13591d77a9b6d941f7e6fcade7f9dfd9e801308752bde50c0a9bb5852778c22c"
 
 [[package]]
 name = "lz4_flex"

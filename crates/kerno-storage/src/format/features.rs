@@ -3,11 +3,17 @@
 /// `incompat` bit 0: blocks, records and frames are sealed and the AEAD
 /// slots are in use. Defined and not supported in Phase 1 (HDR-6).
 pub const AEAD: u64 = 1 << 0;
+/// `incompat` bit 1 (ADR-0023): the data blocks of this SST store
+/// `codec: u8 ‖ body`: codec 0, `body` is the data-block payload; codec 1,
+/// `body` is `raw_len: u32 LE ‖ LZ4 block` of it. The block encapsulation
+/// (§7.2) is unchanged. Written on the SSTs of an engine opened with
+/// `Config::block_compression`.
+pub const BLOCK_LZ4: u64 = 1 << 1;
 /// `incompat` bit 63: written by the pre-freeze draft and never by v1; a reader
 /// refuses it by name (§4.3), it is not a known bit.
 pub const DRAFT: u64 = 1 << 63;
 /// `incompat` bits this reader knows (anything else is `Incompatible`).
-pub const KNOWN_INCOMPAT: u64 = AEAD;
+pub const KNOWN_INCOMPAT: u64 = AEAD | BLOCK_LZ4;
 /// `incompat` bits this writer sets on every file: none since the freeze.
 pub const WRITE_INCOMPAT: u64 = 0;
 /// `ro_compat` bits this reader knows (any other opens read-only, HDR-7).

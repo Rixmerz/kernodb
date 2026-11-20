@@ -7,6 +7,8 @@
 use super::coding::{Reader, le_u32, put_u32, put_varint};
 use super::crc::{block_ctx, crc_ctx};
 use super::features::{SLOT_LEN, slot_is_zero};
+use std::borrow::Cow;
+
 use super::limits::{MAX_DATA_BLOCK_PAYLOAD, MAX_KEY_LEN, MAX_SEQ, MAX_VALUE_LEN};
 use super::{FormatError, Result};
 
@@ -224,6 +226,60 @@ pub fn parse_data_block(payload: &[u8], base: u64) -> Result<Vec<Entry<&[u8]>>> 
 }
 
 /// Opens (SST-R1: length, limit, CRC; AEAD-1) and parses a whole data block.
+/// Data-block codec byte of an SST with `BLOCK_LZ4`: the payload as is.
+pub const CODEC_RAW: u8 = 0;
+/// Data-block codec byte: `raw_len: u32 LE ‖ LZ4 block`.
+pub const CODEC_LZ4: u8 = 1;
+/// The most bytes a stored data-block payload may take: the payload plus the
+/// codec byte and the length of a compressed one.
+pub const MAX_STORED_DATA_PAYLOAD: u64 = MAX_DATA_BLOCK_PAYLOAD + 5;
+
+/// What an SST with `BLOCK_LZ4` stores for a data-block `payload`: the LZ4
+/// form when it is smaller, else the payload as is.
+pub fn store_data_payload(payload: &[u8]) -> Vec<u8> {
+    let compressed = lz4_flex::block::compress(payload);
+    if compressed.len() + 5 < payload.len() + 1 && compressed.len() + 5 >= MIN_DATA_BLOCK_PAYLOAD {
+        let mut out = Vec::with_capacity(5 + compressed.len());
+        out.push(CODEC_LZ4);
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(&compressed);
+        out
+    } else {
+        let mut out = Vec::with_capacity(1 + payload.len());
+        out.push(CODEC_RAW);
+        out.extend_from_slice(payload);
+        out
+    }
+}
+
+/// Checks the encapsulation of data block `block` (SST-R1) and returns its
+/// data-block payload, decompressed when the SST has `BLOCK_LZ4` (`lz4`). A
+/// codec this reader does not know, a length above the format limit or a
+/// stream that does not decompress to exactly that length is SST-R1.
+pub fn data_block_payload(block: &[u8], file_number: u64, block_offset: u64, lz4: bool) -> Result<Cow<'_, [u8]>> {
+    if !lz4 {
+        return Ok(Cow::Borrowed(open_block(block, file_number, block_offset, MAX_DATA_BLOCK_PAYLOAD, "SST-R1")?));
+    }
+    let stored = open_block(block, file_number, block_offset, MAX_STORED_DATA_PAYLOAD, "SST-R1")?;
+    let bad = |detail| FormatError::corruption("SST-R1", block_offset, detail);
+    match stored.split_first() {
+        Some((&CODEC_RAW, body)) => Ok(Cow::Borrowed(body)),
+        Some((&CODEC_LZ4, body)) if body.len() >= 4 => {
+            let raw_len = le_u32(body, 0) as usize;
+            if raw_len as u64 > MAX_DATA_BLOCK_PAYLOAD {
+                return Err(bad("compressed data block longer than the format limit"));
+            }
+            let out =
+                lz4_flex::block::decompress(&body[4..], raw_len).map_err(|_| bad("data block does not decompress"))?;
+            if out.len() != raw_len {
+                return Err(bad("data block decompresses to another length"));
+            }
+            Ok(Cow::Owned(out))
+        }
+        _ => Err(bad("unknown data block codec")),
+    }
+}
+
 pub fn decode_data_block(block: &[u8], file_number: u64, block_offset: u64) -> Result<Vec<Entry<&[u8]>>> {
     let payload = open_block(block, file_number, block_offset, MAX_DATA_BLOCK_PAYLOAD, "SST-R1")?;
     parse_data_block(payload, block_offset)

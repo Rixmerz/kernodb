@@ -191,7 +191,9 @@ pub fn decode_header(prefix: &[u8], file_len: u64, kind: FileKind, expect: &Head
     if incompat & features::DRAFT != 0 {
         return Err(FormatError::incompatible("HDR-6", 32, "pre-freeze draft format"));
     }
-    if incompat & !KNOWN_INCOMPAT != 0 {
+    // `BLOCK_LZ4` has a meaning only in an SST (§4.4): elsewhere it is unknown.
+    let known = if kind == FileKind::Sst { KNOWN_INCOMPAT } else { KNOWN_INCOMPAT & !features::BLOCK_LZ4 };
+    if incompat & !known != 0 {
         return Err(FormatError::incompatible("HDR-6", 32, "unknown incompat feature"));
     }
     if incompat & features::AEAD != 0 {

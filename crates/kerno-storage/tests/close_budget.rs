@@ -35,6 +35,9 @@ fn config(write_buffer: usize, compaction: CompactionConfig, close_budget: Close
         compaction,
         close_budget,
         allow_unverified_platform: true,
+        // Synthetic, highly compressible values: this suite measures file sizes and
+        // byte-driven policies, so it writes uncompressed tables (§4.4 has its own tests).
+        block_compression: false,
         ..Config::default()
     }
 }

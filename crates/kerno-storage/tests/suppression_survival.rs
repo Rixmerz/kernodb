@@ -122,6 +122,9 @@ fn config(wal_preallocate: bool) -> Config {
         close_budget: CloseBudget::Unbounded,
         wal_preallocate,
         allow_unverified_platform: true,
+        // Synthetic, highly compressible values: this suite measures file sizes and
+        // byte-driven policies, so it writes uncompressed tables (§4.4 has its own tests).
+        block_compression: false,
         ..Config::default()
     }
 }

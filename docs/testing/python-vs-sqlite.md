@@ -77,8 +77,8 @@ It does not touch the frozen engine format, only the units layer, as ADR-0021 di
    memtable, targets the largest share.
 3. **Reads inside a change set.** `load_unit` / `current` read the head from the write
    transaction for every op. A per-change-set cache of heads already read would avoid that.
-4. **Disk per revision (about 900 bytes per small revision).** Revision metadata and key
-   overhead dominate for small payloads. Compressing SST blocks would help, but it is a
-   format question.
+4. **Disk per revision.** Done: with the keyword index opt-in and LZ4 data blocks
+   (ADR-0023), a small revision takes 133 B on disk instead of about 900 B, and LiveSpec's real
+   store went from 66 MB to 35 MB.
 5. **A change set holds at most 10,000 operations** by default. Done: `Db::open_with_limits`
    and `kerno.open(path, max_batch_ops=...)` change it, but the engine's byte limit per write still applies.

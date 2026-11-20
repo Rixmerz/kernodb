@@ -102,6 +102,8 @@ const META_MAX: u64 = 256 * 1024 * 1024;
 const FILE_MAX: u64 = (1 << 48) - 1;
 const SEQ_MAX: u64 = (1 << 63) - 1;
 const AEAD: u64 = 1;
+/// §4.4: SST data blocks store `codec ‖ body`.
+const BLOCK_LZ4: u64 = 1 << 1;
 const DRAFT: u64 = 1 << 63;
 const LEVELS: usize = 7;
 
@@ -334,7 +336,8 @@ fn header(b: &[u8], kind: FileType, db: Option<[u8; 16]>, file: Option<u64>) -> 
         return bad("HDR-5");
     }
     let incompat = le64(b, 32);
-    if incompat & DRAFT != 0 || incompat & !AEAD != 0 || incompat & AEAD != 0 {
+    let known = if kind == FileType::Sst { AEAD | BLOCK_LZ4 } else { AEAD };
+    if incompat & DRAFT != 0 || incompat & !known != 0 || incompat & AEAD != 0 {
         return incompatible("HDR-6");
     }
     if le32(b, 88) != 0 {
@@ -552,6 +555,72 @@ fn wal_tail(b: &[u8], p: usize, expected: u64, file: u64, broken_header: bool) -
 // ---------------------------------------------------------------- SST (§7)
 
 /// §7.2: `payload ‖ slot[40] ‖ crc`.
+/// §4.4: the data-block payload of a stored `codec ‖ body` (LZ4-1).
+fn lz4_body(stored: &[u8]) -> R<Vec<u8>> {
+    match stored.split_first() {
+        Some((0, body)) => Ok(body.to_vec()),
+        Some((1, body)) if body.len() >= 4 => {
+            let raw_len = le32(body, 0) as u64;
+            if raw_len > DATA_MAX {
+                return bad("SST-R1");
+            }
+            match lz4_block_decode(&body[4..], raw_len as usize) {
+                Some(out) if out.len() as u64 == raw_len => Ok(out),
+                _ => bad("SST-R1"),
+            }
+        }
+        _ => bad("SST-R1"),
+    }
+}
+
+/// An LZ4 block decoder written from the LZ4 block format description, independent of the
+/// engine's codec: sequences of `token ‖ literal length ext ‖ literals ‖ offset u16 LE ‖ match
+/// length ext`, the last sequence without a match, matches of at least 4 bytes.
+fn lz4_block_decode(src: &[u8], cap: usize) -> Option<Vec<u8>> {
+    let mut out: Vec<u8> = Vec::with_capacity(cap);
+    let mut i = 0usize;
+    let ext = |i: &mut usize, mut n: usize| -> Option<usize> {
+        if n == 15 {
+            loop {
+                let b = *src.get(*i)?;
+                *i += 1;
+                n += b as usize;
+                if b != 255 {
+                    break;
+                }
+            }
+        }
+        Some(n)
+    };
+    loop {
+        let token = *src.get(i)?;
+        i += 1;
+        let lit = ext(&mut i, (token >> 4) as usize)?;
+        out.extend_from_slice(src.get(i..i.checked_add(lit)?)?);
+        i += lit;
+        if out.len() > cap {
+            return None;
+        }
+        if i == src.len() {
+            return Some(out);
+        }
+        let off = u16::from_le_bytes([*src.get(i)?, *src.get(i + 1)?]) as usize;
+        i += 2;
+        if off == 0 || off > out.len() {
+            return None;
+        }
+        let m = ext(&mut i, (token & 15) as usize)? + 4;
+        if out.len() + m > cap {
+            return None;
+        }
+        let start = out.len() - off;
+        for k in 0..m {
+            let b = out[start + k];
+            out.push(b);
+        }
+    }
+}
+
 fn unwrap_block<'a>(b: &'a [u8], file: u64, off: u64, max: u64, rule: &'static str) -> R<&'a [u8]> {
     if b.len() < 44 {
         return bad(rule);
@@ -849,7 +918,7 @@ fn footer_summary(f: &[u64; 8]) -> String {
 /// Summary: `sst {props} blocks{n} entries[...] rdel[...] filter k{k}
 /// nbits{n}`.
 fn sst(b: &[u8], file: u64, db: [u8; 16], meta: Option<&Meta>, last_seq: u64) -> R<String> {
-    header(b, FileType::Sst, Some(db), Some(file))?;
+    let lz4 = header(b, FileType::Sst, Some(db), Some(file))?.incompat & BLOCK_LZ4 != 0;
     let len = b.len() as u64;
     if meta.is_some_and(|m| m.size != len) || len < 176 {
         return bad("SST-O1");
@@ -917,7 +986,12 @@ fn sst(b: &[u8], file: u64, db: [u8; 16], meta: Option<&Meta>, last_seq: u64) ->
     // Data blocks (SST-R1..R3) and verify (SST-V3, SST-V4 per entry).
     let mut all: Vec<Ent> = Vec::new();
     for (i, (last, o, l)) in idx.iter().enumerate() {
-        let ents = data_payload(unwrap_block(at(*o, *l), file, *o, DATA_MAX, "SST-R1")?)?;
+        let ents = if lz4 {
+            let stored = unwrap_block(at(*o, *l), file, *o, DATA_MAX + 5, "SST-R1")?;
+            data_payload(&lz4_body(stored)?)?
+        } else {
+            data_payload(unwrap_block(at(*o, *l), file, *o, DATA_MAX, "SST-R1")?)?
+        };
         if ents.last().unwrap().key != *last {
             return bad("SST-R2");
         }
