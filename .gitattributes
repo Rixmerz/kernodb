@@ -5,3 +5,7 @@
 crates/*/tests/vectors/** -text
 # Specs whose hex blocks tests compare against the vectors keep LF endings.
 docs/file-format/*.md text eol=lf
+# Frozen evaluation data: the measurement tests hash these files (corpus.txt,
+# queries, manifests) with `include_str!`, so a checkout must not turn LF into
+# CRLF (core.autocrlf=true on Windows, issue #5).
+crates/kerno-testkit/data/** -text
