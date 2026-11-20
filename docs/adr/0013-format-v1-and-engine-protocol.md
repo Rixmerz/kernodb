@@ -134,3 +134,14 @@ With the acceptance, the owner fixes the boundary:
 - ~~Decide whether W-1 syncs the WAL header~~: adopted (M1, 2026-10-31).
 - Link the engine evidence here (WP07–WP14) and the measurement of T7 and T8.
 - Change log of the draft's bytes (v1.md §15, table "Draft history"): the last is the freeze itself, which changes the `incompat` of the header (and its CRC) of every file written. From it on, a byte change requires `format_version` or a new bit.
+
+## Amendment (2026-11-20): `incompat` bit 1, `BLOCK_LZ4`
+
+[ADR-0023](0023-format-v2-cut-for-alpha2.md) step 3.3 defines `incompat` bit 1 for SSTs, through
+the feature-bit path that the "What is immutable and what is versioned" section of this ADR
+keeps open. A table with the bit stores each data block's payload as `codec ‖ body` (raw or LZ4,
+v1.md §4.4). The block encapsulation, the header, the footer and every other structure are
+unchanged, so `format_version` stays 1 and no frozen vector changes. On a WAL or MANIFEST the bit
+is unknown (HDR-6). A reader of 1.0.0-alpha.1 refuses a table that has it (HDR-6), which is
+consistent with the cut of ADR-0023 (alpha.1 databases are not read by alpha.2 and the other
+way round).

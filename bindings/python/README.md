@@ -170,18 +170,18 @@ A malformed id or direction, or a call on a closed database, raises `ValueError`
 
 ## Performance
 
-These numbers are from one Linux machine (ext4), with every commit synced to disk, comparing Kerno 1.0.0a1 to SQLite in
+These numbers are from one Linux machine (ext4), with every commit synced to disk, comparing Kerno 1.0.0a2 to SQLite in
 WAL mode with `synchronous=FULL` storing the same data (with a revision table). The full
 method is in
 [docs/testing/python-vs-sqlite.md](https://github.com/Rixmerz/kernodb/blob/main/docs/testing/python-vs-sqlite.md).
 
 | Workload | Kerno vs SQLite |
 |---|---|
-| one write per commit | 1.1–1.3x slower |
-| point read by id, history of a unit | 1.2–1.5x slower |
-| writes in one batch | 2.8–6x slower |
+| one write per commit | about the same |
+| point read by id, history of a unit | 0.8–1.4x |
+| writes in one batch | about 3x slower |
 | relations in one batch | 6–11x slower |
-| disk | 1.7–2.4x larger |
+| disk | about 2x smaller here; LZ4 blocks halve a real store (66 → 35 MB) |
 
 What makes the most difference:
 

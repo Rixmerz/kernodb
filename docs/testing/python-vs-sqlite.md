@@ -16,24 +16,31 @@ Both sides store the same data and sync every commit to disk:
 
 ## Results (time, Kerno ÷ SQLite)
 
-| Workload | text payload | binary payload |
-|---|---|---|
-| 2,000 stores, one commit each | 1.3x | 1.1x |
-| 9,000 stores, one batch | 4.5x | 2.8x |
-| 2,000 point reads | 1.2x | 1.5x |
-| scan 11,000 units of a type | 3.1x | 2.4x |
-| 9,000 updates (history kept), one batch | 4.9x | 3.0x |
-| 9,000 relations, one batch | 5.9x | **10.9x** |
-| `related()` × 1,000 | 5.5x | 1.6x |
-| all relations of a type | 2.1x | 2.2x |
-| history × 1,000 | 1.5x | 1.4x |
-| disk | 16.9 MB vs 7.1 MB (2.4x) | 12.9 MB vs 7.4 MB (1.7x) |
+Two builds: **1.0.0a1** (first measurement) and the **alpha.2 branch** (keyword index opt-in,
+LZ4 data blocks, change-set caches, counts written once per change set; ADR-0023).
 
-"Text payload" is `b"x" * 200` (valid UTF-8, so it is full-text indexed); "binary" prefixes
-it with `0xFF`. Opening the database takes 1–4 ms on both sides, and Kerno opened a 95 MB store in 4 ms.
+| Workload | 1.0.0a1, text payload | 1.0.0a1, binary payload | alpha.2 branch |
+|---|---|---|---|
+| 2,000 stores, one commit each | 1.3x | 1.1x | 1.0x |
+| 9,000 stores, one batch | 4.5x | 2.8x | 2.8–3.1x |
+| 2,000 point reads | 1.2x | 1.5x | 1.3–1.4x |
+| scan 11,000 units of a type | 3.1x | 2.4x | 2.3–3.0x |
+| 9,000 updates (history kept), one batch | 4.9x | 3.0x | 3.5x |
+| 9,000 relations, one batch | 5.9x | 10.9x | 5.9–11x (Kerno ~0.16 s every run; SQLite varies 0.014–0.026 s) |
+| `related()` × 1,000 | 5.5x | 1.6x | 2.3–2.7x |
+| all relations of a type | 2.1x | 2.2x | 1.8–2.9x |
+| history × 1,000 | 1.5x | 1.4x | 0.8–1.4x |
+| **disk** | 16.9 MB vs 7.1 MB (2.4x larger) | 12.9 MB vs 7.4 MB (1.7x) | **3.4 MB vs 7.1 MB (2x smaller)** |
 
-With durable commits, the cost of one commit is mostly the sync to disk, and Kerno stays
-close to SQLite. In batches, Kerno does 3–11 times more CPU work per write. Reads are close.
+"Text payload" is `b"x" * 200` (valid UTF-8, keyword-indexed in 1.0.0a1); "binary" prefixes it
+with `0xFF`. On the alpha.2 branch no type is keyword-indexed by default, so both payloads
+behave the same. The synthetic payload compresses unusually well: on real data (LiveSpec's
+history of the kernodb repository) LZ4 took the store from 66 MB to 35 MB (1.9x).
+
+With durable commits, one commit per write costs about what it costs SQLite. In batches Kerno
+still does 3–11 times more CPU work per write: it keeps every revision, and each relation is
+three records (the relation and both adjacency entries), which SQLite's single index does not
+need. Reads are within 1.5x except scans by type.
 
 ## Where the time goes
 
