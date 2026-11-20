@@ -1,0 +1,44 @@
+# unit_bench mode=full relations=false indexes=false seed=0xe309 dir=target/bench-scratch engine=KernoDb options=Options { durability: Sync, cache_bytes: 67108864, write_buffer_bytes: 8388608 } vfs=StdVfs rounds=5
+## U6: run_retention (KeepLast(1), RetentionBudget { max_units: 1000, max_ops: 10000 }) with 2 writer(s) of 1 KiB updates and 1 reader
+raw U6 low load (1 writer, no reader) write: n=2685 p50_ms=0.9980 p99_ms=6.3597 max_ms=13.9928 mean_ms=1.1169
+raw U6 low load throughput_ops_s=894.6
+raw U6 round 0: before_a 3.00s 2275 writes, before_b 3.00s 2449 writes, during 24.29s 15649 writes
+raw U6 round 1: before_a 3.00s 2439 writes, before_b 3.00s 2710 writes, during 18.81s 15743 writes
+raw U6 round 2: before_a 3.00s 1745 writes, before_b 3.00s 1944 writes, during 20.33s 16444 writes
+raw U6 round 3: before_a 3.00s 1764 writes, before_b 3.00s 2049 writes, during 20.73s 14277 writes
+raw U6 round 4: before_a 3.00s 2092 writes, before_b 3.00s 1674 writes, during 23.31s 15163 writes
+raw U6 before_a write: n=10315 p50_ms=2.0991 p99_ms=11.9938 max_ms=286.9218 mean_ms=2.9082
+raw U6 before_a read: n=5631099 p50_ms=0.0024 p99_ms=0.0053 max_ms=0.2466 mean_ms=0.0026
+raw U6 before_a write_throughput_ops_s=687.7 secs=15.00
+raw U6 before_b write: n=10826 p50_ms=2.1131 p99_ms=11.7765 max_ms=133.4343 mean_ms=2.7709
+raw U6 before_b read: n=5087811 p50_ms=0.0027 p99_ms=0.0065 max_ms=0.1519 mean_ms=0.0029
+raw U6 before_b write_throughput_ops_s=721.7 secs=15.00
+raw U6 during write: n=77276 p50_ms=2.1121 p99_ms=11.0412 max_ms=231.0067 mean_ms=2.7809
+raw U6 during read: n=34468525 p50_ms=0.0029 p99_ms=0.0062 max_ms=1.3329 mean_ms=0.0031
+raw U6 during write_throughput_ops_s=719.0 secs=107.48
+raw U6 retention: calls=55 revisions_pruned=1100922 units_retained=50500 secs=107.481 revisions_per_s=10243 units_per_s=470
+verdict U6: PASS budget 1000 units/10000 ops: write p99 during 11.041 ms vs before 11.994 ms (0.92x; low load 6.360 ms); throughput during 719.0 ops/s vs before 687.7 ops/s (1.05x); read p99 during 0.0062 ms vs before 0.0065 ms (0.95x); retention 10243 revisions/s
+## U6: run_retention (KeepLast(1), RetentionBudget { max_units: 25, max_ops: 100 }) with 2 writer(s) of 1 KiB updates and 1 reader
+raw U6 low load (1 writer, no reader) write: n=2206 p50_ms=0.9923 p99_ms=7.9945 max_ms=91.2466 mean_ms=1.3590
+raw U6 low load throughput_ops_s=735.3
+raw U6 round 0: before_a 3.00s 1630 writes, before_b 3.00s 2114 writes, during 25.04s 19732 writes
+raw U6 round 1: before_a 3.00s 1908 writes, before_b 3.00s 2229 writes, during 30.94s 21856 writes
+raw U6 round 2: before_a 3.00s 2385 writes, before_b 3.00s 2831 writes, during 29.43s 20989 writes
+raw U6 round 3: before_a 3.00s 2572 writes, before_b 3.00s 1750 writes, during 33.02s 21368 writes
+raw U6 round 4: before_a 3.00s 2155 writes, before_b 3.00s 1950 writes, during 32.76s 20415 writes
+raw U6 before_a write: n=10650 p50_ms=2.0731 p99_ms=9.6409 max_ms=352.5938 mean_ms=2.8171
+raw U6 before_a read: n=5845160 p50_ms=0.0024 p99_ms=0.0044 max_ms=0.3144 mean_ms=0.0025
+raw U6 before_a write_throughput_ops_s=710.0 secs=15.00
+raw U6 before_b write: n=10874 p50_ms=2.1071 p99_ms=9.4253 max_ms=97.5647 mean_ms=2.7628
+raw U6 before_b read: n=5345578 p50_ms=0.0026 p99_ms=0.0050 max_ms=0.3603 mean_ms=0.0028
+raw U6 before_b write_throughput_ops_s=724.9 secs=15.00
+raw U6 during write: n=104360 p50_ms=2.1630 p99_ms=11.0257 max_ms=372.8534 mean_ms=2.8966
+raw U6 during read: n=48960061 p50_ms=0.0029 p99_ms=0.0058 max_ms=3.0728 mean_ms=0.0031
+raw U6 during write_throughput_ops_s=690.3 secs=151.18
+raw U6 retention: calls=2020 revisions_pruned=1127870 units_retained=50500 secs=151.184 revisions_per_s=7460 units_per_s=334
+verdict U6: FAIL budget 25 units/100 ops: write p99 during 11.026 ms vs before 9.641 ms (1.14x; low load 7.994 ms); throughput during 690.3 ops/s vs before 710.0 ops/s (0.97x); read p99 during 0.0058 ms vs before 0.0050 ms (1.16x); retention 7460 revisions/s
+time U6: 379.4 s
+# summary
+U6 PASS budget 1000 units/10000 ops: write p99 during 11.041 ms vs before 11.994 ms (0.92x; low load 6.360 ms); throughput during 719.0 ops/s vs before 687.7 ops/s (1.05x); read p99 during 0.0062 ms vs before 0.0065 ms (0.95x); retention 10243 revisions/s
+U6 FAIL budget 25 units/100 ops: write p99 during 11.026 ms vs before 9.641 ms (1.14x; low load 7.994 ms); throughput during 690.3 ops/s vs before 710.0 ops/s (0.97x); read p99 during 0.0058 ms vs before 0.0050 ms (1.16x); retention 7460 revisions/s
+EXIT 0

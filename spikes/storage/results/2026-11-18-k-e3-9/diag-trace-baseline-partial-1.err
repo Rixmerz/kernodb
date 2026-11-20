@@ -1,0 +1,12 @@
+ret-trace phase1_us=164971 chunks=63 chunk_us=646992 sleep_us=7332009
+ret-trace phase1_us=63419 chunks=63 chunk_us=293868 sleep_us=3234808
+ret-trace phase1_us=102752 chunks=63 chunk_us=213558 sleep_us=2866116
+ret-trace phase1_us=56316 chunks=63 chunk_us=69276 sleep_us=1149627
+ret-trace phase1_us=32753 chunks=63 chunk_us=61250 sleep_us=860383
+ret-trace phase1_us=31301 chunks=63 chunk_us=199720 sleep_us=2095585
+ret-trace phase1_us=86380 chunks=63 chunk_us=307425 sleep_us=3567847
+ret-trace phase1_us=124561 chunks=63 chunk_us=249143 sleep_us=3381044
+ret-trace phase1_us=67279 chunks=63 chunk_us=270698 sleep_us=3057998
+ret-trace phase1_us=112050 chunks=63 chunk_us=140034 sleep_us=2283582
+ret-trace phase1_us=1220731 chunks=7 chunk_us=2483840 sleep_us=33343263
+Error: "storage: handle poisoned by an earlier fatal error: WAL write failed: Disk quota exceeded (os error 122)"

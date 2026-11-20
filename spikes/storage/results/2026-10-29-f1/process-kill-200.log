@@ -1,0 +1,21 @@
+   Compiling kerno-core v0.0.0 (/root/.local/share/cauce/worktrees/task-88/crates/kerno-core)
+   Compiling kerno-testkit v0.0.0 (/root/.local/share/cauce/worktrees/task-88/crates/kerno-testkit)
+   Compiling kerno-storage v0.0.0 (/root/.local/share/cauce/worktrees/task-88/crates/kerno-storage)
+   Compiling spike-core v0.0.0 (/root/.local/share/cauce/worktrees/task-88/spikes/storage/spike-core)
+   Compiling spike-btree v0.0.0 (/root/.local/share/cauce/worktrees/task-88/spikes/storage/spike-btree)
+   Compiling spike-lsm v0.0.0 (/root/.local/share/cauce/worktrees/task-88/spikes/storage/spike-lsm)
+    Finished `release` profile [optimized + debuginfo] target(s) in 13.42s
+     Running tests/process_kill.rs (target/release/deps/process_kill-2706942d64ba9eb1)
+
+running 4 tests
+process_kill group-buffered: 200 kills, recovered 96310 writer batches over 96 keys each
+test kill_dash_9_four_writers_recover_acked_batches_buffered ... ok
+process_kill group-sync-prealloc: 200 kills, recovered 40845 writer batches over 96 keys each
+test kill_dash_9_four_writers_recover_acked_batches_sync_preallocate ... ok
+process_kill sync: 200 kills (152 after progress), recovered sequence 20052
+test kill_dash_9_writer_recovers_acked_prefix_sync ... ok
+process_kill buffered: 200 kills (152 after progress), recovered sequence 103720
+test kill_dash_9_writer_recovers_acked_prefix_buffered ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 25.71s
+

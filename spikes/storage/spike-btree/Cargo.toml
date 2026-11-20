@@ -1,0 +1,15 @@
+[package]
+name = "spike-btree"
+description = "Copy-on-write B+ tree candidate for the Kerno storage-engine spike (Phase 0)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+spike-core.workspace = true
+crc32c.workspace = true
+parking_lot.workspace = true
+quick_cache.workspace = true

@@ -1,0 +1,336 @@
+# commit: a7d40d7; rustc: 1.97.0
+# SPIKE_SEEDS=400 cargo test --workspace --all-features --release -- --nocapture
+   Compiling spike-btree v0.0.0 (/home/user/kernodb/spikes/storage/spike-btree)
+   Compiling spike-bench v0.0.0 (/home/user/kernodb/spikes/storage/spike-bench)
+   Compiling spike-lsm v0.0.0 (/home/user/kernodb/spikes/storage/spike-lsm)
+    Finished `release` profile [optimized + debuginfo] target(s) in 7.93s
+     Running unittests src/lib.rs (target/release/deps/spike_bench-59d5ec9d8035fd45)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/release/deps/spike_bench-6ebb2f4a27a1fe94)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/differential.rs (target/release/deps/differential-b12141c2651f6e71)
+
+running 1 test
+test same_history_same_state_in_every_engine ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.06s
+
+     Running unittests src/lib.rs (target/release/deps/spike_btree-9b85b538ba680a4a)
+
+running 32 tests
+test freelist::tests::load_rejects_inconsistent_logs ... ok
+test meta::tests::a_torn_slot_write_uses_the_newest_valid_copy ... ok
+test meta::tests::inconsistent_fields_are_rejected_even_with_a_valid_crc ... ok
+test meta::tests::roundtrip ... ok
+test meta::tests::select_prefers_highest_valid_sequence ... ok
+test meta::tests::every_single_bit_flip_in_the_covered_bytes_is_rejected ... ok
+test page::tests::branch_roundtrip ... ok
+test page::tests::decode_rejects_structural_damage ... ok
+test page::tests::freelist_page_roundtrip ... ok
+test page::tests::full_page_leaf_fits_exactly ... ok
+test page::tests::leaf_roundtrip_with_inline_overflow_and_empty_items ... ok
+test page::tests::overflow_page_header ... ok
+test freelist::tests::log_replay_matches_memory_through_appends_pushes_and_compactions ... ok
+test tests::corrupt_overflow_pointer_is_detected_without_looping ... ok
+test tests::deletes_merge_underfull_nodes ... ok
+test tests::each_page_is_copied_once_per_commit ... ok
+test tests::every_tree_page_bit_flip_is_detected ... ok
+test tests::failed_io_poisons_the_handle ... ok
+test tests::bulk_load_and_bulk_delete_in_single_batches ... ok
+test tests::free_list_survives_reopen_and_space_is_reused ... ok
+test tests::fsyncs_per_commit ... ok
+test tests::leaf_split_and_merge_at_the_exact_page_boundary ... ok
+test tests::lingering_snapshot_keeps_the_database_locked ... ok
+test tests::meta_slot_selection_after_damage ... ok
+test tests::overflow_chains_at_size_boundaries ... ok
+test tests::free_list_log_is_compacted ... ok
+test tests::snapshots_pin_freed_pages_until_dropped ... ok
+test tree::tests::dedupe_keeps_last_operation_per_key ... ok
+test tree::tests::plan_split_boundaries ... ok
+buffered power loss: prefix 2, detected at open 130, detected on read 18
+test tests::buffered_power_loss_gives_a_prefix_or_a_detected_error ... ok
+test tests::concurrent_snapshots_during_page_reuse ... ok
+test tests::randomized_histories_keep_every_invariant ... ok
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.80s
+
+     Running tests/regressions.rs (target/release/deps/regressions-d5fac7144a8a6e10)
+
+running 9 tests
+opened crafted file OK
+get(z) = Ok(None)
+get(a) = Ok(Some("va"))
+scan keys = ["a", "z", "n", "s0", "s1", "s2", "s3"]
+commit returned Err(Corruption("commit produced an invalid node from malformed input: corruption detected: page 6: leaf keys out of order"))
+after open: seq = 18446744073709551615
+test format_version::unknown_format_version_is_rejected_without_touching_the_file ... 
+thread 'commit_panic::a_panic_inside_commit_poisons_the_handle' (23522) panicked at spikes/storage/spike-btree/tests/regressions.rs:605:13:
+injected panic in write_at
+ok
+stack backtrace:
+test crafted::crafted_crc_valid_file_makes_commit_fail_cleanly ... ok
+test exhausted_seq::exhausted_commit_sequence_is_an_error_not_a_wrap ... ok
+test open_makes_the_database_directory_durable_in_its_parent ... ok
+test overflow_cache::repeated_reads_of_a_large_value_hit_the_cache ... ok
+commit 3 uses 5 mutating ops, commit 4 (after reopen) uses 4
+reopened at seq 40; read_all ok = true; get(ACKED-COMMIT-40) = Ok(Some([109, 117, 115, 116, 32, 115, 117, 114, 118, 105, 118, 101]))
+contents == model after commit 39: false
+contents == model after commit 40: true
+verify() passes on the rolled-back state
+after clean close and reopen: seq 40
+next commit got seq 41
+test newest_meta::damaged_newest_meta_after_unclean_shutdown_does_not_roll_back ... ok
+outcomes over 400 seeds:
+   400  ok seq 3
+test reopen_on_unsynced_meta_then_power_loss_during_next_commit ... ok
+close variant outcomes over 400 seeds:
+   400  ok seq 3
+test reopen_on_unsynced_meta_then_power_loss_during_close_byte_tearing ... ok
+   0: __rustc::rust_begin_unwind
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/panicking.rs:80:14
+   2: <regressions::commit_panic::PanickyFile as spike_core::vfs::File>::write_at
+             at ./tests/regressions.rs:605:13
+   3: <spike_btree::engine::BTreeEngine>::write_pages
+             at ./src/engine.rs:494:33
+   4: <spike_btree::engine::BTreeEngine>::commit_locked
+             at ./src/engine.rs:422:14
+   5: <spike_btree::engine::BTreeEngine as spike_core::engine::Engine>::commit
+             at ./src/engine.rs:720:27
+   6: regressions::commit_panic::a_panic_inside_commit_poisons_the_handle::{closure#0}
+             at ./tests/regressions.rs:663:53
+   7: <regressions::commit_panic::a_panic_inside_commit_poisons_the_handle::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/ops/function.rs:250:5
+   8: <core::panic::unwind_safe::AssertUnwindSafe<regressions::commit_panic::a_panic_inside_commit_poisons_the_handle::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/panic/unwind_safe.rs:275:9
+   9: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<regressions::commit_panic::a_panic_inside_commit_poisons_the_handle::{closure#0}>, core::result::Result<u64, spike_core::error::Error>>
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/std/src/panicking.rs:581:40
+  10: std::panicking::catch_unwind::<core::result::Result<u64, spike_core::error::Error>, core::panic::unwind_safe::AssertUnwindSafe<regressions::commit_panic::a_panic_inside_commit_poisons_the_handle::{closure#0}>>
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/std/src/panicking.rs:544:19
+  11: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<regressions::commit_panic::a_panic_inside_commit_poisons_the_handle::{closure#0}>, core::result::Result<u64, spike_core::error::Error>>
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/std/src/panic.rs:359:14
+  12: regressions::commit_panic::a_panic_inside_commit_poisons_the_handle
+             at ./tests/regressions.rs:663:17
+  13: regressions::commit_panic::a_panic_inside_commit_poisons_the_handle::{closure#0}
+             at ./tests/regressions.rs:648:50
+  14: <regressions::commit_panic::a_panic_inside_commit_poisons_the_handle::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/ops/function.rs:250:5
+  15: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+test commit_panic::a_panic_inside_commit_poisons_the_handle ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s
+
+     Running tests/shared.rs (target/release/deps/shared-0ed14e37d40460b3)
+
+running 24 tests
+engine does not claim prefix consistency for buffered commits on power loss
+test shared_crash::power_loss_buffered ... ok
+test shared_crash::power_loss_at_every_io_point ... ok
+test shared_crash::process_kill_at_every_io_point ... ok
+test shared_crash::process_kill_at_every_io_point_buffered ... ok
+btree Truncate: Outcomes { detected_at_open: 400, detected_on_read: 0, harmless: 0 }
+test shared_corruption::truncations_are_detected_or_harmless ... ok
+btree BitFlip: Outcomes { detected_at_open: 28, detected_on_read: 191, harmless: 181 }
+test shared_corruption::bit_flips_are_detected_or_harmless ... ok
+test shared_faults::single_io_failure_at_every_point ... ok
+test shared_functional::batch_semantics ... ok
+test shared_functional::commit_sequence_is_monotonic_and_persistent ... ok
+test shared_functional::concurrent_readers_see_atomic_batches ... ok
+test shared_functional::empty_database ... ok
+test shared_functional::exclusive_open ... ok
+test shared_functional::put_get_overwrite_delete ... ok
+test shared_crash::power_loss_sync ... ok
+test shared_functional::real_filesystem_smoke ... ok
+test shared_functional::reopen_after_clean_close ... ok
+test shared_functional::reopen_after_drop_without_close ... ok
+test shared_functional::scan_bounds_and_pagination ... ok
+test shared_functional::size_limits ... ok
+test shared_crash::process_kill_buffered ... ok
+test shared_functional::space_is_reclaimed ... ok
+test shared_crash::process_kill_sync ... ok
+test shared_functional::snapshot_isolation_under_churn ... ok
+test shared_functional::randomized_model_check ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 57.21s
+
+     Running unittests src/lib.rs (target/release/deps/spike_core-f20f25e403f5db8e)
+
+running 6 tests
+test vfs::sim::tests::injected_fault_fails_one_op_and_device_survives ... ok
+test vfs::sim::tests::process_kill_keeps_everything_written ... ok
+test vfs::sim::tests::synced_data_survives_power_loss ... ok
+test vfs::sim::tests::trigger_stops_the_device ... ok
+test vfs::sim::tests::unsynced_directory_entries_may_vanish ... ok
+test vfs::sim::tests::torn_writes_happen ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/reference_engine.rs (target/release/deps/reference_engine-3da4ee3df1437eed)
+
+running 24 tests
+engine does not claim to detect truncated files
+test shared_corruption::truncations_are_detected_or_harmless ... ok
+test shared_crash::power_loss_at_every_io_point ... ok
+test shared_crash::process_kill_at_every_io_point ... ok
+test shared_crash::process_kill_at_every_io_point_buffered ... ok
+log BitFlip: Outcomes { detected_at_open: 397, detected_on_read: 0, harmless: 3 }
+test shared_corruption::bit_flips_are_detected_or_harmless ... ok
+test shared_crash::power_loss_buffered ... ok
+test shared_faults::single_io_failure_at_every_point ... ok
+test shared_functional::batch_semantics ... ok
+test shared_functional::commit_sequence_is_monotonic_and_persistent ... ok
+test shared_functional::concurrent_readers_see_atomic_batches ... ok
+test shared_functional::empty_database ... ok
+test shared_functional::exclusive_open ... ok
+test shared_functional::put_get_overwrite_delete ... ok
+test shared_crash::power_loss_sync ... ok
+test shared_functional::real_filesystem_smoke ... ok
+test shared_functional::reopen_after_clean_close ... ok
+test shared_functional::reopen_after_drop_without_close ... ok
+test shared_functional::scan_bounds_and_pagination ... ok
+test shared_functional::size_limits ... ok
+test shared_crash::process_kill_buffered ... ok
+test shared_functional::space_is_reclaimed ... ok
+test shared_crash::process_kill_sync ... ok
+test shared_functional::snapshot_isolation_under_churn ... ok
+test shared_functional::randomized_model_check has been running for over 60 seconds
+test shared_functional::randomized_model_check ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 151.35s
+
+     Running unittests src/lib.rs (target/release/deps/spike_lsm-a036ae0af0aec882)
+
+running 24 tests
+test block::tests::every_bit_flip_is_detected ... ok
+test block::tests::roundtrip_and_search ... ok
+test block::tests::structural_checks_behind_a_valid_checksum ... ok
+test bloom::tests::rejects_malformed_filters ... ok
+test coding::tests::varint_roundtrip_and_overflow ... ok
+test coding::tests::crc_trailer ... ok
+test coding::tests::reader_is_bounds_checked ... ok
+test compaction::tests::level_targets_grow_by_the_ratio ... ok
+test iter::tests::merge_keeps_newest_version_and_tombstones ... ok
+test iter::tests::merge_with_no_or_empty_children ... ok
+test manifest::tests::invariants_are_checked ... ok
+test memtable::tests::versions_are_filtered_by_sequence ... ok
+test manifest::tests::roundtrip_through_the_vfs ... ok
+test manifest::tests::every_bit_flip_and_truncation_is_detected ... ok
+test sst::tests::single_entry_and_exact_block_boundaries ... ok
+test version::tests::empty_ranges ... ok
+test wal::tests::damage_before_a_synced_record_is_corruption ... ok
+test wal::tests::garbage_tail_after_valid_records ... ok
+test wal::tests::roundtrip ... ok
+test sst::tests::build_and_read_back ... ok
+test wal::tests::torn_tail_yields_a_prefix ... ok
+test wal::tests::zeroed_header_is_not_a_record ... ok
+test bloom::tests::no_false_negatives_and_low_false_positive_rate ... ok
+test sst::tests::damage_is_detected ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/engine.rs (target/release/deps/engine-1e800adc10503377)
+
+running 7 tests
+test missing_or_damaged_manifest_is_corruption ... ok
+test failed_io_poisons_until_reopen ... ok
+test clean_close_leaves_only_manifest_and_tables ... ok
+test stats_are_reported ... ok
+test old_snapshot_pins_files_until_dropped ... ok
+test scans_honour_bounds_across_sources ... ok
+test compaction_reclaims_space_and_keeps_data ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests/regressions.rs (target/release/deps/regressions-3492f0caacc4df96)
+
+running 7 tests
+test format_version::unknown_manifest_version_is_rejected_without_touching_files ... ok
+test directory::open_makes_the_database_directory_durable_in_its_parent ... ok
+test file_names::non_canonical_names_are_left_alone ... ok
+control (power loss, no damage): seq=10
+A powerloss+value-bitflip: open reported error (GOOD): corruption detected: 000001.wal: invalid record at offset 244 is followed by a valid record written in Sync mode (offset 366); the log was damaged after it was synced
+B processkill+value-bitflip: open reported error (GOOD): corruption detected: 000001.wal: invalid record at offset 244 is followed by a valid record written in Sync mode (offset 366); the log was damaged after it was synced
+C powerloss+len-bitflip: open reported error (GOOD): corruption detected: 000001.wal: invalid record at offset 244 is followed by a valid record written in Sync mode (offset 366); the log was damaged after it was synced
+test wal_damage::mid_wal_damage_after_unclean_shutdown ... ok
+ssts pinned by old snapshot: ["000034.sst", "000035.sst", "000036.sst", "000037.sst", "000038.sst", "000039.sst", "000040.sst"]
+ssts present after close of A: ["000034.sst", "000035.sst", "000036.sst", "000037.sst", "000038.sst", "000039.sst", "000040.sst", "000196.sst", "000246.sst", "000247.sst", "000249.sst", "000264.sst", "000270.sst", "000271.sst", "000272.sst", "000273.sst", "000274.sst", "000275.sst", "000276.sst"]
+pinned-by-snapshot files still present after close: ["000034.sst", "000035.sst", "000036.sst", "000037.sst", "000038.sst", "000039.sst", "000040.sst"]
+B opened OK
+test outliving_snapshot::snapshot_outliving_handle_breaks_reopen ... ok
+before B open: ["000037.sst", "000038.sst", "000039.sst", "000040.sst", "000041.sst", "000042.sst", "000043.sst", "000044.sst", "000241.sst", "000247.sst", "000282.sst", "000284.sst", "000289.sst", "000290.sst", "000291.sst", "000292.sst", "000293.sst", "000296.sst", "000297.sst", "000298.sst", "000299.sst"]
+after B open:  ["000241.sst", "000247.sst", "000282.sst", "000284.sst", "000289.sst", "000290.sst", "000291.sst", "000292.sst", "000293.sst", "000296.sst", "000297.sst", "000298.sst", "000299.sst"]
+old snapshot read after B removed its files: Ok(true)
+test outliving_snapshot::new_handle_deletes_files_of_live_old_snapshot ... ok
+test short_sessions::l0_stays_bounded_across_many_short_sessions ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests/shared.rs (target/release/deps/shared-7af33e508a660975)
+
+running 24 tests
+test shared_crash::power_loss_at_every_io_point ... ok
+lsm Truncate: Outcomes { detected_at_open: 400, detected_on_read: 0, harmless: 0 }
+test shared_corruption::truncations_are_detected_or_harmless ... ok
+lsm BitFlip: Outcomes { detected_at_open: 36, detected_on_read: 364, harmless: 0 }
+test shared_corruption::bit_flips_are_detected_or_harmless ... ok
+test shared_crash::process_kill_at_every_io_point ... ok
+test shared_crash::process_kill_at_every_io_point_buffered ... ok
+test shared_crash::power_loss_buffered ... ok
+test shared_crash::power_loss_sync ... ok
+test shared_functional::batch_semantics ... ok
+test shared_functional::commit_sequence_is_monotonic_and_persistent ... ok
+test shared_functional::concurrent_readers_see_atomic_batches ... ok
+test shared_functional::empty_database ... ok
+test shared_functional::exclusive_open ... ok
+test shared_functional::put_get_overwrite_delete ... ok
+test shared_faults::single_io_failure_at_every_point ... ok
+test shared_functional::real_filesystem_smoke ... ok
+test shared_functional::reopen_after_clean_close ... ok
+test shared_functional::reopen_after_drop_without_close ... ok
+test shared_functional::scan_bounds_and_pagination ... ok
+test shared_functional::size_limits ... ok
+test shared_crash::process_kill_buffered ... ok
+test shared_functional::space_is_reclaimed ... ok
+test shared_crash::process_kill_sync ... ok
+test shared_functional::snapshot_isolation_under_churn ... ok
+test shared_functional::randomized_model_check ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 61.00s
+
+   Doc-tests spike_bench
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests spike_btree
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests spike_core
+
+running 1 test
+test spikes/storage/spike-core/src/harness/mod.rs - harness::engine_test_suite (line 217) ... ignored
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 0.17s; merged doctests compilation took 0.16s
+   Doc-tests spike_lsm
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

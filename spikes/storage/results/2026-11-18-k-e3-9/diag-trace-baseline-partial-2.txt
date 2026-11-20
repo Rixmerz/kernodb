@@ -1,0 +1,15 @@
+ 15:40:50 up  3:59,  1 user,  load average: 19.90, 29.59, 35.47
+# unit_bench mode=full relations=false indexes=false seed=0xe309 dir=/tmp/k2512 engine=KernoDb options=Options { durability: Sync, cache_bytes: 67108864, write_buffer_bytes: 8388608 } vfs=StdVfs rounds=5
+## U6: run_retention (KeepLast(1), RetentionBudget { max_units: 1000, max_ops: 10000 }) with 2 writer(s) of 1 KiB updates and 1 reader
+raw U6 low load (1 writer, no reader) write: n=76608 p50_ms=0.0308 p99_ms=0.1469 max_ms=3.0632 mean_ms=0.0384
+raw U6 low load throughput_ops_s=25509.9
+raw U6 diag round 0 before_a: wal_syncs=58129 flushes=11 flush_bytes_written=72033910 compaction_bytes_written=285085728 txn_gate_wait_micros=2499761
+raw U6 diag round 0 before_b: wal_syncs=63090 flushes=13 flush_bytes_written=85130474 compaction_bytes_written=533175415 txn_gate_wait_micros=2466554
+raw U6 diag round 0 during: wal_syncs=637645 flushes=129 flush_bytes_written=840892817 compaction_bytes_written=6519305076 txn_gate_wait_micros=36597500
+raw U6 round 0: before_a 3.00s 58129 writes, before_b 3.00s 63090 writes, during 38.92s 637644 writes
+raw U6 diag round 1 before_a: wal_syncs=50631 flushes=10 flush_bytes_written=65485299 compaction_bytes_written=210800596 txn_gate_wait_micros=2563828
+raw U6 diag round 1 before_b: wal_syncs=48383 flushes=9 flush_bytes_written=58936098 compaction_bytes_written=536395198 txn_gate_wait_micros=2620045
+raw U6 diag round 1 during: wal_syncs=640031 flushes=130 flush_bytes_written=846425502 compaction_bytes_written=7829195382 txn_gate_wait_micros=35639186
+raw U6 round 1: before_a 3.00s 50631 writes, before_b 3.00s 48383 writes, during 38.00s 640031 writes
+raw U6 diag round 2 before_a: wal_syncs=61248 flushes=12 flush_bytes_written=78583315 compaction_bytes_written=518958788 txn_gate_wait_micros=2543720
+raw U6 diag round 2 before_b: wal_syncs=49423 slowdown_commits=955 slowdown_micros=288526 write_slowdowns=955 flushes=10 flush_bytes_written=65485004 compaction_bytes_written=497503034 txn_gate_wait_micros=2373266

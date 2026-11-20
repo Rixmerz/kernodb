@@ -1,0 +1,42 @@
+loadavg: 22.86 28.96 36.11 20/1724 4008031
+dir: /dev/shm (tmpfs)
+variant: before
+# unit_bench mode=full relations=false indexes=false seed=0xe309 dir=/dev/shm/k2512 engine=KernoDb options=Options { durability: Sync, cache_bytes: 67108864, write_buffer_bytes: 8388608 } vfs=StdVfs rounds=5
+## U6: run_retention (KeepLast(1), RetentionBudget { max_units: 1000, max_ops: 10000 }) with 2 writer(s) of 1 KiB updates and 1 reader
+raw U6 low load (1 writer, no reader) write: n=57511 p50_ms=0.0378 p99_ms=0.2239 max_ms=5.6222 mean_ms=0.0513
+raw U6 low load throughput_ops_s=19161.8
+raw U6 diag round 0 before_a: wal_syncs=55233 flushes=10 flush_bytes_written=65486953 compaction_bytes_written=373276355 txn_gate_wait_micros=2612199
+raw U6 diag round 0 before_b: wal_syncs=47265 flushes=10 flush_bytes_written=65484068 compaction_bytes_written=356521603 txn_gate_wait_micros=2646593
+raw U6 diag round 0 during: wal_syncs=690650 flushes=140 flush_bytes_written=913229844 compaction_bytes_written=7176321357 txn_gate_wait_micros=42554740
+raw U6 round 0: before_a 3.00s 55233 writes, before_b 3.00s 47265 writes, during 45.45s 690650 writes
+raw U6 diag round 1 before_a: wal_syncs=47013 flushes=9 flush_bytes_written=58935474 compaction_bytes_written=357277282 txn_gate_wait_micros=2602703
+raw U6 diag round 1 before_b: wal_syncs=56577 flushes=11 flush_bytes_written=72034114 compaction_bytes_written=653496181 txn_gate_wait_micros=2576164
+raw U6 diag round 1 during: wal_syncs=535489 flushes=109 flush_bytes_written=710809227 compaction_bytes_written=6715202031 txn_gate_wait_micros=30805809
+raw U6 round 1: before_a 3.00s 47013 writes, before_b 3.00s 56577 writes, during 33.65s 535489 writes
+raw U6 diag round 2 before_a: wal_syncs=53093 flushes=10 flush_bytes_written=65484697 compaction_bytes_written=312078029 txn_gate_wait_micros=2544514
+raw U6 diag round 2 before_b: wal_syncs=52132 flushes=11 flush_bytes_written=72032974 compaction_bytes_written=620210494 txn_gate_wait_micros=2547277
+raw U6 diag round 2 during: wal_syncs=1281538 slowdown_commits=406 slowdown_micros=156471 write_slowdowns=406 flushes=258 flush_bytes_written=1688809874 compaction_bytes_written=14833574168 txn_gate_wait_micros=122374897
+raw U6 round 2: before_a 3.00s 53093 writes, before_b 3.00s 52132 writes, during 131.66s 1281538 writes
+raw U6 diag round 3 before_a: wal_syncs=42900 flushes=8 flush_bytes_written=52549344 compaction_bytes_written=171495396 txn_gate_wait_micros=2567955
+raw U6 diag round 3 before_b: wal_syncs=32273 flushes=6 flush_bytes_written=39412612 compaction_bytes_written=123199617 txn_gate_wait_micros=2460076
+raw U6 diag round 3 during: wal_syncs=1195687 slowdown_commits=941 slowdown_micros=539089 write_slowdowns=941 flushes=242 flush_bytes_written=1584610219 compaction_bytes_written=14911263860 txn_gate_wait_micros=89379337
+raw U6 round 3: before_a 3.01s 42900 writes, before_b 3.00s 32273 writes, during 96.17s 1195686 writes
+raw U6 diag round 4 before_a: wal_syncs=47162 flushes=9 flush_bytes_written=59118695 compaction_bytes_written=326769067 txn_gate_wait_micros=2541541
+raw U6 diag round 4 before_b: wal_syncs=37755 flushes=7 flush_bytes_written=45981061 compaction_bytes_written=378223878 txn_gate_wait_micros=2613459
+raw U6 diag round 4 during: wal_syncs=1007380 flushes=204 flush_bytes_written=1336451302 compaction_bytes_written=12764219604 txn_gate_wait_micros=63640317
+raw U6 round 4: before_a 3.00s 47162 writes, before_b 3.00s 37755 writes, during 68.46s 1007380 writes
+raw U6 before_a write: n=245401 p50_ms=0.0482 p99_ms=1.7534 max_ms=36.3460 mean_ms=0.1213
+raw U6 before_a read: n=2064806 p50_ms=0.0047 p99_ms=0.0284 max_ms=12.2913 mean_ms=0.0071
+raw U6 before_a write_throughput_ops_s=16346.7 secs=15.01
+raw U6 before_b write: n=226002 p50_ms=0.0467 p99_ms=1.8923 max_ms=85.8752 mean_ms=0.1317
+raw U6 before_b read: n=1761254 p50_ms=0.0051 p99_ms=0.0358 max_ms=12.3481 mean_ms=0.0084
+raw U6 before_b write_throughput_ops_s=15066.3 secs=15.00
+raw U6 during write: n=4710743 p50_ms=0.0467 p99_ms=2.2887 max_ms=1445.7491 mean_ms=0.1580
+raw U6 during read: n=42504194 p50_ms=0.0049 p99_ms=0.0329 max_ms=159.4811 mean_ms=0.0087
+raw U6 during write_throughput_ops_s=12548.9 secs=375.39
+raw U6 retention: calls=55 revisions_pruned=5931657 units_retained=50500 secs=375.390 revisions_per_s=15801 units_per_s=135
+verdict U6: FAIL budget 1000 units/10000 ops: write p99 during 2.289 ms vs before 1.892 ms (1.21x; low load 0.224 ms); throughput during 12548.9 ops/s vs before 15066.3 ops/s (0.83x); read p99 during 0.0329 ms vs before 0.0358 ms (0.92x); retention 15801 revisions/s
+time U6: 480.9 s
+# summary
+U6 FAIL budget 1000 units/10000 ops: write p99 during 2.289 ms vs before 1.892 ms (1.21x; low load 0.224 ms); throughput during 12548.9 ops/s vs before 15066.3 ops/s (0.83x); read p99 during 0.0329 ms vs before 0.0358 ms (0.92x); retention 15801 revisions/s
+loadavg at end: 24.89 28.03 32.72 18/1701 392238

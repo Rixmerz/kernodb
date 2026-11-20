@@ -1,0 +1,70 @@
+# commit: c8b30f4; rustc: 1.97.0
+# SPIKE_SEEDS=1000 cargo test --release -p spike-btree -p spike-lsm --test shared -- --nocapture
+    Finished `release` profile [optimized + debuginfo] target(s) in 3.56s
+     Running tests/shared.rs (target/release/deps/shared-44832a51dc1a7adb)
+
+running 24 tests
+engine does not claim prefix consistency for buffered commits on power loss
+test shared_crash::power_loss_buffered ... ok
+test shared_crash::power_loss_at_every_io_point ... ok
+test shared_crash::process_kill_at_every_io_point ... ok
+test shared_crash::process_kill_at_every_io_point_buffered ... ok
+btree Truncate: Outcomes { detected_at_open: 1000, detected_on_read: 0, harmless: 0 }
+test shared_corruption::truncations_are_detected_or_harmless ... ok
+btree BitFlip: Outcomes { detected_at_open: 79, detected_on_read: 451, harmless: 470 }
+test shared_corruption::bit_flips_are_detected_or_harmless ... ok
+test shared_faults::single_io_failure_at_every_point ... ok
+test shared_functional::batch_semantics ... ok
+test shared_functional::commit_sequence_is_monotonic_and_persistent ... ok
+test shared_functional::concurrent_readers_see_atomic_batches ... ok
+test shared_functional::empty_database ... ok
+test shared_functional::exclusive_open ... ok
+test shared_functional::put_get_overwrite_delete ... ok
+test shared_crash::power_loss_sync ... ok
+test shared_functional::real_filesystem_smoke ... ok
+test shared_functional::reopen_after_clean_close ... ok
+test shared_functional::reopen_after_drop_without_close ... ok
+test shared_functional::scan_bounds_and_pagination ... ok
+test shared_functional::size_limits ... ok
+test shared_crash::process_kill_buffered ... ok
+test shared_functional::space_is_reclaimed ... ok
+test shared_crash::process_kill_sync ... ok
+test shared_functional::snapshot_isolation_under_churn ... ok
+test shared_functional::randomized_model_check has been running for over 60 seconds
+test shared_functional::randomized_model_check ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 107.25s
+
+     Running tests/shared.rs (target/release/deps/shared-bbdd804e62ecd7f9)
+
+running 24 tests
+test shared_crash::power_loss_at_every_io_point ... ok
+lsm Truncate: Outcomes { detected_at_open: 1000, detected_on_read: 0, harmless: 0 }
+test shared_corruption::truncations_are_detected_or_harmless ... ok
+lsm BitFlip: Outcomes { detected_at_open: 122, detected_on_read: 878, harmless: 0 }
+test shared_corruption::bit_flips_are_detected_or_harmless ... ok
+test shared_crash::process_kill_at_every_io_point ... ok
+test shared_crash::process_kill_at_every_io_point_buffered ... ok
+test shared_crash::power_loss_buffered ... ok
+test shared_crash::power_loss_sync ... ok
+test shared_functional::batch_semantics ... ok
+test shared_functional::commit_sequence_is_monotonic_and_persistent ... ok
+test shared_functional::concurrent_readers_see_atomic_batches ... ok
+test shared_functional::empty_database ... ok
+test shared_functional::exclusive_open ... ok
+test shared_functional::put_get_overwrite_delete ... ok
+test shared_faults::single_io_failure_at_every_point ... ok
+test shared_functional::real_filesystem_smoke ... ok
+test shared_functional::reopen_after_clean_close ... ok
+test shared_functional::reopen_after_drop_without_close ... ok
+test shared_functional::scan_bounds_and_pagination ... ok
+test shared_functional::size_limits ... ok
+test shared_crash::process_kill_buffered ... ok
+test shared_crash::process_kill_sync ... ok
+test shared_functional::space_is_reclaimed ... ok
+test shared_functional::snapshot_isolation_under_churn ... ok
+test shared_functional::randomized_model_check has been running for over 60 seconds
+test shared_functional::randomized_model_check ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 105.94s
+

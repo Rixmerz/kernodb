@@ -1,0 +1,16 @@
+loadavg: 15.84 24.13 32.33 28/2380 3330753
+dir: /dev/shm (tmpfs)
+binary: baseline (before the change), with --control
+# unit_bench mode=full relations=false indexes=false seed=0xe309 dir=/dev/shm/k2512 engine=KernoDb options=Options { durability: Sync, cache_bytes: 67108864, write_buffer_bytes: 8388608 } vfs=StdVfs rounds=5
+## U6: run_retention (KeepLast(1), RetentionBudget { max_units: 1000, max_ops: 10000 }) with 2 writer(s) of 1 KiB updates and 1 reader
+raw U6 low load (1 writer, no reader) write: n=67279 p50_ms=0.0323 p99_ms=0.2318 max_ms=6.8021 mean_ms=0.0438
+raw U6 low load throughput_ops_s=22412.9
+raw U6 diag round 0 before_a: wal_syncs=57634 flushes=11 flush_bytes_written=72034152 compaction_bytes_written=373963443 txn_gate_wait_micros=2538658
+raw U6 diag round 0 before_b: wal_syncs=58888 flushes=12 flush_bytes_written=78581568 compaction_bytes_written=495017797 txn_gate_wait_micros=2532529
+raw U6 diag round 0 during: wal_syncs=820594 flushes=165 flush_bytes_written=1076583602 compaction_bytes_written=8136229596 txn_gate_wait_micros=52981437
+raw U6 diag round 0 control: wal_syncs=556044 slowdown_commits=2912 slowdown_micros=2655949 write_slowdowns=2912 flushes=112 flush_bytes_written=733415493 compaction_bytes_written=6546666288 compactions_while_l0_slowdown=1 txn_gate_wait_micros=46869149
+raw U6 round 0 control: 56.18s 556044 writes
+raw U6 round 0: before_a 3.00s 57634 writes, before_b 3.00s 58888 writes, during 56.18s 820593 writes
+raw U6 diag round 1 before_a: wal_syncs=6701 flushes=1 flush_bytes_written=6548539 txn_gate_wait_micros=2910920
+raw U6 diag round 1 before_b: wal_syncs=17707 flushes=3 flush_bytes_written=19645930 compaction_bytes_written=90883718 txn_gate_wait_micros=2533414
+raw U6 diag round 1 during: wal_syncs=2477057 slowdown_commits=83921 slowdown_micros=103785939 write_slowdowns=83921 flushes=499 flush_bytes_written=3271038387 compaction_bytes_written=31588438512 compactions_while_l0_slowdown=54 txn_gate_wait_micros=385859452

@@ -1,0 +1,9 @@
+# unit_bench mode=full relations=false indexes=false seed=0xe309 dir=/tmp/kerno-phase-c/d-before-u2-2 engine=KernoDb options=Options { durability: Sync, cache_bytes: 67108864, write_buffer_bytes: 8388608 } vfs=StdVfs rounds=5
+## U2: history(id, latest(100)) metadata only vs scan of 100 keys of 100 B
+raw U2 history: n=25000 p50_ms=0.0300 p99_ms=0.0473 max_ms=0.0880 mean_ms=0.0328
+raw U2 scan: n=25000 p50_ms=0.0186 p99_ms=0.0309 max_ms=0.0852 mean_ms=0.0205
+raw U2 history_page (informative): n=25000 p50_ms=0.0182 p99_ms=0.0247 max_ms=0.0568 mean_ms=0.0187
+verdict U2: FAIL p99 history 0.0473 ms / scan 0.0309 ms = 1.53x (threshold <= 1.5x); history_page 0.0247 ms = 0.80x (informative)
+time U2: 2.2 s
+# summary
+U2 FAIL p99 history 0.0473 ms / scan 0.0309 ms = 1.53x (threshold <= 1.5x); history_page 0.0247 ms = 0.80x (informative)

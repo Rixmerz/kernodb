@@ -1,0 +1,8 @@
+ 15:37:41 up  3:56,  1 user,  load average: 28.32, 35.02, 37.99
+# unit_bench mode=full relations=false indexes=false seed=0xe309 dir=/tmp/k2512 engine=KernoDb options=Options { durability: Sync, cache_bytes: 67108864, write_buffer_bytes: 8388608 } vfs=StdVfs rounds=5
+## U6: run_retention (KeepLast(1), RetentionBudget { max_units: 1000, max_ops: 10000 }) with 2 writer(s) of 1 KiB updates and 1 reader
+raw U6 low load (1 writer, no reader) write: n=51077 p50_ms=0.0361 p99_ms=0.4351 max_ms=10.4583 mean_ms=0.0576
+raw U6 low load throughput_ops_s=17018.9
+raw U6 diag round 0 before_a: wal_syncs=40523 flushes=7 flush_bytes_written=45840920 compaction_bytes_written=208256020 txn_gate_wait_micros=2502417
+raw U6 diag round 0 before_b: wal_syncs=18487 flushes=4 flush_bytes_written=26193440 compaction_bytes_written=85932704 txn_gate_wait_micros=2596004
+raw U6 diag round 0 during: wal_syncs=985980 flushes=199 flush_bytes_written=1300069065 compaction_bytes_written=9989794765 txn_gate_wait_micros=65499805
