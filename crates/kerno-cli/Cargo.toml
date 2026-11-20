@@ -1,0 +1,27 @@
+[package]
+name = "kerno-cli"
+description = "kerno: administration command-line tool for a Kerno database directory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "kerno"
+path = "src/main.rs"
+
+[dependencies]
+kerno-backup.workspace = true
+kerno-core.workspace = true
+kerno-storage.workspace = true
+kerno-units.workspace = true
+# Only for `--json`.
+serde_json = "1"
+
+# An administration tool never panics: every failure is a line on stderr.
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

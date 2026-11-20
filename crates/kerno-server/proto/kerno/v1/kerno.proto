@@ -1,0 +1,296 @@
+// The gRPC API of kerno-server. It mirrors the HTTP JSON API in README.md one to one: every
+// RPC is the same operation as the HTTP route of the same name, and the two share one core.
+//
+// Ids are 32 lowercase hex digits. A failed call is a gRPC status: the code follows the table in
+// README.md ("Errors"), the message names the cause.
+
+syntax = "proto3";
+
+package kerno.v1;
+
+service Kerno {
+  rpc Health(Empty) returns (HealthReply);
+
+  rpc CreateUnit(CreateUnitRequest) returns (Unit);
+  rpc GetUnit(UnitRequest) returns (Unit);
+  rpc ListUnits(ListUnitsRequest) returns (ListUnitsReply);
+  rpc UpdateUnit(UpdateUnitRequest) returns (Unit);
+  rpc ArchiveUnit(UnitRequest) returns (Unit);
+  rpc UnarchiveUnit(UnitRequest) returns (Unit);
+  rpc DeleteUnit(UnitRequest) returns (Empty);
+
+  rpc CreateRelation(CreateRelationRequest) returns (Relation);
+  rpc ListRelations(ListRelationsRequest) returns (ListRelationsReply);
+  rpc DeleteRelation(RelationRequest) returns (Empty);
+
+  rpc DefineSchema(Schema) returns (Schema);
+  rpc GetSchema(SchemaRequest) returns (Schema);
+
+  rpc Query(QueryRequest) returns (QueryReply);
+  rpc Explain(QueryRequest) returns (ExplainReply);
+  rpc Search(SearchRequest) returns (SearchReply);
+}
+
+message Empty {}
+
+message HealthReply {
+  string status = 1;
+  string version = 2;
+}
+
+// ---------------------------------------------------------------- units
+
+// The value of one field of a typed record.
+message Value {
+  oneof kind {
+    bool bool_value = 1;
+    sint64 int_value = 2;
+    double float_value = 3;
+    string text_value = 4;
+    bytes bytes_value = 5;
+  }
+}
+
+message Fields {
+  map<string, Value> values = 1;
+}
+
+// The content of a unit: UTF-8 text, raw bytes, or a typed record (for a unit type that has a
+// schema). On a read, `text` is used when the bytes are valid UTF-8.
+message Payload {
+  oneof kind {
+    string text = 1;
+    bytes bytes = 2;
+    Fields fields = 3;
+  }
+}
+
+message Unit {
+  string id = 1;
+  string unit_type = 2;
+  // "active", "archived" or "deleted".
+  string lifecycle = 3;
+  uint64 revision = 4;
+  int64 created_at_us = 5;
+  int64 updated_at_us = 6;
+  // Absent for a deleted unit.
+  Payload payload = 7;
+}
+
+message CreateUnitRequest {
+  string unit_type = 1;
+  Payload payload = 2;
+}
+
+// Names one unit. `expected_revision` makes a change conditional: it fails with ABORTED when the
+// unit is at another revision.
+message UnitRequest {
+  string id = 1;
+  optional uint64 expected_revision = 2;
+}
+
+message UpdateUnitRequest {
+  string id = 1;
+  Payload payload = 2;
+  optional uint64 expected_revision = 3;
+}
+
+message ListUnitsRequest {
+  optional string unit_type = 1;
+  // 1 to 1000; 100 when absent.
+  optional uint32 limit = 2;
+  // Return the units after this id (the `next` of the previous page).
+  optional string after = 3;
+}
+
+message ListUnitsReply {
+  repeated Unit units = 1;
+  // Set when more units follow.
+  optional string next = 2;
+}
+
+// ------------------------------------------------------------ relations
+
+enum Direction {
+  // BOTH when a request leaves it unset.
+  DIRECTION_UNSPECIFIED = 0;
+  DIRECTION_OUT = 1;
+  DIRECTION_IN = 2;
+  DIRECTION_BOTH = 3;
+}
+
+message Relation {
+  string id = 1;
+  string from = 2;
+  string to = 3;
+  string relation_type = 4;
+  string provenance = 5;
+  // Only in a ListRelationsReply: the side of the listed unit this relation was found from.
+  optional Direction direction = 6;
+}
+
+message CreateRelationRequest {
+  string from = 1;
+  string to = 2;
+  string relation_type = 3;
+}
+
+message ListRelationsRequest {
+  string unit = 1;
+  Direction direction = 2;
+  optional string relation_type = 3;
+}
+
+message ListRelationsReply {
+  repeated Relation relations = 1;
+}
+
+message RelationRequest {
+  string id = 1;
+}
+
+// -------------------------------------------------------------- schemas
+
+enum FieldType {
+  FIELD_TYPE_UNSPECIFIED = 0;
+  FIELD_TYPE_BOOL = 1;
+  FIELD_TYPE_INT = 2;
+  FIELD_TYPE_FLOAT = 3;
+  FIELD_TYPE_TEXT = 4;
+  FIELD_TYPE_BYTES = 5;
+}
+
+message FieldDef {
+  string name = 1;
+  FieldType field_type = 2;
+  bool required = 3;
+  // No two active units of the type hold the same value; implies `indexed`.
+  bool unique = 4;
+  bool indexed = 5;
+}
+
+message Schema {
+  string unit_type = 1;
+  repeated FieldDef fields = 2;
+}
+
+message SchemaRequest {
+  string unit_type = 1;
+}
+
+// ---------------------------------------------------------------- query
+
+message QueryRequest {
+  // A query of the language in docs/query-language.md.
+  string query = 1;
+}
+
+message Row {
+  repeated Unit units = 1;
+}
+
+message Access {
+  oneof kind {
+    Empty type_scan = 1;
+    // The name of the indexed field.
+    string field_index = 2;
+  }
+}
+
+message QueryReply {
+  repeated string aliases = 1;
+  repeated Row rows = 2;
+  Access access = 3;
+}
+
+message AccessCandidate {
+  Access access = 1;
+  uint64 cost = 2;
+}
+
+message JoinStep {
+  string alias = 1;
+  string unit_type = 2;
+  string relation_type = 3;
+  Direction direction = 4;
+  string from = 5;
+}
+
+message ExplainReply {
+  string root_alias = 1;
+  string root_type = 2;
+  repeated AccessCandidate candidates = 3;
+  // Index into `candidates` of the path chosen.
+  uint32 chosen = 4;
+  repeated JoinStep joins = 5;
+}
+
+// --------------------------------------------------------------- search
+
+enum Metric {
+  METRIC_COSINE = 0;
+  METRIC_DOT = 1;
+}
+
+message Vector {
+  repeated float values = 1;
+}
+
+// The vector leg: the vectors of the candidate units come with the request, because the server
+// keeps no vector index.
+message VectorLeg {
+  repeated float query = 1;
+  Metric metric = 2;
+  map<string, Vector> vectors = 3;
+}
+
+message GraphLeg {
+  repeated string seeds = 1;
+  // BOTH when unset.
+  Direction direction = 2;
+  repeated string relation_types = 3;
+  // 2 when absent.
+  optional uint32 max_depth = 4;
+  // 20 when absent.
+  optional uint32 limit = 5;
+  // 10000 when absent.
+  optional uint64 visit_budget = 6;
+}
+
+// How much each leg counts; 0 switches a leg off, 1 when absent.
+message Weights {
+  optional uint32 keyword = 1;
+  optional uint32 vector = 2;
+  optional uint32 graph = 3;
+}
+
+message SearchRequest {
+  optional string text = 1;
+  optional VectorLeg vector = 2;
+  optional GraphLeg graph = 3;
+  optional Weights weights = 4;
+  // 60 when absent.
+  optional uint32 rrf_k = 5;
+  // Units each leg contributes; 100 when absent.
+  optional uint32 candidates = 6;
+  // Hits returned; 10 when absent.
+  optional uint32 limit = 7;
+}
+
+// The 1-based rank the unit held in each leg that found it.
+message Ranks {
+  optional uint32 keyword = 1;
+  optional uint32 vector = 2;
+  optional uint32 graph = 3;
+}
+
+message Hit {
+  string id = 1;
+  uint64 score = 2;
+  Ranks ranks = 3;
+  Unit unit = 4;
+}
+
+message SearchReply {
+  repeated Hit hits = 1;
+}

@@ -1,0 +1,53 @@
+[package]
+name = "kerno-server"
+description = "Serves a Kerno database over an HTTP JSON API and gRPC"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[[bin]]
+name = "kerno-server"
+path = "src/main.rs"
+
+[dependencies]
+kerno.workspace = true
+kerno-backup.workspace = true
+bytes = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-graceful"] }
+percent-encoding = "2"
+prost = "0.14"
+# The one crypto provider of the TLS stack, and the SHA-256 of the API tokens.
+ring = "0.17"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_urlencoded = "0.7"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+# No `router` feature: it pulls axum and its `matchit` (BSD-3-Clause, which deny.toml does not allow).
+# A single service is served with `serve_with_incoming_shutdown` instead.
+tonic = { version = "0.14", default-features = false, features = ["codegen", "transport", "tls-ring"] }
+tonic-prost = "0.14"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "json", "std"] }
+
+[dev-dependencies]
+kerno-core.workspace = true
+
+[build-dependencies]
+# Compiles the .proto in pure Rust: building needs no `protoc` on the machine.
+protox = "0.9"
+tonic-prost-build = "0.14"
+
+# A request must never panic the server: an error reaches the client instead.
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
