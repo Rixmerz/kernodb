@@ -44,17 +44,41 @@ pub fn now_ms() -> u64 {
 /// # Errors
 ///
 /// An unknown scheme, or an S3 store whose environment is incomplete.
+/// The local path of the part of a `file://` URL after the scheme. On Windows `file:///C:/dir`
+/// names `C:/dir`: the slash before a drive letter is dropped (issue #4).
+fn local_path(path: &str, windows: bool) -> &str {
+    let b = path.as_bytes();
+    if windows && b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':' {
+        &path[1..]
+    } else {
+        path
+    }
+}
+
 pub fn open_store(url: &str) -> Result<Arc<dyn ObjectStore>> {
     if let Some(path) = url.strip_prefix("file://") {
         if !path.starts_with('/') {
             return Err(Error::Store(format!("{url:?}: a file:// URL needs an absolute path (file:///dir)")));
         }
-        Ok(Arc::new(FsStore::new(path)))
+        Ok(Arc::new(FsStore::new(local_path(path, cfg!(windows)))))
     } else if let Some(rest) = url.strip_prefix("s3://") {
         let (bucket, prefix) = rest.split_once('/').unwrap_or((rest, ""));
         let s3 = s3::S3Store::from_env(bucket)?;
         Ok(Arc::new(Prefixed::new(Arc::new(s3), prefix)))
     } else {
         Err(Error::Store(format!("{url:?}: the backup location is file:///dir or s3://bucket/prefix")))
+    }
+}
+
+#[cfg(test)]
+mod file_url_tests {
+    use super::local_path;
+
+    #[test]
+    fn a_drive_letter_loses_its_leading_slash_on_windows_only() {
+        assert_eq!(local_path("/C:/backups/db", true), "C:/backups/db");
+        assert_eq!(local_path("/C:/backups/db", false), "/C:/backups/db");
+        assert_eq!(local_path("/srv/backups", true), "/srv/backups");
+        assert_eq!(local_path("/srv/backups", false), "/srv/backups");
     }
 }

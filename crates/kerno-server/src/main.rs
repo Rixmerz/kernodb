@@ -13,7 +13,7 @@ use kerno_server::{grpc, http, tls};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 
-/// Completes when the process is asked to stop: Ctrl-C, or SIGTERM where there is one.
+/// Completes when the process is asked to stop: Ctrl-C, SIGTERM on Unix, Ctrl-Break on Windows.
 ///
 /// The handlers are installed when this is called, not when it is first polled: called before the
 /// ports are printed, a SIGTERM sent the moment they are read stops the server gracefully instead
@@ -37,7 +37,26 @@ fn stop_signal() -> impl Future<Output = ()> {
             }
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        // Ctrl-Break as well as Ctrl-C: a parent (a test harness, a service manager) can send
+        // Ctrl-Break to the server's own process group, which it cannot do with Ctrl-C.
+        let brk = tokio::signal::windows::ctrl_break();
+        async move {
+            match brk {
+                Ok(mut brk) => {
+                    tokio::select! {
+                        _ = tokio::signal::ctrl_c() => {}
+                        _ = brk.recv() => {}
+                    }
+                }
+                Err(_) => {
+                    let _ = tokio::signal::ctrl_c().await;
+                }
+            }
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
     async {
         let _ = tokio::signal::ctrl_c().await;
     }

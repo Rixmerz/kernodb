@@ -18,8 +18,10 @@ use serde_json::{Value, json};
 const ACME: &str = "acme-0000000000000000000000000000000001";
 const GLOBEX: &str = "globex-00000000000000000000000000000001";
 
+/// A `file://` URL for `path`: `file:///srv/x` on Unix, `file:///C:/x` on Windows (issue #4).
 fn url_of(path: &Path) -> String {
-    format!("file://{}", path.display())
+    let p = path.display().to_string().replace('\\', "/");
+    if p.starts_with('/') { format!("file://{p}") } else { format!("file:///{p}") }
 }
 
 fn note(server: &Server, headers: &[(&str, &str)], text: &str) {

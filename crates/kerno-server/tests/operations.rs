@@ -388,22 +388,14 @@ fn a_stop_sent_the_moment_the_server_listens_is_graceful() {
     // stop in two sent right after the line killed the process instead. The shell's built-in
     // `kill` and a busy wait are fast enough to hit that window; spawning `kill` is not.
     let dir = TempDir::new();
-    let script = r#"
-        for i in 1 2 3 4 5 6 7 8 9 10; do
-            : > "$2/out"
-            "$1" --db "$2/db" --listen 127.0.0.1:0 > "$2/out" 2>/dev/null &
-            pid=$!
-            until [ -s "$2/out" ]; do :; done
-            kill -TERM "$pid"
-            wait "$pid"
-            echo "$?"
-        done
-    "#;
-    let out = Command::new("sh")
-        .args(["-c", script, "sh", env!("CARGO_BIN_EXE_kerno-server"), dir.0.to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert_eq!(String::from_utf8(out.stdout).unwrap(), "0\n".repeat(10));
+    // Ten times: start, and ask to stop the moment the address is printed. Every exit must be
+    // the graceful one (status 0). Written with the harness, not `sh`, so it runs on Windows
+    // too (issue #4).
+    for _ in 0..10 {
+        let db = dir.0.join("db");
+        let server = Server::launch(&["--db", db.to_str().unwrap()], None);
+        assert!(server.stop().success(), "the server did not stop gracefully");
+    }
 }
 
 #[test]
