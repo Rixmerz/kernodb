@@ -778,6 +778,17 @@ impl Db {
         self.units.snapshot()?.relations_of(unit, direction, relation_type)
     }
 
+    /// Every live relation, optionally of one `relation_type`, in one scan of the relation
+    /// records: the bulk read for a caller that would otherwise call [`Db::related`] once per
+    /// unit. Order: relation id.
+    ///
+    /// # Errors
+    ///
+    /// The engine fails or finds a relation record corrupt.
+    pub fn relations(&self, relation_type: Option<&str>) -> Result<Vec<Relation>> {
+        self.units.snapshot()?.reference_relations(|r| relation_type.is_none_or(|t| t == r.relation_type))
+    }
+
     /// Every active unit that matches `filter`, in unit id order.
     ///
     /// # Errors

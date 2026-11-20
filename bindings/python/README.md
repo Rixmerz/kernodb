@@ -58,6 +58,7 @@ before a close is there the next time you `kerno.open` the same path.
 | `db.commit(ops, reason=None, actor=None, source=None, detailed=False)` | one change set; see below |
 | `db.history(id, limit=100, with_payload=False)` | `list[Revision]`, newest first; `[]` for an unknown id |
 | `db.read_as_of(id, commit_seq)` | the `Revision` in force at that commit (`None` before creation); a sequence past the last commit reads now |
+| `db.relations(type=None)` | every live relation in one scan (use it instead of `related` per unit) |
 | `db.last_commit_seq()` | the sequence of the last commit |
 | `db.verify()` | `dict`: `clean`, `commit_seq`, counts, `findings`; storage damage is reported as `storage_error`, not raised |
 | `db.compact()` | `{"before", "after"}` stored bytes; history keeps deleted payloads until retention drops them |

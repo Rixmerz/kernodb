@@ -366,6 +366,25 @@ impl Database {
         })
     }
 
+    /// Every live relation, optionally of one `relation_type`, in one scan: much faster than
+    /// calling `related` for each unit.
+    #[pyo3(signature = (relation_type=None))]
+    fn relations(&self, py: Python<'_>, relation_type: Option<&str>) -> PyResult<Vec<Relation>> {
+        self.with_db(py, |db| {
+            Ok(db
+                .relations(relation_type)
+                .map_err(engine_error)?
+                .into_iter()
+                .map(|r| Relation {
+                    id: RelationId::to_string(&r.id),
+                    from_id: r.from.to_string(),
+                    to_id: r.to.to_string(),
+                    relation_type: r.relation_type,
+                })
+                .collect())
+        })
+    }
+
     /// Every active unit, in id order; `unit_type` and `schema_version` narrow it.
     #[pyo3(signature = (unit_type=None, schema_version=None))]
     fn query(&self, py: Python<'_>, unit_type: Option<&str>, schema_version: Option<u32>) -> PyResult<Vec<Unit>> {

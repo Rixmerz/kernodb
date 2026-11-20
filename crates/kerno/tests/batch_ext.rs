@@ -128,3 +128,16 @@ fn as_of_a_future_sequence_reads_now() {
         other => panic!("expected absent before creation, got {other:?}"),
     }
 }
+
+#[test]
+fn bulk_relations_by_type() {
+    let dir = TempDir::new();
+    let db = Db::open(&dir.0).unwrap();
+    let a = db.store("n", "a").unwrap();
+    let b = db.store("n", "b").unwrap();
+    db.relate(a, b, "calls").unwrap();
+    db.relate(b, a, "other").unwrap();
+    assert_eq!(db.relations(None).unwrap().len(), 2);
+    let calls = db.relations(Some("calls")).unwrap();
+    assert_eq!((calls[0].from, calls[0].to), (a, b));
+}

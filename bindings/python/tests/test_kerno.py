@@ -238,3 +238,11 @@ def test_verify_reports_storage_corruption(tmp_path):
         assert report["clean"] is False and "corruption" in report["storage_error"]
         with pytest.raises(kerno.CorruptionError):
             db.query("c")
+
+
+def test_relations_bulk_read(tmp_path):
+    with kerno.open(tmp_path / "db") as db:
+        a, b, c = (db.store("n", x) for x in "abc")
+        db.commit([("relate", a, b, "calls"), ("relate", b, c, "calls"), ("relate", a, c, "other")])
+        assert len(db.relations()) == 3
+        assert {(r.from_id, r.to_id) for r in db.relations("calls")} == {(a, b), (b, c)}
