@@ -33,6 +33,7 @@ fn config(write_buffer: usize, compaction: CompactionConfig) -> Config {
         test: TestConfig { background: Background::Inline, db_id: None },
         compaction,
         close_budget: CloseBudget::Unbounded,
+        allow_unverified_platform: true,
         ..Config::default()
     }
 }

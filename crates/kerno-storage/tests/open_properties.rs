@@ -135,6 +135,7 @@ fn config(access: AccessMode) -> Config {
         access,
         test: TestConfig { background: Background::Inline, db_id: Some(DB_ID) },
         close_budget: CloseBudget::Unbounded,
+        allow_unverified_platform: true,
         ..Config::default()
     }
 }

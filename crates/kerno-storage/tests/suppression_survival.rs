@@ -121,6 +121,7 @@ fn config(wal_preallocate: bool) -> Config {
         test: TestConfig { background: Background::Inline, db_id: Some([0xe9; 16]) },
         close_budget: CloseBudget::Unbounded,
         wal_preallocate,
+        allow_unverified_platform: true,
         ..Config::default()
     }
 }

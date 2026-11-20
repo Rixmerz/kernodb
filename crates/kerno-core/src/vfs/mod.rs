@@ -92,6 +92,12 @@ pub trait Vfs: Send + Sync + 'static {
     /// held until the returned guard is dropped. Fails with
     /// `ErrorKind::WouldBlock` if someone else holds it.
     fn lock(&self, path: &Path) -> io::Result<Box<dyn Any + Send + Sync>>;
+    /// Whether writes reach a real file system, whose durability depends on
+    /// the host platform. A simulated VFS returns `false`: its durability is
+    /// defined by the simulator, so the platform check does not apply.
+    fn is_platform_backed(&self) -> bool {
+        true
+    }
 }
 
 /// Total size in bytes of the files directly inside `dir`.

@@ -30,6 +30,7 @@ fn config(background: Background) -> Config {
         write_buffer_bytes: 16 << 10,
         wal_preallocate: false,
         test: TestConfig { background, db_id: None },
+        allow_unverified_platform: true,
         ..Config::default()
     }
 }

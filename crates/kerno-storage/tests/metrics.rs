@@ -113,6 +113,10 @@ impl Drop for OpenOnDrop {
 }
 
 impl Vfs for GatedVfs {
+    fn is_platform_backed(&self) -> bool {
+        self.inner.is_platform_backed()
+    }
+
     fn create_dir_all(&self, path: &Path) -> io::Result<()> {
         self.inner.create_dir_all(path)
     }
@@ -183,6 +187,7 @@ fn stall_episodes_counted_once_per_reason() {
             slowdown: SlowdownPolicy::Off,
             ..CompactionConfig::m0(4 << 10)
         },
+        allow_unverified_platform: true,
         ..Config::default()
     };
     let vfs: Arc<dyn Vfs> = gate.clone();
@@ -231,7 +236,12 @@ fn stall_episodes_counted_once_per_reason() {
 
     // Memtable reason: one immutable memtable allowed, its flush held.
     let gate = GatedVfs::new(SimVfs::new(2).as_vfs(), &[FLUSH]);
-    let cfg = Config { write_buffer_bytes: 4 << 10, max_immutable_memtables: 1, ..Config::default() };
+    let cfg = Config {
+        write_buffer_bytes: 4 << 10,
+        max_immutable_memtables: 1,
+        allow_unverified_platform: true,
+        ..Config::default()
+    };
     let vfs: Arc<dyn Vfs> = gate.clone();
     let db = open(&vfs, &cfg);
     let _open = OpenOnDrop(gate.clone());
@@ -287,6 +297,10 @@ struct SlowWalSync {
 }
 
 impl Vfs for SlowWalSync {
+    fn is_platform_backed(&self) -> bool {
+        self.inner.is_platform_backed()
+    }
+
     fn create_dir_all(&self, path: &Path) -> io::Result<()> {
         self.inner.create_dir_all(path)
     }
@@ -320,7 +334,7 @@ impl Vfs for SlowWalSync {
 #[test]
 fn commit_phase_histograms_populated() {
     let vfs: Arc<dyn Vfs> = Arc::new(SlowWalSync { inner: SimVfs::new(3).as_vfs(), delay: Duration::from_millis(2) });
-    let db = open(&vfs, &Config::default());
+    let db = open(&vfs, &Config { allow_unverified_platform: true, ..Config::default() });
     for i in 0..50u32 {
         put(&db, &i.to_be_bytes(), b"value");
     }
@@ -363,7 +377,8 @@ fn commit_phase_histograms_populated() {
 
     // Buffered commits do not sync the WAL.
     let vfs = SimVfs::new(4).as_vfs();
-    let db = open(&vfs, &Config { durability: Durability::Buffered, ..Config::default() });
+    let db =
+        open(&vfs, &Config { durability: Durability::Buffered, allow_unverified_platform: true, ..Config::default() });
     for i in 0..10u32 {
         put(&db, &i.to_be_bytes(), b"value");
     }

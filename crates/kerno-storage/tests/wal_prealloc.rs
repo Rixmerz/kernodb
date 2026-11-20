@@ -28,6 +28,7 @@ fn config(wal_preallocate: bool) -> Config {
         test: TestConfig { background: Background::Inline, db_id: None },
         compaction: CompactionConfig::default(),
         wal_preallocate,
+        allow_unverified_platform: true,
         ..Config::default()
     }
 }

@@ -234,6 +234,7 @@ fn vector_config(durability: Durability) -> Config {
         close_budget: CloseBudget::Bounded { max_bytes: 64 << 20, max_duration: None },
         wal_preallocate: false,
         test: TestConfig { background: Background::Inline, db_id: Some(VECTOR_DB_ID) },
+        allow_unverified_platform: true,
         ..Config::default()
     }
 }

@@ -96,6 +96,7 @@ fn config() -> Config {
         cache_bytes: 1 << 20,
         test: TestConfig { background: Background::Threads, db_id: Some(DB_ID) },
         close_budget: CloseBudget::Unbounded,
+        allow_unverified_platform: true,
         ..Config::default()
     }
 }

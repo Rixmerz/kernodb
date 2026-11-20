@@ -173,6 +173,9 @@ mod outliving_snapshot {
     }
 
     impl Vfs for HookVfs {
+        fn is_platform_backed(&self) -> bool {
+            self.inner.is_platform_backed()
+        }
         fn create_dir_all(&self, path: &Path) -> io::Result<()> {
             self.inner.create_dir_all(path)
         }
@@ -386,6 +389,9 @@ mod directory {
     }
 
     impl Vfs for Recorder {
+        fn is_platform_backed(&self) -> bool {
+            self.inner.is_platform_backed()
+        }
         fn create_dir_all(&self, path: &Path) -> io::Result<()> {
             self.inner.create_dir_all(path)
         }
@@ -542,7 +548,7 @@ mod nested_new_directory {
     /// Reopens `dir` without creating it and checks the one acknowledged
     /// commit.
     fn check_one_commit(vfs: Arc<dyn Vfs>, dir: &Path, label: &str) {
-        let reopen = Config { create_if_missing: false, ..Config::default() };
+        let reopen = Config { create_if_missing: false, allow_unverified_platform: true, ..Config::default() };
         let db = KernoDb::open(vfs, dir, &reopen).unwrap_or_else(|e| panic!("{label}: the database vanished: {e}"));
         let snap = db.snapshot().unwrap();
         assert_eq!(snap.seq(), 1, "{label}: acknowledged commit lost");
@@ -557,7 +563,12 @@ mod nested_new_directory {
             for seed in 0..32 {
                 let disk = SimVfs::new(seed);
                 disk.set_dir_durability(DirDurability::PerDir);
-                let db = KernoDb::open(disk.as_vfs(), Path::new(dir), &Config::default()).unwrap();
+                let db = KernoDb::open(
+                    disk.as_vfs(),
+                    Path::new(dir),
+                    &Config { allow_unverified_platform: true, ..Config::default() },
+                )
+                .unwrap();
                 commit_one(&db);
                 let image = disk.crash_now(CrashKind::PowerLoss);
                 drop(db);
@@ -576,9 +587,12 @@ mod nested_new_directory {
             let disk = SimVfs::new(seed);
             disk.set_dir_durability(DirDurability::PerDir);
             disk.fail_when(|op| op.kind == OpKind::SyncDir && op.path == Path::new("/data"), 1, None);
-            let first = KernoDb::open(disk.as_vfs(), dir, &Config::default());
+            let first =
+                KernoDb::open(disk.as_vfs(), dir, &Config { allow_unverified_platform: true, ..Config::default() });
             assert!(matches!(first, Err(Error::Io(_))), "seed {seed}: {:?}", first.err());
-            let db = KernoDb::open(disk.as_vfs(), dir, &Config::default()).unwrap();
+            let db =
+                KernoDb::open(disk.as_vfs(), dir, &Config { allow_unverified_platform: true, ..Config::default() })
+                    .unwrap();
             commit_one(&db);
             let image = disk.crash_now(CrashKind::PowerLoss);
             drop(db);
@@ -609,9 +623,10 @@ mod nested_new_directory {
                 }
                 HookAction::Proceed
             });
-            let first = KernoDb::open(vfs.clone(), dir, &Config::default());
+            let first =
+                KernoDb::open(vfs.clone(), dir, &Config { allow_unverified_platform: true, ..Config::default() });
             assert!(matches!(first, Err(Error::Io(_))), "seed {seed}: {:?}", first.err());
-            let db = KernoDb::open(vfs, dir, &Config::default()).unwrap();
+            let db = KernoDb::open(vfs, dir, &Config { allow_unverified_platform: true, ..Config::default() }).unwrap();
             commit_one(&db);
             let image = disk.crash_now(CrashKind::PowerLoss);
             drop(db);
@@ -635,7 +650,7 @@ mod nested_new_directory {
             }
         });
         for attempt in 0..3 {
-            match KernoDb::open(vfs.clone(), dir, &Config::default()) {
+            match KernoDb::open(vfs.clone(), dir, &Config { allow_unverified_platform: true, ..Config::default() }) {
                 Err(Error::Io(e)) => assert_eq!(e.kind(), io::ErrorKind::Other, "attempt {attempt}"),
                 other => panic!("attempt {attempt}: the open must fail, got {:?}", other.err()),
             }
@@ -688,8 +703,12 @@ mod nested_new_directory {
             let db_dir = if nested { "/home/shared/db/nested" } else { DIR };
             let (vfs, synced) = traverse_only(disk.as_vfs(), db_dir, &["/home", "/"]);
             let label = format!("pre-existing {pre_existing}, {db_dir}");
-            let db = KernoDb::open(vfs.clone(), Path::new(db_dir), &Config::default())
-                .unwrap_or_else(|e| panic!("{label}: creating the database failed: {e}"));
+            let db = KernoDb::open(
+                vfs.clone(),
+                Path::new(db_dir),
+                &Config { allow_unverified_platform: true, ..Config::default() },
+            )
+            .unwrap_or_else(|e| panic!("{label}: creating the database failed: {e}"));
             commit_one(&db);
             db.close().unwrap();
             let synced = synced.lock().clone();
@@ -709,7 +728,11 @@ mod nested_new_directory {
                 disk.create_dir_all(Path::new("/home/shared/db")).unwrap();
             }
             let (vfs, _) = traverse_only(disk.as_vfs(), "/home/shared/db", &["/home/shared"]);
-            match KernoDb::open(vfs, Path::new("/home/shared/db"), &Config::default()) {
+            match KernoDb::open(
+                vfs,
+                Path::new("/home/shared/db"),
+                &Config { allow_unverified_platform: true, ..Config::default() },
+            ) {
                 Err(Error::Io(e)) => assert_eq!(e.kind(), io::ErrorKind::PermissionDenied),
                 other => panic!("pre-existing {pre_existing}: {:?}", other.err()),
             }
@@ -740,8 +763,12 @@ mod nested_new_directory {
             }
             for name in ["db", "pre-existing", "nested/db"] {
                 let dir = inner.join(name);
-                let db = KernoDb::open(StdVfs::shared(), &dir, &Config::default())
-                    .unwrap_or_else(|e| panic!("{name}: creating the database failed: {e}"));
+                let db = KernoDb::open(
+                    StdVfs::shared(),
+                    &dir,
+                    &Config { allow_unverified_platform: true, ..Config::default() },
+                )
+                .unwrap_or_else(|e| panic!("{name}: creating the database failed: {e}"));
                 commit_one(&db);
                 db.close().unwrap();
                 check_one_commit(StdVfs::shared(), &dir, name);

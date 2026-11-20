@@ -34,6 +34,7 @@ fn config(write_buffer: usize, compaction: CompactionConfig, close_budget: Close
         test: TestConfig { background: Background::Inline, db_id: None },
         compaction,
         close_budget,
+        allow_unverified_platform: true,
         ..Config::default()
     }
 }

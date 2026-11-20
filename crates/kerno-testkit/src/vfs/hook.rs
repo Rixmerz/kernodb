@@ -197,6 +197,10 @@ impl File for HookFile {
 }
 
 impl Vfs for HookVfs {
+    fn is_platform_backed(&self) -> bool {
+        self.inner.is_platform_backed()
+    }
+
     fn create_dir_all(&self, path: &Path) -> io::Result<()> {
         hooked(&self.hook, Call::new(HookOpKind::CreateDirAll, path), || self.inner.create_dir_all(path))
     }

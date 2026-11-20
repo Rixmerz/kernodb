@@ -41,13 +41,14 @@ impl Drop for TempDir {
 }
 
 fn read_only() -> Config {
-    Config { access: AccessMode::ReadOnly, ..Config::default() }
+    Config { access: AccessMode::ReadOnly, allow_unverified_platform: true, ..Config::default() }
 }
 
 /// The child: opens the database read-write on the real file system, commits
 /// a key, says `ready`, and keeps the handle until its stdin closes.
 fn hold(dir: &Path) {
-    let db = KernoDb::open(StdVfs::shared(), dir, &Config::default()).expect("the holder opens the database");
+    let db = KernoDb::open(StdVfs::shared(), dir, &Config { allow_unverified_platform: true, ..Config::default() })
+        .expect("the holder opens the database");
     let mut b = WriteBatch::new();
     b.put("held", "by the child");
     db.commit(&b).expect("the holder commits");
@@ -82,7 +83,9 @@ fn start_holder(test: &str, dir: &Path) -> Child {
 /// change anything.
 fn assert_locked_everywhere(dir: &Path) {
     let vfs = StdVfs::shared();
-    let e = KernoDb::open(vfs.clone(), dir, &Config::default()).err().expect("read-write open must fail");
+    let e = KernoDb::open(vfs.clone(), dir, &Config { allow_unverified_platform: true, ..Config::default() })
+        .err()
+        .expect("read-write open must fail");
     assert!(matches!(e, Error::Locked), "read-write open: {e:?}");
     let e = KernoDb::open(vfs.clone(), dir, &read_only()).err().expect("read-only open must fail");
     assert!(matches!(e, Error::Locked), "read-only open: {e:?}");
@@ -98,7 +101,8 @@ fn assert_free_and_intact(dir: &Path) {
     let report = verify(vfs.clone(), dir, &VerifyOptions::default()).expect("verify after the holder is gone");
     assert!(report.is_ok(), "{:?}", report.issues);
     inspect(vfs.clone(), dir).expect("inspect after the holder is gone");
-    let db = KernoDb::open(vfs, dir, &Config::default()).expect("open after the holder is gone");
+    let db = KernoDb::open(vfs, dir, &Config { allow_unverified_platform: true, ..Config::default() })
+        .expect("open after the holder is gone");
     let snap = db.snapshot().unwrap();
     assert_eq!(snap.get(b"held").unwrap().as_deref(), Some(&b"by the child"[..]));
     db.close().unwrap();

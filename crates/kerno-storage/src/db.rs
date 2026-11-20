@@ -1786,7 +1786,7 @@ impl KernoDb {
     /// takes the exclusive `LOCK`, replays the live WALs in memory and
     /// changes nothing else.
     pub fn open(vfs: Arc<dyn Vfs>, dir: &Path, cfg: &Config) -> Result<KernoDb> {
-        cfg.validate()?;
+        cfg.validate(vfs.is_platform_backed())?;
         let requested_read_only = cfg.access == AccessMode::ReadOnly;
         // Without a MANIFEST there is no database to open: nothing is
         // created, locked or changed unless this open may create one (DIR-2).

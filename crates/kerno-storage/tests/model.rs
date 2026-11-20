@@ -160,6 +160,7 @@ fn config(levers: bool) -> Config {
         cache_bytes: 64 << 10,
         write_buffer_bytes: 4 << 10,
         test: TestConfig { background: Background::Inline, db_id: None },
+        allow_unverified_platform: true,
         ..Config::default()
     };
     if levers {

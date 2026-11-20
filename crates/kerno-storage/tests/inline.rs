@@ -73,6 +73,7 @@ fn inline_flush_happens_in_commit_path() {
         // one of a preallocated log (the spare is prepared halfway).
         wal_preallocate: false,
         test: kerno_storage::TestConfig { background: Background::Inline, db_id: None },
+        allow_unverified_platform: true,
         ..Config::default()
     };
     let db = KernoDb::open(disk.as_vfs(), Path::new("/db"), &cfg).unwrap();
@@ -133,6 +134,7 @@ mod hooks {
             write_buffer_bytes: 16 << 10,
             test: TestConfig { background, db_id: None },
             compaction: CompactionConfig::m0(16 << 10),
+            allow_unverified_platform: true,
             ..Config::default()
         };
         KernoDb::open(disk.as_vfs(), Path::new("/db"), &cfg).unwrap()
@@ -240,6 +242,7 @@ mod hooks {
             write_buffer_bytes: 16 << 10,
             test: TestConfig { background: Background::Threads, db_id: None },
             compaction: CompactionConfig::m0(16 << 10),
+            allow_unverified_platform: true,
             ..Config::default()
         };
         let db = KernoDb::open(vfs, Path::new("/db"), &cfg).unwrap();

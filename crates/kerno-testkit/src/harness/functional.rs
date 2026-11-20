@@ -417,7 +417,10 @@ pub fn real_filesystem_smoke<E: Engine>() {
 pub fn real_filesystem_smoke_with_config<E: Engine>(cfg: &SuiteConfig) {
     let dir = temp_dir(E::name());
     let vfs = StdVfs::shared();
-    let opts = Options::small_for_tests();
+    // `Sync` on a real file system is verified on Linux only; elsewhere the
+    // engine refuses it, so the smoke runs with `Buffered` there.
+    let durability = if cfg!(target_os = "linux") { Durability::Sync } else { Durability::Buffered };
+    let opts = Options { durability, ..Options::small_for_tests() };
     let mut model = Model::new();
     let mut w = Workload::with_config(77, cfg.workload);
     let mut rng = Rng::new(77);

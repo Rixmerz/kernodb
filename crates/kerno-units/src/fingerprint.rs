@@ -25,11 +25,13 @@
 //! shapes never share an input.
 //!
 //! ponytail: the key is not zeroed on drop (no dependency for it) and
-//! [`FingerprintKey::generate`] reads `/dev/urandom`, so it is Unix only.
-//! Upgrade path: `getrandom` and `zeroize` if the observability key ever
+//! [`FingerprintKey::generate`] reads `/dev/urandom` on Unix and the system
+//! random generator on Windows.
+//! Upgrade path: `zeroize` if the observability key ever
 //! leaves a single trusted process.
 
 use std::fmt;
+#[cfg(not(windows))]
 use std::io::Read;
 
 use crate::assoc::{AssocDirection, AssocQuery};
@@ -224,7 +226,10 @@ impl FingerprintKey {
     /// A fresh random key from the operating system.
     pub fn generate() -> std::io::Result<Self> {
         let mut bytes = [0u8; 32];
+        #[cfg(not(windows))]
         std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+        #[cfg(windows)]
+        getrandom::fill(&mut bytes).map_err(|e| std::io::Error::other(e.to_string()))?;
         Ok(FingerprintKey(bytes))
     }
 }

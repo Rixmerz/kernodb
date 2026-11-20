@@ -1,3 +1,7 @@
 # Format test vectors are raw bytes: never convert line endings or diff
 # them as text.
 *.bin binary
+# Committed database fixtures and their manifests are compared byte for byte.
+crates/*/tests/vectors/** -text
+# Specs whose hex blocks tests compare against the vectors keep LF endings.
+docs/file-format/*.md text eol=lf

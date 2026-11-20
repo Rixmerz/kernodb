@@ -39,6 +39,7 @@ fn config(durability: Durability) -> Config {
         write_buffer_bytes: 16 << 10,
         wal_preallocate: false,
         test: TestConfig { background: Background::Inline, db_id: Some(DB_ID) },
+        allow_unverified_platform: true,
         ..Config::default()
     }
 }
@@ -845,7 +846,7 @@ fn platform_gate_matches_target() {
     let sim = SimVfs::new(9);
     let verified = cfg!(target_os = "linux");
     let strict = Config { allow_unverified_platform: false, ..config(Durability::Sync) };
-    match open_in(&sim.as_vfs(), &strict) {
+    match open_in(&sim.as_platform_vfs(), &strict) {
         Ok(db) => {
             assert!(verified, "an unverified platform opened with Sync");
             db.close().unwrap();

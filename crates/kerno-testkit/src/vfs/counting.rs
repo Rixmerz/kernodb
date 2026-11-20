@@ -110,6 +110,10 @@ impl File for CountingFile {
 }
 
 impl Vfs for CountingVfs {
+    fn is_platform_backed(&self) -> bool {
+        self.inner.is_platform_backed()
+    }
+
     fn create_dir_all(&self, path: &Path) -> io::Result<()> {
         self.inner.create_dir_all(path)
     }

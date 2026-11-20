@@ -561,11 +561,15 @@ impl From<&Options> for Config {
 
 impl Config {
     /// Rejects values the engine cannot run with.
-    pub(crate) fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self, platform_backed: bool) -> Result<()> {
         if self.max_immutable_memtables == 0 {
             return Err(Error::InvalidArgument("max_immutable_memtables must be at least 1".into()));
         }
-        if self.durability == Durability::Sync && !cfg!(target_os = "linux") && !self.allow_unverified_platform {
+        if self.durability == Durability::Sync
+            && !cfg!(target_os = "linux")
+            && !self.allow_unverified_platform
+            && platform_backed
+        {
             return Err(Error::InvalidArgument("durability not verified on this platform".into()));
         }
         self.limits.validate()?;

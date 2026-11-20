@@ -20,10 +20,10 @@
 //! * **Validation order** (cheapest first, before any lookup): prefix `k`,
 //!   version digits and `_`; version; body length; alphabet; canonical
 //!   trailing bits. Each failure is its own [`PublicIdError`].
-//! * **Source of randomness**: the operating system's `/dev/urandom`, read
-//!   through `std` as `FingerprintKey::generate` does; no dependency is added.
-//!   That file exists on Linux, macOS, the BSDs and other Unix systems. On any
-//!   other platform (Windows, WASI) opening it fails and
+//! * **Source of randomness**: the operating system's `/dev/urandom` on Unix,
+//!   read through `std` as `FingerprintKey::generate` does, and the system
+//!   random generator (through `getrandom`) on Windows. On any other platform
+//!   (WASI) opening `/dev/urandom` fails and
 //!   [`ChangeSet::create_public`] returns that error as
 //!   `UnitError::Storage(Io)` without creating anything; reading and
 //!   resolving existing tokens still work. A read error or a short read is an
@@ -280,8 +280,16 @@ fn read_token(mut source: impl Read) -> std::io::Result<[u8; 16]> {
     Ok(bytes)
 }
 
+#[cfg(not(windows))]
 fn os_random() -> std::io::Result<[u8; 16]> {
     read_token(std::fs::File::open("/dev/urandom")?)
+}
+
+#[cfg(windows)]
+fn os_random() -> std::io::Result<[u8; 16]> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).map_err(|e| std::io::Error::other(e.to_string()))?;
+    read_token(&bytes[..])
 }
 
 /// A token nobody holds yet: draws from `random` until `taken` says no. An

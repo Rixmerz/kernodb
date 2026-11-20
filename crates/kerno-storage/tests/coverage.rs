@@ -72,7 +72,7 @@ fn protocol_rows<E: HasCheckpoint>() -> (BTreeSet<&'static str>, SimVfs) {
 fn row_ro(disk: &SimVfs) -> bool {
     let image = disk.crash_now(CrashKind::ProcessKillKeepPending);
     let before = image.mutating_ops();
-    let cfg = Config { access: AccessMode::ReadOnly, ..Config::default() };
+    let cfg = Config { access: AccessMode::ReadOnly, allow_unverified_platform: true, ..Config::default() };
     let db = KernoDb::open(image.as_vfs(), std::path::Path::new("/db"), &cfg).unwrap();
     assert!(db.is_read_only().is_some());
     drop(db);

@@ -723,6 +723,7 @@ impl State {
 #[derive(Clone)]
 pub struct SimVfs {
     state: Arc<Mutex<State>>,
+    platform_backed: bool,
 }
 
 impl SimVfs {
@@ -731,11 +732,17 @@ impl SimVfs {
     }
 
     fn from_state(state: State) -> Self {
-        SimVfs { state: Arc::new(Mutex::new(state)) }
+        SimVfs { state: Arc::new(Mutex::new(state)), platform_backed: false }
     }
 
     pub fn as_vfs(&self) -> Arc<dyn Vfs> {
         Arc::new(self.clone())
+    }
+
+    /// The same disk, reported as a real platform file system, so the
+    /// engine's platform durability check applies to it.
+    pub fn as_platform_vfs(&self) -> Arc<dyn Vfs> {
+        Arc::new(SimVfs { platform_backed: true, ..self.clone() })
     }
 
     /// Sets the granularity (bytes, >= 1) at which power loss can tear a
@@ -1123,6 +1130,10 @@ impl Drop for SimLock {
 }
 
 impl Vfs for SimVfs {
+    fn is_platform_backed(&self) -> bool {
+        self.platform_backed
+    }
+
     fn create_dir_all(&self, path: &Path) -> io::Result<()> {
         let path = resolve(path);
         let mut s = self.state.lock();

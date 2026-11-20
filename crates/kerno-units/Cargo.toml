@@ -24,6 +24,10 @@ blake3.workspace = true
 ureq = { version = "3", optional = true, default-features = false, features = ["json", "native-tls-no-default"] }
 serde_json = { version = "1", optional = true }
 
+# Windows has no /dev/urandom: public ids read the OS generator through it.
+[target.'cfg(windows)'.dependencies]
+getrandom = "0.3"
+
 [features]
 # The raw write accessor (`UnitDb::raw_commit`) and the engine test hooks
 # (`hook_flush`, `hook_wait_idle`, `hook_compact_range`) of `UnitDb` (D23 of
