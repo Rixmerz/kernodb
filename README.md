@@ -92,7 +92,7 @@ tree=$(cargo tree -p kernodb-storage -e normal --prefix none) && grep -q '^kerno
 if grep -rn 'std::fs' crates/kerno-storage/src; then false; else test $? -eq 1; fi
 
 # test-spikes job: all workspace crates except kerno-storage
-cargo test --workspace --exclude kerno-storage --all-features --release -- --nocapture
+cargo test --workspace --exclude kernodb-storage --all-features --release -- --nocapture
 
 # test-kerno job: the kerno-storage suites in all profiles
 cargo test -p kernodb-storage --all-features --release -- --nocapture

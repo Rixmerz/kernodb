@@ -12,3 +12,6 @@ publish = true
 readme = "README.md"
 keywords = ["database", "storage", "embedded", "vfs", "kerno"]
 categories = ["database-implementations"]
+
+[lib]
+name = "kerno_core"
