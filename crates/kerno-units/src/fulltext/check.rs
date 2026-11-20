@@ -47,6 +47,15 @@ impl Check {
         }
     }
 
+    /// Forgets what the heads of `units` said the index must hold: their type
+    /// opted out of the keyword index (ADR-0022), so it must hold nothing of
+    /// them, and an entry that remains is reported like any stray entry.
+    pub(crate) fn exclude(&mut self, units: impl IntoIterator<Item = UnitId>) {
+        for u in units {
+            self.expected.remove(&u);
+        }
+    }
+
     /// One full-text record of the walk.
     pub(crate) fn record(&mut self, k: &[u8], v: &[u8]) -> Result<(), DecodeError> {
         let r = self.keep(k, v);

@@ -64,6 +64,7 @@ pub mod retention;
 pub mod schema;
 pub mod suppression;
 pub mod type_count;
+pub mod type_options;
 pub mod types;
 pub mod vector_store;
 pub mod verify;

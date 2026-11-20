@@ -251,6 +251,20 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         delta: i64,
     ) -> Result<CountStep, UnitError> {
         let k = count_key(unit, dir, relation_type);
+        if let Some(&cached) = self.count_cache.get(&k) {
+            let next = if delta >= 0 {
+                cached.saturating_add(delta as u64)
+            } else {
+                cached.saturating_sub(delta.unsigned_abs())
+            };
+            return Ok(if next > 0 {
+                CountStep::Put(k, next)
+            } else if cached > 0 {
+                CountStep::Delete(k)
+            } else {
+                CountStep::Nothing
+            });
+        }
         let txn = self.txn()?;
         let (existing, base) = match txn.get(&k)? {
             Some(raw) => {
@@ -274,10 +288,12 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         match step {
             CountStep::Put(k, n) => {
                 self.write(&Write::Put(k.clone(), encode_value(n)))?;
+                self.count_cache.insert(k.clone(), n);
                 self.count_live.insert(k);
             }
             CountStep::Delete(k) => {
                 self.write(&Write::Delete(k.clone()))?;
+                self.count_cache.insert(k.clone(), 0);
                 self.count_live.remove(&k);
             }
             CountStep::Nothing => {}

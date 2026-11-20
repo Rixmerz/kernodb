@@ -433,6 +433,13 @@ impl Database {
         })
     }
 
+    /// Turns keyword (BM25) indexing of `unit_type` off or back on. Only while the type has no
+    /// active unit; the setting is stored in the database. Use it for types whose payloads are
+    /// text nobody searches by keyword (JSON, code): their writes get several times faster.
+    fn set_fulltext(&self, py: Python<'_>, unit_type: &str, enabled: bool) -> PyResult<()> {
+        self.with_db(py, |db| db.set_fulltext(unit_type, enabled).map_err(engine_error))
+    }
+
     /// The sequence of the last commit (0 for an empty database): the point to pass to
     /// `read_as_of` for "now".
     fn last_commit_seq(&self, py: Python<'_>) -> PyResult<u64> {
@@ -695,23 +702,24 @@ impl Database {
 /// Opens the database in `path`, creating it when `path` holds none.
 ///
 /// `read_only=True` opens without writing anything to the directory (it still holds the
-/// directory's lock: one handle at a time).
+/// directory's lock: one handle at a time). `max_batch_ops` raises (or lowers) the most
+/// operations one `commit` may hold (default 10,000).
 #[pyfunction]
-#[pyo3(signature = (path, read_only=false))]
-fn open(py: Python<'_>, path: PathBuf, read_only: bool) -> PyResult<Database> {
+#[pyo3(signature = (path, read_only=false, max_batch_ops=None))]
+fn open(py: Python<'_>, path: PathBuf, read_only: bool, max_batch_ops: Option<usize>) -> PyResult<Database> {
     let db = py
         .detach(|| {
-            if read_only {
-                let config = Config {
+            let config = if read_only {
+                Config {
                     access: AccessMode::ReadOnly,
                     create_if_missing: false,
                     allow_unverified_platform: true,
                     ..Config::default()
-                };
-                Db::open_with(path, config)
+                }
             } else {
-                Db::open(path)
-            }
+                Config { allow_unverified_platform: true, ..Config::default() }
+            };
+            Db::open_with_limits(path, config, max_batch_ops.unwrap_or(kerno::units::DEFAULT_MAX_CHANGESET_OPS))
         })
         .map_err(engine_error)?;
     Ok(Database { db: RwLock::new(Some(db)) })

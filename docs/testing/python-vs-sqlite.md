@@ -63,17 +63,16 @@ Indexing made writes **7x slower** and the store **3.5x larger** for data nobody
 keyword. The workaround that works today is to store such payloads as bytes that are not
 valid UTF-8 (for example compressed). The README says so.
 
-**Proposal (needs an owner decision, since the format is frozen by ADR-0013):** a per-type
-opt-out of full-text indexing, persisted in the database so that `verify_units` (UNIT-49)
-knows which types to expect in the index. A setting that lives only in memory is not enough:
-UNIT-49 expects every active text unit to be indexed, and the index must not depend on the
-options of an open.
+**Done (proposed): [ADR-0022](../adr/0022-per-type-fulltext-opt-out.md), units layer v7.**
+`db.set_fulltext(type, False)` before the first unit of a type. With it, the same 9,000 JSON
+payloads store in 0.24 s, update in 0.19 s and take 10.0 MB, with no change to the payload.
+It does not touch the frozen engine format, only the units layer, as ADR-0021 did.
 
 ## Other improvement paths (engine work, not done here)
 
-1. **Relation writes (10.9x).** `create_relation` keeps per-unit adjacency counts and reads
-   them back inside the transaction (`plan_count`, `count_entries`). Batching the count updates
-   per unit, so they are applied once per change set, would remove most of it.
+1. **Relation writes (10.9x).** Done in part: a change set now caches the adjacency counts and
+   the active units it already read (82 → 72 ms on 9,000 relations among 300 units). The
+   profile after that is dominated by allocation and the memtable (items 2 and 3).
 2. **Allocation.** Reusing key and value buffers per change set, or using an arena for the
    memtable, targets the largest share.
 3. **Reads inside a change set.** `load_unit` / `current` read the head from the write
@@ -81,6 +80,5 @@ options of an open.
 4. **Disk per revision (about 900 bytes per small revision).** Revision metadata and key
    overhead dominate for small payloads. Compressing SST blocks would help, but it is a
    format question.
-5. **A change set holds at most 10,000 operations** (`UnitConfig::max_changeset_ops`). The
-   facade does not let a caller raise it, and the engine also has its own byte limit per
-   write.
+5. **A change set holds at most 10,000 operations** by default. Done: `Db::open_with_limits`
+   and `kerno.open(path, max_batch_ops=...)` change it, but the engine's byte limit per write still applies.

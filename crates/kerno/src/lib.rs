@@ -420,7 +420,19 @@ impl Db {
     /// As [`Db::open`], and `InvalidArgument` for a `Config` the engine refuses (for example
     /// `Durability::Sync` off Linux without `allow_unverified_platform`).
     pub fn open_with(path: impl AsRef<Path>, config: Config) -> Result<Self> {
-        let mut layer = UnitConfig::default();
+        Self::open_with_limits(path, config, kerno_units::DEFAULT_MAX_CHANGESET_OPS)
+    }
+
+    /// [`Db::open_with`], with the most operations one change set (one [`Db::commit`]) may hold
+    /// instead of the default 10,000. The engine's own limits on the bytes of one write still
+    /// apply: a commit over them fails with `ChangeSetTooLarge` and writes nothing.
+    ///
+    /// # Errors
+    ///
+    /// As [`Db::open_with`]; `InvalidArgument` when `max_changeset_ops` is 0 or above the
+    /// layer's maximum (2^20).
+    pub fn open_with_limits(path: impl AsRef<Path>, config: Config, max_changeset_ops: usize) -> Result<Self> {
+        let mut layer = UnitConfig { max_changeset_ops, ..UnitConfig::default() };
         // The layer reports `CommitInfo::durable` from this, so it must match the engine's.
         layer.engine.durability = config.durability;
         let engine = KernoDb::open(StdVfs::shared(), path.as_ref(), &config)?;
@@ -787,6 +799,22 @@ impl Db {
     /// The engine fails or finds a relation record corrupt.
     pub fn relations(&self, relation_type: Option<&str>) -> Result<Vec<Relation>> {
         self.units.snapshot()?.reference_relations(|r| relation_type.is_none_or(|t| t == r.relation_type))
+    }
+
+    /// Turns keyword (BM25) indexing of `unit_type` off (`enabled = false`) or back on.
+    ///
+    /// Every payload that is valid UTF-8 is indexed by default, in the commit that writes it.
+    /// For data nobody searches by keyword that costs most of the write time and a large share
+    /// of the disk. The setting is stored in the database (layer version 7, ADR-0022), so it
+    /// holds across opens, and a build that predates it refuses the database instead of
+    /// misreading it. It can change only while the type has no active unit, so the index never
+    /// disagrees with the units.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidArgument` when the type has active units or its name is invalid.
+    pub fn set_fulltext(&self, unit_type: &str, enabled: bool) -> Result<()> {
+        self.units.set_fulltext(unit_type, enabled, ChangeMeta::default()).map(|_| ())
     }
 
     /// Every active unit that matches `filter`, in unit id order.

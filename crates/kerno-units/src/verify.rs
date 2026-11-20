@@ -416,6 +416,9 @@ struct State {
     fulltext: crate::fulltext::Check,
     /// Schemas and their index entries (UNIT-50 and UNIT-51).
     schema: crate::schema::Check,
+    /// Types with `NO_FULLTEXT` (`0x77` records, ADR-0022).
+    no_fulltext: BTreeSet<String>,
+    first_type_options_key: Option<Vec<u8>>,
 }
 
 fn key_of(k: Key) -> Vec<u8> {
@@ -554,6 +557,18 @@ impl State {
         if crate::schema::Check::owns(k.first()) {
             if let Err(e) = self.schema.record(&k, &v) {
                 self.decode_error(k, e);
+            }
+            return;
+        }
+        if k.first() == Some(&crate::type_options::TAG_TYPE_OPTIONS) {
+            self.first_type_options_key.get_or_insert_with(|| k.clone());
+            match crate::type_options::check_shape(&k, &v) {
+                Ok((unit_type, options)) => {
+                    if options & crate::type_options::NO_FULLTEXT != 0 {
+                        self.no_fulltext.insert(unit_type);
+                    }
+                }
+                Err(e) => self.decode_error(k, e),
             }
             return;
         }
@@ -1052,8 +1067,23 @@ impl State {
     /// UNIT-49: the full-text index is what the head payloads say. Skipped
     /// when a head does not decode (its text is unknown), like UNIT-47.
     fn check_fulltext(&mut self) {
+        if let (Some(first), Some(mark)) = (&self.first_type_options_key, &self.mark)
+            && mark.layer_version < crate::codec::LAYER_VERSION_TYPE_OPTIONS
+        {
+            let first = first.clone();
+            self.cross(
+                CrossRule::Unit49,
+                first,
+                "type-options records in a database whose layer mark is below 7".into(),
+            );
+        }
         if !self.bad_heads.is_empty() {
             return;
+        }
+        if !self.no_fulltext.is_empty() {
+            let opted_out: Vec<UnitId> =
+                self.heads.iter().filter(|(_, h)| self.no_fulltext.contains(&h.unit_type)).map(|(u, _)| *u).collect();
+            self.fulltext.exclude(opted_out);
         }
         for (key, detail) in self.fulltext.findings() {
             self.cross(CrossRule::Unit49, key, detail);

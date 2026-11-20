@@ -14,6 +14,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Python packaging and docs**: the README (the PyPI page) is rewritten: install from PyPI, concepts, common tasks, full API, errors, performance advice, durability, concurrency and limits. It no longer says the package is unpublished. `SchemaError` is added for schema refusals. PyPI metadata gains Homepage, Documentation, Changelog and Issues links and OS classifiers. `wheels.yml` builds musllinux x86_64 and aarch64 wheels and tests them in Alpine.
 - **Performance report**: `docs/testing/python-vs-sqlite.md` compares Kerno and SQLite from Python with the same durability, and profiles the write path. Full-text indexing of every UTF-8 payload is the largest single cost (about 7x on writes, 3.5x on disk); a per-type opt-out is proposed for an owner decision. The benchmark script is `bindings/python/bench/vs_sqlite.py`.
 
+- **Keyword-index opt-out per unit type** (ADR-0022, **Proposed**, units layer v7): `Db::set_fulltext(type, enabled)` and Python `Database.set_fulltext`. It is stored as a `0x77` record and can change only while the type has no active unit, so the index never disagrees with the units. `verify_units` knows about it. The first record raises the layer mark to 7, so builds of layer 6 or older refuse such a database. Measured on 9,000 JSON payloads: writes 4–6x faster, store 3.5x smaller.
+- `Db::open_with_limits` and Python `kerno.open(path, max_batch_ops=...)` change the 10,000-operation limit of one change set (50,000 operations committed atomically in a test).
+
+### Changed
+
+- Faster batches: a change set caches the adjacency counts it already read and the units it already found active (both invalidated by its own writes). On 9,000 relations among 300 units, 82 → 72 ms.
+
 ### Fixed
 
 - `Db::verify` documented that a damaged store is a finding, not an `Err`; storage-level corruption (a block CRC mismatch, a damaged MANIFEST) is returned as an `Err`. The rustdoc now says so, and the Python `verify()` reports it as `clean: False` with `storage_error` instead of raising.

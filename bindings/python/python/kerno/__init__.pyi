@@ -109,6 +109,8 @@ class Database:
         """Delete `id` with a tombstone revision (and its relations with `cascade`)."""
     def relations(self, relation_type: str | None = None) -> list[Relation]:
         """Every live relation (optionally of one type), in one scan."""
+    def set_fulltext(self, unit_type: str, enabled: bool) -> None:
+        """Keyword-index a type or not (only while it has no active unit)."""
     def last_commit_seq(self) -> int: ...
     def compact(self) -> dict[str, int]: ...
     def define_schema(self, unit_type: str, fields: list[dict[str, object]]) -> None: ...
@@ -145,5 +147,5 @@ class Database:
         tb: TracebackType | None,
     ) -> bool: ...
 
-def open(path: str | PathLike[str], read_only: bool = False) -> Database:
+def open(path: str | PathLike[str], read_only: bool = False, max_batch_ops: int | None = None) -> Database:
     """Open the database in `path`, creating it when `path` holds none."""

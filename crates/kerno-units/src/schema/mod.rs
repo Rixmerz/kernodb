@@ -57,7 +57,7 @@
 //! The first `0x78` record raises the layer mark to 6 in its own transaction
 //! (`LAYER_VERSION_SCHEMAS`, ADR-0021, `docs/file-format/units-v6.md`), so a
 //! build that predates schemas refuses the database (UNIT-16) instead of
-//! writing typed units unchecked. `0x77` stays unassigned. An indexed `Text` or `Bytes` value whose encoding
+//! writing typed units unchecked. `0x77` is assigned to type options by ADR-0022 (layer 7). An indexed `Text` or `Bytes` value whose encoding
 //! exceeds [`MAX_INDEXED_VALUE_LEN`] bytes is refused, so a key always fits the
 //! engine's key limit.
 //!

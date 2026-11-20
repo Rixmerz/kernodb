@@ -124,7 +124,7 @@ never return wrong data.
 
 | Call | Returns |
 |------|---------|
-| `kerno.open(path, read_only=False)` | a `Database`. A read-only open writes nothing but still takes the directory's lock |
+| `kerno.open(path, read_only=False, max_batch_ops=None)` | a `Database`. A read-only open writes nothing but still takes the directory's lock. `max_batch_ops` changes the 10,000-operation limit of one `commit` |
 | `db.store(unit_type, payload)` | the new unit's id |
 | `db.read(id)` | `Unit` (`id`, `unit_type`, `schema_version`, `lifecycle`, `revision`, `payload`) or `None` |
 | `db.update(id, payload, if_changed=False)` | `True` when a revision was written |
@@ -137,6 +137,7 @@ never return wrong data.
 | `db.commit(ops, reason=None, actor=None, source=None, detailed=False)` | stored ids, or a dict with `detailed=True` |
 | `db.history(id, limit=100, with_payload=False)` | `list[Revision]` (`revision`, `kind`, `commit_seq`, `created_at`, `lifecycle`, `content_hash`, `payload`) |
 | `db.read_as_of(id, commit_seq)` | the `Revision` in force then, or `None` before creation. A sequence past the last commit reads now |
+| `db.set_fulltext(type, enabled)` | `None`. Keyword-index a type or not; only while it has no active unit |
 | `db.last_commit_seq()` | the sequence of the last commit |
 | `db.define_schema(type, fields)` / `db.create_index(type, field)` | `None` |
 | `db.store_document(type, dict)` / `db.update_document(id, dict)` / `db.read_document(id)` | id / `None` / `dict` or `None` |
@@ -185,13 +186,15 @@ What makes the most difference:
 
 1. **Batch your writes.** One `commit([...])` is about 10x faster than the same writes one by
    one, because each commit syncs to disk.
-2. **Store payloads that are not text as bytes that are not UTF-8.** Every payload that is valid UTF-8
-   text is indexed for keyword search (BM25), automatically. For structured data nobody
-   searches by keyword (JSON you only read back), that index made writes about 7x slower and
-   the store about 3.5x larger in our tests. Compressing the payload (`zlib.compress`, which
-   never produces valid UTF-8) or any binary encoding skips it.
+2. **Turn the keyword index off for types nobody searches by keyword.** Every payload that is
+   valid UTF-8 text is indexed for keyword search (BM25), automatically. For structured data
+   you only read back (JSON, code metadata), call `db.set_fulltext("my_type", False)` before
+   storing the first unit of the type: writes get 4–6x faster and the store about 3.5x smaller.
+   The setting is stored in the database, and it can change only while the type has no active
+   unit. (With 1.0.0a1, which lacks it, store such payloads as bytes that are not UTF-8,
+   for example `zlib.compress(...)`.)
 3. **Read relations in bulk** with `relations(type)` instead of `related(id)` per unit.
-4. **Keep a batch under 10,000 operations.** Split larger work into several commits.
+4. **Mind the batch limit.** A commit holds 10,000 operations by default. Split larger work, or open with `max_batch_ops=` when it must be atomic.
 
 ## Durability
 
@@ -210,7 +213,7 @@ never sees half of a change set.
 ## Limits
 
 - Payload: 1 MiB. Unit and relation type: 1–64 bytes (no NUL in a relation type).
-- One change set: 10,000 operations.
+- One change set: 10,000 operations by default (`kerno.open(path, max_batch_ops=...)` changes it, up to 2^20); the engine also limits the bytes of one commit.
 - Deleting a unit keeps its revisions (and their payloads) until a retention policy drops them,
   so deletes do not shrink the store. `compact()` reclaims only what retention removed.
 

@@ -571,7 +571,10 @@ impl<E: TxnEngine> UnitDb<E> {
             derived_ops: 0,
             token_ops: 0,
             count_live: BTreeSet::new(),
+            count_cache: std::collections::HashMap::new(),
+            active_known: std::collections::HashSet::new(),
             schema_ops: 0,
+            type_option_ops: 0,
             members: Vec::new(),
             relation_ops: 0,
             touched: BTreeSet::new(),
@@ -995,9 +998,23 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     /// live-unit count (P5, `0x73`) to 5; a record removed again does not
     /// count.
     pub(crate) count_live: BTreeSet<Vec<u8>>,
+    /// Adjacency counts as this change set left them (`0`: no record), so a
+    /// second relation of the same `(unit, direction, type)` in one change
+    /// set reads its count here instead of from the transaction (and never
+    /// counts the entries again). Only `plan_count` / `apply_count` write
+    /// these records, so the cache cannot go stale within the change set.
+    pub(crate) count_cache: std::collections::HashMap<Vec<u8>, u64>,
+    /// Units `require_active` found `Active` in this change set. Every write
+    /// goes through [`ChangeSet::write`], which drops a unit from here when
+    /// it writes or deletes its `UNIT_HEAD` (and clears it on a range
+    /// delete), so an entry is never stale.
+    active_known: std::collections::HashSet<UnitId>,
     /// Schema and index definitions written so far (ADR-0021): they make the
     /// change set non-empty and, with no member, give it the purpose `Index`.
     pub(crate) schema_ops: usize,
+    /// Type-options records written or removed so far (ADR-0022): they make
+    /// the change set non-empty and raise the mark to layer version 7.
+    pub(crate) type_option_ops: usize,
     members: Vec<(RevisionId, RevisionKind)>,
     /// Relations created or deleted so far (E4-02): they are not members, but
     /// they count against `max_changeset_ops` and make the change set non-empty.
@@ -1106,6 +1123,18 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
             Write::Delete(k) => k.len(),
         };
         let (writes, bytes) = (self.writes + 1, self.bytes + len);
+        if !self.active_known.is_empty() {
+            match w {
+                Write::Put(k, _) | Write::Delete(k) => {
+                    if k.len() == 17 && k[0] == crate::codec::TAG_UNIT_HEAD {
+                        let mut id = [0u8; 16];
+                        id.copy_from_slice(&k[1..]);
+                        self.active_known.remove(&UnitId(id));
+                    }
+                }
+                Write::DeleteRange(..) => self.active_known.clear(),
+            }
+        }
         let r = match w {
             Write::Put(k, v) => txn.put(k, v),
             Write::Delete(k) => txn.delete(k),
@@ -1524,14 +1553,20 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
     /// The lifecycle of `unit` as this change set sees it, reading only its
     /// `UNIT_HEAD`; `NotFound` or `Deleted` for a unit that cannot take a
     /// relation, `InvalidArgument` for an archived one.
-    fn require_active(&self, unit: UnitId) -> Result<(), UnitError> {
+    fn require_active(&mut self, unit: UnitId) -> Result<(), UnitError> {
+        if self.active_known.contains(&unit) {
+            return Ok(());
+        }
         let txn = self.txn()?;
         let Some(raw) = txn.get(&key(Key::UnitHead { unit })?)? else {
             return Err(UnitError::NotFound { unit });
         };
         let head = UnitHead::decode(&raw).map_err(|e| context(e, &format!("UNIT_HEAD of unit {unit}")))?;
         match head.lifecycle {
-            Lifecycle::Active => Ok(()),
+            Lifecycle::Active => {
+                self.active_known.insert(unit);
+                Ok(())
+            }
             Lifecycle::Deleted => Err(UnitError::Deleted { unit }),
             Lifecycle::Archived => Err(UnitError::InvalidArgument(format!(
                 "unit {unit} is archived; a relation needs Active units at both ends"
@@ -1661,6 +1696,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
             && self.relation_ops == 0
             && self.derived_ops == 0
             && self.schema_ops == 0
+            && self.type_option_ops == 0
         {
             let current = CommitSeq(self.seq.0 - 1);
             if let Some(t) = self.txn.take() {
@@ -1689,7 +1725,9 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         // record, and no writer lowers it (ADR-0020 §S3.4, §S3.5).
         // A schema definition writes the first `0x78` record: layer 6, which
         // includes everything below it (`schema_ops` counts definitions only).
-        let wants = if self.schema_ops > 0 {
+        let wants = if self.type_option_ops > 0 {
+            crate::codec::LAYER_VERSION_TYPE_OPTIONS
+        } else if self.schema_ops > 0 {
             LAYER_VERSION_SCHEMAS
         } else if self.count_live.iter().any(|k| k.first() == Some(&crate::type_count::TAG_TYPE_COUNT)) {
             LAYER_VERSION_TYPE_COUNTS
@@ -1726,8 +1764,8 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
                 // ADR-0020 §B.5: derived records only, no relation touched.
                 if self.relation_ops > 0 {
                     Purpose::Relation
-                } else if self.schema_ops > 0 {
-                    // Schema and index definitions only: no unit is a member.
+                } else if self.schema_ops > 0 || self.type_option_ops > 0 {
+                    // Schema, index or type-option definitions only: no unit is a member.
                     Purpose::Index
                 } else if self.derived_ops > 0 {
                     Purpose::Derived

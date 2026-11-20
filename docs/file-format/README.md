@@ -10,6 +10,7 @@ Contents of the directory:
 | [`units-v1.md`](units-v1.md) | Keys and values of the units layer v1 (`layer_version = 1`) |
 | [`units-v2.md`](units-v2.md) | Units layer v2 (`layer_version = 2`, feature `DERIVED_VECTORS`): vectors persisted as derived data, [ADR-0020](../adr/0020-persistence-of-vectors-as-derivatives.md). Its vectors are checked byte by byte by `crates/kerno-units/tests/derived_vectors.rs` |
 | [`units-v3.md`](units-v3.md) | Units layer v3 (`layer_version = 3`): public identifiers, records `0x70`/`0x71` ([ADR-0005](../adr/0005-public-identifiers.md)), with the vector table that `crates/kerno-units/tests/public_ids.rs` checks |
+| [`units-v7.md`](units-v7.md) | Units layer v7 (`layer_version = 7`): per-type options, record `0x77`, with the keyword-index opt-out of [ADR-0022](../adr/0022-per-type-fulltext-opt-out.md) |
 | [`export-v1.md`](export-v1.md) | Logical export, **frozen** at `format_version = 1` (golden files in `crates/kerno-units/tests/golden/export-v1/`). `export-v0-draft.md` is a pointer kept for old links |
 | `crates/kerno-storage/tests/vectors/v1/` | Structure and directory vectors; a CI guard regenerates them in memory and compares them byte by byte ([CONTRIBUTING](../../CONTRIBUTING.md#format-vectors-and-byte-changes)) |
 

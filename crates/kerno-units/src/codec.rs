@@ -64,7 +64,10 @@ pub const LAYER_VERSION_TYPE_COUNTS: u32 = 5;
 /// that writes the first one, never before and never lowered.
 pub const LAYER_VERSION_SCHEMAS: u32 = 6;
 /// The newest `layer_version` this build reads and writes.
-pub const MAX_LAYER_VERSION: u32 = LAYER_VERSION_SCHEMAS;
+/// `layer_version` of a database that holds a type-options record (`0x77`,
+/// ADR-0022, `docs/file-format/units-v7.md`).
+pub const LAYER_VERSION_TYPE_OPTIONS: u32 = 7;
+pub const MAX_LAYER_VERSION: u32 = LAYER_VERSION_TYPE_OPTIONS;
 /// The `LAYER_META` name of the layer mark (design §2.6).
 pub const LAYER_MARK_NAME: &str = "layer";
 /// Length limits of §1.2.
