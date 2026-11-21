@@ -154,7 +154,9 @@
 //! # let _ = std::fs::remove_dir_all(&dir);
 //! let db = Db::open(&dir)?;
 //! db.define_schema("user", vec![FieldDef::new("email", FieldType::Text).unique(), FieldDef::new("name", FieldType::Text)])?;
-//! let user = |name: &str| Document::new().with("email", FieldValue::Text("ada@example.com".into())).with("name", FieldValue::Text(name.into()));
+//! let user = |name: &str| {
+//!     Document::new().with("email", FieldValue::Text("ada@example.com".into())).with("name", FieldValue::Text(name.into()))
+//! };
 //!
 //! let made = db.upsert_document("user", "email", &user("Ada"))?;
 //! assert_eq!(made.outcome, UpsertOutcome::Created);
