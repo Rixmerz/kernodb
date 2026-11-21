@@ -50,7 +50,7 @@ fn batches(n: u64) -> Vec<WriteBatch> {
             let mut b = WriteBatch::new();
             for j in 0..8 {
                 // xorshift64 seeded by the key's turn: reproducible bytes LZ4 cannot shrink.
-                let mut x = (i * 8 + j) * 0x9E37_79B9_7F4A_7C15 + 1;
+                let mut x = (i * 8 + j).wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
                 let value = (0..300)
                     .map(|_| {
                         x ^= x << 13;
