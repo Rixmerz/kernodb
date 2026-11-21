@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **`refresh` on every public surface** (#2, a): a shared read-only open sees the commits a writer made after it opened by calling `refresh()`. `KernoDb::refresh` is now reachable through `UnitDb::refresh`, `kerno::Db::refresh`, Python `db.refresh()` and Node `db.refresh()`; each returns the commit sequence it now reads and fails on a handle that is not read-only. New `kerno_core::contract::Refresh` trait; `UnitDb::refresh` also drops the cached history policies, which the writer may have changed.
+
 ## [1.0.0-alpha.2] - 2026-11-21
 
 Second public alpha. **It does not open databases written by 1.0.0-alpha.1** (export with alpha.1, import with alpha.2), and the keyword index is opt-in per type; see the upgrading notes in `docs/compatibility.md`.

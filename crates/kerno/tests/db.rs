@@ -585,3 +585,26 @@ fn verify_reports_a_removed_adjacency_entry() {
     assert!(report.rules().contains("UNIT-36"), "{:?}", report.findings);
     db.close().unwrap();
 }
+
+#[test]
+fn refresh_shows_a_read_only_handle_the_commits_made_since_it_opened() {
+    let dir = TempDir::new();
+    let writer = Db::open(dir.db()).unwrap();
+    let first = writer.store("note", "one").unwrap();
+
+    let read_only = Config { access: AccessMode::ReadOnly, allow_unverified_platform: true, ..Config::default() };
+    let reader = Db::open_with(dir.db(), read_only).unwrap();
+    let opened_at = reader.last_commit_seq().unwrap();
+    assert!(reader.get(first).unwrap().is_some());
+
+    let second = writer.store("note", "two").unwrap();
+    assert!(reader.get(second).unwrap().is_none(), "not visible before refresh");
+    assert_eq!(reader.last_commit_seq().unwrap(), opened_at);
+
+    let seq = reader.refresh().unwrap();
+    assert_eq!(seq, writer.last_commit_seq().unwrap());
+    assert_eq!(reader.last_commit_seq().unwrap(), seq);
+    assert_eq!(reader.get(second).unwrap().unwrap().payload.as_deref(), Some(&b"two"[..]));
+
+    assert!(writer.refresh().is_err(), "a read-write handle is always current");
+}

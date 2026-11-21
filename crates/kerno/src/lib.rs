@@ -687,6 +687,19 @@ impl Db {
         Ok(self.units.snapshot()?.seq().0)
     }
 
+    /// Moves a database opened read-only to the commits the writer made since it opened (or
+    /// since the last refresh) and returns the commit sequence it now reads. Reads in flight keep
+    /// their state. A shared read-only open never takes the directory lock, so this is how a
+    /// long-lived reader sees a writer's later commits.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidArgument` unless the database was opened with `AccessMode::ReadOnly` (a read-write
+    /// handle is always current); `Corruption` if the directory now holds another database.
+    pub fn refresh(&self) -> Result<u64> {
+        self.units.refresh()
+    }
+
     /// The state of `id` once commit `commit_seq` committed. A sequence after the last commit
     /// reads the current state (it is clamped, not refused).
     ///

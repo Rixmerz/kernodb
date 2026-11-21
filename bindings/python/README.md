@@ -184,6 +184,7 @@ never return wrong data.
 | `db.set_fulltext(type, enabled)` | `None`. Keyword-index a type (off by default); its active units follow in the same commit |
 | `db.fulltext(type)` | `bool`: whether the type is keyword-indexed |
 | `db.last_commit_seq()` | the sequence of the last commit |
+| `db.refresh()` | on a `read_only=True` database: pick up the commits a writer made since the open; returns the sequence now read |
 | `db.define_schema(type, fields)` / `db.create_index(type, field)` | `None` |
 | `db.store_document(type, dict)` / `db.update_document(id, dict)` / `db.read_document(id)` | id / `None` / `dict` or `None` |
 | `db.find(type, field, value)` | `list[Unit]` whose indexed field equals `value` |

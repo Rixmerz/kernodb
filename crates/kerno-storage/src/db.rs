@@ -1662,6 +1662,12 @@ impl TestHooks for KernoDb {
     }
 }
 
+impl kerno_core::contract::Refresh for KernoDb {
+    fn refresh(&self) -> Result<u64> {
+        KernoDb::refresh(self)
+    }
+}
+
 impl kerno_core::contract::Reclaim for KernoDb {
     fn compact_range(&self, start: Bound<&[u8]>, end: Bound<&[u8]>) -> Result<()> {
         KernoDb::compact_range(self, start, end).map(drop)

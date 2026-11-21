@@ -606,6 +606,23 @@ test('open with readOnly reads, refuses writes, and does not create a database',
   db = open(dir)
 })
 
+test('refresh shows a readOnly handle the commits made since it opened', () => {
+  const first = db.store('note', 'one')
+  const reader = open(dir, { readOnly: true })
+  try {
+    assert.ok(reader.read(first))
+    const second = db.store('note', 'two')
+    assert.equal(reader.read(second), null) // not visible before refresh
+    const seq = reader.refresh()
+    assert.equal(seq, db.lastCommitSeq())
+    assert.equal(reader.lastCommitSeq(), seq)
+    assert.equal(reader.read(second)?.payload?.toString(), 'two')
+    assert.ok(codeOf(() => db.refresh())) // a read-write handle is always current
+  } finally {
+    reader.close()
+  }
+})
+
 test('open with maxBatchOps caps the operations of one commit', () => {
   db.close()
   db = open(dir, { maxBatchOps: 2 })
