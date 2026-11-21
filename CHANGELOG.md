@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.0-alpha.2] - 2026-11-21
+
+Second public alpha. **It does not open databases written by 1.0.0-alpha.1** (export with alpha.1, import with alpha.2), and the keyword index is opt-in per type; see the upgrading notes in `docs/compatibility.md`.
+
 ### Added
 
 - **`kerno` facade**: `Batch::relate` / `relate_unique` (an end can be a unit stored earlier in the same batch, `Endpoint::Stored`), `delete_cascade`, `update_if_changed`, `archive`, `unarchive`, `restore`; `Db::commit_with` (provenance — reason, actor, source — and a `Committed` report with relations, skipped updates and the commit sequence), `Db::last_commit_seq`, `Db::read_as_of` (a sequence past the last commit reads now instead of failing), `Db::compact`, `Db::relations` (every relation of a type in one scan). `UnitError::is_corruption`.
@@ -19,6 +23,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **LZ4 block compression** (ADR-0023 step 3.3, v1.md §4.4): SST data blocks are stored LZ4-compressed when that makes them smaller, marked by the `incompat` feature bit `BLOCK_LZ4` (bit 1) on each such SST; the block encapsulation is unchanged, so the engine format stays v1. `Config::block_compression`, on by default. Readers handle both kinds of table. A real store (LiveSpec's history of the kernodb repository) went from 66 MB to 35 MB with no measurable cost in write time. The spec decoder of the tests decodes it with its own LZ4 decoder, and `tests/block_lz4.rs` covers the round trip, the LZ4-1 rules and an engine reopen with a deep verify. New dependency: `lz4_flex` (MIT, pure Rust, safe features only).
 - `kerno-server --fulltext <types>`: the unit types to keyword-index in every database served. The examples (`chat-history`, `document-store`) turn on the types they search.
 - `Db::open_with_limits` and Python `kerno.open(path, max_batch_ops=...)` change the 10,000-operation limit of one change set (50,000 operations committed atomically in a test).
+
+- **Python bindings, third round**: `hybrid_search` (keywords, vectors and relations fused by reciprocal rank), `explain`, `find_range`, `history` with bounds and order, `compare` of two revisions, `Unit.oldest_revision`, and `query(lifecycle=...)`. 12 new tests.
+- **Node.js bindings at parity with Python** (`@rixmerz/kernodb`): writes, `commit` with all nine batch ops, history and maintenance, schemas, documents, `find`, `execute`, `hybridSearch` and open options, with stable error `code`s and a rewritten README. 46 tests.
+- **Keyword index everywhere it is used**: `Db::search_text(query, limit)` (keyword-only search) and `Db::fulltext(type)` in the facade; `db.fulltext(type)` in Python and Node; `GET` and `PUT /v1/types/{type}/fulltext` in `kerno-server`; `set_fulltext` / `get_fulltext` in the Python client and `setFulltext` / `getFulltext` in the TypeScript client. The Vercel AI SDK memory turns its own type's keyword index on, once, on its first `remember` or `recall`, so `recall` works with no server configuration.
+- **Documentation for alpha.2**: an "Upgrading from 1.0.0-alpha.1" section in the `kerno` crate (rustdoc and README), the getting-started guide, and the Python and Node READMEs. Keyword search is opt-in everywhere it is described: crate docs (a doctest), the server README, the clients, the integrations and the examples. `docs/compatibility.md` describes the alpha.2 cut. The client and integration READMEs now say what holds today: TLS works with an `https://` URL, and API tokens are not sent yet (they had said the server had neither).
 
 ### Changed
 

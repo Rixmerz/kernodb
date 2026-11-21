@@ -178,7 +178,7 @@ fn layer_version(dir: &std::path::Path) -> u32 {
 }
 
 fn search(db: &Db, q: &str) -> Vec<kerno::UnitId> {
-    db.unit_db().snapshot().unwrap().search_text(q, 10).unwrap().iter().map(|h| h.unit).collect()
+    db.search_text(q, 10).unwrap().iter().map(|h| h.unit).collect()
 }
 
 #[test]

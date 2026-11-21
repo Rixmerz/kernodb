@@ -43,7 +43,7 @@ export interface Running {
 }
 
 export async function startServer(db: string): Promise<Running> {
-  const child = spawn(serverBinary(), ['--db', db, '--listen', '127.0.0.1:0'], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const child = spawn(serverBinary(), ['--db', db, '--listen', '127.0.0.1:0', '--fulltext', 'note,user,t'], { stdio: ['ignore', 'pipe', 'inherit'] });
   const exited = new Promise<number | null>((resolve) => child.once('exit', (code) => resolve(code)));
   let seen = '';
   const url = await new Promise<string>((resolve, reject) => {

@@ -537,6 +537,11 @@ impl Database {
         self.with_db(py, |db| db.set_fulltext(unit_type, enabled).map_err(engine_error))
     }
 
+    /// Whether `unit_type` is keyword-indexed (off by default).
+    fn fulltext(&self, py: Python<'_>, unit_type: &str) -> PyResult<bool> {
+        self.with_db(py, |db| db.fulltext(unit_type).map_err(engine_error))
+    }
+
     /// The sequence of the last commit (0 for an empty database): the point to pass to
     /// `read_as_of` for "now".
     fn last_commit_seq(&self, py: Python<'_>) -> PyResult<u64> {

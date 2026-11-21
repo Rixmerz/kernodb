@@ -19,9 +19,9 @@ use kerno::{FieldDef as KernoFieldDef, FieldValue, RelationId};
 use kerno_backup::{BaseInfo, Keeper, ObjectStore, Tick};
 
 use crate::api::{
-    Access, Candidate, CreateRelation, CreateUnit, Direction, ExplainReply, Field, FieldDef, FieldType, Health, Hex,
-    Hit, JoinStep, ListRelations, ListUnits, Metric, Payload, QueryReply, QueryRequest, Ranks, RelationList,
-    RelationView, Schema, SearchReply, SearchRequest, UnitList, UnitView, UpdateUnit, from_hex,
+    Access, Candidate, CreateRelation, CreateUnit, Direction, ExplainReply, Field, FieldDef, FieldType, Fulltext,
+    Health, Hex, Hit, JoinStep, ListRelations, ListUnits, Metric, Payload, QueryReply, QueryRequest, Ranks,
+    RelationList, RelationView, Schema, SearchReply, SearchRequest, UnitList, UnitView, UpdateUnit, from_hex,
 };
 use crate::error::{ApiError, Kind};
 
@@ -264,6 +264,18 @@ impl Service {
     pub fn delete_relation(&self, id: &str) -> Res<()> {
         let edge = relation_id(id)?;
         self.change(|changes| changes.delete_relation(edge))
+    }
+
+    // ---------------------------------------------------------------- keyword index
+
+    /// Turns the keyword index of `unit_type` on or off; its units follow in the same commit.
+    pub fn set_fulltext(&self, unit_type: &str, enabled: bool) -> Res<Fulltext> {
+        self.db.set_fulltext(unit_type, enabled)?;
+        self.get_fulltext(unit_type)
+    }
+
+    pub fn get_fulltext(&self, unit_type: &str) -> Res<Fulltext> {
+        Ok(Fulltext { unit_type: unit_type.to_owned(), enabled: self.db.fulltext(unit_type)? })
     }
 
     // ---------------------------------------------------------------- schemas

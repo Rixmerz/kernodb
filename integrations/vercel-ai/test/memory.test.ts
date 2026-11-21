@@ -161,7 +161,8 @@ test('input that does not fit a tool schema never reaches the server', () =>
     assert.equal(requests, 0);
     // The same tools do reach it with valid input.
     await generateText({ model: scriptedModel(['recall', { query: 'x', limit: 20 }], 'ok'), tools: kernoMemory(counting).tools(), stopWhen: isStepCount(5), prompt: 'go' });
-    assert.equal(requests, 1);
+    // Two: the first call of a memory turns its type's keyword index on, then searches.
+    assert.equal(requests, 2);
     assert.equal((await kerno.listUnits()).units.length, 0);
   }));
 
@@ -171,4 +172,17 @@ test('a memory is found even when other units outrank it in the keyword search',
     for (let i = 0; i < 10; i++) await kerno.createUnit('note', 'tea tea tea tea tea tea');
     const { id } = await memory.remember('a single tea');
     assert.deepEqual((await memory.recall('tea')).map((m) => m.id), [id]);
+  }));
+
+test('the memory turns the keyword index of its type on once', () =>
+  withServer(async (kerno, server) => {
+    const paths: string[] = [];
+    const counting = new KernoClient(server.url, { fetch: (input, init) => (paths.push(`${init?.method} ${new URL(String(input)).pathname}`), fetch(input, init)) });
+    const memory = kernoMemory(counting, { type: 'note_to_self' });
+    assert.equal(await kerno.getFulltext('note_to_self'), false, 'off by default');
+    await memory.remember('the orchid needs water on fridays');
+    await memory.remember('the fern likes shade');
+    assert.deepEqual((await memory.recall('orchid')).map((m) => m.text), ['the orchid needs water on fridays']);
+    assert.equal(await kerno.getFulltext('note_to_self'), true);
+    assert.equal(paths.filter((p) => p.endsWith('/fulltext')).length, 1, 'turned on once, not on every call');
   }));

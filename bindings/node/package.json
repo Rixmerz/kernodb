@@ -1,6 +1,6 @@
 {
   "name": "@rixmerz/kernodb",
-  "version": "1.0.0-alpha.1",
+  "version": "1.0.0-alpha.2",
   "description": "Kerno, an embedded database of units, revisions and relations, for Node.js",
   "keywords": ["database", "embedded", "memory", "ai", "napi-rs"],
   "license": "MIT OR Apache-2.0",

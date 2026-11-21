@@ -3,7 +3,8 @@
 Kerno is an embedded database of **units** (typed, versioned records), the **relations**
 between them, and queries over both. This crate is the one entry point: `kerno::Db`.
 
-> **Alpha (1.0.0-alpha.1).** The on-disk format v1 is frozen
+> **Alpha (1.0.0-alpha.2).** It does not open databases written by 1.0.0-alpha.1: see
+> [Upgrading from 1.0.0-alpha.1](#upgrading-from-100-alpha1). The on-disk format v1 is frozen
 > ([ADR-0013](https://github.com/Rixmerz/kernodb/blob/main/docs/adr/0013-format-v1-and-engine-protocol.md));
 > the test vectors fail if one of its bytes changes. Narrative search is an experiment and is not part of
 > this crate. Benchmarks and long fuzzing runs are not yet certified. There is no 1.0 stability promise for the API yet.
@@ -11,7 +12,7 @@ between them, and queries over both. This crate is the one entry point: `kerno::
 ## Install
 
 ```sh
-cargo add kernodb@1.0.0-alpha.1
+cargo add kernodb@1.0.0-alpha.2
 ```
 
 ## Quick start
@@ -48,10 +49,27 @@ Everything the layers below offer is still reachable: `kerno::units` is `kerno-u
 To administer a database directory from a shell, use the `kerno` command-line tool, which is not published
 to crates.io in this alpha.
 
+## Keyword search (opt-in per type)
+
+No unit type is keyword-indexed (BM25) until you turn it on. The setting is stored in the
+database, and turning it on for a type that already has units indexes them in the same commit:
+
+```rust
+db.set_fulltext("note", true)?;
+let rust = db.store("note", "Rust has no garbage collector")?;
+db.store("config", "garbage collector settings")?; // not indexed, never a hit
+let hits = db.search_text("garbage collector", 10)?; // best first
+assert_eq!(hits[0].unit, rust);
+```
+
+Indexing costs writes several times over and about 3.5x the disk, so turn it on only for the types
+you search by text. `db.fulltext(type)` says whether a type is indexed.
+
 ## Hybrid retrieval
 
 `Db::hybrid_search` answers one query over keywords (BM25), vectors and relations, fused by weighted
 reciprocal rank fusion (`k = 60`; each leg has weight 1 by default, and a weight of 0 switches that leg off).
+The keyword leg reads only the types turned on with `set_fulltext`.
 The vector leg is an index you own and keep in step with your units: a `kerno::units::AnnIndex` (HNSW) or,
 for exact search, a `kerno::units::assoc_rank::VectorSet`. Units that are not active are never hits.
 A complete query is in `crates/kerno/tests/db.rs` (`hybrid_search_fuses_text_hnsw_and_graph`).
@@ -159,3 +177,24 @@ fn main() -> Result<(), kerno::Error> {
 ## License
 
 Licensed under either of the Apache License, Version 2.0 or the MIT license, at your option. The license texts are in the package (`LICENSE-APACHE`, `LICENSE-MIT`).
+
+## Storage
+
+New tables are LZ4-compressed when that makes them smaller (on by default:
+`kerno::Config::block_compression`). On a real store that halved the disk. Payloads are at most
+1 MiB, and a commit holds at most 10,000 operations unless the database is opened with
+`Db::open_with_limits`.
+
+## Upgrading from 1.0.0-alpha.1
+
+1.0.0-alpha.2 refuses a database written by alpha.1 (`Error::LayerTooOld`) and changes nothing in
+it. To carry one over:
+
+```sh
+kerno old-db export old.kexp        # with the 1.0.0-alpha.1 CLI
+kerno import old.kexp new-db        # with the 1.0.0-alpha.2 CLI
+```
+
+Then call `db.set_fulltext(type, true)` for every type you search by text, and redefine schemas
+and indexes: an export holds neither. The details are in
+[the compatibility document](https://github.com/Rixmerz/kernodb/blob/main/docs/compatibility.md).

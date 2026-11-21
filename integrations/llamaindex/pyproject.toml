@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kerno-llamaindex"
-version = "1.0.0a1"
+version = "1.0.0a2"
 description = "LlamaIndex vector store on a Kerno database server"
 readme = "README.md"
 requires-python = ">=3.10"

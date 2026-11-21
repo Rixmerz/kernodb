@@ -881,6 +881,12 @@ impl Db {
         self.with(|db| db.set_fulltext(&unit_type, enabled))
     }
 
+    /// Whether `unitType` is keyword-indexed (off by default).
+    #[napi]
+    pub fn fulltext(&self, unit_type: String) -> Result<bool> {
+        self.with(|db| db.fulltext(&unit_type))
+    }
+
     /// Gives `unitType` a schema.
     #[napi]
     pub fn define_schema(&self, unit_type: String, fields: Vec<FieldSpec>) -> Result<()> {

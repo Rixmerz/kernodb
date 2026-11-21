@@ -150,6 +150,8 @@ class Database:
         """Delete `id` with a tombstone revision (and its relations with `cascade`)."""
     def relations(self, relation_type: str | None = None) -> list[Relation]:
         """Every live relation (optionally of one type), in one scan."""
+    def fulltext(self, unit_type: str) -> bool:
+        """Whether the type is keyword-indexed (off by default)."""
     def set_fulltext(self, unit_type: str, enabled: bool) -> None:
         """Keyword-index a type or not (off by default); its units follow in the same commit."""
     def last_commit_seq(self) -> int: ...

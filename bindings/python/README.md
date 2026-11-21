@@ -7,8 +7,9 @@ its data in a directory on disk. There is no server.
 
 The package is `kernodb`; the module you import is `kerno`.
 
-> **Alpha.** The on-disk format is frozen, the API is not. Expect breaking changes between
-> alpha releases. See the [changelog](https://github.com/Rixmerz/kernodb/blob/main/CHANGELOG.md).
+> **Alpha (1.0.0a2).** It does not open databases written by 1.0.0a1 (see
+> [Upgrading](#upgrading-from-100-alpha1)), and the keyword index is opt-in per type. The on-disk
+> format is frozen, the API is not. Expect breaking changes between alpha releases. See the [changelog](https://github.com/Rixmerz/kernodb/blob/main/CHANGELOG.md).
 
 ## Install
 
@@ -181,6 +182,7 @@ never return wrong data.
 | `db.compare(id, a, b)` | `Comparison` (`a`, `b`: the two `Revision`s with payloads; `same_content`). Takes the unit id, as the Rust call does |
 | `db.read_as_of(id, commit_seq)` | the `Revision` in force then, or `None` before creation. A sequence past the last commit reads now |
 | `db.set_fulltext(type, enabled)` | `None`. Keyword-index a type (off by default); its active units follow in the same commit |
+| `db.fulltext(type)` | `bool`: whether the type is keyword-indexed |
 | `db.last_commit_seq()` | the sequence of the last commit |
 | `db.define_schema(type, fields)` / `db.create_index(type, field)` | `None` |
 | `db.store_document(type, dict)` / `db.update_document(id, dict)` / `db.read_document(id)` | id / `None` / `dict` or `None` |
@@ -271,6 +273,21 @@ never sees half of a change set.
   deleted units, so `query(lifecycle=...)` reads every unit's head instead of looking one up.
 - Deleting a unit keeps its revisions (and their payloads) until a retention policy drops them,
   so deletes do not shrink the store. `compact()` reclaims only what retention removed.
+
+## Upgrading from 1.0.0-alpha.1
+
+1.0.0-alpha.2 does not open a database written by alpha.1. Opening one fails with an error whose
+message says the database's `layer_version` predates the format of this build and to export and
+import it. Nothing in the directory changes. To carry it over, export it with the
+alpha.1 command-line tool and import it with the alpha.2 one:
+
+```sh
+kerno old-db export old.kexp        # kerno CLI of 1.0.0-alpha.1
+kerno import old.kexp new-db        # kerno CLI of 1.0.0-alpha.2
+```
+
+Then turn on the keyword index of every type you search by text (it is off by default in
+alpha.2), and define again the schemas and indexes: an export holds neither.
 
 ## Development
 
