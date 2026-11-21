@@ -71,6 +71,7 @@ lock: any number of reader processes read beside the writer and beside each othe
 | A second read-write `Db` in the same process | `Error::Locked`, for the same reason. Share one `Db`. |
 | `verify` or `inspect` on an open database | `Error::Locked`. They are for a store nobody writes. |
 | The owner exits, crashes or is killed (`kill -9`) | The operating system releases the lock with the process. The next open recovers the database from its log: every commit that returned is there. |
+| A thread starts a child process (`fork` and `exec`) while a `Db` is open in another thread | Until the child execs it holds a copy of the `LOCK` file descriptor, and the lock is held as long as any copy is. A directory closed and opened again in that window gets `Error::Locked`, at once, though no one holds it for long. A host that spawns processes from threads and reopens a directory right after closing it should retry on `is_locked()` with a short sleep, or take turns with its own spawning. |
 
 **Readers.** A read-only open reads the `MANIFEST`, the tables it names and the live logs, and
 replays the logs in memory. It writes nothing: no `LOCK`, no recovery, no deletion. The state it

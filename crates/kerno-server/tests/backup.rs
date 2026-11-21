@@ -7,6 +7,7 @@ mod common;
 
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use common::{Reply, Server, TempDir};
@@ -17,6 +18,16 @@ use serde_json::{Value, json};
 
 const ACME: &str = "acme-0000000000000000000000000000000001";
 const GLOBEX: &str = "globex-00000000000000000000000000000001";
+
+/// The tests of this file take turns. Most of them start a server process, and a child holds a
+/// copy of every file its parent has open until it execs: if another test had a restored database
+/// open at that moment, its `LOCK` stays held by the child after the test closes it, and opening
+/// the directory (`restored`, `notes_in`) fails with `Locked`.
+static TURNS: Mutex<()> = Mutex::new(());
+
+fn take_turn() -> MutexGuard<'static, ()> {
+    TURNS.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// A `file://` URL for `path`: `file:///srv/x` on Unix, `file:///C:/x` on Windows (issue #4).
 fn url_of(path: &Path) -> String {
@@ -76,6 +87,7 @@ fn log_lines(path: &Path) -> Vec<Value> {
 
 #[test]
 fn a_server_ships_while_it_runs_and_a_last_time_when_it_stops() {
+    let _turn = take_turn();
     let t = TempDir::new();
     let store = t.0.join("store");
     let log = t.0.join("server.log");
@@ -120,6 +132,7 @@ fn a_server_ships_while_it_runs_and_a_last_time_when_it_stops() {
 
 #[test]
 fn a_clean_stop_ships_the_commits_no_tick_has_seen() {
+    let _turn = take_turn();
     let t = TempDir::new();
     let store = t.0.join("store");
     let url = url_of(&store);
@@ -135,6 +148,7 @@ fn a_clean_stop_ships_the_commits_no_tick_has_seen() {
 
 #[test]
 fn a_server_that_died_takes_a_new_base_when_it_starts_again() {
+    let _turn = take_turn();
     let t = TempDir::new();
     let store = t.0.join("store");
     let url = url_of(&store);
@@ -158,6 +172,7 @@ fn a_server_that_died_takes_a_new_base_when_it_starts_again() {
 
 #[test]
 fn each_tenant_has_its_own_backups_and_the_route_needs_its_token() {
+    let _turn = take_turn();
     let t = TempDir::new();
     let tokens = t.0.join("tokens");
     std::fs::write(&tokens, format!("{} acme\n{} globex\n", hash_hex(ACME), hash_hex(GLOBEX))).unwrap();
@@ -180,12 +195,16 @@ fn each_tenant_has_its_own_backups_and_the_route_needs_its_token() {
         ([("Authorization", &*format!("Bearer {ACME}"))], [("Authorization", &*format!("Bearer {GLOBEX}"))]);
     note(&server, &acme, "acme's");
     note(&server, &globex, "globex's");
+    // Two tenants, a base each at the start. Wait for both before asking for one: a base taken on
+    // demand ahead of a tenant's first tick is that tenant's only base (the tick finds it and takes
+    // none), and the server is up and answering within a millisecond of starting that tick.
+    wait_for(&server, "kerno_backup_bases_total", 2);
     // No token, no backup; the token of a tenant backs up that tenant.
     let no_token: Reply = server.call("POST", "/v1/backup", &[], Some(&json!({})));
     assert_eq!(no_token.status, 401);
     let base = server.call("POST", "/v1/backup", &acme, Some(&json!({})));
     assert_eq!(base.status, 201, "{}", String::from_utf8_lossy(&base.body));
-    // Two tenants, a base each at the start: the counter sums them.
+    // The counter sums the two start bases and the one on demand.
     wait_for(&server, "kerno_backup_bases_total", 3);
     assert!(server.stop().success());
 
@@ -198,6 +217,7 @@ fn each_tenant_has_its_own_backups_and_the_route_needs_its_token() {
 
 #[test]
 fn without_backups_the_route_says_so_and_the_metrics_have_no_backup_family() {
+    let _turn = take_turn();
     let t = TempDir::new();
     let server = Server::start(&t.db());
     let reply = server.post("/v1/backup", &json!({}));
@@ -209,6 +229,7 @@ fn without_backups_the_route_says_so_and_the_metrics_have_no_backup_family() {
 
 #[test]
 fn a_bad_backup_flag_or_location_stops_the_server_before_it_listens() {
+    let _turn = take_turn();
     let t = TempDir::new();
     let db = t.db();
     let run = |extra: &[&str]| {
