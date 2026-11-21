@@ -6,6 +6,8 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
+use kerno::Config;
+use kerno::storage::PlatformPolicy;
 use kerno_server::app::App;
 use kerno_server::args::{self, Args, USAGE};
 use kerno_server::auth::{MIN_TOKEN_LEN, hash_hex};
@@ -165,7 +167,14 @@ async fn run(argv: Vec<String>) -> Result<(), String> {
         return Ok(());
     };
     tracing_subscriber::fmt().json().with_writer(std::io::stderr).with_current_span(false).init();
-    let app = Arc::new(App::open(&args.store, args.backup.as_ref(), &args.fulltext)?);
+    // Where `Sync` durability is not verified (anywhere but Linux) the server starts and says so
+    // once; KERNO_REQUIRE_VERIFIED_DURABILITY=1 refuses to start instead.
+    let policy = PlatformPolicy::from_env(true);
+    if let Some(warning) = policy.warning {
+        tracing::warn!("{warning}");
+    }
+    let config = Config { allow_unverified_platform: policy.allow_unverified_platform, ..Config::default() };
+    let app = Arc::new(App::open(&args.store, args.backup.as_ref(), &args.fulltext, &config)?);
     let served = serve(&app, &args).await;
     // Every transport has stopped, so this is the last handle unless a handler thread is still
     // finishing; dropping it closes the databases too, only without a report.

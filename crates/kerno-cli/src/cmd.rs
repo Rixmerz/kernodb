@@ -8,7 +8,7 @@ use std::io::Write;
 use std::path::Path;
 
 use kerno_core::vfs::StdVfs;
-use kerno_storage::{AccessMode, Config, KernoDb, VerifyOptions};
+use kerno_storage::{AccessMode, Config, KernoDb, PlatformPolicy, VerifyOptions};
 use kerno_units::{
     Access, AsOf, Direction, FingerprintKey, HistoryQuery, Lifecycle, Plan, PublicId, Query, RelationQuery, UnitConfig,
     UnitDb, UnitFilter, UnitId, UnitSnapshot, UnitVerifyReport,
@@ -23,11 +23,27 @@ fn failure(what: &str, e: impl std::fmt::Display) -> CliError {
     CliError::Failure(format!("{what}: {e}"))
 }
 
-/// Opens the database in `dir`, which must exist already.
+/// Prints the warning of an open that went ahead with unverified durability, after the open: a
+/// command that fails to open prints its one error line and nothing else.
+fn warn(policy: &PlatformPolicy) {
+    if let Some(warning) = policy.warning {
+        eprintln!("kerno: warning: {warning}");
+    }
+}
+
+/// Opens the database in `dir`, which must exist already. Where `Sync` durability is not verified
+/// the open goes ahead (and warns when it can write) unless `KERNO_REQUIRE_VERIFIED_DURABILITY` is set.
 fn open(dir: &Path, access: AccessMode) -> Result<Db, CliError> {
-    let cfg = Config { access, create_if_missing: false, ..Config::default() };
+    let policy = PlatformPolicy::from_env(access == AccessMode::ReadWrite);
+    let cfg = Config {
+        access,
+        create_if_missing: false,
+        allow_unverified_platform: policy.allow_unverified_platform,
+        ..Config::default()
+    };
     let what = format!("cannot open {}", dir.display());
     let engine = KernoDb::open(StdVfs::shared(), dir, &cfg).map_err(|e| failure(&what, e))?;
+    warn(&policy);
     UnitDb::from_engine(engine, &UnitConfig::default()).map_err(|e| failure(&what, e))
 }
 
@@ -530,10 +546,16 @@ pub fn import(opts: &Opts) -> Result<Output, CliError> {
         return Err(CliError::Failure(format!("{} exists and is not an empty directory", new_dir.display())));
     }
     // The engine creates a missing directory itself and syncs its entries.
-    let cfg = Config { create_if_missing: true, ..Config::default() };
+    let policy = PlatformPolicy::from_env(true);
+    let cfg = Config {
+        create_if_missing: true,
+        allow_unverified_platform: policy.allow_unverified_platform,
+        ..Config::default()
+    };
     let done = KernoDb::open(StdVfs::shared(), new_dir, &cfg)
         .map_err(|e| failure(&format!("cannot create {}", new_dir.display()), e))
         .and_then(|engine| {
+            warn(&policy);
             let db = UnitDb::from_engine(engine, &UnitConfig::default())?;
             let report = kerno_units::import::import(&db, &bytes);
             let closed = db.close();

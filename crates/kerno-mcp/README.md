@@ -21,6 +21,14 @@ The database directory comes from `--db <dir>` or, if the flag is absent, from t
 environment variable `KERNO_MCP_DB`. It is created if it does not exist. One process at a
 time can hold a directory: a second server on the same one exits with a "locked" message.
 
+**Windows and macOS.** Kerno verifies the durability of its default `Sync` mode on Linux only. On
+another platform `kerno-mcp` still opens the database with `Sync` and prints one warning line on
+stderr (never on stdout, which is the protocol): `kerno-mcp: warning: durability is not verified on
+this platform ...`. A crash or power loss may lose acknowledged writes there. To refuse to run
+instead, set `KERNO_REQUIRE_VERIFIED_DURABILITY=1`; the server then exits with `durability not
+verified on this platform` and writes nothing. See
+[docs/compatibility.md](../../docs/compatibility.md#24-durability-on-platforms-other-than-linux).
+
 ## Tools
 
 | Tool | What it does |
