@@ -1,6 +1,8 @@
 """Kerno: an embedded database of units, the relations between them, and queries over both."""
 
 from kerno._kerno import (
+    Comparison,
+    HybridHit,
     CorruptionError,
     Database,
     DeletedError,
@@ -19,6 +21,8 @@ from kerno._kerno import (
 )
 
 __all__ = [
+    "Comparison",
+    "HybridHit",
     "CorruptionError",
     "Database",
     "DeletedError",

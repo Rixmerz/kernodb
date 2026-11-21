@@ -14,6 +14,8 @@ __all__ = [
     "PayloadTooLargeError",
     "PrunedError",
     "SchemaError",
+    "Comparison",
+    "HybridHit",
     "Relation",
     "Revision",
     "Unit",
@@ -48,6 +50,9 @@ class Unit:
     def lifecycle(self) -> Literal["active", "archived", "deleted"]: ...
     @property
     def revision(self) -> int: ...
+    @property
+    def oldest_revision(self) -> int:
+        """The oldest revision retention still keeps (1 until it prunes the unit)."""
     @property
     def payload(self) -> bytes | None:
         """The content; `None` for a deleted unit."""
@@ -85,6 +90,37 @@ class Revision:
     def payload(self) -> bytes | None:
         """The verified content, when asked for and present."""
 
+class Comparison:
+    """Two revisions of one unit, from `compare`."""
+
+    @property
+    def a(self) -> Revision: ...
+    @property
+    def b(self) -> Revision: ...
+    @property
+    def same_content(self) -> bool: ...
+
+class HybridHit:
+    """One hit of `hybrid_search`; a signal's score and rank are `None` when it missed the unit."""
+
+    @property
+    def id(self) -> str: ...
+    @property
+    def score(self) -> float:
+        """The sum of the signal scores."""
+    @property
+    def keyword_score(self) -> float | None: ...
+    @property
+    def vector_score(self) -> float | None: ...
+    @property
+    def relation_score(self) -> float | None: ...
+    @property
+    def keyword_rank(self) -> int | None: ...
+    @property
+    def vector_rank(self) -> int | None: ...
+    @property
+    def relation_rank(self) -> int | None: ...
+
 class Database:
     """An open Kerno database. Use it as a context manager, or call `close()`."""
 
@@ -101,8 +137,13 @@ class Database:
         relation_type: str | None = None,
     ) -> list[Relation]:
         """Relations that start at (`"out"`) or end at (`"in"`) the unit."""
-    def query(self, unit_type: str | None = None, schema_version: int | None = None) -> list[Unit]:
-        """Every active unit, in id order, optionally narrowed by type and schema version."""
+    def query(
+        self,
+        unit_type: str | None = None,
+        schema_version: int | None = None,
+        lifecycle: Literal["active", "archived", "deleted", "all"] = "active",
+    ) -> list[Unit]:
+        """Units in id order, narrowed by type, schema version and lifecycle (active by default)."""
     def update(self, id: str, payload: str | bytes, if_changed: bool = False) -> bool:
         """Replace the payload of `id`; returns whether a revision was written."""
     def delete(self, id: str, cascade: bool = False) -> None:
@@ -119,7 +160,35 @@ class Database:
     def update_document(self, id: str, document: dict[str, FieldValue]) -> None: ...
     def read_document(self, id: str) -> dict[str, FieldValue] | None: ...
     def find(self, unit_type: str, field: str, value: FieldValue) -> list[Unit]: ...
+    def find_range(
+        self,
+        unit_type: str,
+        field: str,
+        low: FieldValue | None = None,
+        high: FieldValue | None = None,
+        limit: int | None = None,
+    ) -> list[Unit]:
+        """Active units whose indexed field is in `[low, high]` (`None` = open end), by value."""
     def execute(self, query: str) -> dict[str, object]: ...
+    def explain(self, query: str) -> dict[str, object]:
+        """How `execute` would run `query`: candidates with costs, the chosen one, the joins."""
+    def hybrid_search(
+        self,
+        text: str | None = None,
+        vector: list[float] | None = None,
+        vectors: dict[str, list[float]] | None = None,
+        seeds: list[str] | None = None,
+        *,
+        keyword_weight: int = 1,
+        vector_weight: int = 1,
+        relation_weight: int = 1,
+        limit: int = 10,
+        candidates: int = 100,
+        rrf_k: int = 60,
+        max_depth: int = 2,
+        metric: Literal["cosine", "dot"] = "cosine",
+    ) -> list[HybridHit]:
+        """Fuse keyword (BM25), vector and relation signals by reciprocal rank fusion."""
     def unrelate(self, relation_id: str) -> None:
         """Remove a relation."""
     def commit(
@@ -131,8 +200,18 @@ class Database:
         detailed: bool = False,
     ) -> list[str] | dict[str, object]:
         """Commit ops atomically (see the README for the op list)."""
-    def history(self, id: str, limit: int = 100, with_payload: bool = False) -> list[Revision]:
-        """The newest `limit` revisions of `id`, newest first."""
+    def history(
+        self,
+        id: str,
+        limit: int = 100,
+        with_payload: bool = False,
+        from_revision: int | None = None,
+        to_revision: int | None = None,
+        order: Literal["desc", "asc"] = "desc",
+    ) -> list[Revision]:
+        """Up to `limit` revisions of `id` in `[from_revision, to_revision)`, newest first by default."""
+    def compare(self, id: str, a: int, b: int) -> Comparison:
+        """Revisions `a` and `b` of unit `id`, with payloads, and whether their content is equal."""
     def read_as_of(self, id: str, commit_seq: int) -> Revision | None:
         """The revision in force once `commit_seq` committed; `None` before creation."""
     def verify(self) -> dict[str, object]:

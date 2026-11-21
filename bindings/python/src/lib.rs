@@ -4,13 +4,17 @@
 //! payloads as `bytes` (a `str` is stored as its UTF-8 bytes), and every engine failure becomes
 //! a `kerno.KernoError`.
 
+use std::collections::HashMap;
+use std::ops::Bound as Range;
 use std::path::PathBuf;
 use std::sync::RwLock;
 
-use kerno::units::{HistoryQuery, RevisionKind, UnitAt};
+use kerno::units::assoc_rank::{VectorMetric, VectorSet};
+use kerno::units::hybrid::RRF_SCALE;
+use kerno::units::{Access, AsOf, HistoryQuery, Order, RevNo, RevisionKind, UnitAt};
 use kerno::{
-    AccessMode, Batch, CommitMeta, Config, Db, Direction, Document, Endpoint, FieldDef, FieldType, FieldValue,
-    Lifecycle, RelationId, UnitFilter, UnitId,
+    AccessMode, AssocQuery, Batch, CommitMeta, Config, Db, Direction, Document, Endpoint, FieldDef, FieldType,
+    FieldValue, HybridQuery, HybridWeights, Lifecycle, QueryPlan, RelationId, UnitFilter, UnitId, VectorLeg,
 };
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyValueError};
@@ -47,6 +51,9 @@ create_exception!(
     KernoError,
     "The type's schema refused the document (or the payload is not a document)."
 );
+
+/// Units `query(lifecycle=...)` reads per `state_as_of` page.
+const STATE_PAGE: usize = 256;
 
 fn engine_error(e: kerno::Error) -> PyErr {
     use kerno::Error as E;
@@ -234,6 +241,10 @@ struct Unit {
     lifecycle: &'static str,
     #[pyo3(get)]
     revision: u64,
+    /// The oldest revision retention still keeps: `history(from_revision=...)` and `read_as_of`
+    /// fail with `PrunedError` below it. 1 until retention prunes the unit.
+    #[pyo3(get)]
+    oldest_revision: u64,
     payload: Option<Vec<u8>>,
 }
 
@@ -258,6 +269,7 @@ impl From<kerno::Unit> for Unit {
             schema_version: u.schema_version,
             lifecycle: lifecycle_name(u.lifecycle),
             revision: u.head.0,
+            oldest_revision: u.oldest.0,
             payload: u.payload,
         }
     }
@@ -280,6 +292,49 @@ struct Relation {
 impl Relation {
     fn __repr__(&self) -> String {
         format!("Relation(from_id={:?}, to_id={:?}, relation_type={:?})", self.from_id, self.to_id, self.relation_type)
+    }
+}
+
+/// Two revisions of one unit, from `compare`.
+#[pyclass(frozen, module = "kerno")]
+struct Comparison {
+    #[pyo3(get)]
+    a: Py<Revision>,
+    #[pyo3(get)]
+    b: Py<Revision>,
+    /// Same content hash and same payload bytes (two tombstones count as the same).
+    #[pyo3(get)]
+    same_content: bool,
+}
+
+/// One hit of `hybrid_search`. A score is that signal's share of `score`; it and its rank are
+/// `None` when the signal did not find the unit.
+#[pyclass(frozen, module = "kerno", name = "HybridHit")]
+struct SearchHit {
+    #[pyo3(get)]
+    id: String,
+    /// The sum of the signal scores.
+    #[pyo3(get)]
+    score: f64,
+    #[pyo3(get)]
+    keyword_score: Option<f64>,
+    #[pyo3(get)]
+    vector_score: Option<f64>,
+    #[pyo3(get)]
+    relation_score: Option<f64>,
+    /// 1-based rank of the unit in the keyword (BM25) signal.
+    #[pyo3(get)]
+    keyword_rank: Option<u32>,
+    #[pyo3(get)]
+    vector_rank: Option<u32>,
+    #[pyo3(get)]
+    relation_rank: Option<u32>,
+}
+
+#[pymethods]
+impl SearchHit {
+    fn __repr__(&self) -> String {
+        format!("HybridHit(id={:?}, score={})", self.id, self.score)
     }
 }
 
@@ -392,11 +447,53 @@ impl Database {
         })
     }
 
-    /// Every active unit, in id order; `unit_type` and `schema_version` narrow it.
-    #[pyo3(signature = (unit_type=None, schema_version=None))]
-    fn query(&self, py: Python<'_>, unit_type: Option<&str>, schema_version: Option<u32>) -> PyResult<Vec<Unit>> {
+    /// The units in id order; `unit_type` and `schema_version` narrow them. `lifecycle` is
+    /// "active" (the default), "archived", "deleted" or "all". A deleted unit has no payload.
+    #[pyo3(signature = (unit_type=None, schema_version=None, lifecycle="active"))]
+    fn query(
+        &self,
+        py: Python<'_>,
+        unit_type: Option<&str>,
+        schema_version: Option<u32>,
+        lifecycle: &str,
+    ) -> PyResult<Vec<Unit>> {
+        let wanted = match lifecycle {
+            "active" => Some(Lifecycle::Active),
+            "archived" => Some(Lifecycle::Archived),
+            "deleted" => Some(Lifecycle::Deleted),
+            "all" => None,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "lifecycle must be 'active', 'archived', 'deleted' or 'all', not {other:?}"
+                )));
+            }
+        };
         let filter = UnitFilter { unit_type: unit_type.map(str::to_owned), schema_version };
-        self.with_db(py, |db| Ok(db.query(&filter).map_err(engine_error)?.into_iter().map(Unit::from).collect()))
+        self.with_db(py, |db| {
+            if wanted == Some(Lifecycle::Active) {
+                return Ok(db.query(&filter).map_err(engine_error)?.into_iter().map(Unit::from).collect());
+            }
+            // ponytail: reads every unit's head through `state_as_of` (linear in the store, and
+            // it verifies each payload); the engine has no index of archived or deleted units.
+            let snap = db.unit_db().snapshot().map_err(engine_error)?;
+            let at = AsOf::Seq(snap.seq());
+            let (mut out, mut after) = (Vec::new(), None);
+            loop {
+                let page = snap.state_as_of(at, after, STATE_PAGE).map_err(engine_error)?;
+                for (id, state) in &page {
+                    let (UnitAt::Present(r) | UnitAt::DeletedAt(r)) = state else { continue };
+                    if wanted.is_some_and(|l| l != r.lifecycle) {
+                        continue;
+                    }
+                    let unit = snap.get_unit(*id).map_err(engine_error)?;
+                    out.extend(unit.filter(|u| filter.matches(&u.unit_type, u.schema_version)).map(Unit::from));
+                }
+                match page.last() {
+                    Some((id, _)) if page.len() == STATE_PAGE => after = Some(*id),
+                    _ => return Ok(out),
+                }
+            }
+        })
     }
 
     /// Replaces the payload of `id`, adding a revision; the earlier ones stay in its history.
@@ -534,6 +631,160 @@ impl Database {
         Ok(d)
     }
 
+    /// The active units of `unit_type` whose indexed `field` lies between `low` and `high`, both
+    /// inclusive; `None` leaves that end open. Ordered by value, then id. `limit` caps the
+    /// result (default: no cap). Floats order as numbers, text and bytes as bytes.
+    #[pyo3(signature = (unit_type, field, low=None, high=None, limit=None))]
+    fn find_range(
+        &self,
+        py: Python<'_>,
+        unit_type: &str,
+        field: &str,
+        low: Option<Bound<'_, PyAny>>,
+        high: Option<Bound<'_, PyAny>>,
+        limit: Option<usize>,
+    ) -> PyResult<Vec<Unit>> {
+        let end = |v: &Option<Bound<'_, PyAny>>| -> PyResult<Range<FieldValue>> {
+            Ok(match v {
+                Some(v) => Range::Included(to_field(v)?),
+                None => Range::Unbounded,
+            })
+        };
+        let (lo, hi) = (end(&low)?, end(&high)?);
+        self.with_db(py, |db| {
+            let units = db
+                .find_range(unit_type, field, lo.as_ref(), hi.as_ref(), limit.unwrap_or(usize::MAX))
+                .map_err(engine_error)?;
+            Ok(units.into_iter().map(Unit::from).collect())
+        })
+    }
+
+    /// How `execute` would answer `query`, without running it: `{"root_alias", "root_type",
+    /// "candidates": [{"access": "type_scan" | "field_index", "field", "cost"}], "chosen" (an
+    /// index into `candidates`), "joins": [...], "planner_version"}`.
+    fn explain<'py>(&self, py: Python<'py>, query: &str) -> PyResult<Bound<'py, PyDict>> {
+        let plan: QueryPlan = self.with_db(py, |db| db.explain(query).map_err(engine_error))?;
+        let d = PyDict::new(py);
+        d.set_item("root_alias", plan.root_alias)?;
+        d.set_item("root_type", plan.root_type)?;
+        let candidates = PyList::empty(py);
+        for c in plan.candidates {
+            let item = PyDict::new(py);
+            match c.access {
+                Access::TypeScan => {
+                    item.set_item("access", "type_scan")?;
+                    item.set_item("field", py.None())?;
+                }
+                Access::FieldIndex { field } => {
+                    item.set_item("access", "field_index")?;
+                    item.set_item("field", field)?;
+                }
+            }
+            item.set_item("cost", c.cost.0)?;
+            candidates.append(item)?;
+        }
+        d.set_item("candidates", candidates)?;
+        d.set_item("chosen", plan.chosen)?;
+        let joins = PyList::empty(py);
+        for j in plan.joins {
+            let item = PyDict::new(py);
+            item.set_item("alias", j.alias)?;
+            item.set_item("unit_type", j.unit_type)?;
+            item.set_item("relation_type", j.relation_type)?;
+            item.set_item("direction", if j.direction == Direction::Out { "out" } else { "in" })?;
+            item.set_item("from", j.from)?;
+            joins.append(item)?;
+        }
+        d.set_item("joins", joins)?;
+        d.set_item("planner_version", plan.planner_version)?;
+        Ok(d)
+    }
+
+    /// Fuses up to three signals by weighted reciprocal rank fusion, best first:
+    /// - keyword (BM25): `text`, over the types enabled with `set_fulltext`;
+    /// - vector: `vector` (the query) looked up in `vectors`, a `{unit id: vector}` dict you keep
+    ///   in step with your units (an exact, in-memory search; `metric` is "cosine" or "dot");
+    /// - relation: units reached from the `seeds` over at most `max_depth` hops.
+    ///
+    /// A signal runs when its input is given and its weight is above 0; at least one must run.
+    /// Each signal adds `weight / (rrf_k + rank)` to a unit's score. Only active units are hits.
+    #[pyo3(signature = (
+        text=None, vector=None, vectors=None, seeds=None, *,
+        keyword_weight=1, vector_weight=1, relation_weight=1,
+        limit=10, candidates=100, rrf_k=60, max_depth=2, metric="cosine"
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn hybrid_search(
+        &self,
+        py: Python<'_>,
+        text: Option<&str>,
+        vector: Option<Vec<f32>>,
+        vectors: Option<HashMap<String, Vec<f32>>>,
+        seeds: Option<Vec<String>>,
+        keyword_weight: u32,
+        vector_weight: u32,
+        relation_weight: u32,
+        limit: usize,
+        candidates: usize,
+        rrf_k: u32,
+        max_depth: u32,
+        metric: &str,
+    ) -> PyResult<Vec<SearchHit>> {
+        let metric = match metric {
+            "cosine" => VectorMetric::Cosine,
+            "dot" => VectorMetric::Dot,
+            other => return Err(PyValueError::new_err(format!("metric must be 'cosine' or 'dot', not {other:?}"))),
+        };
+        let set = match (&vector, vectors) {
+            (Some(q), Some(vs)) => {
+                let bad = |e: kerno::units::assoc_rank::VectorError| InvalidArgumentError::new_err(e.to_string());
+                let mut set = VectorSet::new(q.len(), metric).map_err(bad)?;
+                for (id, v) in vs {
+                    set.insert(UnitId(parse_id(&id)?), v).map_err(bad)?;
+                }
+                Some(set)
+            }
+            (None, None) => None,
+            _ => return Err(PyValueError::new_err("vector and vectors must be given together")),
+        };
+        let graph = seeds
+            .map(|s| {
+                let ids = s.iter().map(|id| parse_id(id).map(UnitId)).collect::<PyResult<Vec<_>>>()?;
+                Ok::<_, PyErr>(AssocQuery::new(ids, max_depth, candidates, kerno::units::assoc::MAX_ASSOC_VISITS))
+            })
+            .transpose()?;
+        let weights = HybridWeights { keyword: keyword_weight, vector: vector_weight, graph: relation_weight };
+        self.with_db(py, |db| {
+            let mut q = HybridQuery::new(limit);
+            q.text = text;
+            q.vector = set.as_ref().zip(vector.as_deref()).map(|(index, query)| VectorLeg { index, query });
+            q.graph = graph;
+            q.weights = weights;
+            q.rrf_k = rrf_k;
+            q.candidates = candidates;
+            let share = |weight: u32, rank: Option<u32>| {
+                rank.map(|r| {
+                    (u64::from(weight) * RRF_SCALE / (u64::from(rrf_k) + u64::from(r))) as f64 / RRF_SCALE as f64
+                })
+            };
+            Ok(db
+                .hybrid_search(&q)
+                .map_err(engine_error)?
+                .into_iter()
+                .map(|h| SearchHit {
+                    id: h.unit.to_string(),
+                    score: h.score as f64 / RRF_SCALE as f64,
+                    keyword_score: share(keyword_weight, h.ranks.keyword),
+                    vector_score: share(vector_weight, h.ranks.vector),
+                    relation_score: share(relation_weight, h.ranks.graph),
+                    keyword_rank: h.ranks.keyword,
+                    vector_rank: h.ranks.vector,
+                    relation_rank: h.ranks.graph,
+                })
+                .collect())
+        })
+    }
+
     /// Removes the relation `relation_id`.
     fn unrelate(&self, py: Python<'_>, relation_id: &str) -> PyResult<()> {
         let edge = RelationId(parse_id(relation_id)?);
@@ -624,19 +875,51 @@ impl Database {
         Ok(d.into_any())
     }
 
-    /// The newest `limit` revisions of `id`, newest first. `with_payload` reads and verifies
-    /// each revision's content.
-    #[pyo3(signature = (id, limit=100, with_payload=false))]
-    fn history(&self, py: Python<'_>, id: &str, limit: usize, with_payload: bool) -> PyResult<Vec<Revision>> {
+    /// Up to `limit` revisions of `id`, newest first (`order="desc"`) or oldest first
+    /// (`order="asc"`), among those in `[from_revision, to_revision)`; a missing bound is the
+    /// oldest kept or the newest. To page, pass the last revision returned as the next
+    /// `to_revision` (desc) or its successor as the next `from_revision` (asc). A
+    /// `from_revision` below `Unit.oldest_revision` raises `PrunedError`. `with_payload` reads
+    /// and verifies each revision's content.
+    #[pyo3(signature = (id, limit=100, with_payload=false, from_revision=None, to_revision=None, order="desc"))]
+    #[allow(clippy::too_many_arguments)]
+    fn history(
+        &self,
+        py: Python<'_>,
+        id: &str,
+        limit: usize,
+        with_payload: bool,
+        from_revision: Option<u64>,
+        to_revision: Option<u64>,
+        order: &str,
+    ) -> PyResult<Vec<Revision>> {
         let id = UnitId(parse_id(id)?);
         if limit == 0 {
             return Err(PyValueError::new_err("limit must be at least 1"));
         }
-        let q = HistoryQuery { with_payload, ..HistoryQuery::latest(limit) };
+        let order = match order {
+            "desc" => Order::Desc,
+            "asc" => Order::Asc,
+            other => return Err(PyValueError::new_err(format!("order must be 'desc' or 'asc', not {other:?}"))),
+        };
+        let q = HistoryQuery { from: from_revision.map(RevNo), to: to_revision.map(RevNo), order, limit, with_payload };
         self.with_db(py, |db| match db.unit_db().history(id, q) {
             Ok(revs) => Ok(revs.into_iter().map(Revision::from).collect()),
             Err(e) if is_not_found(&e) => Ok(Vec::new()),
             Err(e) => Err(engine_error(e)),
+        })
+    }
+
+    /// Revisions `a` and `b` of unit `id`, with their verified payloads, and whether their
+    /// content is the same. Raises `NotFoundError` for an unknown unit or revision and
+    /// `PrunedError` for a revision retention removed.
+    fn compare(&self, py: Python<'_>, id: &str, a: u64, b: u64) -> PyResult<Comparison> {
+        let id = UnitId(parse_id(id)?);
+        let c = self.with_db(py, |db| db.unit_db().compare(id, RevNo(a), RevNo(b)).map_err(engine_error))?;
+        Ok(Comparison {
+            a: Py::new(py, Revision::from(c.a))?,
+            b: Py::new(py, Revision::from(c.b))?,
+            same_content: c.same_content,
         })
     }
 
@@ -732,6 +1015,8 @@ fn _kerno(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Unit>()?;
     m.add_class::<Relation>()?;
     m.add_class::<Revision>()?;
+    m.add_class::<Comparison>()?;
+    m.add_class::<SearchHit>()?;
     m.add("KernoError", m.py().get_type::<KernoError>())?;
     m.add("NotFoundError", m.py().get_type::<NotFoundError>())?;
     m.add("DeletedError", m.py().get_type::<DeletedError>())?;
