@@ -319,6 +319,97 @@ impl UnitVerifyReport {
     }
 }
 
+/// The records of one kind that a damaged range of the engine's keys may hold.
+///
+/// The bounds are a superset, never a subset: a unit at a bound may have
+/// other records in the intact neighbour block, and a unit strictly between
+/// the bounds may have had a record in the damaged one. A unit outside
+/// `[from_unit, to_unit]` has no record of this kind in the range.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DamagedSpan {
+    /// The record kind by its design name (`UNIT_HEAD`, `REV_META`,
+    /// `REV_PAYLOAD`, `CHANGESET`, `REL`, ...); `UNKNOWN` for a tag this
+    /// layer does not know.
+    pub kind: &'static str,
+    /// The first byte of the keys.
+    pub tag: u8,
+    /// Whether the key of this kind starts with the id of a unit. If not
+    /// (change sets, relations, index metadata, the layer mark), the whole
+    /// kind between the two bounds is at risk and the unit bounds are `None`.
+    pub keyed_by_unit: bool,
+    /// Lowest unit id at risk; `None`: from the first unit (or no unit).
+    pub from_unit: Option<UnitId>,
+    /// Highest unit id at risk; `None`: up to the last unit (or no unit).
+    pub to_unit: Option<UnitId>,
+}
+
+impl DamagedSpan {
+    /// Whether the records of `unit` of this kind may be in the damaged range.
+    pub fn may_hold(&self, unit: UnitId) -> bool {
+        self.keyed_by_unit && self.from_unit.is_none_or(|f| f <= unit) && self.to_unit.is_none_or(|t| unit <= t)
+    }
+}
+
+fn tag_name(tag: u8) -> (&'static str, bool) {
+    use crate::codec::*;
+    match tag {
+        TAG_LAYER_META => ("LAYER_META", false),
+        TAG_UNIT_HEAD => ("UNIT_HEAD", true),
+        TAG_REV_META => ("REV_META", true),
+        TAG_REV_PAYLOAD => ("REV_PAYLOAD", true),
+        TAG_CHANGESET => ("CHANGESET", false),
+        TAG_CS_MEMBER => ("CS_MEMBER", false),
+        TAG_REL => ("REL", false),
+        TAG_REL_OUT => ("REL_OUT", true),
+        TAG_REL_IN => ("REL_IN", true),
+        TAG_IDX_META => ("IDX_META", false),
+        TAG_IDX_PRIMARY => ("IDX_PRIMARY", true),
+        TAG_IDX_TYPE => ("IDX_TYPE", false),
+        TAG_DERIVED_DESC => ("DERIVED_DESC", false),
+        TAG_DERIVED_VEC => ("DERIVED_VEC", false),
+        TAG_DERIVED_SRC => ("DERIVED_SRC", false),
+        _ => ("UNKNOWN", false),
+    }
+}
+
+/// The unit id at the start of `key` (after the tag), when it has one.
+fn unit_in(key: &[u8]) -> Option<UnitId> {
+    let id: [u8; 16] = key.get(1..17)?.try_into().ok()?;
+    Some(UnitId(id))
+}
+
+/// What the keys from `start` to `end` (the range of a damaged block, as the
+/// engine's `verify` reports it) may hold, in the layer's terms: one span per
+/// record kind in the range, with the unit ids it can touch. Keys are ordered
+/// by tag and then by id, so a range inside one kind is a range of unit ids,
+/// and a kind strictly inside the range is damaged whole.
+///
+/// This reads no store and decodes no value: the keys of the range are all
+/// there is to read, and nothing here guesses a record's content. A range
+/// whose bounds are not keys of this layer is still answered, by tag.
+pub fn damaged_spans(start: &[u8], end: &[u8]) -> Vec<DamagedSpan> {
+    let (Some(&first), Some(&last)) = (start.first(), end.first()) else {
+        return Vec::new();
+    };
+    (first..=last)
+        .filter_map(|tag| {
+            let (kind, keyed_by_unit) = tag_name(tag);
+            // Only a kind the range ends in has a bound on its ids; a kind
+            // the range passes through is at risk from its first unit to its last.
+            let from_unit = (tag == first && keyed_by_unit).then(|| unit_in(start)).flatten();
+            let to_unit = (tag == last && keyed_by_unit).then(|| unit_in(end)).flatten();
+            // Tags no layer version defines, between two known ones, hold no key.
+            (kind != "UNKNOWN" || tag == first || tag == last).then_some(DamagedSpan {
+                kind,
+                tag,
+                keyed_by_unit,
+                from_unit,
+                to_unit,
+            })
+        })
+        .collect()
+}
+
 impl<E: TxnEngine> UnitDb<E> {
     /// Verifies the whole store at the latest commit (see the [module
     /// documentation](self)). Read-only.

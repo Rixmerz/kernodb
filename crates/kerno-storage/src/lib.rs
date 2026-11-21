@@ -77,4 +77,4 @@ pub use db::{CloseReport, CompactRangeReport, KernoDb, KernoSnapshot};
 pub use inspect::{FileInfo, FileType, FormatInfo, HeaderInfo, inspect};
 pub use metrics::Metrics;
 pub use txn::WriteTxn;
-pub use verify::{Issue, LevelReport, Orphan, VerifyOptions, VerifyReport, WalReport, verify};
+pub use verify::{DamagedRange, Issue, LevelReport, Orphan, VerifyOptions, VerifyReport, WalReport, verify};

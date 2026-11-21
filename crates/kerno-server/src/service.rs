@@ -569,3 +569,28 @@ fn vector_set(leg: &crate::api::VectorLeg) -> Res<VectorSet> {
     }
     Ok(set)
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+    use kerno_backup::MemStore;
+
+    /// A base taken on demand before the first tick is the database's base: the tick that follows
+    /// finds it and takes none. The server starts that tick as it starts to listen, so a client
+    /// that asks for a base at once can get there first; counting on a base from each is a race.
+    #[test]
+    fn a_base_on_demand_ahead_of_the_first_tick_leaves_the_tick_without_one() {
+        let dir = std::env::temp_dir().join(format!("kerno-server-service-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let svc = Service::open(&dir, &[]).unwrap().with_backups(Arc::new(MemStore::default()));
+        let bases = || svc.backup_stats().unwrap().bases.load(Ordering::Relaxed);
+        svc.backup_now().unwrap();
+        assert_eq!(bases(), 1);
+        assert!(svc.backup_tick().unwrap().base.is_none());
+        assert_eq!(bases(), 1);
+        svc.close().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

@@ -70,6 +70,42 @@ pub struct Issue {
     pub detail: String,
 }
 
+/// The keys a damaged part of a table stands for: what a caller needs to tell
+/// which records are at risk (the layer above decodes them into unit ids).
+/// A damaged block cannot be read, so the range comes from what is intact:
+/// the block's own index entry (its largest key), the one before it (the
+/// block starts after it) and the table's `smallest` for the first block. A
+/// table that does not open is covered whole, by the extent the MANIFEST
+/// records for it.
+///
+/// Keys are data: `Debug` prints their lengths only (I-29), the bytes are in
+/// the fields.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DamagedRange {
+    /// The table.
+    pub file: String,
+    pub start: Vec<u8>,
+    pub start_inclusive: bool,
+    pub end: Vec<u8>,
+    pub end_inclusive: bool,
+    /// The table did not open (or its filter or index is damaged), so the
+    /// range is the whole table's, not one block's.
+    pub whole_table: bool,
+}
+
+impl std::fmt::Debug for DamagedRange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DamagedRange")
+            .field("file", &self.file)
+            .field("start_len", &self.start.len())
+            .field("start_inclusive", &self.start_inclusive)
+            .field("end_len", &self.end.len())
+            .field("end_inclusive", &self.end_inclusive)
+            .field("whole_table", &self.whole_table)
+            .finish()
+    }
+}
+
 /// What the MANIFEST says about one level, as opposed to what was read.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LevelReport {
@@ -128,6 +164,11 @@ pub struct VerifyReport {
     /// Entries that are not engine files (REC-13).
     pub unknown: Vec<String>,
     pub issues: Vec<Issue>,
+    /// The key range behind each damaged table block (and each table that
+    /// could not be opened), one entry per block, so a damaged table is
+    /// more than one `Issue` per rule. Empty when no table is damaged;
+    /// damage in a WAL or the MANIFEST has no key range and is only an issue.
+    pub damaged: Vec<DamagedRange>,
 }
 
 impl VerifyReport {
@@ -179,6 +220,36 @@ impl Verifier<'_> {
                 Ok(())
             }
         }
+    }
+
+    /// The whole extent the MANIFEST records for `meta`, for a table that
+    /// cannot be read at all.
+    fn damaged_table(&mut self, name: &str, meta: &FileMeta) {
+        self.report.damaged.push(DamagedRange {
+            file: name.to_string(),
+            start: meta.smallest.clone(),
+            start_inclusive: true,
+            end: meta.largest.clone(),
+            end_inclusive: !meta.largest_exclusive,
+            whole_table: true,
+        });
+    }
+
+    /// Block `i` of `sst`: after the largest key of the block before it, up
+    /// to its own largest key.
+    fn damaged_block(&mut self, name: &str, sst: &SstMeta, i: usize) {
+        let (start, start_inclusive) = match i.checked_sub(1) {
+            Some(prev) => (sst.index[prev].last_key.clone(), false),
+            None => (sst.props.smallest_key.clone(), true),
+        };
+        self.report.damaged.push(DamagedRange {
+            file: name.to_string(),
+            start,
+            start_inclusive,
+            end: sst.index[i].last_key.clone(),
+            end_inclusive: true,
+            whole_table: false,
+        });
     }
 
     fn violation(&mut self, v: RuleViolation) {
@@ -316,6 +387,7 @@ impl Verifier<'_> {
             // A referenced table cannot disappear legitimately (RO-4).
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 self.issue(&name, None, "REC-5", "referenced by the MANIFEST but missing");
+                self.damaged_table(&name, meta);
                 return Ok(());
             }
             Err(e) => return Err(e.into()),
@@ -325,7 +397,10 @@ impl Verifier<'_> {
         let sst = match open_sst_from(&mut src, &ex) {
             Ok(sst) => sst,
             Err(ReadError::Source(e)) => return Err(e.into()),
-            Err(ReadError::Format(e)) => return self.format_issue(&name, e),
+            Err(ReadError::Format(e)) => {
+                self.damaged_table(&name, meta);
+                return self.format_issue(&name, e);
+            }
         };
         self.report.files.push(FileInfo {
             name: name.clone(),
@@ -338,6 +413,7 @@ impl Verifier<'_> {
         // report without `deep` shows the same refusal. With `deep` the blocks
         // are read all the same: they may name the rule that really broke.
         if let Err(e) = check_filter_holds_index_keys(&sst) {
+            self.damaged_table(&name, meta);
             self.format_issue(&name, e)?;
         }
         if self.opts.deep {
@@ -365,12 +441,14 @@ impl Verifier<'_> {
             match read {
                 Err(e) => {
                     intact = false;
+                    self.damaged_block(name, sst, i);
                     self.format_issue(name, e)?;
                 }
                 Ok(entries) => {
                     for e in &entries {
                         if let Err(err) = verifier.observe(e, handle.offset) {
                             intact = false;
+                            self.damaged_block(name, sst, i);
                             self.format_issue(name, err)?;
                             break;
                         }

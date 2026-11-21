@@ -2,13 +2,29 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use chat_history::{ChatHistory, Error, Role, UnitId};
 
-struct TempDir(PathBuf);
+/// The tests of this file take turns. `the_demo_runs_to_the_end` starts a process, and a child
+/// holds a copy of every file its parent has open until it execs: if a database was open in
+/// another test at that moment, its `LOCK` stays held by the child after the test closes it, and
+/// opening the directory again fails with `Locked`. A test that opens a database holds a
+/// `TempDir`, which holds this guard.
+static TURNS: Mutex<()> = Mutex::new(());
+
+fn take_turn() -> MutexGuard<'static, ()> {
+    TURNS.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+struct TempDir {
+    dir: PathBuf,
+    _turn: MutexGuard<'static, ()>,
+}
 
 impl TempDir {
     fn new() -> Self {
+        let turn = take_turn();
         static N: AtomicU32 = AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!(
             "kerno-chat-history-test-{}-{}",
@@ -16,17 +32,17 @@ impl TempDir {
             N.fetch_add(1, Ordering::SeqCst)
         ));
         let _ = std::fs::remove_dir_all(&dir);
-        TempDir(dir)
+        TempDir { dir, _turn: turn }
     }
 
     fn path(&self) -> &Path {
-        &self.0
+        &self.dir
     }
 }
 
 impl Drop for TempDir {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
@@ -127,6 +143,7 @@ fn a_session_name_finds_the_same_session_after_a_reopen() {
 
 #[test]
 fn the_demo_runs_to_the_end() {
+    let _turn = take_turn();
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_chat-history")).output().expect("run the demo");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "demo failed: {}", String::from_utf8_lossy(&out.stderr));

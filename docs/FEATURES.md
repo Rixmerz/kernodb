@@ -32,7 +32,7 @@ each table; 220 rows in total):
 
 | Section | Rows | IMPLEMENTED | PARTIAL | IN_PROGRESS | EXPERIMENTAL | PROPOSED | DEFERRED | REJECTED |
 |---|---|---|---|---|---|---|---|---|
-| 1 Engine identity | 13 | 7 | 6 | 0 | 0 | 0 | 0 | 0 |
+| 1 Engine identity | 13 | 8 | 5 | 0 | 0 | 0 | 0 | 0 |
 | 2 Storage | 20 | 19 | 0 | 0 | 0 | 1 | 0 | 0 |
 | 3 Data model | 16 | 14 | 2 | 0 | 0 | 0 | 0 | 0 |
 | 4 Revisions and time | 18 | 15 | 2 | 0 | 0 | 1 | 0 | 0 |
@@ -44,8 +44,8 @@ each table; 220 rows in total):
 | 10 Performance and operations | 18 | 7 | 11 | 0 | 0 | 0 | 0 | 0 |
 | 11 Adaptive optimisation | 14 | 6 | 3 | 0 | 3 | 2 | 0 | 0 |
 | 12 Integrations | 16 | 10 | 5 | 0 | 0 | 1 | 0 | 0 |
-| 13 Future | 15 | 3 | 3 | 0 | 0 | 7 | 1 | 1 |
-| **Total** | **220** | **119** | **48** | **0** | **18** | **29** | **5** | **1** |
+| 13 Future | 15 | 3 | 4 | 0 | 0 | 7 | 0 | 1 |
+| **Total** | **220** | **120** | **48** | **0** | **18** | **29** | **4** | **1** |
 
 Section 13 has 15 rows and each row is counted once. Its "IMPLEMENTED" and "PARTIAL" rows are features
 the owner asked to be marked as existing already.
@@ -75,14 +75,13 @@ Phase A and Phase C before Phase D, so every item below is needed before 1.0 by 
 **Ticked in ROADMAP.md but PARTIAL here.** These are not unticked, but a 1.0 reader would take them as done:
 
 - "File format and API compatibility promise" (Phase D, ticked). [docs/compatibility.md](compatibility.md) says "Status: proposed", and the crate version is 1.0.0-alpha.1. Row ENG-07 (PARTIAL).
-- "Concurrency across threads and processes" (Phase C, ticked). Only threads of one process share a database. A second process is refused with `Locked`. Row ENG-10 (PARTIAL), and [docs/concurrency.md](concurrency.md) §Processes.
 - "Pluggable embedding providers: a local model or a remote API" (Phase B, ticked). The crate ships a deterministic hashing provider (not semantic) and an OpenAI-compatible HTTP adapter. No local semantic model is in the crate. Row IDX-16 (PARTIAL).
 - "Memory hygiene ... summarizing old memory" (Phase B, ticked). Importance, dedup and expiry exist (rows REV-17, FUT-08). Summaries live in memory only, with no on-disk format ([docs/architecture/stage8-closure.md](architecture/stage8-closure.md), decision D8): row REV-18 (PARTIAL).
 - "Typed schemas" and "user-defined secondary indexes" (Phase C, ticked). The code exists and is tested, but [ADR-0021](adr/0021-typed-schemas-and-secondary-indexes.md) is still "Proposed, pending the owner's acceptance". Rows IDX-02 and DM-05 carry the gap.
 
 ### Contradictions between ROADMAP.md and the code
 
-- **Cross-process concurrency.** The ROADMAP's Phase C line says "across threads and processes". The code and [docs/concurrency.md](concurrency.md) say one process at a time owns a directory: the second process gets `Locked`, even read-only ([crates/kerno-storage/tests/process_lock.rs](../crates/kerno-storage/tests/process_lock.rs)). Row ENG-10.
+- **Cross-process concurrency: none open.** The ROADMAP's Phase C line says "many readers, one writer, across threads and processes". It holds: one writer process and any number of read-only processes share a directory ([ADR-0024](adr/0024-concurrent-read-only-opens.md), [docs/concurrency.md](concurrency.md) §Processes, [crates/kerno-storage/tests/read_only_processes.rs](../crates/kerno-storage/tests/read_only_processes.rs)). A second *writer* gets `Locked` ([crates/kerno-storage/tests/process_lock.rs](../crates/kerno-storage/tests/process_lock.rs)). Row ENG-10.
 
 ---
 
@@ -99,7 +98,7 @@ Phase A and Phase C before Phase D, so every item below is needed before 1.0 by 
 | ENG-07 | Stable, versioned public API | PARTIAL | `docs/compatibility.md` ("Status: proposed"); crate version 1.0.0-alpha.1 | The promise takes effect only when the owner declares 1.0 (decision D12) |
 | ENG-08 | Versioned on-disk format | IMPLEMENTED | `crates/kerno-storage/src/format/header.rs`, `crates/kerno-storage/src/format/features.rs`, `docs/file-format/v1.md`, `docs/adr/0013-format-v1-and-engine-protocol.md` (v1 frozen 2026-10-31) | ADR-0021 adds record families behind layer 6 (`docs/file-format/units-v6.md`), pending acceptance |
 | ENG-09 | Cross-version compatibility and migrations | PARTIAL | `crates/kerno-units/tests/layer_fixtures.rs`, `crates/kerno-storage/tests/format.rs`; a newer `layer_version` is refused (`crates/kerno-units/src/error.rs`) | Old versions are read; no migration step exists. `KIND_MIGRATION_RESERVED` in `crates/kerno-storage/src/format/manifest.rs` is a reserved constant only |
-| ENG-10 | Single writer, concurrent readers | PARTIAL | Inside one process: `crates/kerno/tests/concurrency.rs`, `docs/concurrency.md`. Across processes: `crates/kerno-storage/tests/process_lock.rs` (second process gets `Locked`) | Within one process: IMPLEMENTED. Across processes: not present (section 13) |
+| ENG-10 | Single writer, concurrent readers | IMPLEMENTED | Inside one process: `crates/kerno/tests/concurrency.rs`, `docs/concurrency.md`. Across processes: `crates/kerno-storage/tests/read_only_processes.rs` (a writer process that flushes and compacts, reader processes that see whole batches), `crates/kerno-storage/tests/read_only.rs` (no lock, `refresh`), `crates/kerno-storage/tests/process_lock.rs` (a second writer gets `Locked`), `docs/adr/0024-concurrent-read-only-opens.md` | A reader sees what the writer has written to its log, durable or not, and moves to newer commits with `KernoDb::refresh` on the engine handle; `kerno::Db` and a read-only `UnitDb` have no refresh, they are reopened. Two writer processes at once: not present (FUT-01) |
 | ENG-11 | Internal UUIDv7 ids | IMPLEMENTED | `crates/kerno-units/src/clock.rs` (`UuidV7Source`, RFC 9562 layout), wired in `crates/kerno-units/src/db.rs` (`Db` open), tested by `v7_ids` in `crates/kerno-units/tests/codecs.rs` | None |
 | ENG-12 | Configurable public ids | PARTIAL | `crates/kerno-units/src/ids.rs` (public id is a random 128-bit token), `docs/adr/0005-public-identifiers.md` (option 1) | The caller cannot choose or format a public id. Only the random token exists |
 | ENG-13 | Typed, deterministic errors | IMPLEMENTED | `crates/kerno-units/src/error.rs` (`UnitError`, rule identifiers), `crates/kerno-units/src/verify.rs` (rule numbers), `crates/kerno-units/tests/errors_api.rs` | None |
@@ -119,7 +118,7 @@ Phase A and Phase C before Phase D, so every item below is needed before 1.0 by 
 | STO-09 | Consistent reads | IMPLEMENTED | `crates/kerno-storage/src/snapshots.rs`, `crates/kerno/tests/concurrency.rs` (`readers_see_whole_change_sets_only`) | None |
 | STO-10 | Snapshot isolation | IMPLEMENTED | `docs/concurrency.md` (isolation level), `crates/kerno/tests/concurrency.rs` (`a_snapshot_is_a_fixed_view`) | Isolation is per snapshot. Separate `Db` calls are read committed (documented) |
 | STO-11 | Durability | IMPLEMENTED | `docs/adr/0002-transaction-model-and-durability.md`, `crates/kerno-storage/tests/sync.rs`, `crates/kerno-storage/tests/deferred.rs`, `docs/concurrency.md` | A buffered commit can be lost in a power cut, not in a process crash (documented) |
-| STO-12 | Corruption detection | IMPLEMENTED | `crates/kerno-storage/src/verify.rs`, `crates/kerno-storage/tests/verify.rs`, `crates/kerno-storage/tests/crafted.rs`, `crates/kerno-storage/tests/damage.rs` | None |
+| STO-12 | Corruption detection | IMPLEMENTED | `crates/kerno-storage/src/verify.rs`, `crates/kerno-storage/tests/verify.rs`, `crates/kerno-storage/tests/crafted.rs`, `crates/kerno-storage/tests/damage.rs`; `VerifyReport::damaged` names the key range behind each damaged block, and `kerno_units::damaged_spans` turns it into record kinds and unit ids (`crates/kerno-units/tests/damaged_blocks.rs`) | A read still fails on a damaged block, never returns wrong data; the ranges say which units to restore |
 | STO-13 | Payload integrity | IMPLEMENTED | `crates/kerno-units/tests/payload_integrity.rs`, `crates/kerno-units/src/payload.rs` | None |
 | STO-14 | BLAKE3-256 hashing | IMPLEMENTED | `crates/kerno-units/src/export.rs` (export digest), `crates/kerno-units/src/fingerprint.rs` (keyed BLAKE3), `docs/adr/0008-document-serialization-and-hashes.md` | None |
 | STO-15 | CRC-32C | IMPLEMENTED | `crates/kerno-storage/src/format/crc.rs` (`crc32c` dependency), `crates/kerno-storage/tests/format.rs` | None |
@@ -163,7 +162,7 @@ Phase A and Phase C before Phase D, so every item below is needed before 1.0 by 
 | REV-07 | Change provenance | IMPLEMENTED | `crates/kerno-units/src/history.rs` (`change_set`, `change_sets_since`), `crates/kerno-units/tests/history.rs` | None |
 | REV-08 | Unit and revision consistency | IMPLEMENTED | `crates/kerno-units/src/verify.rs` (`verify_units`), `crates/kerno-units/tests/verify.rs` | Reads check less than `verify_units` (K-E3-7, accepted by design) |
 | REV-09 | History retention | IMPLEMENTED | `crates/kerno-units/src/retention.rs` (`RetentionRule`, per type), `crates/kerno-units/tests/retention.rs` | None |
-| REV-10 | Pruning | IMPLEMENTED | `crates/kerno-units/src/retention.rs` (`run_retention`, `compact`), `crates/kerno-units/src/reclaim.rs` | Logical pruning. Bytes are reclaimed by compaction (SEC-08) |
+| REV-10 | Pruning | IMPLEMENTED | `crates/kerno-units/src/retention.rs` (`run_retention`, `compact`, `compact_keeping`), `crates/kerno-units/src/reclaim.rs`, `crates/kerno-units/tests/compact_deleted.rs` (50 MB of payloads deleted, then `compact`: the store shrinks) | Logical pruning. `UnitDb::compact` also drops the payloads of every revision of a deleted unit that no retention policy keeps (the `REV_META` and the tombstone stay), then the engine reclaims the bytes (SEC-08) |
 | REV-11 | Integrity during pruning | IMPLEMENTED | `crates/kerno-units/tests/retention.rs` (its helper calls `verify_units` and asserts a clean report, lines 62–66) | Pruning under concurrent writers is measured only in U6 (OPS-08) |
 | REV-12 | Recovery after an interrupted pruning | IMPLEMENTED | `crates/kerno-units/tests/retention.rs` (`retention_every_point`: a crash before every mutating I/O) | None |
 | REV-13 | Snapshots | IMPLEMENTED | `crates/kerno-storage/src/snapshots.rs`, `crates/kerno-units/src/derived_query.rs` (`snapshot()`) | Snapshots are not named or persisted |
@@ -302,7 +301,7 @@ PROPOSED means no code anywhere; REJECTED means the NO-GO decision covers it and
 | SEC-05 | Data and secret separation | PARTIAL | `crates/kerno-server/src/auth.rs` (API tokens stored as SHA-256 hashes, tokens file separate from the data directory), `crates/kerno-units/tests/redaction_units.rs` (no content in errors) | Storage has no secret store. Tokens and data share a host |
 | SEC-06 | Input validation | IMPLEMENTED | `crates/kerno-units/src/schema/check.rs`, `crates/kerno-units/tests/decoders_robust.rs`, `crates/kerno-storage/fuzz/` | None |
 | SEC-07 | Resource and payload limits | IMPLEMENTED | `crates/kerno-storage/src/format/limits.rs`, `crates/kerno-units/src/db.rs` (`max_payload_len`, `max_changeset_ops`), `crates/kerno-storage/tests/crafted.rs` | None |
-| SEC-08 | Data suppression and erasure | PARTIAL | `crates/kerno-units/src/suppression.rs`, `crates/kerno-units/src/reclaim.rs`, `crates/kerno-storage/tests/suppression_survival.rs`, `docs/adr/0009-suppression-retention-and-backups.md` (option 3) | Forgetting is logical. Physical deletion is not guaranteed (ADR-0009; `docs/security/threat-model.md` §6.5) |
+| SEC-08 | Data suppression and erasure | PARTIAL | `crates/kerno-units/src/suppression.rs`, `crates/kerno-units/src/reclaim.rs`, `crates/kerno-storage/tests/suppression_survival.rs`, `docs/adr/0009-suppression-retention-and-backups.md` (option 3) | Forgetting is logical. Physical deletion is not guaranteed (ADR-0009; `docs/security/threat-model.md` §6.5): `UnitDb::compact` drops the payloads of deleted units (REV-10), but a snapshot, a reader's open tables or a backup can still hold the old bytes |
 | SEC-09 | Configurable retention | IMPLEMENTED | `crates/kerno-units/src/retention.rs` (`RetentionRule`, per unit type), `crates/kerno-units/tests/retention.rs` | None |
 | SEC-10 | Data export | IMPLEMENTED | `crates/kerno-units/src/export.rs`, `crates/kerno-units/tests/export_golden.rs`, `docs/file-format/export-v1.md` | None |
 | SEC-11 | Safe migrations | PARTIAL | `crates/kerno-units/tests/layer_fixtures.rs` (fixtures of earlier layers are read) | No migration exists (ENG-09, STO-20). Fixtures prove reading, not migrating |
@@ -384,7 +383,7 @@ Rows marked IMPLEMENTED or PARTIAL below already exist in part, as the owner ask
 
 | ID | Feature | Status | Evidence | Gaps / acceptance criterion |
 |---|---|---|---|---|
-| FUT-01 | Multi-process access to one database directory | DEFERRED | `crates/kerno-storage/tests/process_lock.rs` (exclusive lock; second process gets `Locked`). Multi-process use is through the server (INT-14) | Direct file access from two processes is refused by design |
+| FUT-01 | Multi-process access to one database directory | PARTIAL | One writer and many readers across processes: `crates/kerno-storage/tests/read_only_processes.rs`, `docs/adr/0024-concurrent-read-only-opens.md`. A second writer gets `Locked`: `crates/kerno-storage/tests/process_lock.rs`. Several writers go through the server (INT-14) | Direct file access by two writer processes is refused by design |
 | FUT-02 | Network protocol | IMPLEMENTED | `crates/kerno-server/` (HTTP/JSON and gRPC, TLS through `crates/kerno-server/src/tls.rs`), `docs/server.md` | Exists now, outside the core. See INT-14 |
 | FUT-03 | Replication | PARTIAL | `crates/kerno-backup/src/ship.rs` (WAL shipping to object storage) | Backup and point-in-time restore only. No live replica, no failover |
 | FUT-04 | Multi-user server | PARTIAL | `crates/kerno-server/src/app.rs` (one database per tenant), `crates/kerno-server/src/auth.rs` | Tenants, not users. Exists in part |
@@ -408,15 +407,14 @@ The four pillars group the sections as follows. Sections 12 and 13 cut across pi
 
 | Pillar | Sections | Rows | IMPLEMENTED | PARTIAL | EXPERIMENTAL | PROPOSED | DEFERRED | Overall status |
 |---|---|---|---|---|---|---|---|---|
-| Store | 1, 2, 8, 9 | 59 | 39 | 14 | 0 | 2 | 4 | PARTIAL |
+| Store | 1, 2, 8, 9 | 59 | 40 | 13 | 0 | 2 | 4 | PARTIAL |
 | Remember | 3, 4, 5 | 48 | 38 | 7 | 0 | 3 | 0 | PARTIAL |
 | Find | 6, 7 | 50 | 16 | 5 | 15 | 14 | 0 | PARTIAL |
 | Optimise | 10, 11 | 32 | 13 | 14 | 3 | 2 | 0 | PARTIAL |
 
 - **Store: PARTIAL.** The engine, WAL, crash recovery, snapshots and corruption detection are
   implemented and tested. Missing: encryption and key handling (deferred by decision D3), any format
-  migration (ENG-09, STO-20), read-error atomicity in ChangeSets (TXN-01, note #960), and direct
-  cross-process access (ENG-10).
+  migration (ENG-09, STO-20), and read-error atomicity in ChangeSets (TXN-01, note #960).
 - **Remember: PARTIAL.** Units, revisions, `as_of`, history, retention and export are implemented.
   Missing: relation metadata and per-relation weights (REL-03, REL-12), rebuilding unit heads from
   history (DM-16), branches (REV-16), and on-disk summaries (REV-18).

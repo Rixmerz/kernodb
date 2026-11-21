@@ -34,5 +34,6 @@ Rules:
 | [0021](0021-typed-schemas-and-secondary-indexes.md) | Typed schemas per unit type and user-defined secondary indexes | **Proposed** (2026-11-18, Phase C; implemented, new record families `0x78`/`0x79` with layer 6, pending the owner's acceptance) |
 | [0022](0022-per-type-fulltext-opt-out.md) | Per-type opt-out of the keyword index | **Superseded** by 0023 (the record stays, as an opt-in) |
 | [0023](0023-format-v2-cut-for-alpha2.md) | The format cut for 1.0.0-alpha.2: no legacy readers, keyword index opt-in | **Accepted in direction** (2026-11-20, owner); freeze after the measured steps |
+| [0024](0024-concurrent-read-only-opens.md) | Concurrent read-only opens: no lock, one consistent read, `refresh()` | **Proposed** (2026-11-21, GitHub issue #2 §3), implemented; waits for the owner; no format change |
 
 ADRs 0014–0018 come from the list in the [specification v0.2.0](../spec/architecture-specification-v0.2.0.md) §17; the full correspondence is in [`docs/spec/`](../spec/README.md).
