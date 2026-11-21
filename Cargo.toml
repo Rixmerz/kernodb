@@ -52,7 +52,10 @@ crossbeam-skiplist = "0.1"
 proptest = { version = "1", default-features = false, features = ["std"] }
 
 [profile.release]
-debug = 1
+# Line tables keep file:line in backtraces; full variable debuginfo (debug = 1) only slows the
+# build and links. Unpacked keeps the debuginfo out of the linker's input.
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
 
 [profile.test]
 opt-level = 1
