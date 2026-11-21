@@ -100,6 +100,34 @@ Field types: `bool`, `int`, `float`, `text`, `bytes`. A type has one schema, def
 Indexes can be added later with `create_index`. The query language is described in
 [docs/query-language.md](https://github.com/Rixmerz/kernodb/blob/main/docs/query-language.md).
 
+Range lookups and query plans work on the same indexed fields:
+
+```python
+db.find_range("user", "age", 18, 65)           # both ends included; None leaves an end open
+db.find_range("user", "age", low=65)           # age >= 65, ordered by age; `limit=` caps it
+db.explain("FIND user AS u WHERE u.age > 30")  # how `execute` would run it, without running it
+# {"candidates": [{"access": "type_scan", ...}, {"access": "field_index", "field": "age", "cost": ...}],
+#  "chosen": 1, "joins": [], ...}
+```
+
+### Search by keyword, vector and relations
+
+```python
+db.set_fulltext("note", True)                   # keyword (BM25) search finds only these types
+hits = db.hybrid_search(
+    "garbage collector",                        # keyword signal
+    vector=query_vec, vectors={uid: vec, ...},  # vector signal: your vectors, searched exactly
+    seeds=[topic_id],                           # relation signal: units near these seeds
+)
+hits[0].id, hits[0].score                       # best first; score = sum of the signal scores
+hits[0].keyword_score, hits[0].vector_score, hits[0].relation_score   # None: the signal missed it
+```
+
+Kerno does not store vectors: you pass the `{unit id: vector}` dict you keep in step with your
+units, as in the Rust API. Signals are fused by weighted reciprocal rank fusion; each adds
+`weight / (rrf_k + rank)`. Only active units are hits. Types you did not enable with
+`set_fulltext` never match the keyword signal.
+
 ### Read the past
 
 ```python
@@ -107,7 +135,20 @@ seq = db.last_commit_seq()
 db.update_document(uid, {"email": "a@example.com", "age": 32})
 db.read_as_of(uid, seq).payload   # the payload before the update (raw document bytes)
 db.history(uid, limit=10)         # newest first; [] for an unknown id
+
+# Page through a long history: [from_revision, to_revision), newest first or order="asc"
+page = db.history(uid, limit=50)
+older = db.history(uid, limit=50, to_revision=page[-1].revision)
+
+diff = db.compare(uid, 1, 3)      # both revisions with payloads: diff.a, diff.b, diff.same_content
+db.read(uid).oldest_revision      # the oldest revision still kept; asking for an older one
+                                  # raises PrunedError
 ```
+
+Archived and deleted units stay out of `query()` unless you ask: `db.query("note",
+lifecycle="archived")` (or `"deleted"`, or `"all"`). A deleted unit comes back with
+`payload=None`; read its history to see what it held. `find` and `find_range` see only active
+units.
 
 ### Check integrity
 
@@ -127,28 +168,41 @@ never return wrong data.
 |------|---------|
 | `kerno.open(path, read_only=False, max_batch_ops=None)` | a `Database`. A read-only open writes nothing but still takes the directory's lock. `max_batch_ops` changes the 10,000-operation limit of one `commit` |
 | `db.store(unit_type, payload)` | the new unit's id |
-| `db.read(id)` | `Unit` (`id`, `unit_type`, `schema_version`, `lifecycle`, `revision`, `payload`) or `None` |
+| `db.read(id)` | `Unit` (`id`, `unit_type`, `schema_version`, `lifecycle`, `revision`, `oldest_revision`, `payload`) or `None`. `oldest_revision` is the oldest revision retention still keeps |
 | `db.update(id, payload, if_changed=False)` | `True` when a revision was written |
 | `db.delete(id, cascade=False)` | `None`. Without `cascade`, a unit with relations raises `HasRelationsError` |
 | `db.relate(from, to, type, unique=False)` | the relation id. `unique` reuses an existing one |
 | `db.unrelate(relation_id)` | `None` |
 | `db.related(id, direction="out", relation_type=None)` | `list[Relation]` (`id`, `from_id`, `to_id`, `relation_type`) |
 | `db.relations(relation_type=None)` | every live relation, in one scan. Use it instead of `related` per unit |
-| `db.query(unit_type=None, schema_version=None)` | `list[Unit]`, every active unit that matches, in id order |
+| `db.query(unit_type=None, schema_version=None, lifecycle="active")` | `list[Unit]` that match, in id order. `lifecycle` is `"active"`, `"archived"`, `"deleted"` or `"all"`; the last three read every unit's head, so they cost time linear in the store |
 | `db.commit(ops, reason=None, actor=None, source=None, detailed=False)` | stored ids, or a dict with `detailed=True` |
-| `db.history(id, limit=100, with_payload=False)` | `list[Revision]` (`revision`, `kind`, `commit_seq`, `created_at`, `lifecycle`, `content_hash`, `payload`) |
+| `db.history(id, limit=100, with_payload=False, from_revision=None, to_revision=None, order="desc")` | `list[Revision]` (`revision`, `kind`, `commit_seq`, `created_at`, `lifecycle`, `schema_version`, `content_hash`, `payload`) in `[from_revision, to_revision)`, at most `limit`. A `from_revision` below `oldest_revision` raises `PrunedError` |
+| `db.compare(id, a, b)` | `Comparison` (`a`, `b`: the two `Revision`s with payloads; `same_content`). Takes the unit id, as the Rust call does |
 | `db.read_as_of(id, commit_seq)` | the `Revision` in force then, or `None` before creation. A sequence past the last commit reads now |
 | `db.set_fulltext(type, enabled)` | `None`. Keyword-index a type (off by default); its active units follow in the same commit |
 | `db.last_commit_seq()` | the sequence of the last commit |
 | `db.define_schema(type, fields)` / `db.create_index(type, field)` | `None` |
 | `db.store_document(type, dict)` / `db.update_document(id, dict)` / `db.read_document(id)` | id / `None` / `dict` or `None` |
 | `db.find(type, field, value)` | `list[Unit]` whose indexed field equals `value` |
+| `db.find_range(type, field, low=None, high=None, limit=None)` | `list[Unit]` whose indexed field is in `[low, high]` (both included, `None` = open end), ordered by value then id. No `limit` means no cap |
 | `db.execute(query)` | `{"aliases": [...], "rows": [[Unit, ...], ...]}` |
+| `db.explain(query)` | the plan `execute` would follow, without running it: `root_alias`, `root_type`, `candidates` (`access` `"type_scan"` or `"field_index"`, `field`, `cost`), `chosen` (an index into `candidates`), `joins`, `planner_version` |
+| `db.hybrid_search(text=None, vector=None, vectors=None, seeds=None, *, keyword_weight=1, vector_weight=1, relation_weight=1, limit=10, candidates=100, rrf_k=60, max_depth=2, metric="cosine")` | `list[HybridHit]`, best first: `id`, `score`, `keyword_score`, `vector_score`, `relation_score`, `keyword_rank`, `vector_rank`, `relation_rank` (a signal that missed the unit is `None`). `vector` and `vectors` go together; `metric` is `"cosine"` or `"dot"` |
 | `db.verify()` | `dict`: `clean`, `commit_seq`, `units`, `revisions`, `relations`, `findings`, maybe `storage_error` |
 | `db.compact()` | `{"before", "after"}` stored bytes |
 | `db.close()` | `None`. Closing twice is harmless |
 
 Type stubs ship with the package (`py.typed`).
+
+## Retention and the oldest revision
+
+Retention (dropping old revisions) is not configurable from Python. The Rust `Config` that
+`open` fills has no retention setting: a policy is applied by calling `run_retention` on the
+units layer, and that call has no Python binding. A database pruned by another tool (the Rust
+API) keeps working here. Before reading an old revision, compare it with
+`db.read(id).oldest_revision`, or catch `PrunedError`. A unit that was never pruned has
+`oldest_revision == 1`.
 
 ## Errors
 
@@ -213,6 +267,8 @@ never sees half of a change set.
 
 - Payload: 1 MiB. Unit and relation type: 1–64 bytes (no NUL in a relation type).
 - One change set: 10,000 operations by default (`kerno.open(path, max_batch_ops=...)` changes it, up to 2^20); the engine also limits the bytes of one commit.
+- `find` and `find_range` return active units only. The Rust API has no index of archived or
+  deleted units, so `query(lifecycle=...)` reads every unit's head instead of looking one up.
 - Deleting a unit keeps its revisions (and their payloads) until a retention policy drops them,
   so deletes do not shrink the store. `compact()` reclaims only what retention removed.
 
