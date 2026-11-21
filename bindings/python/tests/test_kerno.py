@@ -227,6 +227,21 @@ def test_locked_and_read_only(tmp_path):
             ro.store("n", "b")
 
 
+def test_refresh_shows_a_read_only_handle_the_commits_made_since_it_opened(tmp_path):
+    path = tmp_path / "db"
+    with kerno.open(path) as writer:
+        first = writer.store("n", "one")
+        with kerno.open(path, read_only=True) as reader:
+            assert reader.read(first) is not None
+            second = writer.store("n", "two")
+            assert reader.read(second) is None  # not visible before refresh
+            seq = reader.refresh()
+            assert seq == writer.last_commit_seq() == reader.last_commit_seq()
+            assert reader.read(second).payload == b"two"
+        with pytest.raises(kerno.KernoError):
+            writer.refresh()  # a read-write handle is always current
+
+
 def test_verify_reports_storage_corruption(tmp_path):
     path = tmp_path / "db"
     with kerno.open(path) as db:

@@ -835,6 +835,14 @@ impl Db {
         self.with(|db| db.last_commit_seq()).map(num)
     }
 
+    /// Moves a database opened with `readOnly: true` to the commits the writer made since it
+    /// opened (or since the last refresh); returns the commit sequence it now reads. Throws on a
+    /// handle that is not read-only.
+    #[napi]
+    pub fn refresh(&self) -> Result<i64> {
+        self.with(|db| db.refresh()).map(num)
+    }
+
     /// Checks every record of the units layer. A damaged store is reported, not thrown.
     #[napi]
     pub fn verify(&self) -> Result<VerifyReport> {

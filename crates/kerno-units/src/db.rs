@@ -751,6 +751,21 @@ impl<E: TxnEngine + SyncEngine> UnitDb<E> {
     }
 }
 
+impl<E: TxnEngine + kerno_core::contract::Refresh> UnitDb<E> {
+    /// Moves a read-only handle to the commits the writer made since it
+    /// opened (or since the last refresh) and returns the commit sequence it
+    /// now reads. Snapshots taken before keep their state. `Storage(InvalidArgument)`
+    /// on a handle that is not read-only.
+    pub fn refresh(&self) -> Result<u64, UnitError> {
+        self.check_poisoned()?;
+        let seq = kerno_core::contract::Refresh::refresh(&self.engine)?;
+        // The writer may have changed a history policy: drop what the cache
+        // read. Two steps keep the epoch even, as a commit does.
+        self.policy_epoch.fetch_add(2, Ordering::SeqCst);
+        Ok(seq)
+    }
+}
+
 /// Bumps the policy epoch when dropped: the second half of the pair around
 /// a commit that may change a policy.
 struct EpochBump<'a>(&'a AtomicU64);

@@ -68,6 +68,12 @@ export declare class Db {
    * `readAsOf` for "now".
    */
   lastCommitSeq(): number
+  /**
+   * Moves a database opened with `readOnly: true` to the commits the writer made since it
+   * opened (or since the last refresh); returns the commit sequence it now reads. Throws on a
+   * handle that is not read-only.
+   */
+  refresh(): number
   /** Checks every record of the units layer. A damaged store is reported, not thrown. */
   verify(): VerifyReport
   /**

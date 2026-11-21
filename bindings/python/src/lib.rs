@@ -548,6 +548,13 @@ impl Database {
         self.with_db(py, |db| db.last_commit_seq().map_err(engine_error))
     }
 
+    /// Moves a database opened with `read_only=True` to the commits the writer made since it
+    /// opened (or since the last refresh); returns the commit sequence it now reads. Raises
+    /// `KernoError` on a handle that is not read-only.
+    fn refresh(&self, py: Python<'_>) -> PyResult<u64> {
+        self.with_db(py, |db| db.refresh().map_err(engine_error))
+    }
+
     /// Compacts the revision ranges; returns `{"before": bytes, "after": bytes}`. History keeps
     /// deleted units' payloads, so this frees only what a retention policy dropped.
     fn compact<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {

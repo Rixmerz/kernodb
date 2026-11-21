@@ -350,6 +350,16 @@ pub trait Reclaim {
     }
 }
 
+/// An engine whose read-only handle can move to the commits a writer made
+/// after it opened (shared read-only opens).
+pub trait Refresh {
+    /// Moves the handle to the newest commits and returns the sequence it now
+    /// reads. Snapshots taken before keep their own state. An engine refuses
+    /// it (`InvalidArgument`) on a handle that is not read-only, which is
+    /// always current.
+    fn refresh(&self) -> Result<u64>;
+}
+
 fn unsupported() -> crate::Error {
     crate::Error::InvalidArgument("unsupported".into())
 }
