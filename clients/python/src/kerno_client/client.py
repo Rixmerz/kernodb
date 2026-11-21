@@ -150,6 +150,21 @@ class KernoClient:
     def get_schema(self, type: str) -> Schema:
         return Schema.from_json(self._request("GET", f"/schemas/{_quote(type)}"))
 
+    # ------------------------------------------------------------ keyword index
+
+    def set_fulltext(self, type: str, enabled: bool) -> bool:
+        """Turns the keyword (BM25) index of a unit type on or off and returns the new state.
+
+        The index is off by default (Kerno 1.0.0-alpha.2): ``search`` finds text only in the
+        types that have it. The type's units are indexed (or cleared) in the same commit.
+        """
+        reply = self._request("PUT", f"/types/{_quote(type)}/fulltext", {"enabled": enabled})
+        return bool(reply["enabled"])
+
+    def get_fulltext(self, type: str) -> bool:
+        """Whether a unit type is keyword-indexed."""
+        return bool(self._request("GET", f"/types/{_quote(type)}/fulltext")["enabled"])
+
     # -------------------------------------------------------------------- query
 
     def query(self, query: str) -> QueryResult:

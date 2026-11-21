@@ -27,6 +27,7 @@ target/release/kerno-server --data-dir /var/lib/kerno --tokens tokens \
 | `--grpc-listen <addr>` | Also serve gRPC on this address. Off by default. |
 | `--data-dir <dir>`, `--tokens <file>` | Tenant mode instead of `--db`: see [docs/server.md](../../docs/server.md). |
 | `--tls-cert <pem>`, `--tls-key <pem>` | Serve both transports over TLS. |
+| `--fulltext <types>` | Unit types to keyword-index (BM25) in every database served, comma-separated, for example `--fulltext note,memory`. The keyword index is **off by default** (Kerno 1.0.0-alpha.2): a type not listed here, or not turned on with `PUT /types/{type}/fulltext`, is not found by the text leg of `POST /search`. |
 | `--backup <url>`, `--backup-interval <s>` | Keep a base backup and the shipped write-ahead log of every database in `file:///dir` or `s3://bucket/prefix`, every `s` seconds (default 5). See [docs/backup.md](../../docs/backup.md). |
 
 On start the server prints `listening on http://ADDR` (`https://` with TLS, and `grpc listening
@@ -55,6 +56,8 @@ and `GET /metrics` (outside `/v1`, no token) are in [docs/server.md](../../docs/
 | `POST /relations` | Body `{"from", "to", "type"}`. 201 and the relation. |
 | `GET /units/{id}/relations?direction=&type=` | `direction` is `out`, `in` or `both` (default). Each entry says which side it was found from. |
 | `DELETE /relations/{id}` | 204. |
+| `GET /types/{type}/fulltext` | `{"type", "enabled"}`: whether the type is keyword-indexed. |
+| `PUT /types/{type}/fulltext` | Body `{"enabled": true}` or `false`. Turns the type's keyword index on or off; its units are indexed (or cleared) in the same commit. Replies like `GET`. |
 | `POST /schemas` | Give a unit type a schema (below). A type has one schema for good. |
 | `GET /schemas/{type}` | The schema; the type is percent-encoded in the path. |
 | `POST /query` | Run a query of the [query language](../../docs/query-language.md). Body `{"query"}`. |
@@ -110,7 +113,8 @@ says so. Indexed fields speed up `POST /query`; `POST /query/explain` shows when
 ### Hybrid search
 
 `POST /search` ranks units over up to three legs and fuses them by weighted reciprocal rank
-fusion (see `kerno_units::hybrid` for the arithmetic):
+fusion (see `kerno_units::hybrid` for the arithmetic). The **text** leg reads the keyword index,
+which holds only the types turned on with `--fulltext` or `PUT /types/{type}/fulltext`:
 
 ```json
 {
@@ -161,6 +165,9 @@ meaning (`CreateUnit`, `GetUnit`, `ListUnits`, `UpdateUnit`, `ArchiveUnit`, `Una
 Rust client is `kerno_server::grpc::pb::kerno_client::KernoClient`. It is HTTP/2, over TLS when
 the server has a certificate; in tenant mode every call carries `authorization: Bearer <token>` in
 its metadata.
+
+The keyword-index setting has no RPC yet: turn types on with `--fulltext <types>` at start, or
+with `PUT /v1/types/{type}/fulltext` over HTTP. `Search` then finds their text.
 
 ## Limits and what is not here
 

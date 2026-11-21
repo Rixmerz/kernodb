@@ -42,13 +42,26 @@ const SCAN = 200;
 export function kernoMemory(client: KernoClient, options: KernoMemoryOptions = {}): KernoMemory {
   const type = options.type ?? DEFAULT_TYPE;
 
+  // Kerno's keyword index is off by default (1.0.0-alpha.2): turn it on for the memory type once,
+  // before the first write or search. A failure is not cached, so the next call tries again.
+  let indexed: Promise<boolean> | undefined;
+  const ensureIndexed = (): Promise<boolean> => {
+    indexed ??= client.setFulltext(type, true).catch((e: unknown) => {
+      indexed = undefined;
+      throw e;
+    });
+    return indexed;
+  };
+
   const remember = async (text: string): Promise<Memory> => {
     if (text.trim() === '') throw new RangeError('a memory cannot be empty');
+    await ensureIndexed();
     const unit = await client.createUnit(type, text);
     return { id: unit.id, text };
   };
 
   const recall = async (query: string, limit = DEFAULT_LIMIT): Promise<Memory[]> => {
+    await ensureIndexed();
     const hits = await client.search({ text: query, limit: SCAN, candidates: SCAN });
     const memories: Memory[] = [];
     for (const { unit } of hits) {

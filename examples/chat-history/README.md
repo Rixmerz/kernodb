@@ -11,6 +11,7 @@ Conversation turns per session, on the public API of the `kerno` crate and throu
 
 ## Where the facade stops
 
+- The keyword index is opt-in per type (Kerno 1.0.0-alpha.2): `ChatHistory::open` turns it on for the two turn types (`Db::set_fulltext`), never for sessions.
 - Keyword search is global: `Db::hybrid_search` has no type or relation filter and returns at most the best 1000 hits, so hits are filtered to the session afterwards. A match of the session ranked below 1000 globally is missed.
 - `append` is two commits (the turn, then its `in_session` relation). A crash between them leaves an orphan turn, which is never listed or found, because both reads go through the relation.
 - Turns are ordered by the relation's `created_seq`, which persists and only grows.

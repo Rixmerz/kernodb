@@ -208,3 +208,18 @@ impl<E: TxnEngine> crate::db::UnitDb<E> {
         cs.commit()
     }
 }
+
+impl<E: kerno_core::contract::Engine> crate::db::UnitSnapshot<E> {
+    /// Whether `unit_type` is in the keyword index at this snapshot (off by default).
+    ///
+    /// # Errors
+    ///
+    /// The engine fails or the options record is damaged.
+    pub fn fulltext_enabled(&self, unit_type: &str) -> Result<bool, UnitError> {
+        use kerno_core::contract::Snapshot;
+        Ok(match self.snap.get(&options_key(unit_type))? {
+            Some(v) => decode_value(&v).map_err(|e| crate::db::context(e, "TYPE_OPTIONS"))? & FULLTEXT != 0,
+            None => false,
+        })
+    }
+}

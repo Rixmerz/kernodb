@@ -81,6 +81,8 @@ export declare class Db {
    * same commit. `hybridSearch`'s keyword leg only sees types that have it on.
    */
   setFulltext(unitType: string, enabled: boolean): void
+  /** Whether `unitType` is keyword-indexed (off by default). */
+  fulltext(unitType: string): boolean
   /** Gives `unitType` a schema. */
   defineSchema(unitType: string, fields: Array<FieldSpec>): void
   /** Indexes `field` of `unitType` (it must be in the type's schema). */

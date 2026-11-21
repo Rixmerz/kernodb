@@ -387,7 +387,9 @@ test('setFulltext switches keyword search on and off per type', () => {
 
   // Off by default: no unit is keyword-indexed.
   assert.deepEqual(keywords(), [])
+  assert.equal(db.fulltext('note'), false)
   db.setFulltext('note', true)
+  assert.equal(db.fulltext('note'), true)
   assert.deepEqual(keywords(), [note])
   // A unit stored after switching on is indexed too.
   const later = db.store('note', 'another fox')

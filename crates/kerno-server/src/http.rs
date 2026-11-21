@@ -31,7 +31,7 @@ use tokio_rustls::TlsAcceptor;
 
 use crate::MAX_BODY;
 use crate::api::{
-    CreateRelation, CreateUnit, Expect, ListRelations, ListUnits, QueryRequest, SearchRequest, UpdateUnit,
+    CreateRelation, CreateUnit, Expect, Fulltext, ListRelations, ListUnits, QueryRequest, SearchRequest, UpdateUnit,
 };
 use crate::app::App;
 use crate::error::{ApiError, Kind};
@@ -276,6 +276,17 @@ async fn api(svc: &Arc<Service>, parts: &hyper::http::request::Parts, body: Inco
             no_content()
         }
         (_, ["v1", "relations", _]) => Err(not_allowed("DELETE")),
+
+        (&Method::GET, ["v1", "types", unit_type, "fulltext"]) => {
+            let t = (*unit_type).to_owned();
+            ok(&svc.run(move |s| s.get_fulltext(&t)).await?)
+        }
+        (&Method::PUT, ["v1", "types", unit_type, "fulltext"]) => {
+            let t = (*unit_type).to_owned();
+            let req: Fulltext = body_of(body).await?;
+            ok(&svc.run(move |s| s.set_fulltext(&t, req.enabled)).await?)
+        }
+        (_, ["v1", "types", _, "fulltext"]) => Err(not_allowed("GET, PUT")),
 
         (&Method::POST, ["v1", "schemas"]) => {
             let req = body_of(body).await?;

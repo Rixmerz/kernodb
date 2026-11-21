@@ -6,7 +6,8 @@ It runs inside your process and keeps its data in a local directory. TypeScript 
 the package, and the API matches the [Python binding](https://github.com/Rixmerz/kernodb/tree/main/bindings/python)
 call for call (camelCase names, optional arguments in an options object).
 
-> **Alpha: 1.0.0-alpha.1.** The on-disk format v1 is frozen
+> **Alpha: 1.0.0-alpha.2.** It does not open databases written by alpha.1 (see
+> [Upgrading](#upgrading-from-100-alpha1)). The keyword index is opt-in per type. The on-disk format v1 is frozen
 > ([ADR-0013](https://github.com/Rixmerz/kernodb/blob/main/docs/adr/0013-format-v1-and-engine-protocol.md)).
 > There is no 1.0 release and no stability promise yet for the API. Benchmarks and long fuzzing runs are not yet certified.
 
@@ -133,7 +134,8 @@ const { units, commitSeq } = db.commit(
 | `db.lastCommitSeq()` | the sequence of the last commit (0 for an empty database) |
 | `db.verify()` | `{ clean, commitSeq, units, revisions, relations, findings, findingsOmitted, storageError? }`. A damaged store is reported (`clean: false`), not thrown. |
 | `db.compact()` | `{ before?, after? }`, the stored bytes around the compaction. History keeps deleted units' payloads, so it frees only what a retention policy dropped. |
-| `db.setFulltext(unitType, enabled)` | nothing. Turns keyword (BM25) indexing of a type on or off. |
+| `db.setFulltext(unitType, enabled)` | nothing. Turns keyword (BM25) indexing of a type on or off (off by default); its active units are indexed or cleared in the same commit. |
+| `db.fulltext(unitType)` | `boolean`: whether the type is keyword-indexed. |
 
 ### Schemas, indexes and documents
 
@@ -237,6 +239,21 @@ try {
 `open` asks for durable commits: a commit is on stable storage when the call returns. That
 guarantee is verified on Linux (ext4, xfs) only; on macOS and Windows the database works, but the
 guarantee is not verified.
+
+## Upgrading from 1.0.0-alpha.1
+
+1.0.0-alpha.2 does not open a database written by alpha.1. Opening one fails with an error whose
+message says the database's `layer_version` predates the format of this build and to export and
+import it. Nothing in the directory changes. To carry it over, export it with the
+alpha.1 command-line tool and import it with the alpha.2 one:
+
+```sh
+kerno old-db export old.kexp        # kerno CLI of 1.0.0-alpha.1
+kerno import old.kexp new-db        # kerno CLI of 1.0.0-alpha.2
+```
+
+Then turn on the keyword index of every type you search by text (it is off by default in
+alpha.2), and define again the schemas and indexes: an export holds neither.
 
 ## Build from source
 

@@ -137,3 +137,13 @@ def test_units_survive_a_graceful_stop(server_binary: str, server, kerno: KernoC
         assert KernoClient(again.url).get_unit(unit.id) == unit
     finally:
         assert stop_server(again) == 0
+
+
+def test_set_fulltext_turns_keyword_search_on_for_a_type(kerno):
+    # "memo" is not in the suite's --fulltext list: off by default (Kerno 1.0.0-alpha.2).
+    unit = kerno.create_unit("memo", "orchid greenhouse")
+    assert kerno.get_fulltext("memo") is False
+    assert not [h for h in kerno.search(text="orchid") if h.unit.id == unit.id]
+    assert kerno.set_fulltext("memo", True) is True
+    assert [h.unit.id for h in kerno.search(text="orchid")] == [unit.id]
+    assert kerno.set_fulltext("memo", False) is False

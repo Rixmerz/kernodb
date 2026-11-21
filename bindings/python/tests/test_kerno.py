@@ -265,8 +265,10 @@ def test_set_fulltext(tmp_path):
     with kerno.open(tmp_path / "db") as db:
         db.store("sym", '{"qname": "m.f"}')
         db.store("note", "hello")
+        assert db.fulltext("note") is False
         db.set_fulltext("note", True)
         db.set_fulltext("note", True)  # same state: nothing written
+        assert db.fulltext("note") is True
         assert db.verify()["clean"] is True
         db.set_fulltext("note", False)
         assert db.verify()["clean"] is True

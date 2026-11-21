@@ -252,6 +252,16 @@ pub struct Schema {
     pub fields: Vec<FieldDef>,
 }
 
+/// `PUT /v1/types/{type}/fulltext` and its reply: whether a unit type is keyword-indexed
+/// (off by default, ADR-0023).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Fulltext {
+    #[serde(rename = "type", default, skip_deserializing)]
+    pub unit_type: String,
+    pub enabled: bool,
+}
+
 // ------------------------------------------------------------------ query
 
 #[derive(Debug, Deserialize)]

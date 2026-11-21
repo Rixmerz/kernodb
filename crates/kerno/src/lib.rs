@@ -73,6 +73,40 @@
 //! [`Db::hybrid_search`] answers one query over keywords (BM25), vectors (an index you own) and
 //! relations, fused by weighted reciprocal rank fusion.
 //!
+//! # Keyword search is opt-in per type
+//!
+//! No unit type is in the keyword (BM25) index until [`Db::set_fulltext`] turns it on: indexing
+//! costs writes several times over and most of the disk for data nobody searches by text. The
+//! setting is stored in the database. Turning it on for a type that already has units indexes them
+//! in the same commit. [`Db::search_text`] and the keyword leg of [`Db::hybrid_search`] find only
+//! the indexed types.
+//!
+//! ```
+//! use kerno::Db;
+//!
+//! # let dir = std::env::temp_dir().join(format!("kerno-doc-fulltext-{}", std::process::id()));
+//! # let _ = std::fs::remove_dir_all(&dir);
+//! let db = Db::open(&dir)?;
+//! db.set_fulltext("note", true)?;
+//! let rust = db.store("note", "Rust has no garbage collector")?;
+//! db.store("config", "garbage collector settings")?; // not indexed, never a hit
+//!
+//! let hits = db.search_text("garbage collector", 10)?;
+//! assert_eq!(hits.len(), 1);
+//! assert_eq!(hits[0].unit, rust);
+//! assert!(db.fulltext("note")? && !db.fulltext("config")?);
+//! db.close()?;
+//! # std::fs::remove_dir_all(&dir).expect("remove the doc database");
+//! # Ok::<(), kerno::Error>(())
+//! ```
+//!
+//! # Upgrading from 1.0.0-alpha.1
+//!
+//! 1.0.0-alpha.2 does not open a database written by alpha.1 ([`Error::LayerTooOld`]). Export
+//! it with the alpha.1 CLI (`kerno <dir> export <file>`), import it with alpha.2 (`kerno import
+//! <file> <new-dir>`), then call [`Db::set_fulltext`] for the types you search. New tables are
+//! LZ4-compressed ([`Config::block_compression`]).
+//!
 //! # Schemas and indexes
 //!
 //! A unit type can have a [`Schema`]: typed fields that may be required, unique or indexed. Once it
@@ -226,12 +260,12 @@ pub use kerno_core::Durability;
 pub use kerno_storage as storage;
 pub use kerno_storage::{AccessMode, Config};
 pub use kerno_units as units;
-pub use kerno_units::CompactReport;
 pub use kerno_units::{
     AssocDirection, AssocQuery, Direction, Document, FieldDef, FieldType, FieldValue, HybridHit, HybridQuery,
     HybridWeights, LegRanks, Lifecycle, NearestUnits, Query, QueryPlan, QueryResult, Relation, RelationId, Schema,
     Unit, UnitError as Error, UnitFilter, UnitId, UnitVerifyReport as VerifyReport, VectorLeg,
 };
+pub use kerno_units::{CompactReport, TextHit};
 
 /// The result of every [`Db`] method.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -815,6 +849,26 @@ impl Db {
     /// `InvalidArgument` when the type has active units or its name is invalid.
     pub fn set_fulltext(&self, unit_type: &str, enabled: bool) -> Result<()> {
         self.units.set_fulltext(unit_type, enabled, ChangeMeta::default()).map(|_| ())
+    }
+
+    /// The units whose text matches `query` by keyword (BM25, any of the words), best first, at
+    /// most `limit`. Only the types turned on with [`Db::set_fulltext`] are searched; the index is
+    /// off by default. For keywords fused with vectors and relations, see [`Db::hybrid_search`].
+    ///
+    /// # Errors
+    ///
+    /// The engine fails or finds the index damaged.
+    pub fn search_text(&self, query: &str, limit: usize) -> Result<Vec<TextHit>> {
+        self.units.snapshot()?.search_text(query, limit)
+    }
+
+    /// Whether `unit_type` is keyword-indexed (see [`Db::set_fulltext`]; off by default).
+    ///
+    /// # Errors
+    ///
+    /// The engine fails.
+    pub fn fulltext(&self, unit_type: &str) -> Result<bool> {
+        self.units.snapshot()?.fulltext_enabled(unit_type)
     }
 
     /// Every active unit that matches `filter`, in unit id order.

@@ -38,8 +38,8 @@ print(history.messages)  # in order; usable with RunnableWithMessageHistory
   a query over 2000 vectors of 1536 dimensions took 1.4 s when measured, and the time is linear in
   both, so it suits a few thousand items. The dimension of the query must be that
   of the stored documents, else it raises `ValueError`. There is no maximal-marginal-relevance
-  search and no keyword leg (the embedding is a `bytes` field, and the server's keyword index skips a record that is not
-  valid UTF-8).
+  search and no keyword leg (the server's keyword index is opt-in per type and this store does not
+  turn it on: it searches by embedding).
 
 ## Chat message history
 
@@ -50,7 +50,8 @@ run and, across runs, with the server's clock). `clear()` deletes only the messa
 
 A collection is one unit type with one schema for good. Two stores may share a collection, but a
 collection that already has another schema raises `ValueError`: pick another `collection`. The
-server has no authentication or TLS yet, so neither has this package.
+server's API tokens are not sent by this package yet (use a server started with `--db`, or a
+proxy that adds the token); TLS works with an `https://` URL.
 
 ## Tests
 
