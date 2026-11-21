@@ -1,6 +1,6 @@
 //! The concurrency model of `docs/concurrency.md`, through the public API on real directories:
-//! many reader threads and one writer at a time inside a process, one process at a time on a
-//! database directory.
+//! many reader threads and one writer at a time inside a process, one writer process at a time on
+//! a database directory, and read-only processes beside it.
 //!
 //! The process tests run this same test binary again as a child (`KERNO_CONCURRENCY_ROLE` says
 //! which part it plays), so there is nothing else to build.
@@ -241,8 +241,8 @@ fn a_writer_waits_for_the_open_change_set_and_readers_do_not() {
     db.close().unwrap();
 }
 
-/// The lock is per open handle, not per process: a second `Db` on the same directory is refused
-/// while the first lives, read-only too, and the directory is free again once it is closed.
+/// The lock is per open handle, not per process: a second read-write `Db` on the same directory is
+/// refused while the first lives. A read-only one takes no lock (ADR-0024) and reads beside it.
 #[test]
 fn a_second_handle_in_the_same_process_gets_locked() {
     let _one = serial();
@@ -250,7 +250,9 @@ fn a_second_handle_in_the_same_process_gets_locked() {
     let db = Db::open(dir.db()).unwrap();
     db.store("cell", "1").unwrap();
     assert!(Db::open(dir.db()).err().expect("a second read-write handle").is_locked());
-    assert!(Db::open_with(dir.db(), read_only()).err().expect("a second read-only handle").is_locked());
+    let beside = Db::open_with(dir.db(), read_only()).expect("a read-only handle beside the writer");
+    assert_eq!(beside.query(&UnitFilter::default()).unwrap().len(), 1);
+    beside.close().unwrap();
     db.close().unwrap();
     let again = Db::open_with(dir.db(), read_only()).expect("free after close");
     assert_eq!(again.query(&UnitFilter::default()).unwrap().len(), 1);
@@ -326,8 +328,11 @@ fn start_holder(test: &str, dir: &Path) -> Child {
 fn assert_locked(dir: &Path) {
     let rw = Db::open(dir).err().expect("a read-write open must fail while another process holds the directory");
     assert!(rw.is_locked(), "read-write open: {rw:?}");
-    let ro = Db::open_with(dir, read_only()).err().expect("a read-only open must fail too");
-    assert!(ro.is_locked(), "read-only open: {ro:?}");
+    // A read-only open takes no lock (ADR-0024): it succeeds and sees what the holder committed.
+    let ro = Db::open_with(dir, read_only()).expect("a read-only open beside the holder");
+    let held = ro.query(&UnitFilter { unit_type: Some("held".into()), ..UnitFilter::default() }).unwrap();
+    assert_eq!(held.len(), 1, "the reader sees the holder's commit");
+    ro.close().unwrap();
 }
 
 /// What the holder stored is there once the directory is free, and both kinds of open work.
@@ -340,8 +345,8 @@ fn assert_free_and_intact(dir: &Path) {
     Db::open(dir).expect("a read-write open after the holder is gone").close().unwrap();
 }
 
-/// While another process has the database, every open says `Locked` at once, read-only ones
-/// included; when it closes, the next process opens it and finds what it stored.
+/// While another process has the database, every read-write open says `Locked` at once and a
+/// read-only one reads beside it; when it closes, the next process opens it and finds what it stored.
 #[test]
 fn a_second_process_gets_locked_until_the_first_closes() {
     const TEST: &str = "a_second_process_gets_locked_until_the_first_closes";

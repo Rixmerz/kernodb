@@ -423,11 +423,13 @@ impl Batch {
 
 /// An open Kerno database: units, the relations between them, and queries over both.
 ///
-/// One process holds a database directory at a time; opening it again while a `Db` is alive
-/// fails (`Error::is_locked`), at once and read-only opens included. Every method takes `&self`,
-/// and a `Db` can be shared between threads: any number of readers run while one writer commits,
-/// and a read never sees half of a change set. The guarantees, the isolation level and the limits
-/// are in `docs/concurrency.md`.
+/// One process writes a database directory at a time; a read-write open of it while another `Db`
+/// holds it fails at once (`Error::is_locked`). A read-only open (`Config::access` set to
+/// `AccessMode::ReadOnly`) takes no lock: any number of reader processes read beside the writer
+/// and see a consistent committed state, and to see newer commits a reader reopens. Every method
+/// takes `&self`, and a `Db` can be shared between threads: any number of readers run while one
+/// writer commits, and a read never sees half of a change set. The guarantees, the isolation
+/// level and the limits are in `docs/concurrency.md`.
 pub struct Db {
     units: UnitDb<KernoDb>,
 }
@@ -512,8 +514,9 @@ impl Db {
     }
 
     /// Deletes the unit `id`. The unit stays readable through [`Db::get`] as a tombstone
-    /// (`Lifecycle::Deleted`, no payload), its history stays, [`Db::query`] and the keyword
-    /// search no longer find it, and its id is never reused.
+    /// (`Lifecycle::Deleted`, no payload), its history stays (until [`Db::compact`] drops the
+    /// payloads of its revisions), [`Db::query`] and the keyword search no longer find it, and its
+    /// id is never reused.
     ///
     /// # Errors
     ///
@@ -689,21 +692,28 @@ impl Db {
     ///
     /// # Errors
     ///
-    /// The engine fails or finds the unit corrupt.
+    /// The engine fails or finds the unit corrupt, or `HistoryUnavailable` when the revision's
+    /// payload is gone (a deleted unit after [`Db::compact`], or retention).
     pub fn read_as_of(&self, id: UnitId, commit_seq: u64) -> Result<UnitAt> {
         let snap = self.units.snapshot()?;
         let at = commit_seq.min(snap.seq().0);
         snap.unit_as_of(id, AsOf::Seq(CommitSeq(at)))
     }
 
-    /// Compacts the revision ranges so that what retention removed leaves the live files, and
-    /// returns the stored bytes before and after. Deleting a unit keeps its history (and its
-    /// payloads) until a retention policy drops them: compaction alone frees nothing that
-    /// history still holds.
+    /// Gives back the space of deleted units, compacts the revision ranges so that what was
+    /// dropped leaves the live files, and returns the stored bytes before and after.
+    ///
+    /// A deleted unit keeps its payloads until this call: it then drops the payload of every
+    /// revision of every deleted unit, whatever its history policy, and keeps the tombstone and
+    /// each revision's metadata (hash, length, kind, times), so its history still lists the
+    /// revisions but an as-of read of one answers `HistoryUnavailable`. Live units are not
+    /// touched. To keep the payloads a retention policy keeps, call
+    /// `units::UnitDb::compact_keeping` through [`Db::unit_db`]. What an open snapshot still
+    /// sees stays until it is dropped.
     ///
     /// # Errors
     ///
-    /// The engine fails.
+    /// The engine fails or finds a deleted unit's history corrupt.
     pub fn compact(&self) -> Result<kerno_units::CompactReport> {
         self.units.compact()
     }

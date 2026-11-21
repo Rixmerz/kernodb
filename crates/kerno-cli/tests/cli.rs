@@ -1039,17 +1039,23 @@ fn the_read_commands_leave_every_file_byte_identical() {
 }
 
 #[test]
-fn a_read_command_cannot_open_a_database_another_handle_holds() {
+fn query_reads_beside_a_handle_that_holds_the_database_and_stats_and_verify_do_not() {
     let t = TempDir::new();
     build(&t.db(), true);
-    let open = open_units(&t.db(), None);
-    for args in [&["stats"][..], &["verify"], &["query", "--type", "note"]] {
+    let open = open_more(&t.db());
+    write_more(&open, &["third"]);
+    // A read-only open takes no lock (ADR-0024): `query` reads beside the writer and sees what it committed.
+    let r = run_in(&t.db(), &["query", "--type", "note"]);
+    assert_eq!(r.code, 0, "{} {}", r.out, r.err);
+    assert!(r.out.contains("3 unit(s) of type \"note\""), "{}", r.out);
+    // `stats` and `verify` inspect the files, need a quiet directory and keep the exclusive lock.
+    for args in [&["stats"][..], &["verify"]] {
         let r = kerno_once(&[&[t.db().to_str().unwrap()], args].concat());
         assert_eq!(r.code, 1, "{args:?}: {} {}", r.out, r.err);
         assert!(r.err.starts_with("kerno: ") && r.err.contains("locked by another handle"), "{}", r.err);
     }
     close_and_wait(open, &t.db());
-    assert_eq!(run_in(&t.db(), &["stats"]).code, 0);
+    assert_eq!(run_in(&t.db(), &["verify"]).code, 0);
 }
 
 // ------------------------------------------------ backup, ship, restore
@@ -1097,13 +1103,16 @@ fn backup_ship_and_restore_rebuild_the_database_while_a_handle_holds_the_origina
     assert_eq!(base["parts"], 1);
     std::thread::sleep(std::time::Duration::from_millis(20));
 
-    // A handle that holds the directory blocks `backup`, which opens it, but not `ship`, which only reads files.
+    // A handle that holds the directory does not block `backup` (a read-only open) nor `ship` (it only reads files).
     let held = open_more(&t.db());
     write_more(&held, &["first", "second"]);
     write_more(&held, &["third"]);
-    let r = kerno_once(&[t.db().to_str().unwrap(), "backup", &url]);
-    assert_eq!(r.code, 1, "{}", r.out);
-    assert!(r.err.contains("locked by another handle"), "{}", r.err);
+    // `backup` opens the database read-only, which takes no lock, so it works beside the holder.
+    // It goes to a store of its own so the base of `url` stays the one `ship` and `restore` build on.
+    let beside = url_of(&t.path("beside"));
+    let r = kerno_once(&[t.db().to_str().unwrap(), "backup", &beside]);
+    assert_eq!(r.code, 0, "{} {}", r.out, r.err);
+    assert!(r.out.starts_with("backed up commit "), "{}", r.out);
     let shipped = json_of(&t.db(), &["ship", &url]);
     assert!(shipped["commits"].as_u64().unwrap() > 0 && shipped["segments"] == 1, "{shipped}");
     assert_eq!(shipped["shipped_seq"].as_u64().unwrap(), held.raw_seq().unwrap());

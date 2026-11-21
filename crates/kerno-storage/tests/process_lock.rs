@@ -1,7 +1,9 @@
-//! The exclusive lock across real processes (I-07, RO-1): a second process
-//! gets `Locked` from every way into the directory while the first one holds
-//! it, and the lock goes away with the process, killed or not (phase1-design.md
-//! §6.6). Linux only: `flock` through `StdVfs`.
+//! The exclusive lock across real processes (I-07): a second process gets
+//! `Locked` from every way into the directory that writes or needs it
+//! quiet (read-write open, `verify`, `inspect`) while the first one holds
+//! it. A read-only open takes no lock and succeeds. The lock goes away with
+//! the process, killed or not (phase1-design.md §6.6). Linux only: `flock`
+//! through `StdVfs`.
 //!
 //! The holder is this same test binary run again as a child
 //! (`kerno_testkit::process`), so there is nothing else to build.
@@ -87,8 +89,11 @@ fn assert_locked_everywhere(dir: &Path) {
         .err()
         .expect("read-write open must fail");
     assert!(matches!(e, Error::Locked), "read-write open: {e:?}");
-    let e = KernoDb::open(vfs.clone(), dir, &read_only()).err().expect("read-only open must fail");
-    assert!(matches!(e, Error::Locked), "read-only open: {e:?}");
+    // A read-only open takes no lock (ADR "Concurrent read-only handles"): it
+    // reads what the holder committed while the holder keeps the directory.
+    let ro = KernoDb::open(vfs.clone(), dir, &read_only()).expect("read-only open beside the holder");
+    assert_eq!(ro.snapshot().unwrap().get(b"held").unwrap().as_deref(), Some(&b"by the child"[..]));
+    drop(ro);
     let e = verify(vfs.clone(), dir, &VerifyOptions::default()).expect_err("verify must fail");
     assert!(matches!(e, Error::Locked), "verify: {e:?}");
     let e = inspect(vfs, dir).expect_err("inspect must fail");

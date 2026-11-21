@@ -220,6 +220,50 @@ fn verify_detects_bloom_missing_key() {
     assert_eq!(db.snapshot().unwrap().get(&hole).unwrap(), None);
 }
 
+/// A damaged block is not only one issue: the report names the key range of
+/// every damaged block (and nothing of the intact ones), so a caller can tell
+/// which records are at risk. A table that does not open is covered whole.
+#[test]
+fn verify_reports_the_key_range_of_every_damaged_block() {
+    let t = Table::grid(1, 'k', 4, 40, 0);
+    let (mut bytes, layout) = t.encode_layout(|_| {});
+    // Blocks 0 and 2: a payload bit flipped, the checksum left as it was.
+    for i in [0, 2] {
+        bytes[layout.index[i].handle.offset as usize + 3] ^= 0x01;
+    }
+    let image = Dir::new(vec![(t.meta(0), bytes)]).image();
+    let r = report_of(&image);
+    assert_eq!(rules(&r), ["SST-R1"], "one issue per rule and file: {:?}", r.issues);
+    let range = |start: &str, start_inclusive, end: &str| kerno_storage::DamagedRange {
+        file: "000001.sst".into(),
+        start: start.into(),
+        start_inclusive,
+        end: end.into(),
+        end_inclusive: true,
+        whole_table: false,
+    };
+    // Block 0 starts at the table's smallest key; block 2 after block 1's largest.
+    assert_eq!(r.damaged, [range("k00000", true, "k00039"), range("k00079", false, "k00119")]);
+    // Keys are data: the report prints their lengths only (I-29).
+    let text = format!("{r:?}");
+    assert!(!text.contains("k000") && text.contains("start_len: 6"), "{text}");
+
+    // A clean table reports no range.
+    assert!(report_of(&Dir::single(&t).image()).damaged.is_empty());
+
+    // A table that does not open: the extent the MANIFEST records for it.
+    let mut cut = t.encode();
+    cut.truncate(cut.len() - 1);
+    let r = report_of(&Dir::new(vec![(t.meta(0), cut)]).image());
+    assert!(!r.is_ok());
+    let whole = kerno_storage::DamagedRange { whole_table: true, ..range("k00000", true, "k00159") };
+    assert_eq!(r.damaged, std::slice::from_ref(&whole));
+    // And one that is missing.
+    let mut image = Dir::single(&t).image();
+    image.files.remove(&sst_path(1));
+    assert_eq!(report_of(&image).damaged, [whole]);
+}
+
 #[test]
 fn verify_detects_cross_block_disorder() {
     let mut t = Table::grid(1, 'k', 2, 40, 0);
