@@ -1,7 +1,8 @@
-//! Read-only open (v1.md §9.5, RO-1..RO-3, HDR-7): it takes the exclusive
-//! `LOCK`, classifies the directory and replays the live WALs in memory, and
-//! changes nothing else, whatever state it finds; every write returns
-//! `ReadOnly`. An unknown `ro_compat` bit makes a read-write request open the
+//! Read-only open (v1.md §9.5, RO-2, RO-3, HDR-7): it takes no lock (the RO-1
+//! exclusive `LOCK` is replaced by `DESIGN.md`, "Concurrent read-only
+//! handles"), classifies the directory and replays the live WALs in memory,
+//! and changes nothing else, whatever state it finds; every write returns
+//! `ReadOnly`; `refresh` moves it to newer commits. An unknown `ro_compat` bit makes a read-write request open the
 //! same way.
 
 mod common;
@@ -98,6 +99,9 @@ fn unknown_ro_compat_opens_read_only() {
         let name = file.file_name().unwrap().to_string_lossy().into_owned();
         assert_eq!(db.is_read_only(), Some(ReadOnlyReason::UnknownRoCompat { file: name, bits: 1 << 3 }), "{ext}");
         assert!(model_of(&db) == model, "{ext}: reads work");
+        // It holds the LOCK like any read-write open: a writer is refused, a plain reader is not.
+        assert!(matches!(open_in(&disk.as_vfs(), &config(Durability::Sync)), Err(Error::Locked)), "{ext}: lock");
+        open_in(&disk.as_vfs(), &read_only(Durability::Sync)).expect("a reader beside it");
         let mut b = WriteBatch::new();
         b.put("x", "y");
         assert!(matches!(db.commit(&b), Err(Error::ReadOnly(m)) if m.contains("ro_compat")), "{ext}");
@@ -114,20 +118,171 @@ fn unknown_ro_compat_opens_read_only() {
     );
 }
 
+/// A read-only open takes no lock: it opens beside a live writer and beside
+/// other readers, sees what the writer has committed so far, and does not stop
+/// a writer from opening later. Writers stay exclusive against each other.
 #[test]
-fn read_only_takes_exclusive_lock() {
-    let (image, _) = closed_image();
+fn read_only_takes_no_lock() {
+    let (image, model) = unclean_image();
     let disk = SimVfs::restore(&image);
     let vfs = disk.as_vfs();
-    // A read-write handle excludes a read-only one, and the other way round.
     let rw = open_in(&vfs, &config(Durability::Sync)).unwrap();
-    assert!(matches!(open_in(&vfs, &read_only(Durability::Sync)), Err(Error::Locked)));
+    let ro1 = open_in(&vfs, &read_only(Durability::Sync)).expect("a reader beside the writer");
+    let ro2 = open_in(&vfs, &read_only(Durability::Sync)).expect("two readers");
+    assert!(model_of(&ro1) == model && model_of(&ro2) == model);
+    assert!(matches!(open_in(&vfs, &config(Durability::Sync)), Err(Error::Locked)), "writers stay exclusive");
     drop(rw);
+    let rw = open_in(&vfs, &config(Durability::Sync)).expect("readers hold nothing a writer needs");
+    drop((ro1, ro2));
+    drop(rw);
+}
+
+/// A reader sees one committed state and moves to newer ones only on
+/// `refresh`; a snapshot taken before keeps reading the state it was taken in,
+/// also after the writer has flushed, compacted and deleted the tables it used.
+#[test]
+fn read_only_refreshes_to_newer_commits() {
+    let (image, mut model) = unclean_image();
+    let disk = SimVfs::restore(&image);
+    let vfs = disk.as_vfs();
+    let rw = open_in(&vfs, &config(Durability::Sync)).unwrap();
     let ro = open_in(&vfs, &read_only(Durability::Sync)).unwrap();
-    assert!(matches!(open_in(&vfs, &config(Durability::Sync)), Err(Error::Locked)));
-    assert!(matches!(open_in(&vfs, &read_only(Durability::Sync)), Err(Error::Locked)));
+    let old_model = model.clone();
+    let old = ro.snapshot().unwrap();
+    // Nothing new: refresh answers the same sequence and changes nothing.
+    let seq0 = ro.refresh().unwrap();
+    assert!(model_of(&ro) == model);
+    put(&rw, &mut model, "key-00001", b"newer");
+    assert!(model_of(&ro) == old_model, "a commit is not visible before refresh");
+    let seq1 = ro.refresh().unwrap();
+    assert!(seq1 > seq0 && model_of(&ro) == model, "refresh sees the commit in the live WAL");
+    // Enough writes to flush, compact and delete the tables the reader holds.
+    fill(&rw, &mut model, 1000, 600);
+    rw.compact_range(std::ops::Bound::Unbounded, std::ops::Bound::Unbounded).unwrap();
+    let seq2 = ro.refresh().unwrap();
+    assert!(seq2 > seq1 && model_of(&ro) == model, "refresh after a flush and a compaction");
+    assert_eq!(old.get(b"key-00001").unwrap(), old_model.get(&b"key-00001"[..]).cloned(), "the old snapshot reads on");
+    assert!(matches!(ro.commit(&WriteBatch::new()), Err(Error::ReadOnly(_))), "still read-only after a refresh");
+}
+
+#[test]
+fn only_a_read_only_handle_refreshes() {
+    let (image, _) = closed_image();
+    let disk = SimVfs::restore(&image);
+    let rw = open_in(&disk.as_vfs(), &config(Durability::Sync)).unwrap();
+    assert!(matches!(rw.refresh(), Err(Error::InvalidArgument(m)) if m.contains("AccessMode::ReadOnly")));
+    drop(rw);
+    // A handle that is read-only for an unknown ro_compat bit holds the LOCK:
+    // nothing changes under it, so it does not refresh either.
+    let (mut image, _) = unclean_image();
+    let file = files_with(&image, "sst").into_iter().next().unwrap();
+    patch_header(&mut image, &file, |h| or_u64(h, 24, 1 << 3));
+    let disk = SimVfs::restore(&image);
+    let db = open_in(&disk.as_vfs(), &config(Durability::Sync)).unwrap();
+    assert!(db.is_read_only().is_some());
+    assert!(matches!(db.refresh(), Err(Error::InvalidArgument(_))));
+}
+
+/// A reader that keeps its handle while the directory is emptied and filled
+/// with another, intact database must not adopt it: its tables, cache and
+/// snapshots belong to the first one, so `refresh` says `Corruption`, and the
+/// handle goes on reading the database it opened.
+#[test]
+fn refresh_refuses_a_directory_that_now_holds_another_database() {
+    use kerno_core::vfs::OpenMode;
+    let (image, model) = closed_image();
+    let other = {
+        let disk = SimVfs::new(3);
+        let mut cfg = config(Durability::Sync);
+        cfg.test.db_id = Some([0x5A; 16]);
+        let db = open_in(&disk.as_vfs(), &cfg).unwrap();
+        fill(&db, &mut kerno_testkit::harness::Model::new(), 0, 50);
+        db.close().unwrap();
+        disk.dump()
+    };
+    let id = |i: &kerno_testkit::vfs::DirImage| manifest_of(i).0.header.db_id;
+    assert_ne!(id(&image), id(&other), "two databases get two ids");
+    let disk = SimVfs::restore(&image);
+    let vfs = disk.as_vfs();
+    let ro = open_in(&vfs, &read_only(Durability::Sync)).unwrap();
+    let dir = std::path::Path::new(DIR);
+    for name in vfs.list(dir).unwrap().into_iter().filter(|n| n != "LOCK") {
+        vfs.remove_file(&dir.join(name)).unwrap();
+    }
+    for (file, bytes) in other.files.iter().filter(|(p, _)| p.file_name().is_some_and(|n| n != "LOCK")) {
+        vfs.open(file, OpenMode::CreateNew).unwrap().write_at(bytes, 0).unwrap();
+    }
+    let err = ro.refresh().expect_err("another database");
+    assert!(matches!(&err, Error::Corruption(m) if m.contains("another database")), "{err:?}");
+    assert!(model_of(&ro) == model, "the handle still reads the database it opened");
+}
+
+/// The writer flushes and compacts while the reader is opening: the tables the
+/// reader listed are gone when it opens them. The open reads again and ends
+/// with the writer's final state instead of failing.
+#[test]
+fn read_only_open_reads_again_when_the_writer_changes_the_files() {
+    use kerno_testkit::vfs::{HookAction, HookOpKind, HookPoint, HookVfs};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    let (image, model) = unclean_image();
+    let disk = SimVfs::restore(&image);
+    let writer = Arc::new(open_in(&disk.as_vfs(), &config(Durability::Sync)).unwrap());
+    let model = Arc::new(Mutex::new(model));
+    let fired = Arc::new(AtomicUsize::new(0));
+    let lists = Arc::new(AtomicUsize::new(0));
+    let hook = {
+        let (writer, model, fired, lists) = (writer.clone(), model.clone(), fired.clone(), lists.clone());
+        move |op: &kerno_testkit::vfs::HookOp<'_>| {
+            if op.point == HookPoint::Before && op.kind == HookOpKind::List {
+                lists.fetch_add(1, Ordering::SeqCst);
+            }
+            let is_sst = op.path.extension().is_some_and(|e| e == "sst");
+            // The first time the reader opens a table, the writer replaces them all.
+            if op.point == HookPoint::Before
+                && op.kind == HookOpKind::Open
+                && is_sst
+                && fired.fetch_add(1, Ordering::SeqCst) == 0
+            {
+                fill(&writer, &mut model.lock().unwrap(), 2000, 600);
+                writer.compact_range(std::ops::Bound::Unbounded, std::ops::Bound::Unbounded).unwrap();
+            }
+            HookAction::Proceed
+        }
+    };
+    let reader_vfs = HookVfs::wrap(disk.as_vfs(), hook);
+    let ro = open_in(&reader_vfs, &read_only(Durability::Sync)).expect("the open reads again");
+    assert!(fired.load(Ordering::SeqCst) > 1, "the open went back to the tables after the writer changed them");
+    assert!(model_of(&ro) == *model.lock().unwrap(), "one consistent, newer state");
     drop(ro);
-    assert!(open_in(&vfs, &config(Durability::Sync)).is_ok(), "released with the handle");
+}
+
+/// Damage that does not change between two reads is reported at once, as
+/// before: the retry is for a writer's changes, never a way to skip damage.
+#[test]
+fn read_only_open_reports_damage_without_retrying() {
+    use kerno_testkit::vfs::{HookAction, HookOpKind, HookPoint, HookVfs};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let (mut image, _) = closed_image();
+    let sst = files_with(&image, "sst").pop().unwrap();
+    let last = image.files[&sst].len() - 1;
+    image.files.get_mut(&sst).unwrap()[last] ^= 0xFF; // the footer
+    let disk = SimVfs::restore(&image);
+    let lists = Arc::new(AtomicUsize::new(0));
+    let counter = lists.clone();
+    let vfs = HookVfs::wrap(disk.as_vfs(), move |op| {
+        if op.point == HookPoint::Before && op.kind == HookOpKind::List {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }
+        HookAction::Proceed
+    });
+    let err = open_in(&vfs, &read_only(Durability::Sync)).err().expect("a damaged table");
+    assert!(matches!(err, Error::Corruption(_)), "{err:?}");
+    // open's own listing, then one read: before, the read, after.
+    assert_eq!(lists.load(Ordering::SeqCst), 4, "damage is not read again");
 }
 
 #[test]

@@ -14,7 +14,7 @@
 //! read again by the replay that follows a plan, in chunks the size of a
 //! write buffer (S-2), so recovery memory does not grow with the logs.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
@@ -348,15 +348,35 @@ pub fn plan(vfs: &dyn Vfs, dir: &Path, listing: &Listing) -> Result<(manifest::L
 /// SST-O1..O7), and the first of them with `ro_compat` bits this engine does
 /// not know.
 pub fn open_tables(ctx: &Arc<TableCtx>, state: &ManifestState) -> Result<(Levels, Option<(String, u64)>)> {
+    open_tables_reusing(ctx, state, &mut HashMap::new())
+}
+
+/// [`open_tables`], taking the tables of `reuse` (by file number) instead of
+/// opening them again: a table file never changes and its number is never
+/// reused, so a refresh of a read-only handle only opens the ones that are
+/// new. Every table it opens is added to `reuse`, also when a later one
+/// fails, so a read that has to start again does not open them twice.
+pub fn open_tables_reusing(
+    ctx: &Arc<TableCtx>,
+    state: &ManifestState,
+    reuse: &mut HashMap<u64, Arc<Table>>,
+) -> Result<(Levels, Option<(String, u64)>)> {
     let mut levels: Levels = vec![Vec::new(); NUM_LEVELS];
     let mut unknown = None;
     for (l, files) in state.levels.iter().enumerate() {
         for f in files {
-            let table = Table::open(ctx, f, state.last_seq)?;
+            let table = match reuse.get(&f.number) {
+                Some(t) => t.clone(),
+                None => {
+                    let t = Arc::new(Table::open(ctx, f, state.last_seq)?);
+                    reuse.insert(f.number, t.clone());
+                    t
+                }
+            };
             if table.unknown_ro_compat != 0 && unknown.is_none() {
                 unknown = Some((sst_name(f.number), table.unknown_ro_compat));
             }
-            levels[l].push(Arc::new(table));
+            levels[l].push(table);
         }
     }
     Ok((levels, unknown))

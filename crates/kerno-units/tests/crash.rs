@@ -593,16 +593,27 @@ fn wal_independence(preallocate: bool) {
     }
     assert_eq!(histories(&db, &units), want, "history after WAL rotation");
     verified(&db, "after WAL rotation");
+    // `compact` drops the payloads of the deleted unit (units[2]): its trail
+    // stays, every other history is as it was.
+    let after_compact = |db: &UnitDb<KernoDb>, ctx: &str| {
+        let live: Vec<UnitId> = units.iter().enumerate().filter(|(i, _)| *i != 2).map(|(_, u)| *u).collect();
+        let want_live: Vec<_> = want.iter().enumerate().filter(|(i, _)| *i != 2).map(|(_, w)| w.clone()).collect();
+        assert_eq!(histories(db, &live), want_live, "history {ctx}");
+        let trail = db.history(units[2], HistoryQuery::oldest(1_000)).expect("history of the deleted unit");
+        assert_eq!(trail, want[2].0, "the trail of the deleted unit {ctx}");
+        let first = db.get_revision(units[2], RevNo(1));
+        assert!(matches!(first, Err(UnitError::HistoryUnavailable { .. })), "{ctx}: {first:?}");
+    };
     db.compact().expect("compact");
-    assert_eq!(histories(&db, &units), want, "history after compact");
+    after_compact(&db, "after compact");
     db.close().unwrap();
     let db = open(&disk);
-    assert_eq!(histories(&db, &units), want, "history after a clean reopen");
+    after_compact(&db, "after a clean reopen");
     verified(&db, "after a clean reopen");
     let image = disk.crash_now(CrashKind::PowerLoss);
     drop(db);
     let db = open(&image);
-    assert_eq!(histories(&db, &units), want, "history after a power loss");
+    after_compact(&db, "after a power loss");
     verified(&db, "after a power loss");
 }
 

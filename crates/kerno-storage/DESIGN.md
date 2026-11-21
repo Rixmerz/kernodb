@@ -274,7 +274,13 @@ After a clean shutdown the directory holds only `LOCK`, `MANIFEST` (a single rec
 
 ## Read-only
 
-`AccessMode::ReadOnly`, or an unknown `ro_compat` bit in any file the opening reads (the MANIFEST, the referenced SSTs, the live WALs), opens the database without writing (v1.md §9.5; invariant I-18): it takes the exclusive `LOCK` (`Locked` if another handle, read or write, holds it), classifies the directory with the same function as the read-write opening, opens the SSTs and replays the live WALs **into a single in-memory memtable** (memory is proportional to the live WALs). It does no `create_dir_all`, `sync_dir`, deletions, checkpoints or flush, launches no threads and creates nothing (the `LOCK` may be created). Orphans, `MANIFEST.tmp` and unknown files are reported (`recovery_orphans`, hidden) and not touched.
+`AccessMode::ReadOnly`, or an unknown `ro_compat` bit in any file the opening reads (the MANIFEST, the referenced SSTs, the live WALs), opens the database without writing (v1.md §9.5; invariant I-18): it classifies the directory with the same function as the read-write opening, opens the SSTs and replays the live WALs **into a single in-memory memtable** (memory is proportional to the live WALs). It does no `create_dir_all`, `sync_dir`, deletions, checkpoints or flush, launches no threads and creates nothing. Orphans, `MANIFEST.tmp` and unknown files are reported (`recovery_orphans`, hidden) and not touched.
+
+**The lock.** `AccessMode::ReadOnly` takes **no lock**; the unknown-`ro_compat` case, which was asked to write, still takes the exclusive `LOCK` like any read-write open. Writers stay exclusive against each other (`Locked`), `verify()` and `inspect()` still take the `LOCK` (they need a quiet directory), and a read-only handle blocks nobody. See the next section.
+
+### Concurrent read-only handles
+
+Designed in [ADR-0024](../../docs/adr/0024-concurrent-read-only-opens.md): a read-only open takes no lock and reads one consistent state (MANIFEST + WAL replay, retried while the writer moves files under it); `KernoDb::refresh()` moves a read-only handle to newer commits. The on-disk format does not change.
 
 - `commit` (even with an empty batch), `begin_write`, `sync`, `compact_range`, `TestHooks::flush`, `compact_once` and `checkpoint` return `Error::ReadOnly` (`Inner::check_writable`).
 - Reads, snapshots and `wait_idle` work; `close` writes nothing.
@@ -283,7 +289,7 @@ After a clean shutdown the directory holds only `LOCK`, `MANIFEST` (a single rec
 
 ## `verify()` and `inspect()`
 
-They are library functions (`kerno_storage::verify`, `kerno_storage::inspect`; the CLI arrives in Phase 2, C-01) and **do not write**: the only thing they can create is `LOCK` (v1.md §9.5, RO-1; invariant I-18). Each takes the exclusive `LOCK`, so they return `Locked` if another handle or process has the database (`tests/process_lock.rs`). A directory that is not a database (nonexistent, empty or with foreign files) is `InvalidArgument` and nothing is locked or created; data files without a MANIFEST are a damaged database (REC-2) and are reported.
+They are library functions (`kerno_storage::verify`, `kerno_storage::inspect`; the CLI arrives in Phase 2, C-01) and **do not write**: the only thing they can create is `LOCK` (v1.md §9.5, RO-1; invariant I-18). Each takes the exclusive `LOCK`, so they return `Locked` if another handle or process has the database (`tests/process_lock.rs`); unlike a read-only open they need a store nobody is writing. Damage in a table is also given as key ranges: `VerifyReport::damaged` has one `DamagedRange` per damaged data block (the keys after the largest key of the block before it, up to its own largest key; the first block starts at the table's smallest key) and one per table that does not open or is missing (the extent the MANIFEST records, `whole_table`), so a caller can tell which records are at risk (`kerno_units::damaged_spans` turns a range into record kinds and unit ids). The `Issue`s stay one per rule and file. The keys are in the fields; `Debug` prints their lengths only (I-29). Damage in a WAL or the MANIFEST has no key range. A directory that is not a database (nonexistent, empty or with foreign files) is `InvalidArgument` and nothing is locked or created; data files without a MANIFEST are a damaged database (REC-2) and are reported.
 
 `verify(vfs, dir, &VerifyOptions { deep, check_wal })` follows these steps:
 
