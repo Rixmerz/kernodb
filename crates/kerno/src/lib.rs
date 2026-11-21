@@ -140,6 +140,33 @@
 //! # Ok::<(), kerno::Error>(())
 //! ```
 //!
+//! # Natural keys: upsert
+//!
+//! Ids are random, so a logical key (an email, a path) needs a lookup. Declare the field `unique`
+//! and [`Db::upsert_document`] (or [`Batch::upsert`], in the same commit as other writes) revises
+//! the active unit that holds the same value of it, or stores a new one. The result says which
+//! unit, and whether it was created, updated or already had the document.
+//!
+//! ```
+//! use kerno::{Db, Document, FieldDef, FieldType, FieldValue, UpsertOutcome};
+//!
+//! # let dir = std::env::temp_dir().join(format!("kerno-doc-upsert-{}", std::process::id()));
+//! # let _ = std::fs::remove_dir_all(&dir);
+//! let db = Db::open(&dir)?;
+//! db.define_schema("user", vec![FieldDef::new("email", FieldType::Text).unique(), FieldDef::new("name", FieldType::Text)])?;
+//! let user = |name: &str| Document::new().with("email", FieldValue::Text("ada@example.com".into())).with("name", FieldValue::Text(name.into()));
+//!
+//! let made = db.upsert_document("user", "email", &user("Ada"))?;
+//! assert_eq!(made.outcome, UpsertOutcome::Created);
+//! assert_eq!(db.upsert_document("user", "email", &user("Ada"))?.outcome, UpsertOutcome::Unchanged);
+//! let newer = db.upsert_document("user", "email", &user("Ada L."))?;
+//! assert_eq!((newer.id, newer.outcome), (made.id, UpsertOutcome::Updated));
+//!
+//! db.close()?;
+//! # std::fs::remove_dir_all(&dir).expect("remove the doc database");
+//! # Ok::<(), kerno::Error>(())
+//! ```
+//!
 //! # The query language
 //!
 //! [`Db::execute`] runs a declarative query over the typed units of a schema: filters, ordering,

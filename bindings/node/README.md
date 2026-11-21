@@ -93,7 +93,8 @@ none, and returns a `Committed` report:
 ```ts
 { units: string[]       // ids of the units the `store` ops created, in order
   relations: string[]   // ids of the relations created (or found, for a unique relate), in order
-  unchanged: number     // `update` ops skipped by `ifChanged`
+  unchanged: number     // `update` ops skipped by `ifChanged`, and `upsert` ops that found the same document
+  upserts: Upserted[]   // what each `upsert` op did, in order (see below); an upserted unit is not in `units`
   commitSeq?: number }  // the commit's sequence; absent when nothing was written
 ```
 
@@ -110,6 +111,7 @@ are recorded with every revision of the commit.
 | `'restore'` | `id`, `revision`: a new revision that copies that one |
 | `'relate'` | `from`, `to`, `relationType`, `unique?` |
 | `'unrelate'` | `relationId` |
+| `'upsert'` | `unitType`, `field`, `document`: see "Upsert by a unique field" |
 
 A relation end (`from`, `to`) is a unit id, or the 0-based index of an earlier `store` op in
 the same commit:
@@ -124,6 +126,27 @@ const { units, commitSeq } = db.commit(
   { reason: 'import', actor: 'importer' },
 )
 ```
+
+### Upsert by a unique field
+
+Ids are random, so a logical key (an email, a path) needs a lookup. Declare the field `unique`
+and `db.upsert(unitType, field, document)` revises the active unit that holds the same value of
+it, or stores a new one. It returns `{ id, outcome }`, where `outcome` is `'created'`,
+`'updated'` (a new revision) or `'unchanged'` (the unit had this document already: nothing is
+written).
+
+```js
+db.defineSchema('user', [{ name: 'email', type: 'text', unique: true }, { name: 'name', type: 'text' }])
+const { id } = db.upsert('user', 'email', { email: 'a@example.com', name: 'Ada' })   // created
+db.upsert('user', 'email', { email: 'a@example.com', name: 'Ada L.' }).outcome       // 'updated'
+db.history(id).map((r) => r.kind)                                                    // ['update', 'create']
+```
+
+In `commit`, `{ op: 'upsert', unitType, field, document }` runs in the same change set as the other
+ops, and several upserts of one key in a commit make one unit (the last document wins). A field
+that is not declared `unique`, or a type with no schema, throws `INVALID_ARGUMENT`; a document
+with no value in the field throws `SCHEMA`. Only active units hold a key: an archived or
+deleted one does not.
 
 ### History and maintenance
 
@@ -151,6 +174,7 @@ against it, and a refused write stores nothing (`SCHEMA`).
 | `db.createIndex(unitType, field)` | nothing. Indexes a field of the type's schema, over the units that exist already. |
 | `db.storeDocument(unitType, document)` | the new unit's id |
 | `db.updateDocument(id, document)` | nothing |
+| `db.upsert(unitType, field, document)` | `{ id, outcome }`: store the document or revise the active unit holding the same value of the unique `field`; `outcome` is `'created'`, `'updated'` or `'unchanged'` |
 | `db.readDocument(id)` | the document, or `null` for an unknown or deleted unit |
 | `db.find(unitType, field, value)` | the `Unit[]` of the type whose indexed `field` equals `value` |
 | `db.execute(query)` | `{ aliases: string[], rows: Unit[][] }`: one `Unit` per alias in each row. See the [query language](https://github.com/Rixmerz/kernodb/blob/main/docs/query-language.md). |
