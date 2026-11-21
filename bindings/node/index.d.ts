@@ -11,34 +11,260 @@ export declare const __napiBindingTarget: 'native' | 'wasm32-wasi' | 'wasm32-was
 
 /** An open database. Get one with `open(path)`; call `close()` when done. */
 export declare class Db {
-  /** Stores a new unit of type `unitType` (1 to 64 bytes of UTF-8) and returns its id. */
-  store(unitType: string, payload: string | Buffer): string
+  /**
+   * Stores a new unit of type `unitType` (1 to 64 bytes of UTF-8) and returns its id. A
+   * payload is at most 1 MiB.
+   */
+  store(unitType: string, payload: Payload): string
   /** The unit `id`, or `null` when there is none. */
   read(id: string): Unit | null
   /**
-   * Relates `from` to `to` with a relation of type `relationType` (1 to 256 bytes) and
-   * returns the relation's id. Both units must exist and be active.
+   * Replaces the payload of `id`, adding a revision; the earlier ones stay in its history.
+   * With `ifChanged`, an identical payload writes nothing. Returns whether a revision was
+   * written.
    */
-  relate(from: string, to: string, relationType: string): string
+  update(id: string, payload: Payload, options?: UpdateOptions | undefined | null): boolean
+  /**
+   * Deletes `id` with a tombstone revision; its history is kept. Without `cascade` a unit
+   * that still has relations throws `HAS_RELATIONS`.
+   */
+  delete(id: string, options?: DeleteOptions | undefined | null): void
+  /**
+   * Relates `from` to `to` with a relation of type `relationType` (1 to 256 bytes) and
+   * returns the relation's id. Both units must exist and be active. With `unique`, an
+   * existing relation of that type between the two units is reused.
+   */
+  relate(from: string, to: string, relationType: string, options?: RelateOptions | undefined | null): string
+  /** Removes the relation `relationId`. */
+  unrelate(relationId: string): void
   /**
    * The relations that start at (`out`) or end at (`in`) the unit `id`, optionally of one
    * `relationType`.
    */
   related(id: string, direction: 'out' | 'in', relationType?: string | undefined | null): Array<Relation>
+  /**
+   * Every live relation, optionally of one `relationType`, in one scan: much faster than
+   * calling `related` for each unit.
+   */
+  relations(relationType?: string | undefined | null): Array<Relation>
   /** Every active unit that matches `filter` (all of them without one), in id order. */
   query(filter?: UnitFilter | undefined | null): Array<Unit>
   /**
+   * Commits `ops` atomically, as one change set, and returns what it wrote. See `CommitOp`
+   * for the ops. `reason`, `actor` and `source` are recorded with every revision.
+   */
+  commit(ops: Array<CommitOp>, options?: CommitOptions | undefined | null): Committed
+  /** The newest `limit` revisions of `id`, newest first; empty for an unknown unit. */
+  history(id: string, options?: HistoryOptions | undefined | null): Array<Revision>
+  /**
+   * The revision of `id` in force once commit `commitSeq` committed, with its payload;
+   * `null` when the unit did not exist yet. A deleted unit returns its tombstone. A
+   * sequence after the last commit reads the current state. Throws `PRUNED` when retention
+   * removed that revision.
+   */
+  readAsOf(id: string, commitSeq: number): Revision | null
+  /**
+   * The sequence of the last commit (0 for an empty database): the point to pass to
+   * `readAsOf` for "now".
+   */
+  lastCommitSeq(): number
+  /** Checks every record of the units layer. A damaged store is reported, not thrown. */
+  verify(): VerifyReport
+  /**
+   * Compacts the revision ranges. History keeps deleted units' payloads, so this frees only
+   * what a retention policy dropped.
+   */
+  compact(): CompactReport
+  /**
+   * Turns keyword (BM25) indexing of `unitType` on or off. It is off by default; the setting
+   * is stored in the database, and the type's active units are indexed (or cleared) in the
+   * same commit. `hybridSearch`'s keyword leg only sees types that have it on.
+   */
+  setFulltext(unitType: string, enabled: boolean): void
+  /** Whether `unitType` is keyword-indexed (off by default). */
+  fulltext(unitType: string): boolean
+  /** Gives `unitType` a schema. */
+  defineSchema(unitType: string, fields: Array<FieldSpec>): void
+  /** Indexes `field` of `unitType` (it must be in the type's schema). */
+  createIndex(unitType: string, field: string): void
+  /**
+   * Stores a document (an object of boolean, number, bigint, string and Buffer values) and
+   * returns its id; the type's schema, if any, validates it.
+   */
+  storeDocument(unitType: string, document: Record<string, boolean | number | bigint | string | Buffer>): string
+  /** Replaces the payload of `id` with a document. */
+  updateDocument(id: string, document: Record<string, boolean | number | bigint | string | Buffer>): void
+  /** The payload of `id` decoded as a document, or `null` for an unknown or deleted unit. */
+  readDocument(id: string): Record<string, boolean | number | bigint | string | Buffer> | null
+  /** The units of `unitType` whose indexed `field` equals `value`. */
+  find(unitType: string, field: string, value: boolean | number | bigint | string | Buffer): Array<Unit>
+  /** Runs a query of the Kerno query language. */
+  execute(query: string): QueryResult
+  /**
+   * One query over keywords, vectors and relations, fused by weighted reciprocal rank
+   * fusion; best hit first. Wraps the engine's `hybrid_search`.
+   */
+  hybridSearch(query: HybridQueryInput): Array<HybridHit>
+  /**
    * Closes the database and releases its directory. Closing twice is fine; any other call
-   * after it throws.
+   * after it throws `CLOSED`.
    */
   close(): void
 }
 
 /**
- * Opens the database in the directory `path`, creating it when there is none. One process
- * holds a directory at a time: opening it again before `close()` throws.
+ * One operation of `commit`. Which fields it needs depends on `op`:
+ *
+ * | `op` | fields |
+ * |---|---|
+ * | `store` | `unitType`, `payload` |
+ * | `update` | `id`, `payload`, optional `ifChanged` |
+ * | `delete` | `id`, optional `cascade` |
+ * | `delete_cascade` | `id` |
+ * | `archive`, `unarchive` | `id` |
+ * | `restore` | `id`, `revision` |
+ * | `relate` | `from`, `to`, `relationType`, optional `unique` |
+ * | `unrelate` | `relationId` |
+ *
+ * A relation end (`from`, `to`) is a unit id, or the 0-based index of an earlier `store` op of
+ * the same commit.
  */
-export declare function open(path: string): Db
+export interface CommitOp {
+  op: 'store' | 'update' | 'delete' | 'delete_cascade' | 'archive' | 'unarchive' | 'restore' | 'relate' | 'unrelate'
+  unitType?: string
+  payload?: string | Buffer
+  id?: string
+  ifChanged?: boolean
+  cascade?: boolean
+  /** `restore`: the revision number to copy. */
+  revision?: number
+  from?: string | number
+  to?: string | number
+  relationType?: string
+  unique?: boolean
+  /** `unrelate`: the relation to remove. */
+  relationId?: string
+}
+
+export interface CommitOptions {
+  /** At most 1024 bytes. */
+  reason?: string
+  /** At most 256 bytes. */
+  actor?: string | Buffer
+  /** At most 256 bytes. */
+  source?: string | Buffer
+}
+
+/** What a `commit` wrote. */
+export interface Committed {
+  /** The ids of the units the commit stored, in the order of its `store` ops. */
+  units: Array<string>
+  /** The ids of the relations it created (or, for a unique relate, found), in order. */
+  relations: Array<string>
+  /** Updates skipped because the payload was already the current one. */
+  unchanged: number
+  /** The sequence of the commit; absent when nothing was written. */
+  commitSeq?: number
+}
+
+/** What `compact` measured; `null` when the engine does not know. */
+export interface CompactReport {
+  before?: number
+  after?: number
+}
+
+export interface DeleteOptions {
+  /** Remove the unit's relations first, in the same commit. Default `false`. */
+  cascade?: boolean
+}
+
+/** A field of a schema. */
+export interface FieldSpec {
+  name: string
+  type: 'bool' | 'int' | 'float' | 'text' | 'bytes'
+  required?: boolean
+  /** No two active units of the type hold the same value. Implies `indexed`. */
+  unique?: boolean
+  indexed?: boolean
+}
+
+export interface HistoryOptions {
+  /** The newest `limit` revisions (at least 1). Default 100. */
+  limit?: number
+  /** Read and verify each revision's content. Default `false`. */
+  withPayload?: boolean
+}
+
+export interface HybridHit {
+  id: string
+  /** The sum of the leg contributions, scaled by 1e9. Compare, do not interpret. */
+  score: number
+  ranks: LegRanks
+}
+
+/**
+ * One query over keywords (BM25), vectors and relations, fused by weighted reciprocal rank
+ * fusion. A leg runs when its input is set and its weight is above 0; at least one must run.
+ */
+export interface HybridQueryInput {
+  /** The keyword leg. Only types with `setFulltext(type, true)` are searched. */
+  text?: string
+  vectors?: VectorInput
+  relations?: RelationsInput
+  weights?: HybridWeightsInput
+  /**
+   * `graph_gated` ranks the units the relations leg found first, nearest hop first.
+   * Default `rrf`.
+   */
+  fusion?: 'rrf' | 'graph_gated'
+  /** The `k` of the fusion. Default 60. */
+  rrfK?: number
+  /** Units each leg contributes, 1 to 1000. Default 100. */
+  candidates?: number
+  /** Hits returned, 1 to 1000. Default 10. */
+  limit?: number
+}
+
+/** Leg weights, 0 to 1000; 0 switches a leg off. Default 1 each. */
+export interface HybridWeightsInput {
+  keyword?: number
+  vector?: number
+  relations?: number
+}
+
+/** The 1-based rank a unit held in each leg that found it. */
+export interface LegRanks {
+  keyword?: number
+  vector?: number
+  relations?: number
+}
+
+/**
+ * Opens the database in the directory `path`, creating it when there is none. One process
+ * holds a directory at a time: opening it again before `close()` throws `LOCKED`.
+ */
+export declare function open(path: string, options?: OpenOptions | undefined | null): Db
+
+export interface OpenOptions {
+  /**
+   * Open without writing anything to the directory. It still holds the directory's lock.
+   * Default `false`.
+   */
+  readOnly?: boolean
+  /** The most operations one `commit` may hold. Default 10,000. */
+  maxBatchOps?: number
+}
+
+/** The result of `execute`: one `Unit` per alias in each row. */
+export interface QueryResult {
+  aliases: Array<string>
+  rows: Array<Array<Unit>>
+}
+
+export interface RelateOptions {
+  /** Reuse an existing relation of that type between the two units. Default `false`. */
+  unique?: boolean
+}
 
 /** A directed, typed edge between two units. */
 export interface Relation {
@@ -51,14 +277,52 @@ export interface Relation {
   relationType: string
 }
 
+/** The relations leg of `hybridSearch`: units reached from `seeds` by walking relations. */
+export interface RelationsInput {
+  /** Active units to start from; they are not hits themselves. */
+  seeds: Array<string>
+  /** Follow only these relation types. Default: any. */
+  types?: Array<string>
+  /** Default `both`. */
+  direction?: 'out' | 'in' | 'both'
+  /** Most hops from a seed, 1 to 4. Default 2. */
+  maxDepth?: number
+  /** Most relation entries examined, up to 100,000. Default 10,000. */
+  visitBudget?: number
+}
+
+/** One revision of a unit, from `history` or `readAsOf`. */
+export interface Revision {
+  revision: number
+  kind: 'create' | 'update' | 'archive' | 'unarchive' | 'delete' | 'restore'
+  /** The commit that wrote it. */
+  commitSeq: number
+  /** Microseconds since the Unix epoch; descriptive, never used for ordering. */
+  createdAtUs: number
+  lifecycle: 'active' | 'archived' | 'deleted'
+  schemaVersion: number
+  /** Hex digest of the verified content. */
+  contentHash: string
+  /**
+   * The verified content: present when it was asked for (`readAsOf` always asks) and the
+   * revision has one.
+   */
+  payload?: Buffer
+}
+
 /** A unit as of its latest revision. */
 export interface Unit {
   /** 32 hex digits. */
   id: string
   unitType: string
   schemaVersion: number
-  /** `read` and `query` only return `active` units today. */
+  /**
+   * `read`, `query` and `find` return `active` and `archived` units as the engine does;
+   * a deleted unit has no payload.
+   */
   lifecycle: 'active' | 'archived' | 'deleted'
+  /** The number of the unit's latest revision. */
+  revision: number
   /** Microseconds since the Unix epoch; descriptive, not an ordering guarantee. */
   createdAtUs: number
   updatedAtUs: number
@@ -70,4 +334,40 @@ export interface Unit {
 export interface UnitFilter {
   unitType?: string
   schemaVersion?: number
+}
+
+export interface UpdateOptions {
+  /** An identical payload writes nothing. Default `false`. */
+  ifChanged?: boolean
+}
+
+/** The vector leg of `hybridSearch`: the vectors to rank, and the one to rank them against. */
+export interface VectorInput {
+  /** The vector to look up. */
+  query: Array<number>
+  /** The candidates: a unit and its vector, all of the dimension of `query`. */
+  items: Array<VectorItem>
+  /** Default `cosine`. */
+  metric?: 'cosine' | 'dot'
+}
+
+export interface VectorItem {
+  id: string
+  vector: Array<number>
+}
+
+/** What `verify` found. A damaged store is reported (`clean: false`), not thrown. */
+export interface VerifyReport {
+  clean: boolean
+  /** The snapshot verified. 0 (like the counts) when `storageError` is set. */
+  commitSeq: number
+  units: number
+  revisions: number
+  relations: number
+  /** At most the first findings, as text. */
+  findings: Array<string>
+  /** Findings beyond the ones listed. */
+  findingsOmitted: number
+  /** Set when storage-level damage stopped the scan. */
+  storageError?: string
 }

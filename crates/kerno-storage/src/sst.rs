@@ -84,6 +84,8 @@ pub struct TableCtx {
     /// Where an obsolete table's file is queued when its last reference goes
     /// away (W-13).
     pub deleter: Arc<Deleter>,
+    /// New tables store LZ4 data blocks (`Config::block_compression`, §4.4).
+    pub block_compression: bool,
 }
 
 impl TableCtx {
@@ -100,6 +102,7 @@ impl TableCtx {
             bytes_per_writeback: None,
             db_id: [0; 16],
             deleter,
+            block_compression: false,
         }
     }
 
@@ -120,6 +123,12 @@ impl TableCtx {
 
     pub fn with_db_id(mut self, db_id: [u8; 16]) -> Self {
         self.db_id = db_id;
+        self
+    }
+
+    /// New tables store LZ4 data blocks (§4.4).
+    pub fn with_block_compression(mut self, on: bool) -> Self {
+        self.block_compression = on;
         self
     }
 
@@ -229,7 +238,7 @@ impl TableBuilder {
                 bytes_per_writeback: ctx.bytes_per_writeback,
                 stats: ctx.stats.clone(),
             },
-            inner: SstBuilder::new(ctx.db_id, number, block_size),
+            inner: SstBuilder::with_compression(ctx.db_id, number, block_size, ctx.block_compression),
             entries: 0,
         })
     }
@@ -317,6 +326,8 @@ pub struct Table {
     /// `ro_compat` bits of the header this engine does not know (HDR-7):
     /// a database with such a file opens read-only.
     pub unknown_ro_compat: u64,
+    /// The header has `BLOCK_LZ4`: data blocks store `codec ‖ body`.
+    lz4: bool,
 }
 
 impl Table {
@@ -365,6 +376,7 @@ impl Table {
             ctx: ctx.clone(),
             obsolete: AtomicBool::new(false),
             unknown_ro_compat: opened.header.unknown_ro_compat(),
+            lz4: opened.header.incompat & crate::format::features::BLOCK_LZ4 != 0,
         })
     }
 
@@ -440,9 +452,10 @@ impl Table {
         }
         let mut buf = vec![0u8; handle.len as usize];
         self.file.read_at(&mut buf, handle.offset)?;
-        read_data_block(&buf, self.number, &self.index, i, &self.props)
+        let payload = crate::format::block::data_block_payload(&buf, self.number, handle.offset, self.lz4)
+            .and_then(|p| read_data_block(&p, &self.index, i, &self.props).map(|_| ()).map(|()| p.into_owned()))
             .map_err(|e| format_error(&sst_name(self.number), e))?;
-        let block = Arc::new(Block::from_validated(buf));
+        let block = Arc::new(Block::from_payload(payload));
         if fill_cache {
             self.ctx.cache.insert(key, block.clone());
         }

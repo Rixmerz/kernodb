@@ -210,6 +210,8 @@ fn lower_tables(db: &KernoDb) -> Vec<(usize, TableInfo)> {
 fn wide_range_database() -> (SimVfs, KernoDb, Model) {
     let disk = SimVfs::new(4);
     let mut cfg = config(Durability::Sync);
+    // Its compactions are driven by file sizes, with compressible values: uncompressed tables.
+    cfg.block_compression = false;
     cfg.compaction.l0_trigger = 2;
     let db = open_in(&disk.as_vfs(), &cfg).unwrap();
     let mut model = Model::new();

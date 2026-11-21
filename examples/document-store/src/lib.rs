@@ -42,6 +42,8 @@ impl DocumentStore {
     /// The database cannot be opened or its schema cannot be defined.
     pub fn open(dir: impl AsRef<Path>) -> Result<Self, Error> {
         let db = Db::open(dir)?;
+        // The keyword index is opt-in per type (ADR-0023): search reads the bodies only.
+        db.set_fulltext(BODY, true)?;
         // A type keeps one schema for good, so define it only the first time.
         if db.schema(DOCUMENT)?.is_none() {
             db.define_schema(

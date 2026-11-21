@@ -1039,3 +1039,27 @@ fn a_search_that_cannot_run_is_a_400_that_says_why() {
     }
     assert_eq!(server.get("/v1/search").status, 405);
 }
+
+#[test]
+fn the_keyword_index_of_a_type_is_turned_on_over_http() {
+    // `memo` is not in the suite's --fulltext list: off by default (ADR-0023).
+    let (_dir, server) = start();
+    let body = json!({ "type": "memo", "payload": { "text": "orchid greenhouse" } });
+    let created = server.post("/v1/units", &body);
+    assert_eq!(created.status, 201);
+    let id = created.json()["id"].as_str().unwrap().to_owned();
+    assert!(hit_ids(&search(&server, &json!({ "text": "orchid" }))).is_empty(), "not indexed yet");
+    let state = server.get("/v1/types/memo/fulltext");
+    assert_eq!((state.status, state.json()), (200, json!({ "type": "memo", "enabled": false })));
+
+    // Turning it on indexes the units the type already has, in the same commit.
+    let on = server.put("/v1/types/memo/fulltext", &json!({ "enabled": true }));
+    assert_eq!((on.status, on.json()), (200, json!({ "type": "memo", "enabled": true })));
+    assert_eq!(hit_ids(&search(&server, &json!({ "text": "orchid" }))), [id]);
+
+    let off = server.put("/v1/types/memo/fulltext", &json!({ "enabled": false }));
+    assert_eq!(off.json()["enabled"], json!(false));
+    assert!(hit_ids(&search(&server, &json!({ "text": "orchid" }))).is_empty());
+    assert_eq!(server.put("/v1/types/memo/fulltext", &json!({ "on": true })).status, 400, "unknown field");
+    assert_eq!(server.delete("/v1/types/memo/fulltext").status, 405);
+}

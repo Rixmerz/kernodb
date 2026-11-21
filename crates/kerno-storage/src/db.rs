@@ -1833,6 +1833,7 @@ impl KernoDb {
                 .with_bytes_per_sync(cfg.compaction.bytes_per_sync)
                 .with_bytes_per_writeback(cfg.compaction.bytes_per_writeback)
                 .with_db_id(db_id)
+                .with_block_compression(cfg.block_compression)
                 .with_deleter(deleter),
         );
         let (levels, table_ro_compat) = recovery::open_tables(&ctx, &loaded.replay.state)?;

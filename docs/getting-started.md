@@ -2,7 +2,7 @@
 
 Kerno is an embedded database of **units** (records with a type and content), the **relations** between them, and queries over both. This guide covers how to install the `kerno` crate, open a database, store and retrieve memory in five minutes, and where the three complete examples are.
 
-Status: there is no version 1.0 and no promise of API stability (see the [README](../README.md#status)). The "published on crates.io" entry in the [roadmap](../ROADMAP.md) is still unchecked, so for now the dependency is added by path.
+Status: 1.0.0-alpha.2. There is no version 1.0 and no promise of API stability (see the [README](../README.md#status)). A database written by 1.0.0-alpha.1 is not opened by alpha.2: see [Upgrading from 1.0.0-alpha.1](#upgrading-from-100-alpha1).
 
 ## Requirements
 
@@ -11,12 +11,14 @@ Status: there is no version 1.0 and no promise of API stability (see the [README
 
 ## Install
 
-From a checkout of the repository, add the dependency to your `Cargo.toml`:
-
-```toml
-[dependencies]
-kerno = { path = "path/to/kernodb/crates/kerno" }
+```sh
+cargo add kernodb@1.0.0-alpha.2
 ```
+
+The package is `kernodb`; the library you `use` is `kerno`. From a checkout of the repository you
+can also depend on it by path: `kerno = { package = "kernodb", path = "path/to/kernodb/crates/kerno" }`.
+Python (`pip install --pre kernodb`) and Node.js (`npm install @rixmerz/kernodb@alpha`) have their
+own guides in `bindings/python/README.md` and `bindings/node/README.md`.
 
 ## Open a database
 
@@ -107,12 +109,51 @@ fn main() -> Result<(), kerno::Error> {
 }
 ```
 
-- `update(id, content)` replaces the content of an active unit (`update_document` does the same with a `Document` and respects the schema). The full-text index is updated in the same commit. An unknown id gives `NotFound`.
+- `update(id, content)` replaces the content of an active unit (`update_document` does the same with a `Document` and respects the schema). If the type is keyword-indexed (below), the index is updated in the same commit. An unknown id gives `NotFound`.
 - `delete(id)` deletes the unit: `get` returns a tombstone (`Lifecycle::Deleted`, without content), `query` and word search no longer find it, and the history is kept. If a relation still touches it, it fails with `UnitHasRelations`: remove the relation first with `unrelate(relation)`.
 - `commit(batch)` applies a `Batch` (`store`, `update`, `delete`, `unrelate`) as a single commit and returns the ids of the stored units. If one operation fails, nothing is written. A unit can appear in only one operation of the batch.
 - A `Batch` is data: it holds no lock, so it can be built while the same thread keeps calling `store` or `get`. A `ChangeSet` opened with `unit_db()` does hold the write turn until it ends, and a `store` from the same thread would wait forever.
 
 What the facade does not cover is in `kerno::units` (the complete `kerno-units` layer) and in `Db::unit_db()`, which gives access to the `UnitDb` that wraps `Db`. According to the [crate documentation](../crates/kerno/src/lib.rs), that includes history, reads at a past instant, change sets with several operations, associative queries, export and import, and verification.
+
+### Search by keyword (opt-in per type)
+
+No type is in the keyword (BM25) index until you turn it on, so `search_text` finds nothing at first:
+
+```rust
+use kerno::Db;
+
+fn main() -> Result<(), kerno::Error> {
+    let db = Db::open("my-base")?;
+    db.set_fulltext("note", true)?; // stored in the database; existing notes are indexed now
+    let rust = db.store("note", "Rust has no garbage collector")?;
+    db.store("config", "garbage collector settings")?; // not indexed: never a hit
+
+    let hits = db.search_text("garbage collector", 10)?;
+    println!("hits: {}, first is the note: {}", hits.len(), hits[0].unit == rust);
+    db.close()?;
+    Ok(())
+}
+```
+
+Real output:
+
+```text
+hits: 1, first is the note: true
+```
+
+- `set_fulltext(type, true)` turns the index on for one type, and `false` turns it off again. Either way the type's active units follow in the same commit. `fulltext(type)` says which it is.
+- Indexing costs writes several times over and about 3.5x the disk, so turn it on only for the types you search by text.
+- `search_text(query, limit)` returns `TextHit`s (`unit`, `score`), best first. `hybrid_search` fuses the same keyword leg with vectors and relations.
+
+### Upgrading from 1.0.0-alpha.1
+
+alpha.2 refuses a database written by alpha.1 (`Error::LayerTooOld`) and leaves it untouched. Export it with the alpha.1 command-line tool and import it with the alpha.2 one, then turn on the keyword index of the types you search and redefine schemas and indexes (an export holds neither):
+
+```sh
+kerno old-db export old.kexp      # alpha.1
+kerno import old.kexp new-db      # alpha.2
+```
 
 ## Three complete examples
 

@@ -38,12 +38,13 @@ print(index.as_retriever(similarity_top_k=3).retrieve("memory management"))
   both, so it suits a few thousand items. The dimension of the query must be that of
   the stored nodes, else it raises `ValueError`.
 * **Only the default query mode.** `HYBRID`, `TEXT_SEARCH`, `MMR` and the rest, `output_fields` and
-  `embedding_field` raise `NotImplementedError`; they are never silently ignored. (The embedding is a
-  `bytes` field, and the server's keyword index skips a record that is not valid UTF-8, so there is
+  `embedding_field` raise `NotImplementedError`; they are never silently ignored. (The server's keyword
+  index is opt-in per type and this store does not turn it on: it searches by embedding, so there is
   no text leg.)
 * A collection is one unit type with one schema for good. Two stores may share a collection, but a
   collection that already has another schema raises `ValueError`: pick another `collection`.
-* The server has no authentication or TLS yet, so neither has this store.
+* The server's API tokens are not sent by this store yet (use a server started with `--db`, or a
+  proxy that adds the token); TLS works with an `https://` URL.
 
 ## Tests
 

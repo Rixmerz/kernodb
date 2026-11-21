@@ -4,6 +4,40 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Python packages use the PEP 440 spelling of the same version (`1.0.0a1` is `1.0.0-alpha.1`).
 
+## [Unreleased]
+
+## [1.0.0-alpha.2] - 2026-11-21
+
+Second public alpha. **It does not open databases written by 1.0.0-alpha.1** (export with alpha.1, import with alpha.2), and the keyword index is opt-in per type; see the upgrading notes in `docs/compatibility.md`.
+
+### Added
+
+- **`kerno` facade**: `Batch::relate` / `relate_unique` (an end can be a unit stored earlier in the same batch, `Endpoint::Stored`), `delete_cascade`, `update_if_changed`, `archive`, `unarchive`, `restore`; `Db::commit_with` (provenance — reason, actor, source — and a `Committed` report with relations, skipped updates and the commit sequence), `Db::last_commit_seq`, `Db::read_as_of` (a sequence past the last commit reads now instead of failing), `Db::compact`, `Db::relations` (every relation of a type in one scan). `UnitError::is_corruption`.
+- **Python bindings, second round** (from the LiveSpec integration feedback, #2): every op above in `commit`, `update(if_changed=)`, `delete(cascade=)`, `relate(unique=)`, `last_commit_seq`, `relations`, `compact`, schemas, indexes, documents, `find`, `execute`, `open(read_only=)`, and typed exceptions (`NotFoundError`, `LockedError`, `CorruptionError`, ... all subclasses of `KernoError`). `history` of an unknown id returns `[]` and `read_as_of` returns `None`, like `read`.
+
+- **Python packaging and docs**: the README (the PyPI page) is rewritten: install from PyPI, concepts, common tasks, full API, errors, performance advice, durability, concurrency and limits. It no longer says the package is unpublished. `SchemaError` is added for schema refusals. PyPI metadata gains Homepage, Documentation, Changelog and Issues links and OS classifiers. `wheels.yml` builds musllinux x86_64 and aarch64 wheels and tests them in Alpine.
+- **Performance report**: `docs/testing/python-vs-sqlite.md` compares Kerno and SQLite from Python with the same durability, and profiles the write path. Full-text indexing of every UTF-8 payload is the largest single cost (about 7x on writes, 3.5x on disk); a per-type opt-out is proposed for an owner decision. The benchmark script is `bindings/python/bench/vs_sqlite.py`.
+
+- **Format cut for 1.0.0-alpha.2** (ADR-0023). **Breaking:** an alpha.1 database is refused (`LayerTooOld`); export it with alpha.1 (`kerno <dir> export`) and import it with alpha.2. Every database is created at units layer 7.
+- **Keyword index is opt-in per type** (ADR-0023, units-v7): no type is BM25-indexed unless `Db::set_fulltext(type, true)` / Python `db.set_fulltext(type, True)` says so. The setting is stored in the database; switching a type with units indexes or clears them in the same commit, so it also works after an import. `verify_units` expects index entries only for indexed types. Measured on 9,000 JSON payloads: writes 4–6x faster and the store 3.5x smaller for types that are not indexed.
+- **LZ4 block compression** (ADR-0023 step 3.3, v1.md §4.4): SST data blocks are stored LZ4-compressed when that makes them smaller, marked by the `incompat` feature bit `BLOCK_LZ4` (bit 1) on each such SST; the block encapsulation is unchanged, so the engine format stays v1. `Config::block_compression`, on by default. Readers handle both kinds of table. A real store (LiveSpec's history of the kernodb repository) went from 66 MB to 35 MB with no measurable cost in write time. The spec decoder of the tests decodes it with its own LZ4 decoder, and `tests/block_lz4.rs` covers the round trip, the LZ4-1 rules and an engine reopen with a deep verify. New dependency: `lz4_flex` (MIT, pure Rust, safe features only).
+- `kerno-server --fulltext <types>`: the unit types to keyword-index in every database served. The examples (`chat-history`, `document-store`) turn on the types they search.
+- `Db::open_with_limits` and Python `kerno.open(path, max_batch_ops=...)` change the 10,000-operation limit of one change set (50,000 operations committed atomically in a test).
+
+- **Python bindings, third round**: `hybrid_search` (keywords, vectors and relations fused by reciprocal rank), `explain`, `find_range`, `history` with bounds and order, `compare` of two revisions, `Unit.oldest_revision`, and `query(lifecycle=...)`. 12 new tests.
+- **Node.js bindings at parity with Python** (`@rixmerz/kernodb`): writes, `commit` with all nine batch ops, history and maintenance, schemas, documents, `find`, `execute`, `hybridSearch` and open options, with stable error `code`s and a rewritten README. 46 tests.
+- **Keyword index everywhere it is used**: `Db::search_text(query, limit)` (keyword-only search) and `Db::fulltext(type)` in the facade; `db.fulltext(type)` in Python and Node; `GET` and `PUT /v1/types/{type}/fulltext` in `kerno-server`; `set_fulltext` / `get_fulltext` in the Python client and `setFulltext` / `getFulltext` in the TypeScript client. The Vercel AI SDK memory turns its own type's keyword index on, once, on its first `remember` or `recall`, so `recall` works with no server configuration.
+- **Documentation for alpha.2**: an "Upgrading from 1.0.0-alpha.1" section in the `kerno` crate (rustdoc and README), the getting-started guide, and the Python and Node READMEs. Keyword search is opt-in everywhere it is described: crate docs (a doctest), the server README, the clients, the integrations and the examples. `docs/compatibility.md` describes the alpha.2 cut. The client and integration READMEs now say what holds today: TLS works with an `https://` URL, and API tokens are not sent yet (they had said the server had neither).
+
+### Changed
+
+- Faster batches: a change set caches the units it already found active (invalidated by its own writes) and keeps the adjacency counts in memory, writing each count record once at commit instead of once per relation. On 9,000 relations among 300 units, 82 → 63 ms; relation batches went from 10.9x to 5.9x the time of SQLite.
+
+### Fixed
+
+- `Db::verify` documented that a damaged store is a finding, not an `Err`; storage-level corruption (a block CRC mismatch, a damaged MANIFEST) is returned as an `Err`. The rustdoc now says so, and the Python `verify()` reports it as `clean: False` with `storage_error` instead of raising.
+- **Python bindings**: `Database.update`, `delete`, `unrelate`, `commit` (an atomic batch of store/update/delete/unrelate ops), `history` and `read_as_of` (returning the new `kerno.Revision`), and `verify` (the units-layer integrity report as a dict). Driven by the experimental LiveSpec backend, which keeps one revisioned unit per indexed symbol.
+
 ## [1.0.0-alpha.1] - 2026-11-20
 
 First public alpha. The on-disk format v1 is frozen (ADR-0013); the API and the wire protocols may still change before 1.0. Expect breaking fixes between alpha releases until the open items below are closed.

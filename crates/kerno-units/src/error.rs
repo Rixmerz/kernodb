@@ -204,6 +204,13 @@ pub enum UnitError {
         found: u32,
         supported: u32,
     },
+    /// The database was written before the format cut of 1.0.0-alpha.2
+    /// (ADR-0023): its layer mark is below `minimum`. It is not migrated;
+    /// export it with the build that wrote it and import it.
+    LayerTooOld {
+        found: u32,
+        minimum: u32,
+    },
     ChangeSetClosed,
     /// No relation with that id (E4-02).
     RelationNotFound {
@@ -257,6 +264,11 @@ impl fmt::Display for UnitError {
             UnitError::IncompatibleLayer { found, supported } => {
                 write!(f, "layer_version {found} is newer than the supported {supported}")
             }
+            UnitError::LayerTooOld { found, minimum } => write!(
+                f,
+                "layer_version {found} predates the format of this build (at least {minimum}); export the \
+                 database with the build that wrote it and import it (ADR-0023)"
+            ),
             UnitError::ChangeSetClosed => f.write_str("the change set is closed"),
             UnitError::RelationNotFound { relation } => write!(f, "relation {relation} not found"),
             UnitError::UnitHasRelations { unit, relation } => write!(
@@ -281,6 +293,12 @@ impl UnitError {
     /// wait out and open again.
     pub fn is_locked(&self) -> bool {
         matches!(self, UnitError::Storage(kerno_core::Error::Locked))
+    }
+
+    /// Whether stored bytes failed validation (a checksum, a structure rule): damage, not a
+    /// refusal of the request.
+    pub fn is_corruption(&self) -> bool {
+        matches!(self, UnitError::Storage(kerno_core::Error::Corruption(_)))
     }
 }
 

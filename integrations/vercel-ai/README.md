@@ -32,7 +32,9 @@ await memory.forget(saved.id); // true; false when there is no such memory
 * A memory is one **text unit** of the type `memory` (change it with `{ type }`). Nothing else is
   stored.
 * `recall` is a **keyword search** (BM25, any of the words, ranked) through the server's hybrid
-  search. There are no embeddings, so nothing here needs a model or a network: the agent asks for
+  search. Kerno's keyword index is off by default (1.0.0-alpha.2): the memory turns it on for its
+  own type, once, on its first `remember` or `recall` (`PUT /v1/types/{type}/fulltext`), so
+  nothing has to be configured on the server. There are no embeddings, so nothing here needs a model or a network: the agent asks for
   what it needs in words. For semantic search by embeddings use the
   [LangChain](../langchain) or [LlamaIndex](../llamaindex) stores.
 * The tools validate what the model sends with a schema (`zod`); input that does not fit is
@@ -47,7 +49,8 @@ await memory.forget(saved.id); // true; false when there is no such memory
 * The server's keyword search cannot be limited to one unit type, so `recall` reads the best 200
   hits of the whole database and keeps the memories among them. Give the memory a database of its
   own if it shares one with much other text.
-* A memory is text of at most 1 MiB, and the server has no authentication or TLS yet.
+* A memory is text of at most 1 MiB. The server's API tokens are not sent by the client yet: use a
+  server started with `--db`, or a proxy that adds the token. TLS works with an `https://` URL.
 
 ## Tests
 

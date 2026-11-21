@@ -356,7 +356,13 @@ impl Verifier<'_> {
             let handle = sst.index[i].handle;
             let mut buf = vec![0u8; handle.len as usize];
             file.read_at(&mut buf, handle.offset)?;
-            match read_data_block(&buf, number, &sst.index, i, &sst.props) {
+            let lz4 = sst.header.incompat & crate::format::features::BLOCK_LZ4 != 0;
+            let payload = crate::format::block::data_block_payload(&buf, number, handle.offset, lz4);
+            let read = payload.and_then(|p| {
+                read_data_block(&p, &sst.index, i, &sst.props)
+                    .map(|entries| entries.iter().map(crate::format::block::Entry::to_owned_entry).collect::<Vec<_>>())
+            });
+            match read {
                 Err(e) => {
                     intact = false;
                     self.format_issue(name, e)?;

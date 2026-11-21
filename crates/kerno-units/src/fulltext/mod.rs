@@ -46,8 +46,8 @@
 //! `ponytail:` these records do not raise the layer mark: that needs a new
 //! `LAYER_VERSION_*` in `codec.rs` and its own file-format document, which
 //! this change did not touch. A build older than this one reads the keys as
-//! "a newer layer" (UNIT-2) in `verify_units`. Upgrade path: layer version 7
-//! (6 is taken by schemas, `docs/file-format/units-v6.md`) written with the first `STATS`, like the count records of layer 5.
+//! "a newer layer" (UNIT-2) in `verify_units`. Upgrade path: layer version 8
+//! (6 is taken by schemas, `docs/file-format/units-v6.md`; 7 by type options, ADR-0022) written with the first `STATS`, like the count records of layer 5.
 //!
 //! `ponytail:` a query reads the whole posting list of each of its terms and
 //! scores every unit in it (no top-k pruning); fine up to ~10^5 postings per
@@ -289,8 +289,8 @@ enum Next {
     /// The writes do not change the unit's text (retention drops history).
     Unchanged,
     /// The unit's indexed document afterwards; `None` when it has none
-    /// (not `Active`, not text, or without a term).
-    Doc(Option<Doc>),
+    /// (not `Active`, not text, or without a term), and its type.
+    Doc(Option<Doc>, String),
 }
 
 /// Reads the unit's new head and payload off the writes of its operation.
@@ -301,13 +301,13 @@ fn next_of(unit: UnitId, writes: &[Write]) -> Result<Next, UnitError> {
     };
     let head = UnitHead::decode(raw).map_err(|e| context(e, &format!("UNIT_HEAD of unit {unit}")))?;
     if head.lifecycle != Lifecycle::Active {
-        return Ok(Next::Doc(None));
+        return Ok(Next::Doc(None, head.unit_type));
     }
     let payload_key = Key::RevPayload { unit, rev: head.head_rev }.encode()?;
     Ok(writes
         .iter()
         .find_map(|w| match w {
-            Write::Put(k, p) if *k == payload_key => Some(Next::Doc(analyze(p))),
+            Write::Put(k, p) if *k == payload_key => Some(Next::Doc(analyze(p), head.unit_type.clone())),
             _ => None,
         })
         .unwrap_or(Next::Unchanged))
@@ -320,9 +320,14 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
     /// no index entry without its head. A change set sees its own earlier
     /// writes, so the statistics of several units add up.
     pub(crate) fn plan_fulltext(&self, unit: UnitId, writes: &[Write]) -> Result<Vec<Write>, UnitError> {
-        let Next::Doc(new) = next_of(unit, writes)? else {
+        let Next::Doc(mut new, unit_type) = next_of(unit, writes)? else {
             return Ok(Vec::new());
         };
+        // A type that opted out (ADR-0022) keeps no document: an old one, if
+        // any, is still removed below.
+        if new.is_some() && !self.fulltext_enabled(&unit_type)? {
+            new = None;
+        }
         let txn = self.txn()?;
         let old = match txn.get(&doc_key(unit))? {
             Some(raw) => Some(decode_doc(&raw).map_err(|e| context(e, &format!("DOC of unit {unit}")))?),

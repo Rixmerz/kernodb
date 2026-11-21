@@ -155,6 +155,24 @@ export class KernoClient {
     await this.#request('DELETE', `/relations/${segment(id)}`);
   }
 
+  // ------------------------------------------------------------ keyword index
+
+  /**
+   * Turns the keyword (BM25) index of a unit type on or off and returns the new state. The index
+   * is off by default (Kerno 1.0.0-alpha.2): `search` finds text only in the types that have it.
+   * The type's units are indexed (or cleared) in the same commit.
+   */
+  async setFulltext(type: string, enabled: boolean): Promise<boolean> {
+    const reply = (await this.#request('PUT', `/types/${segment(type)}/fulltext`, { enabled })) as { enabled: boolean };
+    return reply.enabled;
+  }
+
+  /** Whether a unit type is keyword-indexed. */
+  async getFulltext(type: string): Promise<boolean> {
+    const reply = (await this.#request('GET', `/types/${segment(type)}/fulltext`)) as { enabled: boolean };
+    return reply.enabled;
+  }
+
   // ------------------------------------------------------------------ schemas
 
   /** Gives a unit type its schema. A type has one for good. */

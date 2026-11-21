@@ -8,7 +8,7 @@
 
 use std::ops::Range;
 
-use crate::format::block::{BLOCK_TRAILER_LEN, KIND_DELETE, KIND_PUT};
+use crate::format::block::{KIND_DELETE, KIND_PUT};
 use crate::format::coding::Reader;
 
 /// Location of one entry inside a block's buffer.
@@ -52,8 +52,15 @@ impl Block {
     /// Wraps a whole encapsulated data block that
     /// [`read_data_block`](crate::format::sst::read_data_block) accepted
     /// (CRC, structure, key order and sequences already checked).
+    #[cfg(test)]
     pub fn from_validated(mut raw: Vec<u8>) -> Block {
-        raw.truncate(raw.len() - BLOCK_TRAILER_LEN);
+        raw.truncate(raw.len() - crate::format::block::BLOCK_TRAILER_LEN);
+        Block::from_payload(raw)
+    }
+
+    /// Wraps a data-block payload (encapsulation stripped, decompressed) that
+    /// [`read_data_block`](crate::format::sst::read_data_block) accepted.
+    pub fn from_payload(raw: Vec<u8>) -> Block {
         let count_at = raw.len() - 4;
         let count = u32::from_le_bytes(raw[count_at..].try_into().expect("four bytes")) as usize;
         Block { offsets_at: count_at - 4 * count, count, data: raw }

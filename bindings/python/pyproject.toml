@@ -14,13 +14,21 @@ classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: Implementation :: CPython",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Intended Audience :: Developers",
     "Topic :: Database",
     "Typing :: Typed",
 ]
 dynamic = ["version"]
 
 [project.urls]
+Homepage = "https://github.com/Rixmerz/kernodb"
 Repository = "https://github.com/Rixmerz/kernodb"
+Documentation = "https://github.com/Rixmerz/kernodb/tree/main/bindings/python#readme"
+Changelog = "https://github.com/Rixmerz/kernodb/blob/main/CHANGELOG.md"
+Issues = "https://github.com/Rixmerz/kernodb/issues"
 
 [tool.maturin]
 python-source = "python"

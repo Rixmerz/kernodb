@@ -22,14 +22,13 @@
 mod harness;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use harness::units::{Target, open_units, raw, seq, to_legacy};
+use harness::units::{Target, open_units, raw, seq};
 use kerno_core::contract::Options;
 use kerno_storage::KernoDb;
-use kerno_testkit::sha256;
-use kerno_testkit::vfs::{DirImage, SimVfs, dir_difference};
+use kerno_testkit::vfs::SimVfs;
 use kerno_units::codec::{IndexMeta, Key, LayerMeta, MAX_LAYER_VERSION};
 use kerno_units::type_count::{check_shape, record};
 use kerno_units::*;
@@ -145,7 +144,7 @@ fn record_layout_is_pinned<E: Target>() {
             (long_key, value(1)),
         ])
     );
-    assert_eq!(layer_version(&db), 5);
+    assert_eq!(layer_version(&db), 7);
     clean(&db, "layout");
 }
 
@@ -194,7 +193,7 @@ fn counts_follow_every_lifecycle_change<E: Target>() {
         cs.delete(u[0], None).unwrap();
     });
     assert_eq!(counts(&db), want(&[("a", 0), ("b", 1)]), "zero is stored, not removed");
-    assert_eq!(layer_version(&db), 5);
+    assert_eq!(layer_version(&db), 7);
     clean(&db, "all of a gone");
     // A type back from zero keeps counting from the record, with no scan to rebuild it.
     create_units(&db, &[("a", 1)]);
@@ -281,7 +280,7 @@ fn export_import_keeps_the_counts<E: Target>() {
     kerno_units::import::import(&target, &bytes).unwrap();
     // `c` has no active unit to import, so the target never counts it: no record, not a zero.
     assert_eq!(counts(&target), want(&[("a", 1), ("b", 1)]));
-    assert_eq!(layer_version(&target), 5);
+    assert_eq!(layer_version(&target), 7);
     clean(&target, "imported");
     assert_eq!(kerno_units::export::export(&target).unwrap(), bytes);
 }
@@ -327,39 +326,6 @@ fn reclaim_and_compact_leave_the_counts() {
     let snap = db.snapshot().unwrap();
     let f = by_type("a", None);
     assert_eq!(snap.indexed_scan_via(IndexPath::ByType, &f).unwrap(), snap.reference_filter(&f).unwrap());
-}
-
-/// The mark: the first unit raises it to 5 and nothing lowers it; on a store
-/// written before layer 5, a write that moves no unit in or out of `Active`
-/// (an update, a relation) does not raise it to 5.
-fn the_mark_rises_with_the_first_count<E: Target>() {
-    let db = open::<E>();
-    assert!(raw(&db).is_empty(), "opening writes nothing");
-    let u = create_units(&db, &[("a", 1), ("a", 1)]);
-    assert_eq!(layer_version(&db), 5);
-    change(&db, |cs| {
-        cs.delete(u[0], None).unwrap();
-    });
-    db.set_policy("a", HistoryPolicy::Audit, ChangeMeta::default()).unwrap();
-    assert_eq!(layer_version(&db), 5, "nothing lowers it");
-
-    let old = open::<E>();
-    let v = create_units(&old, &[("a", 1), ("a", 1)]);
-    to_legacy(&old, 1);
-    assert_eq!((layer_version(&old), counts(&old).len()), (1, 0));
-    change(&old, |cs| {
-        cs.update(v[0], UnitUpdate { payload: b"x".to_vec(), schema_version: Some(2), metadata: None }, None).unwrap();
-    });
-    change(&old, |cs| {
-        cs.create_relation(v[0], v[1], "cites", RelationProvenance::Declared).unwrap();
-    });
-    assert_eq!((layer_version(&old), counts(&old).len()), (4, 0), "a relation raises it to 4, an update to nothing");
-    change(&old, |cs| {
-        cs.create(new_unit("b", 1, b"x")).unwrap();
-    });
-    assert_eq!(layer_version(&old), 5);
-    assert_eq!(counts(&old), want(&[("b", 1)]), "only the type the write touched has a record");
-    clean(&old, "legacy then a write");
 }
 
 // ------------------------------------------------------------- the reader
@@ -647,205 +613,6 @@ fn vectors_of_the_document_match_the_codec_byte_for_byte() {
 
 // ---------------------------------------------------------------- fixture
 
-const FIXTURE_DIR: &str = "tests/vectors/type-counts-v5/db-legacy-types";
-const FIXTURE_MANIFEST: &str = "tests/vectors/type-counts-v5/MANIFEST";
-const FIXTURE_SEED: u64 = 55;
-
-fn root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
-fn fixture_files() -> BTreeMap<String, Vec<u8>> {
-    let dir = root().join(FIXTURE_DIR);
-    std::fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
-        .map(|e| {
-            let e = e.unwrap();
-            (e.file_name().into_string().unwrap(), std::fs::read(e.path()).unwrap())
-        })
-        .collect()
-}
-
-fn manifest_of(files: &BTreeMap<String, Vec<u8>>) -> String {
-    files.iter().map(|(n, b)| format!("{}  {}  {n}\n", sha256::hex(&sha256::digest(b)), b.len())).collect()
-}
-
-/// Four units as the writer before layer 5 stored them: `a/1`, `b/1`, `a/2`
-/// active and one more `a/1` archived; the primary index and the one by type
-/// built; mark 1, no count record.
-fn build_fixture<E: Target>(disk: &SimVfs) {
-    let db = open_units::<E>(disk.as_vfs(), &cfg(1)).unwrap();
-    let u = create_units(&db, &[("a", 1), ("b", 1), ("a", 2), ("a", 1)]);
-    change(&db, |cs| {
-        cs.archive(u[3], None).unwrap();
-    });
-    assert_eq!(db.rebuild_index().unwrap().state, IndexState::Ready);
-    to_legacy(&db, 1);
-    assert_eq!(db.index_status().unwrap().state, IndexState::Ready, "the legacy store keeps a ready index");
-    db.close().unwrap();
-}
-
-/// `cargo test --release -p kerno-units --all-features --test type_counts -- --ignored regenerate_fixture`
-#[test]
-#[ignore = "regenerates the committed directory"]
-fn regenerate_fixture() {
-    let disk = SimVfs::new(FIXTURE_SEED);
-    build_fixture::<KernoDb>(&disk);
-    let files: BTreeMap<String, Vec<u8>> = disk
-        .dump()
-        .files
-        .into_iter()
-        .filter_map(|(p, b)| {
-            let name = p.file_name()?.to_str()?.to_owned();
-            (name != "LOCK").then_some((name, b))
-        })
-        .collect();
-    let dir = root().join(FIXTURE_DIR);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    for (name, bytes) in &files {
-        std::fs::write(dir.join(name), bytes).unwrap();
-    }
-    std::fs::write(root().join(FIXTURE_MANIFEST), manifest_of(&files)).unwrap();
-}
-
-#[test]
-fn fixture_manifest_lists_the_committed_files() {
-    let files = fixture_files();
-    assert!(!files.is_empty());
-    let want = std::fs::read_to_string(root().join(FIXTURE_MANIFEST)).expect("MANIFEST");
-    assert_eq!(manifest_of(&files), want, "a file of {FIXTURE_DIR} differs from MANIFEST");
-}
-
-fn fixture_disk<E: Target>() -> SimVfs {
-    if E::NAME == <KernoDb as Target>::NAME {
-        let image = DirImage {
-            dirs: BTreeSet::from([PathBuf::from("/db")]),
-            files: fixture_files().into_iter().map(|(n, b)| (Path::new("/db").join(n), b)).collect(),
-            unlinked_open: Vec::new(),
-        };
-        SimVfs::restore(&image)
-    } else {
-        let disk = SimVfs::new(FIXTURE_SEED);
-        build_fixture::<E>(&disk);
-        disk
-    }
-}
-
-/// A store written before layer 5 (units, a ready index, no count records,
-/// mark 1): opening and reading write nothing (I-18), every read agrees with
-/// the reference, it verifies clean; a lost `IDX_TYPE` entry is invisible, as
-/// before the layer (the declared limit); the first write that moves a unit
-/// of a type in or out of `Active` records the count of what exists plus the
-/// change, for that type only.
-fn legacy_store_opens_reads_unchanged_and_gets_a_count_when_written<E: Target>() {
-    let disk = fixture_disk::<E>();
-    let db = open_units::<E>(disk.as_vfs(), &cfg(100)).unwrap();
-    assert_eq!(layer_version(&db), 1);
-    assert!(counts(&db).is_empty());
-    clean(&db, "fixture");
-    let before = raw(&db);
-    let snap = db.snapshot().unwrap();
-    assert_eq!(snap.index_status().unwrap().state, IndexState::Ready);
-    for (path, filter) in [
-        (IndexPath::ByType, by_type("a", None)),
-        (IndexPath::ByType, by_type("a", Some(1))),
-        (IndexPath::ByType, by_type("b", None)),
-        (IndexPath::Primary, UnitFilter::default()),
-    ] {
-        let units = snap.indexed_scan_via(path, &filter).unwrap();
-        assert_eq!(units, snap.reference_filter(&filter).unwrap(), "{path:?} {filter:?}");
-    }
-    assert_eq!(
-        snap.indexed_scan_via(IndexPath::ByType, &by_type("a", None)).unwrap().len(),
-        2,
-        "the archived one is not indexed"
-    );
-    assert_eq!(snap.query(&by_type("a", None)).unwrap().fallback, None);
-    drop(snap);
-    assert_eq!(raw(&db), before, "opening and reading write nothing");
-
-    // The limit, as before layer 5: no count, so a lost entry is not seen from the read.
-    let u0 = UnitId({
-        let mut id = [0u8; 16];
-        id[8..].copy_from_slice(&1u64.to_be_bytes());
-        id
-    });
-    let w = seq(&db) + 1;
-    put_all(&db, vec![(type_key("a", 1, u0), None), (meta_key(), Some(meta_value(w, 3)))]);
-    let snap = db.snapshot().unwrap();
-    let short = snap.indexed_scan_via(IndexPath::ByType, &by_type("a", None)).unwrap();
-    assert_eq!(short.len(), 1, "known limit: a type with no count record reads short");
-    assert!(rules(&db).contains("UNIT-38"));
-    drop(snap);
-    put_all(&db, vec![(type_key("a", 1, u0), Some(vec![1, 0])), (meta_key(), Some(meta_value(seq(&db) + 1, 3)))]);
-    clean(&db, "restored");
-
-    // The first write that touches a type counts it: b gets 1 + 1, a is not touched.
-    change(&db, |cs| {
-        cs.create(new_unit("b", 1, b"new")).unwrap();
-    });
-    assert_eq!(counts(&db), want(&[("b", 2)]));
-    assert_eq!(layer_version(&db), 5);
-    // Archiving an active unit of a counts the active heads that exist (a/1 and a/2) minus it; the archived one is not counted.
-    change(&db, |cs| {
-        cs.archive(u0, None).unwrap();
-    });
-    assert_eq!(counts(&db), want(&[("a", 1), ("b", 2)]));
-    clean(&db, "after the first writes");
-    // With a count the typed read is held to it.
-    db.rebuild_index().unwrap();
-    let snap = db.snapshot().unwrap();
-    for t in ["a", "b"] {
-        let f = by_type(t, None);
-        assert_eq!(snap.indexed_scan_via(IndexPath::ByType, &f).unwrap(), snap.reference_filter(&f).unwrap());
-    }
-    drop(snap);
-    let victim = first_type_entry(&db, "b");
-    let w = seq(&db) + 1;
-    put_all(&db, vec![(victim, None), (meta_key(), Some(meta_value(w, 3)))]);
-    let e = db.snapshot().unwrap().indexed_scan_via(IndexPath::ByType, &by_type("b", None)).unwrap_err();
-    assert!(is_corruption(&e), "{e}");
-}
-
-fn first_type_entry<E: Target>(db: &UnitDb<E>, t: &str) -> Vec<u8> {
-    let prefix = Key::type_range(t, None).unwrap().0;
-    raw(db).into_iter().map(|(k, _)| k).find(|k| k.starts_with(&prefix)).expect("an IDX_TYPE entry")
-}
-
-/// The committed directory, opened and read by the layered build, changes no
-/// file but the ones an open of the bare engine changes.
-#[test]
-fn opening_the_legacy_directory_adds_nothing() {
-    let image = fixture_disk::<KernoDb>().dump();
-    let plain = SimVfs::restore(&image);
-    drop(open_units::<KernoDb>(plain.as_vfs(), &cfg(100)).unwrap());
-    let layered = SimVfs::restore(&image);
-    let db = open_units::<KernoDb>(layered.as_vfs(), &cfg(100)).unwrap();
-    let snap = db.snapshot().unwrap();
-    for t in ["a", "b"] {
-        let f = by_type(t, None);
-        assert_eq!(snap.indexed_scan_via(IndexPath::ByType, &f).unwrap(), snap.reference_filter(&f).unwrap());
-    }
-    drop(snap);
-    assert!(db.verify_units().unwrap().is_clean());
-    drop(db);
-    if let Some(d) = dir_difference(&plain.dump(), &layered.dump(), &["LOCK"]) {
-        panic!("opening and reading the legacy directory wrote more than the engine does: {d}");
-    }
-}
-
-/// A reader that knows layer 4 refuses the mark a count record raises.
-fn layer4_reader_refuses_a_database_with_type_counts<E: Target>() {
-    let db = open::<E>();
-    create_units(&db, &[("a", 1)]);
-    let mark = raw(&db).into_iter().find(|(k, _)| *k == mark_key()).unwrap().1;
-    for reader in [1, 2, 3, 4] {
-        let e = LayerMeta::decode_upto(&mark, reader).unwrap_err();
-        assert_eq!((e.rule, e.found_layer_version), (UnitRule::Unit16, Some(5)), "reader {reader}");
-    }
-}
-
 macro_rules! engines {
     ($($m:ident: $e:ty),*) => {$(
         mod $m {
@@ -862,12 +629,9 @@ macro_rules! engines {
             each!(a_refused_or_aborted_write_leaves_no_count);
             each!(export_import_keeps_the_counts);
             each!(retention_leaves_the_counts);
-            each!(the_mark_rises_with_the_first_count);
             each!(damage_matrix);
             each!(query_falls_back_on_a_typed_mismatch);
             each!(verifier_rules_of_the_count_records);
-            each!(legacy_store_opens_reads_unchanged_and_gets_a_count_when_written);
-            each!(layer4_reader_refuses_a_database_with_type_counts);
         }
     )*};
 }

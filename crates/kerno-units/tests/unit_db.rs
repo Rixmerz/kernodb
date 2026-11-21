@@ -584,7 +584,7 @@ fn written_records_decode<E: TxnEngine>() {
             Record::LayerMeta { name, meta } => {
                 assert_eq!(name, "layer");
                 // The first unit created raises the mark to the layer of the live counts.
-                assert_eq!(*meta, LayerMeta { layer_version: 5, history_policy: HistoryPolicy::Versioned });
+                assert_eq!(*meta, LayerMeta { layer_version: 7, history_policy: HistoryPolicy::Versioned });
             }
             Record::CsMember { seq, member, .. } => {
                 *members.entry(*seq).or_default() += 1;
@@ -799,7 +799,7 @@ fn open_and_mark<E: TxnEngine>() {
     let mark = db.raw_snapshot().unwrap().get(&mark_key).unwrap().expect("mark");
     assert_eq!(
         LayerMeta::decode_upto(&mark, MAX_LAYER_VERSION).unwrap(),
-        LayerMeta { layer_version: 5, history_policy: HistoryPolicy::Versioned }
+        LayerMeta { layer_version: 7, history_policy: HistoryPolicy::Versioned }
     );
     db.close().unwrap();
     open::<E>(&disk, &cfg()).expect("reopen a units database").close().unwrap();
@@ -811,8 +811,8 @@ fn open_and_mark<E: TxnEngine>() {
 
     // A newer layer, a damaged mark.
     let disk = SimVfs::new(12);
-    raw_commit::<E>(&disk, &[(&mark_key, &[1, 0, 0, 0, 0, 7, 2])]);
-    assert!(matches!(open::<E>(&disk, &cfg()), Err(UnitError::IncompatibleLayer { found: 7, supported: 6 })));
+    raw_commit::<E>(&disk, &[(&mark_key, &[1, 0, 0, 0, 0, 8, 2])]);
+    assert!(matches!(open::<E>(&disk, &cfg()), Err(UnitError::IncompatibleLayer { found: 8, supported: 7 })));
     let disk = SimVfs::new(13);
     raw_commit::<E>(&disk, &[(&mark_key, &[0, 0, 0, 0, 0, 1, 2])]);
     let e = open::<E>(&disk, &cfg()).err().expect("damaged mark");

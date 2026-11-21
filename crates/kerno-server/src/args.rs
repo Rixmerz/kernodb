@@ -17,6 +17,7 @@ pub const USAGE: &str = "usage: kerno-server --db <dir> [options]\n\
     --backup <url>        keep a base backup and the shipped write-ahead log of every database in <url>\n\
     \x20                     (file:///dir or s3://bucket/prefix; a tenant's backups go under its name)\n\
     --backup-interval <s> seconds between shipments; default 5\n\
+    --fulltext <types>    unit types to keyword-index, comma-separated (off by default)\n\
     hash-token            print the SHA-256 of the token read on stdin, for the tokens file";
 
 /// Where the HTTP API listens unless `--listen` says otherwise: the loopback interface only, because
@@ -57,6 +58,9 @@ pub struct Args {
     pub grpc_listen: Option<SocketAddr>,
     pub tls: Option<Tls>,
     pub backup: Option<Backup>,
+    /// Unit types whose keyword index is turned on in every database served (ADR-0023:
+    /// the index is off by default).
+    pub fulltext: Vec<String>,
 }
 
 fn address(flag: &str, text: &str) -> Result<SocketAddr, String> {
@@ -69,6 +73,7 @@ pub fn parse(args: impl Iterator<Item = String>, env_db: Option<String>) -> Resu
     let (mut db, mut listen, mut grpc, mut data_dir, mut tokens, mut cert, mut key) =
         (None, None, None, None, None, None, None);
     let (mut backup, mut every): (Option<String>, Option<String>) = (None, None);
+    let mut fulltext: Option<String> = None;
     let mut args = args;
     while let Some(arg) = args.next() {
         let (flag, inline) = match arg.split_once('=') {
@@ -86,6 +91,7 @@ pub fn parse(args: impl Iterator<Item = String>, env_db: Option<String>) -> Resu
             "--tls-key" => &mut key,
             "--backup" => &mut backup,
             "--backup-interval" => &mut every,
+            "--fulltext" => &mut fulltext,
             other => return Err(format!("unknown argument {other:?}")),
         };
         *slot = Some(match inline {
@@ -133,6 +139,9 @@ pub fn parse(args: impl Iterator<Item = String>, env_db: Option<String>) -> Resu
         grpc_listen: grpc.as_deref().map(|a| address("--grpc-listen", a)).transpose()?,
         tls,
         backup,
+        fulltext: fulltext
+            .map(|t| t.split(',').map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned).collect())
+            .unwrap_or_default(),
     }))
 }
 

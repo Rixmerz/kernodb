@@ -23,7 +23,7 @@ members = [
 exclude = ["bindings/python"]
 
 [workspace.package]
-version = "1.0.0-alpha.1"
+version = "1.0.0-alpha.2"
 edition = "2024"
 rust-version = "1.89"
 publish = false
@@ -32,11 +32,13 @@ repository = "https://github.com/Rixmerz/kernodb"
 homepage = "https://github.com/Rixmerz/kernodb"
 
 [workspace.dependencies]
-kerno-core = { package = "kernodb-core", path = "crates/kerno-core", version = "1.0.0-alpha.1" }
+# SST data-block compression (ADR-0023 step 3.3): pure Rust, no unsafe in the safe-* features.
+lz4_flex = { version = "0.11", default-features = false, features = ["safe-encode", "safe-decode", "std"] }
+kerno-core = { package = "kernodb-core", path = "crates/kerno-core", version = "1.0.0-alpha.2" }
 kerno-testkit = { path = "crates/kerno-testkit" }
-kerno-storage = { package = "kernodb-storage", path = "crates/kerno-storage", version = "1.0.0-alpha.1" }
-kerno-units = { package = "kernodb-units", path = "crates/kerno-units", version = "1.0.0-alpha.1" }
-kerno = { package = "kernodb", path = "crates/kerno", version = "1.0.0-alpha.1" }
+kerno-storage = { package = "kernodb-storage", path = "crates/kerno-storage", version = "1.0.0-alpha.2" }
+kerno-units = { package = "kernodb-units", path = "crates/kerno-units", version = "1.0.0-alpha.2" }
+kerno = { package = "kernodb", path = "crates/kerno", version = "1.0.0-alpha.2" }
 kerno-backup = { path = "crates/kerno-backup" }
 spike-core = { path = "spikes/storage/spike-core" }
 spike-btree = { path = "spikes/storage/spike-btree" }

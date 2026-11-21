@@ -25,6 +25,8 @@ const { rows } = await kerno.query('FIND user AS u WHERE u.age >= 30 ORDER BY u.
 console.log(rows[0]?.[0]?.payload);
 console.log((await kerno.explain('FIND user AS u WHERE u.age = 36')).chosen);
 
+// The keyword index is off by default (Kerno 1.0.0-alpha.2): turn it on for the types you search.
+await kerno.setFulltext('note', true);
 // Hybrid retrieval: keywords, relations and (caller-supplied) vectors, fused by reciprocal rank.
 for (const hit of await kerno.search({ text: 'rust', graph: { seeds: [topic.id] } })) {
   console.log(hit.id, hit.score, hit.ranks);
@@ -48,7 +50,9 @@ A few things to know:
 * JavaScript numbers are doubles: an `int` field beyond 2^53 loses precision. A whole number
   written for a `float` field is accepted and read back as a number.
 * `search`'s vector leg ranks the vectors you pass in: the server keeps no vector index.
-* The server has no authentication or TLS yet, so neither has this client.
+* The server can serve TLS (`--tls-cert`, `--tls-key`): pass an `https://` URL. API tokens
+  (`--data-dir` with `--tokens`) are not sent by this client yet, so use it with a server started
+  with `--db` (one database, no authentication), or behind a proxy that adds the token.
 
 ## Develop
 

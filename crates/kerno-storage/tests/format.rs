@@ -40,6 +40,9 @@ fn config(durability: Durability) -> Config {
         wal_preallocate: false,
         test: TestConfig { background: Background::Inline, db_id: Some(DB_ID) },
         allow_unverified_platform: true,
+        // Synthetic, highly compressible values: this suite measures file sizes and
+        // byte-driven policies, so it writes uncompressed tables (§4.4 has its own tests).
+        block_compression: false,
         ..Config::default()
     }
 }

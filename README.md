@@ -6,24 +6,41 @@
 
 **Where Kerno is going:** see the [product roadmap](ROADMAP.md): the 1.0 declaration, a query language and a cloud server mode.
 
-> **Alpha: 1.0.0-alpha.1.** This is a public alpha, not a 1.0 release.
+> **Alpha: 1.0.0-alpha.2.** This is a public alpha, not a 1.0 release.
 >
+> - **It does not open databases written by 1.0.0-alpha.1**: export with alpha.1 and import with alpha.2 ([compatibility](docs/compatibility.md#0-before-10-the-alpha2-format-cut)).
+> - **Keyword search is opt-in per unit type**: `set_fulltext(type, true)` in Rust, Python and Node, or `kerno-server --fulltext <types>`.
 > - The on-disk format v1 is frozen ([ADR-0013](docs/adr/0013-format-v1-and-engine-protocol.md)), and the test vectors fail if one of its bytes changes. The freeze does not promise compatibility of the API.
 > - Narrative-thread search is an experiment. It lives only in `experiments/` and is not part of any published package.
 > - Benchmarks and long fuzzing runs are not yet certified.
 > - There is no stability promise yet for the API. Whether and when to declare 1.0 is reserved to the project owner.
 
+## What is new in 1.0.0-alpha.2
+
+| | |
+|---|---|
+| **Format cut** (breaking) | alpha.1 databases are refused; every database starts at units layer 7 ([ADR-0023](docs/adr/0023-format-v2-cut-for-alpha2.md)) |
+| **Keyword index opt-in** (breaking) | no type is BM25-indexed until `set_fulltext(type, true)`; types that are not indexed write 4–6x faster and take 3.5x less disk |
+| **LZ4 blocks** | tables are compressed when that makes them smaller: a real store went from 66 MB to 35 MB |
+| **Batch API** | relations inside a batch, cascading deletes, `update_if_changed`, archive / restore, provenance, `last_commit_seq`, `relations(type)` |
+| **Python and Node** | the full facade, plus schemas, documents, `find`, `execute`, hybrid search and typed errors; the two bindings match call for call |
+| **Server** | `--fulltext <types>`, and `GET`/`PUT /v1/types/{type}/fulltext`; the TypeScript and Python clients have `setFulltext` / `set_fulltext` |
+| **Windows** | the Python client and server test harnesses run there; `file:///C:/...` backup URLs fixed |
+
+The full list is in the [changelog](CHANGELOG.md), and the measurements against SQLite are in
+[docs/testing/python-vs-sqlite.md](docs/testing/python-vs-sqlite.md).
+
 ## Install
 
-The alpha is published with the pre-release version `1.0.0-alpha.1`. Each registry needs its own syntax to get it:
+The alpha is published with the pre-release version `1.0.0-alpha.2`. Each registry needs its own syntax to get it:
 
 | Package | Registry | Install |
 |---|---|---|
-| `kernodb` (with `kernodb-core`, `kernodb-storage`, `kernodb-units`) | crates.io | `cargo add kernodb@1.0.0-alpha.1` (imported as `kerno`) |
+| `kernodb` (with `kernodb-core`, `kernodb-storage`, `kernodb-units`) | crates.io | `cargo add kernodb@1.0.0-alpha.2` (imported as `kerno`) |
 | `@rixmerz/kernodb` (Node.js bindings) | npm | `npm install @rixmerz/kernodb@alpha` |
 | `kernodb` (Python bindings, imported as `kerno`) | PyPI | `pip install --pre kernodb` |
 
-The HTTP clients (`kerno-client`) and the LangChain, LlamaIndex and Vercel AI SDK integrations live in this repository but are not published in this alpha; install them from source. The release steps and the package list are in [the release checklist](docs/release/1.0.0-alpha.1-checklist.md). The quick start is in [the `kerno` crate README](crates/kerno/README.md).
+The HTTP clients (`kerno-client`) and the LangChain, LlamaIndex and Vercel AI SDK integrations live in this repository but are not published in this alpha; install them from source. The release steps and the package list are in [the release checklist](docs/release/1.0.0-alpha.2-checklist.md). The quick start is in [the `kerno` crate README](crates/kerno/README.md).
 
 ## Status
 
@@ -47,6 +64,8 @@ Stages follow the [roadmap](docs/roadmap/README.md):
 | Document | Content |
 |---|---|
 | [Getting started](docs/getting-started.md) | Install the `kerno` crate, open a database, store and retrieve memory in five minutes, and three runnable examples (agent memory, chat history, document store) |
+| [Python bindings](bindings/python/README.md) | Install from PyPI, concepts, API, errors, performance advice and limits for the `kernodb` package |
+| [Kerno vs SQLite from Python](docs/testing/python-vs-sqlite.md) | The same workloads on both engines, the profile of the write path, and the improvement paths |
 | [SAD](docs/architecture/SAD.md) | Reference architecture and implementation plan (version 0.3.0) |
 | [ADR index](docs/adr/README.md) | Architecture decisions and their status |
 | [ADR-0001](docs/adr/0001-storage-engine.md) | Storage engine: decision (leveled LSM tree) and M0 evidence |

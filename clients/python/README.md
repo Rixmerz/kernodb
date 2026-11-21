@@ -22,6 +22,8 @@ for row in kerno.query("FIND user AS u WHERE u.age >= 30 ORDER BY u.age").rows:
     print(row[0].payload)
 print(kerno.explain("FIND user AS u WHERE u.age = 36").chosen)
 
+# The keyword index is off by default (Kerno 1.0.0-alpha.2): turn it on for the types you search.
+kerno.set_fulltext("note", True)
 # Hybrid retrieval: keywords, relations and (caller-supplied) vectors, fused by reciprocal rank.
 for hit in kerno.search(text="rust", graph=GraphLeg([topic.id])):
     print(hit.id, hit.score, hit.ranks)
@@ -41,7 +43,9 @@ A few things to know:
 * Bytes that are valid UTF-8 come back as `str`: the server cannot tell them apart.
 * Passing an `int` for a `float` field is fine; it is stored and read back as a float.
 * `search`'s vector leg ranks the vectors you pass in: the server keeps no vector index.
-* The server has no authentication or TLS yet, so neither has this client.
+* The server can serve TLS (`--tls-cert`, `--tls-key`): pass an `https://` URL. API tokens
+  (`--data-dir` with `--tokens`) are not sent by this client yet, so use it with a server started
+  with `--db` (one database, no authentication), or behind a proxy that adds the token.
 
 ## Tests
 

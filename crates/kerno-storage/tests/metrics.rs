@@ -188,6 +188,9 @@ fn stall_episodes_counted_once_per_reason() {
             ..CompactionConfig::m0(4 << 10)
         },
         allow_unverified_platform: true,
+        // Synthetic, highly compressible values: this suite measures file sizes and
+        // byte-driven policies, so it writes uncompressed tables (§4.4 has its own tests).
+        block_compression: false,
         ..Config::default()
     };
     let vfs: Arc<dyn Vfs> = gate.clone();
@@ -240,6 +243,9 @@ fn stall_episodes_counted_once_per_reason() {
         write_buffer_bytes: 4 << 10,
         max_immutable_memtables: 1,
         allow_unverified_platform: true,
+        // Synthetic, highly compressible values: this suite measures file sizes and
+        // byte-driven policies, so it writes uncompressed tables (§4.4 has its own tests).
+        block_compression: false,
         ..Config::default()
     };
     let vfs: Arc<dyn Vfs> = gate.clone();
@@ -390,7 +396,8 @@ fn commit_phase_histograms_populated() {
 #[test]
 fn close_and_recovery_flushes_counted() {
     let vfs = SimVfs::new(5).as_vfs();
-    let cfg = Config::from(&Options::small_for_tests());
+    // Counts flushed bytes of compressible values: uncompressed tables.
+    let cfg = Config { block_compression: false, ..Config::from(&Options::small_for_tests()) };
 
     // A new database: nothing replayed, nothing flushed yet.
     let db = open(&vfs, &cfg);
@@ -565,7 +572,12 @@ fn expected_pending(m: &Metrics, cfg: &CompactionConfig) -> u64 {
 fn pending_compaction_bytes_reported() {
     let sim = SimVfs::new(7);
     // The M0 policy: this test counts L0 files against the trigger.
-    let cfg = Config { compaction: CompactionConfig::m0(16 << 10), ..Config::from(&Options::small_for_tests()) };
+    // Byte-driven compaction debt with compressible values: uncompressed tables.
+    let cfg = Config {
+        compaction: CompactionConfig::m0(16 << 10),
+        block_compression: false,
+        ..Config::from(&Options::small_for_tests())
+    };
     assert_eq!(cfg.compaction.l0_trigger, 4);
     let value = vec![9u8; 17 << 10]; // fills a 16 KiB memtable
 

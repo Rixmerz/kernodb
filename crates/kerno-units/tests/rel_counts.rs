@@ -19,14 +19,13 @@
 mod harness;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use harness::units::{Target, open_units, raw, to_legacy};
+use harness::units::{Target, open_units, raw};
 use kerno_core::contract::Options;
 use kerno_storage::KernoDb;
-use kerno_testkit::sha256;
-use kerno_testkit::vfs::{DirImage, SimVfs};
+use kerno_testkit::vfs::SimVfs;
 use kerno_units::adj_count::{check_shape, record};
 use kerno_units::codec::{Adjacency, Key, LayerMeta, MAX_LAYER_VERSION, RelationRecord};
 use kerno_units::*;
@@ -45,9 +44,8 @@ fn open<E: Target>() -> UnitDb<E> {
     open_units::<E>(SimVfs::new(5).as_vfs(), &cfg(1)).expect("open")
 }
 
-/// `n` units of one type, left as a build before layer 5 left them (no
-/// live-unit counts, mark 1): these tests are about the adjacency counts of
-/// layer 4 and read the mark that a relation raises.
+/// `n` units of one type. Every database starts at the cut layer version
+/// (ADR-0023), so the mark is 7 before and after a relation.
 fn units<E: Target>(db: &UnitDb<E>, n: usize) -> Vec<UnitId> {
     let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
     let ids = (0..n)
@@ -57,7 +55,6 @@ fn units<E: Target>(db: &UnitDb<E>, n: usize) -> Vec<UnitId> {
         })
         .collect();
     cs.commit().unwrap();
-    to_legacy(db, 1);
     ids
 }
 
@@ -134,7 +131,7 @@ fn record_layout_is_pinned<E: Target>() {
     in_key.extend_from_slice(&[1, b'c', b'i', b't', b'e', b's', 0]);
     let value = vec![1, 0, 0, 0, 0, 0, 0, 0, 0, 2];
     assert_eq!(got, BTreeMap::from([(out_key, value.clone()), (in_key, value)]));
-    assert_eq!(layer_version(&db), 4);
+    assert_eq!(layer_version(&db), 7);
     clean(&db, "two relations");
 }
 
@@ -144,7 +141,7 @@ fn record_layout_is_pinned<E: Target>() {
 fn counts_follow_create_and_delete<E: Target>() {
     let db = open::<E>();
     let u = units(&db, 3);
-    assert_eq!(layer_version(&db), 1);
+    assert_eq!(layer_version(&db), 7);
     assert!(count_records(&db).is_empty());
     let a = relate(&db, u[0], u[1], "cites");
     let b = relate(&db, u[0], u[2], "cites");
@@ -168,7 +165,7 @@ fn counts_follow_create_and_delete<E: Target>() {
         clean(&db, "after a delete");
     }
     assert_eq!(count_records(&db).len(), 2, "only the one left in the last change set");
-    assert_eq!(layer_version(&db), 4, "nothing lowers the mark");
+    assert_eq!(layer_version(&db), 7, "nothing lowers the mark");
 }
 
 /// An aborted change set leaves no count record behind and no mark change.
@@ -179,7 +176,7 @@ fn an_aborted_change_set_leaves_no_count<E: Target>() {
     cs.create_relation(u[0], u[1], "cites", RelationProvenance::Declared).unwrap();
     drop(cs);
     assert!(count_records(&db).is_empty());
-    assert_eq!(layer_version(&db), 1);
+    assert_eq!(layer_version(&db), 7);
     clean(&db, "after abort");
 }
 
@@ -296,15 +293,15 @@ fn a_refused_delete_keeps_the_only_count<E: Target>() {
 fn the_mark_rises_only_for_a_record_that_stays<E: Target>() {
     let db = open::<E>();
     let u = units(&db, 2);
-    assert_eq!(layer_version(&db), 1);
+    assert_eq!(layer_version(&db), 7);
     let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
     let edge = cs.create_relation(u[0], u[1], "cites", RelationProvenance::Declared).unwrap();
     cs.delete_relation(edge).unwrap();
     cs.commit().unwrap();
     assert!(count_records(&db).is_empty());
-    assert_eq!(layer_version(&db), 1, "no 0x72 record committed, mark unchanged");
+    assert_eq!(layer_version(&db), 7, "no 0x72 record committed, mark unchanged");
     relate(&db, u[0], u[1], "cites");
-    assert_eq!(layer_version(&db), 4);
+    assert_eq!(layer_version(&db), 7);
 }
 
 // ---------------------------------------------------------------- K1
@@ -449,12 +446,9 @@ fn verifier_rules_of_the_count_records<E: Target>() {
     relate(&db, u[0], u[1], "cites");
     let mark = raw(&db).into_iter().find(|(k, _)| *k == mark_key()).unwrap().1;
     let current = LayerMeta::decode_upto(&mark, MAX_LAYER_VERSION).unwrap();
-    for lowered in [1, 2, 3] {
-        let v = LayerMeta { layer_version: lowered, ..current.clone() }.encode().unwrap();
-        put_all(&db, vec![(mark_key(), Some(v))]);
-        clean_except(&db, &["UNIT-46"]);
-    }
-    put_all(&db, vec![(mark_key(), Some(mark))]);
+    // No mark below the cut version (7, ADR-0023) can be opened, so the
+    // "count records under a lower mark" case of UNIT-46 has no database.
+    let _ = (current, mark);
     clean(&db, "mark restored");
     let key = record(u[0], Direction::Out, "cites", 1).0;
     let good = db.raw_get(&key).unwrap().unwrap();
@@ -511,14 +505,14 @@ fn build_legacy<E: Target>(db: &UnitDb<E>) -> Vec<UnitId> {
 fn legacy_relations_work_and_get_a_count_when_next_changed<E: Target>() {
     let db = open::<E>();
     let u = build_legacy(&db);
-    assert_eq!(layer_version(&db), 1);
+    assert_eq!(layer_version(&db), 7);
     assert!(count_records(&db).is_empty());
     clean(&db, "legacy");
     assert_eq!(never_short(&db, u[0], Direction::Out, &["cites", "refines"], "legacy"), 0);
     assert_eq!(db.snapshot().unwrap().relations_of(u[0], Direction::Out, None).unwrap().len(), 2);
 
     let third = relate(&db, u[0], u[1], "cites");
-    assert_eq!(layer_version(&db), 4);
+    assert_eq!(layer_version(&db), 7);
     let counts = count_records(&db);
     assert_eq!(counts[&record(u[0], Direction::Out, "cites", 0).0], record(u[0], Direction::Out, "cites", 3).1);
     assert_eq!(counts[&record(u[1], Direction::In, "cites", 0).0], record(u[1], Direction::In, "cites", 2).1);
@@ -538,7 +532,7 @@ fn deleting_a_legacy_relation_counts_what_is_left<E: Target>() {
     let db = open::<E>();
     let u = build_legacy(&db);
     unrelate(&db, RelationId([0xA1; 16]));
-    assert_eq!(layer_version(&db), 4);
+    assert_eq!(layer_version(&db), 7);
     assert_eq!(
         count_records(&db)[&record(u[0], Direction::Out, "cites", 0).0],
         record(u[0], Direction::Out, "cites", 1).1
@@ -562,7 +556,7 @@ fn export_import_keeps_the_counts<E: Target>() {
     kerno_units::import::import(&target, &bytes).unwrap();
     assert_eq!(count_records(&target), count_records(&src));
     // The import writes the live counts of its units too: layer 5, where the source stayed at 4.
-    assert_eq!(layer_version(&target), 5);
+    assert_eq!(layer_version(&target), 7);
     clean(&target, "imported");
     assert_eq!(kerno_units::export::export(&target).unwrap(), bytes);
 }
@@ -628,121 +622,6 @@ fn vectors_of_the_document_match_the_codec_byte_for_byte() {
 }
 
 // ---------------------------------------------------------------- fixture
-
-const FIXTURE_DIR: &str = "tests/vectors/rel-counts-v4/db-legacy-relations";
-const FIXTURE_MANIFEST: &str = "tests/vectors/rel-counts-v4/MANIFEST";
-const FIXTURE_SEED: u64 = 44;
-
-fn root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
-fn fixture_files() -> BTreeMap<String, Vec<u8>> {
-    let dir = root().join(FIXTURE_DIR);
-    std::fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
-        .map(|e| {
-            let e = e.unwrap();
-            (e.file_name().into_string().unwrap(), std::fs::read(e.path()).unwrap())
-        })
-        .collect()
-}
-
-fn manifest_of(files: &BTreeMap<String, Vec<u8>>) -> String {
-    files.iter().map(|(n, b)| format!("{}  {}  {n}\n", sha256::hex(&sha256::digest(b)), b.len())).collect()
-}
-
-/// Three units and three relations as the writer before layer 4 stored them
-/// (`build_legacy`): mark 1, no count record.
-fn build_fixture<E: Target>(disk: &SimVfs) {
-    let db = open_units::<E>(disk.as_vfs(), &cfg(1)).unwrap();
-    build_legacy(&db);
-    db.close().unwrap();
-}
-
-/// `cargo test --release -p kerno-units --all-features --test rel_counts -- --ignored regenerate_fixture`
-#[test]
-#[ignore = "regenerates the committed directory"]
-fn regenerate_fixture() {
-    let disk = SimVfs::new(FIXTURE_SEED);
-    build_fixture::<KernoDb>(&disk);
-    let files: BTreeMap<String, Vec<u8>> = disk
-        .dump()
-        .files
-        .into_iter()
-        .filter_map(|(p, b)| {
-            let name = p.file_name()?.to_str()?.to_owned();
-            (name != "LOCK").then_some((name, b))
-        })
-        .collect();
-    let dir = root().join(FIXTURE_DIR);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    for (name, bytes) in &files {
-        std::fs::write(dir.join(name), bytes).unwrap();
-    }
-    std::fs::write(root().join(FIXTURE_MANIFEST), manifest_of(&files)).unwrap();
-}
-
-#[test]
-fn fixture_manifest_lists_the_committed_files() {
-    let files = fixture_files();
-    assert!(!files.is_empty());
-    let want = std::fs::read_to_string(root().join(FIXTURE_MANIFEST)).expect("MANIFEST");
-    assert_eq!(manifest_of(&files), want, "a file of {FIXTURE_DIR} differs from MANIFEST");
-}
-
-fn fixture_disk<E: Target>() -> SimVfs {
-    if E::NAME == <KernoDb as Target>::NAME {
-        let image = DirImage {
-            dirs: BTreeSet::from([PathBuf::from("/db")]),
-            files: fixture_files().into_iter().map(|(n, b)| (Path::new("/db").join(n), b)).collect(),
-            unlinked_open: Vec::new(),
-        };
-        SimVfs::restore(&image)
-    } else {
-        let disk = SimVfs::new(FIXTURE_SEED);
-        build_fixture::<E>(&disk);
-        disk
-    }
-}
-
-/// A directory written before layer 4 (relations, no count records, mark 1)
-/// opens, serves its relations, verifies clean, writes nothing on open, and
-/// takes a new relation: the mark goes to 4 and the touched ends get a count.
-fn legacy_directory_opens_works_and_upgrades_when_written<E: Target>() {
-    let disk = fixture_disk::<E>();
-    let db = open_units::<E>(disk.as_vfs(), &cfg(100)).unwrap();
-    let mut id = [0u8; 16];
-    id[8..].copy_from_slice(&1u64.to_be_bytes());
-    let first = UnitId(id);
-    id[8..].copy_from_slice(&2u64.to_be_bytes());
-    let second = UnitId(id);
-    assert_eq!(layer_version(&db), 1);
-    assert!(count_records(&db).is_empty());
-    clean(&db, "fixture");
-    let snap = db.snapshot().unwrap();
-    assert_eq!(snap.relations_of(first, Direction::Out, None).unwrap().len(), 2);
-    assert_eq!(snap.relations_of(second, Direction::In, Some("cites")).unwrap().len(), 1);
-    assert_eq!(snap.relations_of(second, Direction::Out, Some("refines")).unwrap().len(), 1);
-    drop(snap);
-    assert!(count_records(&db).is_empty(), "opening and reading write nothing");
-    relate(&db, second, first, "cites");
-    assert_eq!(layer_version(&db), 4);
-    assert_eq!(count_records(&db).len(), 2);
-    clean(&db, "fixture then a new relation");
-    never_short(&db, first, Direction::In, &["cites"], "fixture then a new relation");
-}
-
-/// A reader that knows layer 3 refuses the mark a count record raises.
-fn layer3_reader_refuses_a_database_with_counts<E: Target>() {
-    let db = open::<E>();
-    let u = units(&db, 2);
-    relate(&db, u[0], u[1], "cites");
-    let mark = raw(&db).into_iter().find(|(k, _)| *k == mark_key()).unwrap().1;
-    let e = LayerMeta::decode_upto(&mark, 3).unwrap_err();
-    assert_eq!((e.rule, e.found_layer_version), (kerno_units::UnitRule::Unit16, Some(4)));
-}
 
 macro_rules! engines {
     ($($m:ident: $e:ident),*) => {$(
@@ -819,14 +698,6 @@ macro_rules! engines {
             #[test]
             fn export_import_keeps_the_counts() {
                 super::export_import_keeps_the_counts::<E>();
-            }
-            #[test]
-            fn legacy_directory_opens_works_and_upgrades_when_written() {
-                super::legacy_directory_opens_works_and_upgrades_when_written::<E>();
-            }
-            #[test]
-            fn layer3_reader_refuses_a_database_with_counts() {
-                super::layer3_reader_refuses_a_database_with_counts::<E>();
             }
         }
     )*};

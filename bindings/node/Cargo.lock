@@ -243,7 +243,7 @@ checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 
 [[package]]
 name = "kernodb"
-version = "1.0.0-alpha.1"
+version = "1.0.0-alpha.2"
 dependencies = [
  "kernodb-core",
  "kernodb-storage",
@@ -252,11 +252,11 @@ dependencies = [
 
 [[package]]
 name = "kernodb-core"
-version = "1.0.0-alpha.1"
+version = "1.0.0-alpha.2"
 
 [[package]]
 name = "kernodb-node"
-version = "1.0.0-alpha.1"
+version = "1.0.0-alpha.2"
 dependencies = [
  "kernodb",
  "napi",
@@ -266,18 +266,19 @@ dependencies = [
 
 [[package]]
 name = "kernodb-storage"
-version = "1.0.0-alpha.1"
+version = "1.0.0-alpha.2"
 dependencies = [
  "crc32c",
  "crossbeam-skiplist",
  "kernodb-core",
+ "lz4_flex",
  "parking_lot",
  "quick_cache",
 ]
 
 [[package]]
 name = "kernodb-units"
-version = "1.0.0-alpha.1"
+version = "1.0.0-alpha.2"
 dependencies = [
  "blake3",
  "crc32c",
@@ -315,6 +316,12 @@ checksum = "224399e74b87b5f3557511d98dff8b14089b3dadafcab6bb93eab67d3aace965"
 dependencies = [
  "scopeguard",
 ]
+
+[[package]]
+name = "lz4_flex"
+version = "0.11.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13591d77a9b6d941f7e6fcade7f9dfd9e801308752bde50c0a9bb5852778c22c"
 
 [[package]]
 name = "memchr"

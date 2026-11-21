@@ -46,14 +46,12 @@
 mod harness;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use harness::units::{Target, open_units, raw, to_legacy};
+use harness::units::{Target, open_units, raw};
 use kerno_core::contract::Options;
-use kerno_storage::KernoDb;
-use kerno_testkit::sha256;
-use kerno_testkit::vfs::{CrashKind, DirImage, OpKind, SimVfs};
+use kerno_testkit::vfs::{CrashKind, OpKind, SimVfs};
 use kerno_units::codec::{Key, LayerMeta, MAX_LAYER_VERSION};
 use kerno_units::export::{EXPORT_VERSION, export};
 use kerno_units::ids::{check_record, records};
@@ -171,34 +169,17 @@ fn mark_is_raised_to_3_by_the_first_token_and_never_lowered<E: Target>() {
     let disk = SimVfs::new(16);
     let db = open::<E>(&disk);
     let unit = plain(&db, b"before");
-    assert_eq!(layer_version(&db), 5, "the first unit raised the mark to the layer of the live counts");
+    assert_eq!(layer_version(&db), 7, "the first unit raised the mark to the layer of the live counts");
     let (with_token, _) = issue(&db, b"token");
-    assert_eq!(layer_version(&db), 5, "a token needs layer 3, which layer 5 includes");
+    assert_eq!(layer_version(&db), 7, "a token needs layer 3, which layer 5 includes");
     // Neither deleting the only token nor a policy change lowers it.
     delete(&db, with_token);
     assert_eq!(token_records(&db), (0, 0));
     db.set_policy("doc", HistoryPolicy::Versioned, ChangeMeta::default()).unwrap();
     plain(&db, b"after");
-    assert_eq!(layer_version(&db), 5);
+    assert_eq!(layer_version(&db), 7);
     assert!(db.get_unit(unit).unwrap().is_some());
     clean(&db);
-}
-
-fn layer2_reader_refuses_a_database_with_tokens<E: Target>() {
-    let disk = SimVfs::new(17);
-    let db = open::<E>(&disk);
-    issue(&db, b"x");
-    let mark = mark_of(&db);
-    // A build that knows layers 1 and 2 reads the mark first and refuses it.
-    for reader in [1, 2, 3, 4] {
-        let e = LayerMeta::decode_upto(&mark, reader).unwrap_err();
-        assert_eq!((e.rule, e.found_layer_version), (UnitRule::Unit16, Some(5)), "reader {reader}");
-        assert_eq!(e.class(), ErrorClass::IncompatibleLayer);
-        assert!(
-            matches!(UnitError::from(e), UnitError::IncompatibleLayer { found: 5, supported } if supported == reader)
-        );
-    }
-    assert_eq!(LayerMeta::decode_upto(&mark, MAX_LAYER_VERSION).unwrap().layer_version, 5);
 }
 
 // -------------------------------------------------------------- lifecycle
@@ -429,7 +410,7 @@ fn legacy_units_without_a_token_stay_readable<E: Target>() {
     let report = import(&target, &export(&src).unwrap()).unwrap();
     assert_eq!(report.tokens, 0);
     assert_eq!(target.public_id(carried).unwrap(), None);
-    assert_eq!(layer_version(&target), 5, "no token, but units: the layer of the live counts");
+    assert_eq!(layer_version(&target), 7, "no token, but units: the layer of the live counts");
     clean(&target);
     db.close().unwrap();
     // Reopened, mixed with a unit that has one.
@@ -437,47 +418,6 @@ fn legacy_units_without_a_token_stay_readable<E: Target>() {
     let (_, token) = issue(&db, b"new");
     assert_eq!(db.public_id(old).unwrap(), None);
     assert!(db.resolve_public_id(&token).unwrap().is_some());
-    clean(&db);
-}
-
-fn committed_files() -> BTreeMap<String, Vec<u8>> {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/vectors/derived-v2/db-with-vector");
-    std::fs::read_dir(dir)
-        .unwrap()
-        .map(|e| {
-            let e = e.unwrap();
-            (e.file_name().into_string().unwrap(), std::fs::read(e.path()).unwrap())
-        })
-        .collect()
-}
-
-/// The directory E9-01 committed was written before this change: it has a
-/// unit and no token. Only `kerno_db` has directories of files to open; the
-/// `emulated_log` engine keeps its state in memory and cannot open one, so
-/// this test has no `emulated_log` twin (its legacy case is
-/// `legacy_units_without_a_token_stay_readable`).
-#[test]
-fn legacy_directory_written_before_tokens_opens_and_verifies() {
-    let files = committed_files();
-    let image = DirImage {
-        dirs: BTreeSet::from([PathBuf::from("/db")]),
-        files: files.iter().map(|(n, b)| (Path::new("/db").join(n), b.clone())).collect(),
-        unlinked_open: Vec::new(),
-    };
-    let disk = SimVfs::restore(&image);
-    let db = open_units::<KernoDb>(disk.as_vfs(), &cfg(100)).unwrap();
-    let mut id = [0u8; 16];
-    id[8..].copy_from_slice(&1u64.to_be_bytes());
-    let unit = UnitId(id);
-    assert!(db.get_unit(unit).unwrap().is_some());
-    assert_eq!(db.public_id(unit).unwrap(), None);
-    assert_eq!(layer_version(&db), 2);
-    clean(&db);
-    // New units on top of it get tokens (the mark goes 2 to 5: a token needs 3, the live count of its type 5); the old one still has none.
-    let (fresh, token) = issue(&db, b"after");
-    assert_eq!(db.resolve_public_id(&token).unwrap(), Some(fresh));
-    assert_eq!(db.public_id(unit).unwrap(), None);
-    assert_eq!(layer_version(&db), 5);
     clean(&db);
 }
 
@@ -632,7 +572,7 @@ fn export_carries_tokens_and_import_restores_them<E: Target>() {
     assert_eq!(target.public_id(untokened).unwrap(), None);
     assert_eq!(target.resolve_public_id(&tgone).unwrap(), None);
     assert_eq!(token_records(&target), (2, 2));
-    assert_eq!(layer_version(&target), 5);
+    assert_eq!(layer_version(&target), 7);
     clean(&target);
     // The exported bytes are the same again, and a unit made afterwards gets
     // a token that collides with none of them.
@@ -809,136 +749,6 @@ fn derived_db_issues_resolves_and_forgets_tokens<E: Target>() {
 }
 
 // ------------------------------------------------- the committed directory
-
-const FIXTURE_DIR: &str = "tests/vectors/public-ids-v3/db-with-token";
-const FIXTURE_MANIFEST: &str = "tests/vectors/public-ids-v3/MANIFEST";
-const FIXTURE_TOKEN: &str = "tests/vectors/public-ids-v3/TOKEN";
-const FIXTURE_SEED: u64 = 33;
-
-fn root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
-/// The fixture content: unit 1 with a token, unit 2 without, unit 3 with a
-/// token and then deleted. Returns the token of unit 1.
-fn build_fixture<E: Target>(disk: &SimVfs) -> PublicId {
-    let db = open_units::<E>(disk.as_vfs(), &cfg(1)).unwrap();
-    let (_, token) = issue(&db, b"hello");
-    plain(&db, b"plain");
-    let (third, _) = issue(&db, b"gone");
-    delete(&db, third);
-    // The committed directory was written before layer 5 (no live-unit
-    // counts, mark 3): the build undoes what this layer adds.
-    to_legacy(&db, 3);
-    db.close().unwrap();
-    token
-}
-
-fn fixture_files() -> BTreeMap<String, Vec<u8>> {
-    let dir = root().join(FIXTURE_DIR);
-    std::fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
-        .map(|e| {
-            let e = e.unwrap();
-            (e.file_name().into_string().unwrap(), std::fs::read(e.path()).unwrap())
-        })
-        .collect()
-}
-
-fn manifest_of(files: &BTreeMap<String, Vec<u8>>) -> String {
-    files.iter().map(|(n, b)| format!("{}  {}  {n}\n", sha256::hex(&sha256::digest(b)), b.len())).collect()
-}
-
-fn written_files(disk: &SimVfs) -> BTreeMap<String, Vec<u8>> {
-    disk.dump()
-        .files
-        .into_iter()
-        .filter_map(|(p, b)| {
-            let name = p.file_name()?.to_str()?.to_owned();
-            (name != "LOCK").then_some((name, b))
-        })
-        .collect()
-}
-
-/// Regenerates the committed directory after a deliberate layout change:
-/// `cargo test --release -p kerno-units --test public_ids -- --ignored regenerate_fixture`.
-#[test]
-#[ignore = "writes the committed fixture; run by hand after a deliberate layout change"]
-fn regenerate_fixture() {
-    let disk = SimVfs::new(FIXTURE_SEED);
-    let token = build_fixture::<KernoDb>(&disk);
-    let files = written_files(&disk);
-    let dir = root().join(FIXTURE_DIR);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    for (name, bytes) in &files {
-        std::fs::write(dir.join(name), bytes).unwrap();
-    }
-    std::fs::write(root().join(FIXTURE_MANIFEST), manifest_of(&files)).unwrap();
-    std::fs::write(root().join(FIXTURE_TOKEN), format!("{token}\n")).unwrap();
-}
-
-#[test]
-fn fixture_manifest_lists_the_committed_files() {
-    let files = fixture_files();
-    assert!(!files.is_empty(), "the fixture directory is empty");
-    let want = std::fs::read_to_string(root().join(FIXTURE_MANIFEST)).expect("MANIFEST");
-    assert_eq!(manifest_of(&files), want, "a file of {FIXTURE_DIR} differs from MANIFEST");
-}
-
-/// The disk and the token to expect: the committed directory for the engine
-/// that has files, the same content built in memory for the other (whose
-/// token is its own, so only its shape and round trip are checked).
-fn fixture_disk<E: Target>() -> (SimVfs, Option<PublicId>) {
-    if E::NAME == <KernoDb as Target>::NAME {
-        let image = DirImage {
-            dirs: BTreeSet::from([PathBuf::from("/db")]),
-            files: fixture_files().into_iter().map(|(n, b)| (Path::new("/db").join(n), b)).collect(),
-            unlinked_open: Vec::new(),
-        };
-        let text = std::fs::read_to_string(root().join(FIXTURE_TOKEN)).expect("TOKEN");
-        (SimVfs::restore(&image), Some(text.trim().parse().expect("TOKEN holds a token")))
-    } else {
-        let disk = SimVfs::new(FIXTURE_SEED);
-        build_fixture::<E>(&disk);
-        (disk, None)
-    }
-}
-
-fn fixture_directory_opens_resolves_and_verifies<E: Target>() {
-    let (disk, pinned) = fixture_disk::<E>();
-    let db = open_units::<E>(disk.as_vfs(), &cfg(100)).unwrap();
-    let mut id = [0u8; 16];
-    id[8..].copy_from_slice(&1u64.to_be_bytes());
-    let first = UnitId(id);
-    id[8..].copy_from_slice(&2u64.to_be_bytes());
-    let second = UnitId(id);
-    id[8..].copy_from_slice(&3u64.to_be_bytes());
-    let third = UnitId(id);
-    let token = db.public_id(first).unwrap().expect("unit 1 has a token");
-    if let Some(pinned) = pinned {
-        assert_eq!(token, pinned, "the token the directory holds is the one TOKEN records");
-    }
-    assert_eq!(db.resolve_public_id(&token).unwrap(), Some(first));
-    assert_eq!(db.public_id(second).unwrap(), None);
-    assert_eq!(db.public_id(third).unwrap(), None, "the deleted unit's mapping was removed");
-    assert_eq!(token_records(&db), (1, 1));
-    assert_eq!(layer_version(&db), 3);
-    clean(&db);
-    // A unit made on top of the opened directory gets its own token.
-    let (_, fresh) = issue(&db, b"on top");
-    assert_ne!(fresh, token);
-    assert_eq!(db.resolve_public_id(&token).unwrap(), Some(first));
-    clean(&db);
-}
-
-fn fixture_directory_is_refused_by_a_layer2_reader<E: Target>() {
-    let (disk, _) = fixture_disk::<E>();
-    let db = open_units::<E>(disk.as_vfs(), &cfg(100)).unwrap();
-    let mark = mark_of(&db);
-    let e = LayerMeta::decode_upto(&mark, 2).unwrap_err();
-    assert_eq!((e.rule, e.found_layer_version), (UnitRule::Unit16, Some(3)));
-}
 
 /// Tampered stored records, written under the feature that opens the raw path.
 #[cfg(feature = "test-support")]
@@ -1258,7 +1068,6 @@ macro_rules! engines {
                 issued_token_reads_back_and_resolves,
                 stable_after_reopen_and_later_revisions,
                 mark_is_raised_to_3_by_the_first_token_and_never_lowered,
-                layer2_reader_refuses_a_database_with_tokens,
                 deleting_a_unit_removes_its_token_like_one_never_issued,
                 retention_leaves_the_mapping_of_a_live_unit,
                 same_transaction_a_dropped_change_set_leaves_nothing,
@@ -1275,8 +1084,6 @@ macro_rules! engines {
                 import_refuses_token_records_that_no_writer_produces,
                 import_of_a_version_0_export_is_refused,
                 derived_db_issues_resolves_and_forgets_tokens,
-                fixture_directory_opens_resolves_and_verifies,
-                fixture_directory_is_refused_by_a_layer2_reader,
             );
             #[cfg(feature = "test-support")]
             mod stored {

@@ -225,6 +225,10 @@ pub struct Config {
     /// committing thread), and up to one more WAL of disk space while the
     /// handle is open. The files are valid v1 either way (default `false`: the micro-benchmark shows no gain on an idle machine).
     pub wal_preallocate: bool,
+    /// Store the data blocks of new SSTs compressed with LZ4 when that makes them smaller
+    /// (`incompat` bit `BLOCK_LZ4`, v1.md §4.4, ADR-0023). Readers handle both kinds of SST,
+    /// whatever this says. Default `true`. Measured on a real store: 2.2x smaller tables.
+    pub block_compression: bool,
 }
 
 /// How much compaction work a clean close may do (phase1-design.md §5.4,
@@ -541,6 +545,7 @@ impl Default for Config {
             compaction: CompactionConfig::default(),
             close_budget: CloseBudget::default(),
             wal_preallocate: false,
+            block_compression: true,
         }
     }
 }

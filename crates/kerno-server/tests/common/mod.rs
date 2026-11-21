@@ -12,6 +12,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use serde_json::Value;
 
+/// The unit types the test suites keyword-index (the index is off by default, ADR-0023).
+pub const FULLTEXT_TYPES: &str = "note,user,team,t,doc";
+
 /// A fresh directory that is removed when the test ends, pass or fail. It lives under the system
 /// temp directory: a test runs with the crate as its working directory, and a database written
 /// there would end up in `git add -A`.
@@ -98,10 +101,21 @@ impl Server {
     pub fn launch(args: &[&str], log: Option<&Path>) -> Server {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_kerno-server"));
         cmd.env_remove("KERNO_SERVER_DB").args(["--listen", "127.0.0.1:0"]).args(args);
+        // The keyword index is off by default (ADR-0023): the suites search these types.
+        if !args.iter().any(|a| a.starts_with("--fulltext")) && !args.contains(&"hash-token") {
+            cmd.args(["--fulltext", FULLTEXT_TYPES]);
+        }
         let stderr = match log {
             Some(path) => Stdio::from(std::fs::File::create(path).unwrap()),
             None => Stdio::inherit(),
         };
+        #[cfg(windows)]
+        {
+            // Its own process group, so `stop` can send it Ctrl-Break (issue #4).
+            use std::os::windows::process::CommandExt;
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+            cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
+        }
         let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(stderr).spawn().unwrap();
         let mut stdout = BufReader::new(child.stdout.take().unwrap());
         let wants_grpc = args.contains(&"--grpc-listen");
@@ -166,10 +180,10 @@ impl Server {
         self.request("DELETE", path, None)
     }
 
-    /// Asks the server to stop as a service manager does (SIGTERM) and waits for it to exit.
+    /// Asks the server to stop as a service manager does (SIGTERM on Unix, Ctrl-Break to its
+    /// process group on Windows) and waits for it to exit.
     pub fn stop(mut self) -> ExitStatus {
-        let status = Command::new("kill").arg("-TERM").arg(self.child.id().to_string()).status().unwrap();
-        assert!(status.success(), "kill -TERM failed");
+        ask_to_stop(self.child.id());
         self.child.wait().unwrap()
     }
 }
@@ -226,4 +240,24 @@ pub fn parse_reply(raw: &[u8]) -> Reply {
     let headers =
         lines.filter_map(|l| l.split_once(':')).map(|(k, v)| (k.trim().to_owned(), v.trim().to_owned())).collect();
     Reply { status, headers, body: raw[split..].to_vec() }
+}
+
+/// Sends the graceful stop request of the platform to process `pid`.
+#[cfg(unix)]
+pub fn ask_to_stop(pid: u32) {
+    let status = Command::new("kill").arg("-TERM").arg(pid.to_string()).status().unwrap();
+    assert!(status.success(), "kill -TERM failed");
+}
+
+/// Sends the graceful stop request of the platform to process `pid` (its own process group).
+#[cfg(windows)]
+pub fn ask_to_stop(pid: u32) {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GenerateConsoleCtrlEvent(event: u32, group: u32) -> i32;
+    }
+    const CTRL_BREAK_EVENT: u32 = 1;
+    // SAFETY: a plain Win32 call with integer arguments.
+    let ok = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid) };
+    assert!(ok != 0, "GenerateConsoleCtrlEvent failed");
 }

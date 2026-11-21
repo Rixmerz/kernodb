@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import json
 import os
-import select
+import queue
+import threading
 import signal
 import subprocess
 from pathlib import Path
@@ -48,25 +49,43 @@ class Running(NamedTuple):
     log: Path
 
 
+def _first_line(stream, timeout: float) -> str:
+    """The first line of `stream`, or "" after `timeout` seconds.
+
+    A reader thread and a queue instead of `select`: on Windows `select` only takes
+    sockets, not a subprocess pipe (issue #3).
+    """
+    lines: "queue.Queue[str]" = queue.Queue()
+    threading.Thread(target=lambda: lines.put(stream.readline()), daemon=True).start()
+    try:
+        return lines.get(timeout=timeout)
+    except queue.Empty:
+        return ""
+
+
 def start_server(binary: str, db: Path, log: Path) -> Running:
     stderr = open(log, "ab")
     process = subprocess.Popen(
-        [binary, "--db", str(db), "--listen", "127.0.0.1:0"],
+        # The keyword index is opt-in per type (ADR-0023): the suites search these types.
+        [binary, "--db", str(db), "--listen", "127.0.0.1:0", "--fulltext", "note,user"],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=stderr,
         text=True,
+        # Windows: its own process group, so `stop_server` can send it Ctrl-Break.
+        creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
     )
     assert process.stdout is not None
-    ready, _, _ = select.select([process.stdout], [], [], 30)
-    line = process.stdout.readline() if ready else ""
+    line = _first_line(process.stdout, timeout=30)
     prefix = "listening on "
     assert line.startswith(prefix), f"the server did not start: {line!r}\n{log.read_text()}"
     return Running(line[len(prefix):].strip(), process, db, log)
 
 
 def stop_server(running: Running) -> int:
-    running.process.send_signal(signal.SIGTERM)
+    """Asks for the graceful stop: SIGTERM on Unix, Ctrl-Break on Windows (where SIGTERM
+    would terminate the process at once, issue #3)."""
+    running.process.send_signal(getattr(signal, "CTRL_BREAK_EVENT", signal.SIGTERM))
     return running.process.wait(timeout=30)
 
 
