@@ -37,8 +37,12 @@ use crate::app::App;
 use crate::error::{ApiError, Kind};
 use crate::service::{Res, Service};
 
-/// How long a client may take to send the request line and headers, and to finish a TLS handshake.
-const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a client may take to send the request line and headers, and to finish a TLS handshake:
+/// 10 seconds, or `KERNO_SERVER_HEADER_TIMEOUT_MS` (the tests shorten it so that they need not wait).
+static HEADER_TIMEOUT: std::sync::LazyLock<Duration> = std::sync::LazyLock::new(|| {
+    let ms = std::env::var("KERNO_SERVER_HEADER_TIMEOUT_MS").ok().and_then(|s| s.parse().ok());
+    Duration::from_millis(ms.unwrap_or(10_000))
+});
 /// How long shutdown waits for requests in flight.
 const GRACE: Duration = Duration::from_secs(10);
 
@@ -64,7 +68,7 @@ pub async fn serve(listener: TcpListener, app: Arc<App>, tls: Option<TlsAcceptor
                 // The handshake runs in the connection's own task: a slow client holds up no one.
                 tokio::spawn(async move {
                     let Some(acceptor) = tls else { return connection(watcher, stream, app).await };
-                    match tokio::time::timeout(HEADER_TIMEOUT, acceptor.accept(stream)).await {
+                    match tokio::time::timeout(*HEADER_TIMEOUT, acceptor.accept(stream)).await {
                         Ok(Ok(stream)) => connection(watcher, stream, app).await,
                         Ok(Err(e)) => tracing::debug!(error = %e, "TLS handshake failed"),
                         Err(_) => tracing::debug!("TLS handshake timed out"),
@@ -81,7 +85,7 @@ pub async fn serve(listener: TcpListener, app: Arc<App>, tls: Option<TlsAcceptor
 async fn connection(watcher: Watcher, io: impl AsyncRead + AsyncWrite + Unpin + Send + 'static, app: Arc<App>) {
     let conn = http1::Builder::new()
         .timer(TokioTimer::new())
-        .header_read_timeout(HEADER_TIMEOUT)
+        .header_read_timeout(*HEADER_TIMEOUT)
         .serve_connection(TokioIo::new(io), service_fn(move |req| handle(Arc::clone(&app), req)));
     let _ = watcher.watch(conn).await;
 }

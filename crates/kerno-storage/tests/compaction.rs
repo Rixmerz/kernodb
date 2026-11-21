@@ -640,8 +640,8 @@ fn concurrent_compactions_preserve_model() {
             HookAction::Proceed
         }
     };
-    let mut most_at_once = 0;
-    for seed in 0..4u64 {
+    // The seeds are independent and the injected delays are real time, so they run side by side.
+    let run_seed = |seed: u64| {
         let sim = SimVfs::new(seed);
         let vfs: Arc<dyn Vfs> = HookVfs::wrap(sim.as_vfs(), slow_compactions);
         let policy = CompactionConfig {
@@ -665,7 +665,7 @@ fn concurrent_compactions_preserve_model() {
         }
         db.hooks().wait_idle().unwrap();
         assert_model(&db, &model, &format!("seed {seed}, idle"));
-        most_at_once = most_at_once.max(stat(&db, "compactions_concurrent_max"));
+        let most_at_once = stat(&db, "compactions_concurrent_max");
         let snap = db.snapshot().unwrap();
         db.close().unwrap();
         // The snapshot outlived the close of its handle and still reads what
@@ -675,6 +675,11 @@ fn concurrent_compactions_preserve_model() {
         let db = open(&vfs, &cfg);
         assert_model(&db, &model, &format!("seed {seed}, reopened"));
         db.close().unwrap();
-    }
+        most_at_once
+    };
+    let most_at_once = std::thread::scope(|scope| {
+        let runs: Vec<_> = (0..4u64).map(|seed| scope.spawn(move || run_seed(seed))).collect();
+        runs.into_iter().map(|r| r.join().unwrap()).max().unwrap()
+    });
     assert!(most_at_once >= 2, "no two compactions ever ran at once ({most_at_once})");
 }

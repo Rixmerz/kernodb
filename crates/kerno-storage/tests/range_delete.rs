@@ -387,21 +387,27 @@ fn range_delete_crash_at_every_point() {
         commits(&steps).iter().filter(|b| b.has_range_deletes()).count() >= 5,
         "the scenario must write range deletions"
     );
-    for (kind, durability) in [
-        (CrashKind::PowerLoss, Durability::Sync),
-        (CrashKind::ProcessKill, Durability::Sync),
-        (CrashKind::ProcessKill, Durability::Buffered),
-        (CrashKind::ProcessKillKeepPending, Durability::Sync),
-    ] {
-        every_point_steps::<Db>(kind, durability, &|_| {}, &steps);
-    }
     // Aimed at the operations of the directed compaction and the checkpoint
     // after it, for the kinds of crash that lose different things.
     let filter: kerno_testkit::harness::crash::OpFilter =
         Arc::new(|op: &OpInfo| op.phase == "compact_range" || op.phase == "checkpoint");
-    for kind in [CrashKind::PowerLoss, CrashKind::ProcessKill] {
-        every_matching_point::<Db>(kind, Durability::Sync, &steps, filter.clone());
-    }
+    // The six sweeps are independent (each point builds its own device), and this is the only test
+    // of its binary that takes seconds: they run side by side.
+    std::thread::scope(|scope| {
+        let steps = &steps;
+        for (kind, durability) in [
+            (CrashKind::PowerLoss, Durability::Sync),
+            (CrashKind::ProcessKill, Durability::Sync),
+            (CrashKind::ProcessKill, Durability::Buffered),
+            (CrashKind::ProcessKillKeepPending, Durability::Sync),
+        ] {
+            scope.spawn(move || every_point_steps::<Db>(kind, durability, &|_| {}, steps));
+        }
+        for kind in [CrashKind::PowerLoss, CrashKind::ProcessKill] {
+            let filter = filter.clone();
+            scope.spawn(move || every_matching_point::<Db>(kind, Durability::Sync, steps, filter));
+        }
+    });
 }
 
 /// A crash that leaves the files of a flush and a directed compaction behind

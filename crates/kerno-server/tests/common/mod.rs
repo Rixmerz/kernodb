@@ -99,8 +99,13 @@ impl Server {
     /// The server with `--listen 127.0.0.1:0` then `args`; its stderr (the JSON logs) goes to
     /// `log` when given.
     pub fn launch(args: &[&str], log: Option<&Path>) -> Server {
+        Server::launch_with_env(args, log, &[])
+    }
+
+    /// [`Server::launch`] with extra environment variables for the server process.
+    pub fn launch_with_env(args: &[&str], log: Option<&Path>, env: &[(&str, &str)]) -> Server {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_kerno-server"));
-        cmd.env_remove("KERNO_SERVER_DB").args(["--listen", "127.0.0.1:0"]).args(args);
+        cmd.envs(env.iter().copied()).env_remove("KERNO_SERVER_DB").args(["--listen", "127.0.0.1:0"]).args(args);
         // The keyword index is off by default (ADR-0023): the suites search these types.
         if !args.iter().any(|a| a.starts_with("--fulltext")) && !args.contains(&"hash-token") {
             cmd.args(["--fulltext", FULLTEXT_TYPES]);

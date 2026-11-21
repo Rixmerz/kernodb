@@ -459,9 +459,10 @@ fn a_client_that_never_finishes_its_tls_handshake_is_cut_off() {
     use std::io::Read;
     let dir = TempDir::new();
     let args = [vec!["--db".to_owned(), dir.db().to_str().unwrap().to_owned()], tls_args()].concat();
-    let server = Server::launch(&args.iter().map(String::as_str).collect::<Vec<_>>(), None);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let server = Server::launch_with_env(&args, None, &[("KERNO_SERVER_HEADER_TIMEOUT_MS", "500")]);
     let mut silent = std::net::TcpStream::connect(server.http).unwrap();
-    // The server allows 10 seconds; a read that outlives 20 means it never hung up.
+    // The server allows half a second; a read that outlives 20 seconds means it never hung up.
     silent.set_read_timeout(Some(std::time::Duration::from_secs(20))).unwrap();
     let started = std::time::Instant::now();
     let mut byte = [0; 1];
@@ -470,7 +471,7 @@ fn a_client_that_never_finishes_its_tls_handshake_is_cut_off() {
         matches!(read, Ok(0)) || read.as_ref().is_err_and(|e| e.kind() == std::io::ErrorKind::ConnectionReset),
         "{read:?}"
     );
-    assert!(started.elapsed() < std::time::Duration::from_secs(15), "closed after {:?}", started.elapsed());
+    assert!(started.elapsed() < std::time::Duration::from_secs(10), "closed after {:?}", started.elapsed());
 }
 
 #[test]

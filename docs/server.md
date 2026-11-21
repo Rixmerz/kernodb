@@ -22,6 +22,9 @@ anywhere else. Use tenant mode for anything on a network, even with one tenant.
 The two modes do not mix: `--db` with `--data-dir` is refused, and so is `--tokens` without
 `--data-dir`. `KERNO_SERVER_DB` stands for `--db` and is ignored in tenant mode.
 
+`KERNO_SERVER_HEADER_TIMEOUT_MS` (default 10000) is how long a client may take to send its request
+line and headers or to finish a TLS handshake. It exists so that the tests do not wait ten seconds.
+
 ### All flags
 
 | Flag | Meaning |
