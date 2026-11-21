@@ -116,7 +116,7 @@ pub use payload::{
 pub use plan::{CacheView, Candidate, Cost, Plan, PlanError, PlanPath, Reason, Unusable, Usability};
 pub use planner::{AssocOutcome, Fallback, FallbackCause, PLANNER_VERSION, RelationsOutcome, Violation};
 pub use retention::{CompactReport, RetentionBudget, RetentionPacing, RetentionPolicy, RetentionReport, RetentionRule};
-pub use schema::{Document, FieldDef, FieldType, FieldValue, Schema};
+pub use schema::{Document, FieldDef, FieldType, FieldValue, Schema, UpsertOutcome, Upserted, upsert_key};
 pub use suppression::SuppressionReport;
 pub use types::{
     BuildOutcome, ChangeKind, ChangePurpose, ChangeSetId, CommitSeq, Direction, HistoryPolicy, Lifecycle,
