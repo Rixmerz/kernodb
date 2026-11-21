@@ -730,10 +730,15 @@ fn quality_over_the_frozen_set() {
     println!("MANIFEST: corpus.txt, vectors.txt and queries.txt match");
     let mut reports: Vec<(&str, Lines)> = Vec::new();
     let mut equalities_hold = true;
-    for (name, quality_lines, eq) in [
-        ("emulated_log", quality::<EmuLog>(&set), equalities::<EmuLog>(&set)),
-        ("kerno_db", quality::<KernoDb>(&set), equalities::<KernoDb>(&set)),
-    ] {
+    // The four measurements share nothing but the read-only set: run them side by side.
+    let (emu_quality, emu_eq, kerno_quality, kerno_eq) = std::thread::scope(|scope| {
+        let a = scope.spawn(|| quality::<EmuLog>(&set).map_err(|e| e.to_string()));
+        let b = scope.spawn(|| equalities::<EmuLog>(&set).map_err(|e| e.to_string()));
+        let c = scope.spawn(|| quality::<KernoDb>(&set).map_err(|e| e.to_string()));
+        let d = equalities::<KernoDb>(&set).map_err(|e| e.to_string());
+        (a.join().unwrap(), b.join().unwrap(), c.join().unwrap(), d)
+    });
+    for (name, quality_lines, eq) in [("emulated_log", emu_quality, emu_eq), ("kerno_db", kerno_quality, kerno_eq)] {
         let mut lines = quality_lines.expect("quality measurement");
         let (eq_lines, timing, ok) = eq.expect("equalities");
         lines.extend(eq_lines);

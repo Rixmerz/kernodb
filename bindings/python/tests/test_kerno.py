@@ -269,9 +269,10 @@ def test_max_batch_ops(tmp_path):
     with kerno.open(tmp_path / "a") as db:
         with pytest.raises(kerno.InvalidArgumentError):
             db.commit([("store", "n", b"\xff")] * 10_001)
-    with kerno.open(tmp_path / "b", max_batch_ops=60_000) as db:
-        out = db.commit([("store", "n", b"\xff")] * 30_000 + [("relate", 0, 1, "r")] * 20_000, detailed=True)
-        assert len(out["units"]) == 30_000 and len(out["relations"]) == 20_000
+    # One operation more than the default cap, so the raised cap is what lets it through.
+    with kerno.open(tmp_path / "b", max_batch_ops=12_000) as db:
+        out = db.commit([("store", "n", b"\xff")] * 6_000 + [("relate", 0, 1, "r")] * 4_001, detailed=True)
+        assert len(out["units"]) == 6_000 and len(out["relations"]) == 4_001
 
 
 def test_set_fulltext(tmp_path):

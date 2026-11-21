@@ -1107,27 +1107,54 @@ fn frozen_corpus_traces_are_verifiable<E: TxnEngine>() {
     assert_eq!(snap.seq().0, 300);
     assert_eq!(set.queries.len(), 64);
 
-    let mut with_hits = 0;
-    let mut multi_hop = 0;
-    for q in &set.queries {
-        let query = corpus_query(&ids, q);
-        let res = run(&snap, &query);
-        verify_result(&snap, &query, &res, &q.id);
-        assert_eq!(res.ending, AssocEnding::Exhausted, "{}: the bounds of the set are far below the hard maxima", q.id);
+    // The queries only read the snapshot, and each one is a long breadth-first check: run them in
+    // four slices side by side.
+    let slices: Vec<(usize, usize)> = std::thread::scope(|scope| {
+        let workers: Vec<_> = set
+            .queries
+            .chunks(set.queries.len().div_ceil(4))
+            .map(|slice| {
+                let (snap, ids) = (&snap, &ids);
+                scope.spawn(move || {
+                    let (mut with_hits, mut multi_hop) = (0, 0);
+                    for q in slice {
+                        let query = corpus_query(ids, q);
+                        let res = run(snap, &query);
+                        verify_result(snap, &query, &res, &q.id);
+                        assert_eq!(
+                            res.ending,
+                            AssocEnding::Exhausted,
+                            "{}: the bounds of the set are far below the hard maxima",
+                            q.id
+                        );
 
-        // The hits and their distances are the plain breadth-first answer.
-        let want: BTreeMap<UnitId, u32> = oracle(&snap, &query).into_iter().filter(|(_, d)| *d > 0).collect();
-        let got: BTreeMap<UnitId, u32> = res.hits.iter().map(|h| (h.unit, h.distance)).collect();
-        assert_eq!(got, want, "{}: hits differ from the oracle", q.id);
+                        // The hits and their distances are the plain breadth-first answer.
+                        let want: BTreeMap<UnitId, u32> =
+                            oracle(snap, &query).into_iter().filter(|(_, d)| *d > 0).collect();
+                        let got: BTreeMap<UnitId, u32> = res.hits.iter().map(|h| (h.unit, h.distance)).collect();
+                        assert_eq!(got, want, "{}: hits differ from the oracle", q.id);
 
-        // Every expected answer of the set is a hit (the set checks that they
-        // are reachable; here the reference path agrees).
-        for j in &q.expected {
-            assert!(got.contains_key(&ids[j.index as usize]), "{}: expected unit {} is not a hit", q.id, j.index);
-        }
-        with_hits += usize::from(!res.hits.is_empty());
-        multi_hop += usize::from(res.hits.iter().any(|h| h.distance >= 2));
-    }
+                        // Every expected answer of the set is a hit (the set checks that they
+                        // are reachable; here the reference path agrees).
+                        for j in &q.expected {
+                            assert!(
+                                got.contains_key(&ids[j.index as usize]),
+                                "{}: expected unit {} is not a hit",
+                                q.id,
+                                j.index
+                            );
+                        }
+                        with_hits += usize::from(!res.hits.is_empty());
+                        multi_hop += usize::from(res.hits.iter().any(|h| h.distance >= 2));
+                    }
+                    (with_hits, multi_hop)
+                })
+            })
+            .collect();
+        workers.into_iter().map(|w| w.join().unwrap()).collect()
+    });
+    let with_hits: usize = slices.iter().map(|s| s.0).sum();
+    let multi_hop: usize = slices.iter().map(|s| s.1).sum();
     assert_eq!(with_hits, 64, "every query reaches something");
     // Counted on the frozen set: 56 of its 64 queries reach distance 2 or more.
     assert_eq!(multi_hop, 56, "the set exercises several hops");
