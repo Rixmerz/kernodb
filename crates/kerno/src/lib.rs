@@ -253,7 +253,7 @@ use std::path::Path;
 use kerno_core::vfs::StdVfs;
 use kerno_storage::KernoDb;
 use kerno_units::{
-    AsOf, ChangeMeta, CommitSeq, NewUnit, RelationProvenance, RevNo, UnitAt, UnitConfig, UnitDb, UnitUpdate,
+    AsOf, ChangeMeta, CommitSeq, NewUnit, RelationProvenance, RevNo, UnitAt, UnitConfig, UnitDb, UnitUpdate, upsert_key,
 };
 
 pub use kerno_core::Durability;
@@ -265,7 +265,7 @@ pub use kerno_units::{
     HybridWeights, LegRanks, Lifecycle, NearestUnits, Query, QueryPlan, QueryResult, Relation, RelationId, Schema,
     Unit, UnitError as Error, UnitFilter, UnitId, UnitVerifyReport as VerifyReport, VectorLeg,
 };
-pub use kerno_units::{CompactReport, RetentionPolicy, RetentionReport, RetentionRule, TextHit};
+pub use kerno_units::{CompactReport, RetentionPolicy, RetentionReport, RetentionRule, TextHit, UpsertOutcome, Upserted};
 
 /// The result of every [`Db`] method.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -306,8 +306,11 @@ pub struct Committed {
     pub units: Vec<UnitId>,
     /// The relations the batch created (or, for a unique relate, found), in order.
     pub relations: Vec<RelationId>,
-    /// Updates skipped because the payload was already the current one.
+    /// Updates and upserts skipped because the payload was already the current one.
     pub unchanged: usize,
+    /// What each [`Batch::upsert`] did, in the order the batch added them. Upserts of one key
+    /// share an entry's id and outcome.
+    pub upserts: Vec<Upserted>,
     /// The sequence of the commit; `None` when nothing was written.
     pub commit_seq: Option<u64>,
 }
@@ -322,6 +325,7 @@ enum Op {
     Archive { id: UnitId },
     Unarchive { id: UnitId },
     Restore { id: UnitId, from: u64 },
+    Upsert { unit_type: String, field: String, payload: Vec<u8> },
 }
 
 /// Several writes that [`Db::commit`] applies as one commit: all of them or none.
@@ -410,6 +414,21 @@ impl Batch {
     /// Adds a revision of `id` that copies revision `from` (later revisions stay in the history).
     pub fn restore(&mut self, id: UnitId, from: u64) -> &mut Self {
         self.ops.push(Op::Restore { id, from });
+        self
+    }
+
+    /// Adds an upsert keyed by `field`, a field of `unit_type`'s schema declared `unique`: the
+    /// active unit whose `field` equals the value `payload` (an encoded [`Document`]) holds in it
+    /// gets `payload` as a new revision, or nothing is written when it has that payload already
+    /// (counted in [`Committed::unchanged`]); when no active unit holds the value a new unit is
+    /// stored. [`Committed::upserts`] says which happened and the id. Several upserts of one key
+    /// in a batch resolve to one unit and the last payload wins. The unit an upsert stores is not
+    /// in [`Committed::units`], so it does not count for [`Endpoint::Stored`].
+    ///
+    /// [`Db::commit`] fails with `InvalidArgument` when `field` is not declared unique (or the
+    /// type has no schema), and with `SchemaViolation` when `payload` has no value in it.
+    pub fn upsert(&mut self, unit_type: &str, field: &str, payload: impl Into<Vec<u8>>) -> &mut Self {
+        self.ops.push(Op::Upsert { unit_type: unit_type.to_owned(), field: field.to_owned(), payload: payload.into() });
         self
     }
 
@@ -503,6 +522,28 @@ impl Db {
         self.commit(Batch::new().update(id, payload)).map(|_| ())
     }
 
+    /// Stores `document` as a unit of `unit_type`, or revises the active unit that already holds
+    /// the same value of the unique field `field` (see [`Batch::upsert`]), in one commit, and
+    /// says which unit and whether it was created, updated or already had this payload.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidArgument` when the type has no schema or `field` is not declared `unique` in it;
+    /// `SchemaViolation` when the schema refuses the document or it has no value in `field`.
+    pub fn upsert_document(&self, unit_type: &str, field: &str, document: &Document) -> Result<Upserted> {
+        self.upsert(unit_type, field, document.encode()?)
+    }
+
+    /// [`Db::upsert_document`] with an already encoded payload.
+    ///
+    /// # Errors
+    ///
+    /// As [`Db::upsert_document`].
+    pub fn upsert(&self, unit_type: &str, field: &str, payload: impl Into<Vec<u8>>) -> Result<Upserted> {
+        let done = self.commit_with(Batch::new().upsert(unit_type, field, payload), &CommitMeta::default())?;
+        Ok(done.upserts[0])
+    }
+
     /// Replaces the payload of `id` with `document`, like [`Db::update`]. When the type has a
     /// [`Schema`] the document must satisfy it, and a refused write changes nothing.
     ///
@@ -561,6 +602,26 @@ impl Db {
         if ops.is_empty() {
             return Ok(Committed::default());
         }
+        // Upserts of one key become one: the first one's place, the last one's payload.
+        let mut upsert_at: Vec<(String, String, Vec<u8>)> = Vec::new();
+        let mut upsert_last: Vec<&[u8]> = Vec::new();
+        let mut upsert_slot = vec![usize::MAX; ops.len()];
+        for (i, op) in ops.iter().enumerate() {
+            if let Op::Upsert { unit_type, field, payload } = op {
+                // A payload without a key is left to `ChangeSet::upsert`, which names the first
+                // problem (a field that is not unique comes before a missing value).
+                let Ok(key) = upsert_key(payload, field) else { continue };
+                let key = (unit_type.clone(), field.clone(), key);
+                let slot = upsert_at.iter().position(|k| *k == key).unwrap_or_else(|| {
+                    upsert_at.push(key);
+                    upsert_last.push(payload);
+                    upsert_at.len() - 1
+                });
+                upsert_last[slot] = payload;
+                upsert_slot[i] = slot;
+            }
+        }
+        let mut upserted: Vec<Option<Upserted>> = vec![None; upsert_at.len()];
         let snap = self.units.snapshot()?;
         let change_meta = ChangeMeta {
             reason: meta.reason.clone(),
@@ -581,7 +642,7 @@ impl Db {
                 }),
             }
         };
-        for op in ops {
+        for (i, op) in ops.iter().enumerate() {
             match op {
                 Op::Store { unit_type, payload } => {
                     out.units.push(changes.create(NewUnit {
@@ -667,6 +728,31 @@ impl Db {
                 Op::Restore { id, from } => {
                     changes.restore(*id, RevNo(*from), None)?;
                     wrote = true;
+                }
+                Op::Upsert { unit_type, field, payload } => {
+                    let slot = upsert_slot[i];
+                    let done = match upserted.get(slot).copied().flatten() {
+                        Some(done) => done,
+                        None => {
+                            let payload = upsert_last.get(slot).map_or(payload.as_slice(), |p| *p);
+                            let new = NewUnit {
+                                unit_type: unit_type.clone(),
+                                schema_version: SCHEMA_VERSION,
+                                metadata: Vec::new(),
+                                payload: payload.to_vec(),
+                            };
+                            let done = changes.upsert(new, field)?;
+                            match done.outcome {
+                                UpsertOutcome::Unchanged => out.unchanged += 1,
+                                UpsertOutcome::Created | UpsertOutcome::Updated => wrote = true,
+                            }
+                            if let Some(held) = upserted.get_mut(slot) {
+                                *held = Some(done);
+                            }
+                            done
+                        }
+                    };
+                    out.upserts.push(done);
                 }
             }
         }
