@@ -18,7 +18,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 kerno = { package = "kernodb", path = "../../crates/kerno", version = "1.0.0-alpha.1" }
-napi = { version = "3", default-features = false, features = ["napi4"] }
+napi = { version = "3", default-features = false, features = ["napi6"] }
 napi-derive = "3"
 
 [build-dependencies]
