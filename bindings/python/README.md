@@ -194,6 +194,7 @@ never return wrong data.
 | `db.hybrid_search(text=None, vector=None, vectors=None, seeds=None, *, keyword_weight=1, vector_weight=1, relation_weight=1, limit=10, candidates=100, rrf_k=60, max_depth=2, metric="cosine")` | `list[HybridHit]`, best first: `id`, `score`, `keyword_score`, `vector_score`, `relation_score`, `keyword_rank`, `vector_rank`, `relation_rank` (a signal that missed the unit is `None`). `vector` and `vectors` go together; `metric` is `"cosine"` or `"dot"` |
 | `db.verify()` | `dict`: `clean`, `commit_seq`, `units`, `revisions`, `relations`, `findings`, maybe `storage_error` |
 | `db.compact()` | `{"before", "after"}` stored bytes |
+| `db.run_retention(default=None, by_type=None)` | prune old revisions; a rule is a dict with one of `keep_last` (newest N), `keep_for` (seconds) or `keep_since` (commit sequence); returns `{"units_retained", "revisions_pruned", "payloads_dropped", "bytes_logically_freed", "commit_seq"}`. Pruned revisions raise `PrunedError` in `read_as_of`, `history(from_revision=)` and `compare`. A bad rule raises `ValueError` and writes nothing; a `None` rule is no rule. The policy is not stored: pass it each time |
 | `db.close()` | `None`. Closing twice is harmless |
 
 Type stubs ship with the package (`py.typed`).

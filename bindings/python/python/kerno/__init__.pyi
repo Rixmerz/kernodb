@@ -22,6 +22,9 @@ __all__ = [
     "open",
 ]
 
+# Exactly one of `keep_last` (newest N revisions), `keep_for` (seconds) or `keep_since` (commit sequence).
+RetentionRule = dict[str, float]
+
 class KernoError(Exception):
     """Any failure reported by the Kerno engine."""
 
@@ -158,6 +161,14 @@ class Database:
     def refresh(self) -> int:
         """Move a `read_only=True` database to the writer's newest commits; returns the sequence it now reads."""
     def compact(self) -> dict[str, int]: ...
+    def run_retention(
+        self, default: RetentionRule | None = None, by_type: dict[str, RetentionRule] | None = None
+    ) -> dict[str, int | None]:
+        """Prune old revisions by rule (`by_type`, else `default`; no rule keeps everything).
+
+        Returns `units_retained`, `revisions_pruned`, `payloads_dropped`, `bytes_logically_freed` and
+        `commit_seq` (`None` when nothing was pruned). `history` from a pruned revision and
+        `read_as_of` before the oldest kept one raise `PrunedError`. The policy is not stored."""
     def define_schema(self, unit_type: str, fields: list[dict[str, object]]) -> None: ...
     def create_index(self, unit_type: str, field: str) -> None: ...
     def store_document(self, unit_type: str, document: dict[str, FieldValue]) -> str: ...

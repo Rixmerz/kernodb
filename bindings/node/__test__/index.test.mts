@@ -349,6 +349,73 @@ test('readAsOf reads the revision in force at a commit', () => {
   assert.equal(db.readAsOf(MISSING, seq1), null)
 })
 
+test('runRetention prunes old revisions and readAsOf reports PRUNED', () => {
+  const note = db.store('note', 'v1')
+  const firstSeq = db.lastCommitSeq()
+  for (const v of ['v2', 'v3', 'v4']) db.update(note, v)
+  const log = db.store('log', 'l1')
+  db.update(log, 'l2')
+  const before = db.lastCommitSeq()
+
+  // Nothing is pruned before retention runs; a refused rule writes nothing.
+  assert.equal(db.readAsOf(note, firstSeq)?.payload?.toString(), 'v1')
+  const badRules = [
+    {}, { keepLast: null }, { keepLast: 0 }, { keepLast: 1, keepFor: 1 }, { keepFor: -1 }, { keepFor: NaN },
+    { keepLast: -2 }, { keepLast: 2 ** 60 }, { keepLast: 1.5 }, { keepLast: NaN }, { keepLast: Infinity }, { keepSince: 1.5 },
+    { keepSince: -1 }, { keepLast: '2' }, { keepFor: 'x' }, 3,
+  ]
+  for (const bad of badRules) {
+    assert.equal(codeOf(() => db.runRetention({ byType: { note: bad as never } })), 'INVALID_ARGUMENT', JSON.stringify(bad))
+    assert.equal(codeOf(() => db.runRetention({ default: bad as never })), 'INVALID_ARGUMENT', JSON.stringify(bad))
+  }
+  for (const bad of ['x', 3, { byType: 'x' }]) {
+    assert.equal(codeOf(() => db.runRetention(bad as never)), 'INVALID_ARGUMENT', JSON.stringify(bad))
+  }
+  assert.equal(db.lastCommitSeq(), before)
+  // `null` is the same as no rule: nothing to prune.
+  for (const none of [null, undefined, {}, { default: null, byType: null }, { byType: { note: null } }]) {
+    assert.equal(db.runRetention(none).unitsRetained, 0)
+  }
+  assert.equal(db.lastCommitSeq(), before)
+
+  // `note` keeps its newest two revisions; `log` has no rule and keeps everything.
+  const report = db.runRetention({ byType: { note: { keepLast: 2 } } })
+  assert.equal(report.unitsRetained, 1)
+  assert.equal(report.revisionsPruned, 2)
+  assert.equal(report.commitSeq, db.lastCommitSeq())
+  assert.deepEqual(db.history(note).map((r) => r.revision), [4, 3])
+  assert.deepEqual(db.history(log).map((r) => r.revision), [2, 1])
+  assert.equal(codeOf(() => db.readAsOf(note, firstSeq)), 'PRUNED')
+  assert.equal(codeOf(() => db.history(note, { fromRevision: 2 })), 'PRUNED')
+  assert.deepEqual(db.history(note, { fromRevision: 3 }).map((r) => r.revision), [4, 3])
+  assert.equal(codeOf(() => db.history(note, { fromRevision: 2.5 })), 'INVALID_ARGUMENT')
+  assert.equal(db.read(note)?.payload?.toString(), 'v4')
+  assert.equal(db.verify().clean, true)
+
+  // Idempotent: a second run commits nothing.
+  const seq = db.lastCommitSeq()
+  const again = db.runRetention({ byType: { note: { keepLast: 2 } } })
+  assert.equal(again.unitsRetained, 0)
+  assert.equal(again.commitSeq, undefined)
+  assert.equal(db.lastCommitSeq(), seq)
+
+  // A duration rule on every type: 0 seconds keeps only the revision in force now.
+  db.runRetention({ default: { keepFor: 0 } })
+  assert.deepEqual(db.history(note).map((r) => r.revision), [4])
+  assert.deepEqual(db.history(log).map((r) => r.revision), [2])
+  assert.equal(db.verify().clean, true)
+
+  // `keepSince` keeps what answers as-of reads from that commit on.
+  const memo = db.store('memo', 'm1')
+  const mid = db.lastCommitSeq()
+  db.update(memo, 'm2')
+  db.update(memo, 'm3')
+  db.runRetention({ byType: { memo: { keepSince: mid } } })
+  assert.deepEqual(db.history(memo).map((r) => r.revision), [3, 2, 1])
+  db.runRetention({ byType: { memo: { keepSince: db.lastCommitSeq() } } })
+  assert.deepEqual(db.history(memo).map((r) => r.revision), [3])
+})
+
 test('lastCommitSeq starts at 0 and grows with each commit', () => {
   assert.equal(db.lastCommitSeq(), 0)
   db.store('note', 'x')

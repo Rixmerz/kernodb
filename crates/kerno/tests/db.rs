@@ -608,3 +608,56 @@ fn refresh_shows_a_read_only_handle_the_commits_made_since_it_opened() {
 
     assert!(writer.refresh().is_err(), "a read-write handle is always current");
 }
+
+#[test]
+fn run_retention_prunes_old_revisions_and_they_answer_pruned() {
+    use kerno::units::{HistoryQuery, RevNo, UnitAt, UnitError};
+    use kerno::{RetentionPolicy, RetentionRule};
+
+    let dir = TempDir::new();
+    let db = Db::open(dir.db()).unwrap();
+    let note = db.store("note", "v1").unwrap();
+    let first_seq = db.last_commit_seq().unwrap();
+    db.update(note, "v2").unwrap();
+    db.update(note, "v3").unwrap();
+    db.update(note, "v4").unwrap();
+    let keep = db.store("log", "l1").unwrap();
+    db.update(keep, "l2").unwrap();
+    let before = db.last_commit_seq().unwrap();
+
+    // Nothing is pruned until retention runs, and a refused policy writes nothing.
+    assert!(matches!(db.read_as_of(note, first_seq).unwrap(), UnitAt::Present(_)));
+    assert!(db.run_retention(&RetentionPolicy::all(RetentionRule::KeepLast(0))).is_err());
+    assert_eq!(db.last_commit_seq().unwrap(), before);
+
+    // `note` keeps its newest two revisions; `log` has no rule and keeps everything.
+    let policy = RetentionPolicy::default().with_type("note", RetentionRule::KeepLast(2));
+    let report = db.run_retention(&policy).unwrap();
+    assert!(report.complete);
+    assert_eq!((report.units_retained, report.revisions_pruned), (1, 2), "{report:?}");
+    assert_eq!(db.get(note).unwrap().unwrap().oldest, RevNo(3));
+    assert_eq!(db.get(keep).unwrap().unwrap().oldest, RevNo(1));
+
+    assert!(matches!(db.read_as_of(note, first_seq).unwrap(), UnitAt::Pruned { oldest } if oldest == RevNo(3)));
+    assert!(matches!(
+        db.unit_db().history(note, HistoryQuery { from: Some(RevNo(1)), ..HistoryQuery::oldest(10) }),
+        Err(UnitError::Pruned { .. })
+    ));
+    let revisions: Vec<u64> =
+        db.unit_db().history(note, HistoryQuery::oldest(10)).unwrap().iter().map(|r| r.id.rev.0).collect();
+    assert_eq!(revisions, [3, 4]);
+    assert_eq!(db.get(note).unwrap().unwrap().payload.as_deref(), Some(&b"v4"[..]));
+    assert!(db.verify().unwrap().is_clean());
+
+    // A second run has nothing left to do and commits nothing.
+    let seq = db.last_commit_seq().unwrap();
+    let again = db.run_retention(&policy).unwrap();
+    assert_eq!((again.units_retained, again.change_set), (0, None));
+    assert_eq!(db.last_commit_seq().unwrap(), seq);
+
+    // A duration rule: `ZERO` keeps only the revision in force now.
+    db.run_retention(&RetentionPolicy::all(RetentionRule::KeepFor(std::time::Duration::ZERO))).unwrap();
+    assert_eq!(db.get(note).unwrap().unwrap().oldest, RevNo(4));
+    assert_eq!(db.get(keep).unwrap().unwrap().oldest, RevNo(2));
+    assert!(db.verify().unwrap().is_clean());
+}

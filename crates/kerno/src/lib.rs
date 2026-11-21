@@ -265,7 +265,7 @@ pub use kerno_units::{
     HybridWeights, LegRanks, Lifecycle, NearestUnits, Query, QueryPlan, QueryResult, Relation, RelationId, Schema,
     Unit, UnitError as Error, UnitFilter, UnitId, UnitVerifyReport as VerifyReport, VectorLeg,
 };
-pub use kerno_units::{CompactReport, TextHit};
+pub use kerno_units::{CompactReport, RetentionPolicy, RetentionReport, RetentionRule, TextHit};
 
 /// The result of every [`Db`] method.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -729,6 +729,23 @@ impl Db {
     /// The engine fails or finds a deleted unit's history corrupt.
     pub fn compact(&self) -> Result<kerno_units::CompactReport> {
         self.units.compact()
+    }
+
+    /// Prunes old revisions as `policy` says (a rule per unit type: keep the newest `n`, keep
+    /// the ones younger than a duration, or keep from a commit sequence on) and returns what it
+    /// removed. It runs until every unit is done, in change sets of at most 16 units that pause
+    /// between them so writers keep the write slot; it is idempotent. The head is never pruned.
+    ///
+    /// After it, a unit's `oldest` revision moves up, [`UnitDb::history`](units::UnitDb::history)
+    /// below it and [`Db::read_as_of`] before it answer `Pruned`, and [`Db::verify`] stays clean.
+    /// The policy is not stored: pass it each time. The bytes stay on disk until the engine
+    /// compacts them (see [`Db::compact`]) and no snapshot needs them.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidArgument` for `KeepLast(0)`; the engine fails or finds a unit's history corrupt.
+    pub fn run_retention(&self, policy: &RetentionPolicy) -> Result<RetentionReport> {
+        self.units.run_retention_all(policy)
     }
 
     /// Stores a new unit of type `unit_type` whose payload is `document`, like

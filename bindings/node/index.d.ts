@@ -54,7 +54,10 @@ export declare class Db {
    * for the ops. `reason`, `actor` and `source` are recorded with every revision.
    */
   commit(ops: Array<CommitOp>, options?: CommitOptions | undefined | null): Committed
-  /** The newest `limit` revisions of `id`, newest first; empty for an unknown unit. */
+  /**
+   * The newest `limit` revisions of `id` from `fromRevision` on, newest first; empty for an
+   * unknown unit. Throws `PRUNED` when `fromRevision` is below the oldest revision retention kept.
+   */
   history(id: string, options?: HistoryOptions | undefined | null): Array<Revision>
   /**
    * The revision of `id` in force once commit `commitSeq` committed, with its payload;
@@ -81,6 +84,12 @@ export declare class Db {
    * what a retention policy dropped.
    */
   compact(): CompactReport
+  /**
+   * Prunes old revisions as `options` says and returns what it removed. The head is always
+   * kept. Afterwards `history` from a pruned revision and `readAsOf` before the oldest kept
+   * one throw `PRUNED`. The policy is not stored: pass it each time. Idempotent.
+   */
+  runRetention(options?: RetentionOptions | null): RetentionReport
   /**
    * Turns keyword (BM25) indexing of `unitType` on or off. It is off by default; the setting
    * is stored in the database, and the type's active units are indexed (or cleared) in the
@@ -199,6 +208,8 @@ export interface HistoryOptions {
   limit?: number
   /** Read and verify each revision's content. Default `false`. */
   withPayload?: boolean
+  /** The oldest revision to list, inclusive. Default: the oldest kept. Below it throws `PRUNED`. */
+  fromRevision?: number
 }
 
 export interface HybridHit {
@@ -295,6 +306,38 @@ export interface RelationsInput {
   maxDepth?: number
   /** Most relation entries examined, up to 100,000. Default 10,000. */
   visitBudget?: number
+}
+
+/**
+ * What `runRetention` applies: `byType` gives a rule to a unit type and `default` is the rule of
+ * every other type. A type with no rule keeps everything; `null` is the same as no rule.
+ */
+export interface RetentionOptions {
+  default?: RetentionRule | null
+  byType?: Record<string, RetentionRule | null> | null
+}
+
+/** What `runRetention` removed. */
+export interface RetentionReport {
+  unitsRetained: number
+  revisionsPruned: number
+  payloadsDropped: number
+  bytesLogicallyFreed: number
+  /** The sequence of the last retention commit; absent when there was nothing to prune. */
+  commitSeq?: number
+}
+
+/**
+ * How much history of a unit type retention keeps. Set exactly one field; `null` is the same
+ * as leaving it out.
+ */
+export interface RetentionRule {
+  /** Keep the newest N revisions (a whole number, 1 or more). */
+  keepLast?: number | null
+  /** Keep the revisions younger than this many seconds (0 or more). */
+  keepFor?: number | null
+  /** Keep what answers an as-of read at this commit sequence (a whole number) or later. */
+  keepSince?: number | null
 }
 
 /** One revision of a unit, from `history` or `readAsOf`. */
