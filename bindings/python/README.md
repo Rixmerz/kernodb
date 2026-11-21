@@ -11,6 +11,10 @@ The package is `kernodb`; the module you import is `kerno`.
 > [Upgrading](#upgrading-from-100-alpha1)), and the keyword index is opt-in per type. The on-disk
 > format is frozen, the API is not. Expect breaking changes between alpha releases. See the [changelog](https://github.com/Rixmerz/kernodb/blob/main/CHANGELOG.md).
 
+Guides: [Kerno as a revisioned history next to another database](https://github.com/Rixmerz/kernodb/blob/main/docs/guides/history-alongside.md),
+[one unit per entity, keyed by a logical key](https://github.com/Rixmerz/kernodb/blob/main/docs/guides/one-unit-per-entity.md),
+and the [coverage of the `kerno` facade in the Python and Node bindings](https://github.com/Rixmerz/kernodb/blob/main/docs/bindings-coverage.md).
+
 ## Install
 
 ```bash
@@ -167,7 +171,7 @@ never return wrong data.
 
 | Call | Returns |
 |------|---------|
-| `kerno.open(path, read_only=False, max_batch_ops=None)` | a `Database`. A read-only open writes nothing but still takes the directory's lock. `max_batch_ops` changes the 10,000-operation limit of one `commit` |
+| `kerno.open(path, read_only=False, max_batch_ops=None)` | a `Database`. A read-only open writes nothing and takes no lock, so it runs beside a writer (see `refresh`). `max_batch_ops` changes the 10,000-operation limit of one `commit` |
 | `db.store(unit_type, payload)` | the new unit's id |
 | `db.read(id)` | `Unit` (`id`, `unit_type`, `schema_version`, `lifecycle`, `revision`, `oldest_revision`, `payload`) or `None`. `oldest_revision` is the oldest revision retention still keeps |
 | `db.update(id, payload, if_changed=False)` | `True` when a revision was written |
@@ -262,8 +266,9 @@ middle of a stream of commits never lost an acknowledged commit and never left h
 
 ## Concurrency
 
-One process holds a database directory at a time (a second open raises `LockedError`, also for
-`read_only=True`). Inside the process, a `Database` can be shared between threads. Calls release
+One read-write `Database` holds a database directory at a time: a second read-write open raises
+`LockedError`. A read-only open takes no lock, so readers run beside the writer, in other processes
+or in the same one. Inside the process, a `Database` can be shared between threads. Calls release
 the GIL while they touch disk, any number of readers run while one writer commits, and a read
 never sees half of a change set.
 

@@ -3,8 +3,12 @@
 Node.js bindings for [Kerno](https://github.com/Rixmerz/kernodb), an embedded database of
 **units** (typed records with a payload), the **relations** between them, and queries over both.
 It runs inside your process and keeps its data in a local directory. TypeScript types ship with
-the package, and the API matches the [Python binding](https://github.com/Rixmerz/kernodb/tree/main/bindings/python)
-call for call (camelCase names, optional arguments in an options object).
+the package, and the API follows the [Python binding](https://github.com/Rixmerz/kernodb/tree/main/bindings/python)
+(camelCase names, optional arguments in an options object). Calls that one has and the other lacks are
+listed in the [coverage table](https://github.com/Rixmerz/kernodb/blob/main/docs/bindings-coverage.md).
+The guides [Kerno as a revisioned history next to another database](https://github.com/Rixmerz/kernodb/blob/main/docs/guides/history-alongside.md)
+and [one unit per entity, keyed by a logical key](https://github.com/Rixmerz/kernodb/blob/main/docs/guides/one-unit-per-entity.md)
+have Python examples. Every call they use exists here under its camelCase name (see the coverage table).
 
 > **Alpha: 1.0.0-alpha.2.** It does not open databases written by alpha.1 (see
 > [Upgrading](#upgrading-from-100-alpha1)). The keyword index is opt-in per type. The on-disk format v1 is frozen
@@ -68,7 +72,7 @@ Run it in a directory where `memory-db` does not exist yet, because the query co
 
 | Call | Returns |
 |---|---|
-| `open(path, { readOnly?, maxBatchOps? })` | a `Db`. The directory is created when missing. `readOnly` writes nothing to it (and does not create it); `maxBatchOps` sets the most operations one `commit` may hold (default 10,000). One handle holds a directory at a time, read-only opens included: a second `open` throws `LOCKED`. |
+| `open(path, { readOnly?, maxBatchOps? })` | a `Db`. The directory is created when missing. `readOnly` writes nothing to it, takes no lock, and does not create it, so it can run beside a writer (see `refresh`); `maxBatchOps` sets the most operations one `commit` may hold (default 10,000). One read-write handle holds a directory at a time: a second read-write `open` throws `LOCKED`. |
 | `db.close()` | nothing. Closing twice is fine; any other call afterwards throws `CLOSED`. |
 
 ### Units and relations
