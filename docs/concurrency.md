@@ -8,8 +8,10 @@ says which.
 
 Inside one process, any number of threads read while one thread writes: readers never wait for
 the writer and never see half of a commit. Writers take turns, so writes are serializable.
-Across processes, one process at a time owns a database directory, through an exclusive lock
-file: a second process is refused at once, it does not wait, and it cannot read either.
+Across processes, one process at a time writes a database directory, through an exclusive lock
+file: a second writer is refused at once, it does not wait. Any number of read-only processes read
+beside the writer, with no lock, and each sees a consistent committed state
+([ADR-0024](adr/0024-concurrent-read-only-opens.md)).
 
 ## Threads (one process)
 
@@ -57,20 +59,36 @@ says which.
 
 ## Processes
 
-One process at a time owns a database directory. Opening takes an exclusive advisory lock
-(`flock`) on the file `LOCK` in the directory, and the lock is held until the `Db` is closed or
-dropped.
+One process at a time **writes** a database directory. A read-write open takes an exclusive
+advisory lock (`flock`) on the file `LOCK` in the directory, and the lock is held until the `Db`
+is closed or dropped. A read-only open (`Config { access: AccessMode::ReadOnly, .. }`) takes **no**
+lock: any number of reader processes read beside the writer and beside each other.
 
 | Situation | Result |
 |---|---|
-| A second process opens a directory another process holds, read-write **or read-only** | `Error::Locked` at once (`Error::is_locked()`). It does not wait. |
-| A second `Db` in the same process | `Error::Locked`, for the same reason. Share one `Db`. |
-| `verify` or `inspect` on an open database | `Error::Locked`. |
+| A second process opens, read-write, a directory another process holds | `Error::Locked` at once (`Error::is_locked()`). It does not wait. |
+| A process opens a directory another process writes, read-only | It opens at once and reads the commits the writer had written when the open read the files. It never blocks the writer. |
+| A second read-write `Db` in the same process | `Error::Locked`, for the same reason. Share one `Db`. |
+| `verify` or `inspect` on an open database | `Error::Locked`. They are for a store nobody writes. |
 | The owner exits, crashes or is killed (`kill -9`) | The operating system releases the lock with the process. The next open recovers the database from its log: every commit that returned is there. |
 
-**Many processes, one at a time.** The lock file is what makes it safe to start several
-processes against one directory: each one gets in alone, and none sees a half-finished state. To
-share a database between processes, retry on `is_locked()` (with a short sleep and a deadline),
+**Readers.** A read-only open reads the `MANIFEST`, the tables it names and the live logs, and
+replays the logs in memory. It writes nothing: no `LOCK`, no recovery, no deletion. The state it
+reads is a prefix of the writer's commits: whole change sets only, never half of one. If the
+writer flushes, compacts or checkpoints while the read runs, the read starts again (for up to 30
+seconds in all); damage that is still there after a read is reported at once, never skipped or
+repaired. Tables the reader holds open stay readable after the writer deletes them.
+
+A reader sees the commits the writer has *written* to its log, durable or not
+(`Durability::Buffered` commits are visible once they are in the page cache): it does not wait for
+the writer's `fsync`. Its handle is a view of one moment. To move it to newer commits, call
+`KernoDb::refresh()` on the engine handle (`kerno-storage`): it returns the sequence it now reads,
+and snapshots taken before keep their own state. The `kerno::Db` facade and a `UnitDb` over a
+read-only engine have no refresh of their own: reopen them to see newer commits.
+
+**Writers, one at a time.** The lock file is what makes it safe to start several writer processes
+against one directory: each one gets in alone, and none sees a half-finished state. To share a
+database between writer processes, retry on `is_locked()` (with a short sleep and a deadline),
 open, work, close:
 
 ```rust
@@ -89,15 +107,14 @@ and the `kerno` CLI reports the same refusal when a server holds the database.
 
 ### What is not supported
 
-- **Readers in other processes while a process has the database open.** A read-only open takes
-  the same exclusive lock, so it is refused too. Many reader *processes* at the same time would
-  need a shared lock in the file-system layer and a way for a reader to survive the owner
-  deleting the files that compaction replaces. Neither exists today.
 - **A second writer process at the same time.** There is no multi-writer mode: not across
   threads, not across processes.
-- **Network file systems.** The lock is an advisory `flock`. Its behaviour on NFS and similar
-  file systems varies, and nothing here has been tested on them: keep the directory on a local
-  disk.
+- **A reader that outruns a writer for 30 seconds.** A writer that changes the files faster than a
+  read can catch up starves the reader: its open fails with the last error, and a file it raced
+  is reported as `Io(NotFound)`, which is not damage.
+- **Network file systems.** The lock is an advisory `flock`, and a reader relies on the listing
+  and the sizes of the files being current. Their behaviour on NFS and similar file systems
+  varies, and nothing here has been tested on them: keep the directory on a local disk.
 
 ## Tests
 
@@ -107,10 +124,12 @@ and the `kerno` CLI reports the same refusal when a server holds the database.
 | A snapshot is a fixed view: no later update, no phantom | `a_snapshot_is_a_fixed_view` |
 | Writers are serial: no lost update, each state is read once, consecutive commit sequences | `writers_are_serial_and_lose_no_update` (4 threads, read-modify-write) |
 | An open change set blocks other writers and does not block readers | `a_writer_waits_for_the_open_change_set_and_readers_do_not` |
-| A second process is refused at once, read-write and read-only, until the owner closes | `a_second_process_gets_locked_until_the_first_closes` |
+| A second process is refused at once when it opens read-write, a read-only one reads beside the owner, and the next open after it closes finds what it stored | `a_second_process_gets_locked_until_the_first_closes` |
+| A writer process that commits 10-key batches, flushes and compacts, and reader processes: whole batches only, sequences that never go back, a second writer refused | `crates/kerno-storage/tests/read_only_processes.rs` |
+| A read-only open takes no lock, refreshes to newer commits, reads again while a writer replaces every table, and reports damage without retrying | `read_only_takes_no_lock`, `read_only_refreshes_to_newer_commits`, `read_only_open_reads_again_when_the_writer_changes_the_files`, `read_only_open_reports_damage_without_retrying` (`crates/kerno-storage/tests/read_only.rs`) |
 | A killed owner releases the lock and its commits survive | `a_killed_process_releases_the_lock` |
 | Processes that start together take turns through the lock file and lose no commit | `processes_take_turns_through_the_lock_file` (4 processes) |
-| The lock also refuses `verify` and `inspect`, and goes away with a killed process | `crates/kerno-storage/tests/process_lock.rs` |
+| The lock refuses a second writer, `verify` and `inspect`, and goes away with a killed process | `crates/kerno-storage/tests/process_lock.rs` |
 | The engine's write transactions exclude each other and read the latest committed state; concurrent writers form one group commit and publish in order | `crates/kerno-storage/tests/txn.rs`, `crates/kerno-storage/tests/group_commit.rs` |
 | A second `Db` in the same process is refused | `a_second_handle_in_the_same_process_gets_locked` |
 | `kill -9` of a writer with concurrent writer threads loses no acknowledged commit | `crates/kerno-storage/tests/process_kill.rs` |

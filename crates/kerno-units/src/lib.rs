@@ -127,6 +127,6 @@ pub use vector_store::{
     VectorDescriptor, VectorRecipe, VectorSpec, VectorState,
 };
 pub use verify::{
-    CrossRule, UnitVerifyReport, VerifyCounts, VerifyFinding, VerifyRule, verify_engine, verify_immutable,
-    verify_snapshot,
+    CrossRule, DamagedSpan, UnitVerifyReport, VerifyCounts, VerifyFinding, VerifyRule, damaged_spans, verify_engine,
+    verify_immutable, verify_snapshot,
 };

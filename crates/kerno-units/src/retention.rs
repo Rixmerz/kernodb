@@ -48,6 +48,16 @@
 //!   a [`crate::UnitSnapshot`] taken before it keeps its whole history.
 //!   Logical deletion is not physical deletion (§5.3): the bytes stay until
 //!   the engine compacts them and no snapshot needs them.
+//! * **Deleted units give their space back (`compact`).** Retention never
+//!   touches the payloads of a deleted unit under `KeepAll`, and delete only
+//!   writes a tombstone, so without more a deleted store would keep every
+//!   byte it ever held. [`UnitDb::compact`] drops the payload of every
+//!   revision of every deleted unit (head = `Delete` tombstone) that no
+//!   retention policy keeps, and keeps each `REV_META` and the tombstone:
+//!   the trail of what existed (hash, length, kind, times) outlives the
+//!   content. [`UnitDb::compact_keeping`] takes the policy whose rules say
+//!   which payloads stay; `compact` is `compact_keeping` with a policy that
+//!   keeps none. Live units are never touched by it.
 //! * **Damage is never "nothing to do".** A missing or out-of-order
 //!   `REV_META` inside `[oldest_rev, head_rev]` is `Storage(Corruption)`.
 
@@ -60,7 +70,7 @@ use kerno_core::contract::{Reclaim, Txn, TxnEngine};
 use crate::codec::{Key, LAYER_MARK_NAME, RevisionMeta, TAG_LAYER_META, TAG_REV_META, TAG_REV_PAYLOAD, UnitHead};
 use crate::db::{ChangeSet, CommitInfo, UnitDb, Write, context, corruption, key};
 use crate::error::UnitError;
-use crate::types::{CommitSeq, HistoryPolicy, RevNo, RevisionKind, Timestamp, UnitId};
+use crate::types::{CommitSeq, HistoryPolicy, Lifecycle, RevNo, RevisionKind, Timestamp, UnitId};
 
 /// How much history of a unit type retention keeps (design §5.2).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -189,6 +199,8 @@ pub struct RetentionReport {
 pub struct CompactReport {
     pub stored_bytes_before: Option<u64>,
     pub stored_bytes_after: Option<u64>,
+    /// Payloads of deleted units dropped by this call.
+    pub payloads_dropped: u64,
 }
 
 impl CompactReport {
@@ -332,6 +344,43 @@ fn retained_metas(
     }
 }
 
+/// What a pass of [`UnitDb::run_pass`] does to a unit.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pass {
+    /// Retention: prune what the rules and the history policy say.
+    Retention,
+    /// [`UnitDb::compact`]: drop the payloads of the revisions of deleted
+    /// units, except the ones the rules keep (`keep_nothing`: none are kept).
+    DeletedPayloads { keep_nothing: bool },
+}
+
+/// What a [`Pass::DeletedPayloads`] does to `unit`: nothing unless it is
+/// deleted; else every payload below the revision the rule keeps from, the
+/// whole history when nothing is kept. The `REV_META` of each stays (hash,
+/// length, kind, times), as after an `Audit` period.
+fn plan_deleted(
+    scan: &ScanFn<'_>,
+    unit: UnitId,
+    head: &UnitHead,
+    policy: HistoryPolicy,
+    rule: RetentionRule,
+    keep_nothing: bool,
+    now: Timestamp,
+) -> Result<Option<UnitPlan>, UnitError> {
+    if head.lifecycle != Lifecycle::Deleted || head.oldest_rev == head.head_rev {
+        return Ok(None);
+    }
+    let metas = retained_metas(scan, unit, head)?;
+    let k = if keep_nothing { head.head_rev } else { keep_from(&metas, head, policy, rule, now) };
+    let i = (k.0 - head.oldest_rev.0) as usize;
+    let drops: Vec<(RevNo, RevisionMeta)> =
+        metas[..i].iter().filter(|(_, m, _)| m.payload_present).map(|(r, m, _)| (*r, m.clone())).collect();
+    if drops.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(UnitPlan { keep_from: head.oldest_rev, keep_kind: metas[0].1.kind, pruned: 0, pruned_bytes: 0, drops }))
+}
+
 /// What retention does to `unit`, or `None` when nothing.
 fn plan_unit(
     scan: &ScanFn<'_>,
@@ -339,8 +388,12 @@ fn plan_unit(
     head: &UnitHead,
     policy: HistoryPolicy,
     rule: RetentionRule,
+    pass: Pass,
     now: Timestamp,
 ) -> Result<Option<UnitPlan>, UnitError> {
+    if let Pass::DeletedPayloads { keep_nothing } = pass {
+        return plan_deleted(scan, unit, head, policy, rule, keep_nothing, now);
+    }
     let idle = match policy {
         HistoryPolicy::Versioned => rule == RetentionRule::KeepAll,
         HistoryPolicy::None => head.oldest_rev == head.head_rev,
@@ -397,15 +450,19 @@ fn replan_unit(
     head: UnitHead,
     policy: HistoryPolicy,
     rule: RetentionRule,
+    pass: Pass,
     now: Timestamp,
     policy_moved: bool,
 ) -> Result<Option<Planned>, UnitError> {
     let unit = prev.unit;
-    let plan = if !policy_moved && head.oldest_rev == prev.head.oldest_rev && head.head_rev > prev.head.head_rev {
+    let grew = !policy_moved && head.oldest_rev == prev.head.oldest_rev && head.head_rev > prev.head.head_rev;
+    // Only a retention plan can meet a unit that grew: a deletion plan is made for a deleted unit,
+    // and a deleted unit takes no new revision (`UnitError::Deleted`).
+    let plan = if grew {
         Some(prev.plan)
     } else {
         // A unit's type never changes after it is created, so the rule is the same.
-        plan_unit(scan, unit, &head, policy, rule, now)?
+        plan_unit(scan, unit, &head, policy, rule, pass, now)?
     };
     Ok(plan.map(|plan| Planned { unit, raw_head: raw, head, plan }))
 }
@@ -431,6 +488,20 @@ impl<E: TxnEngine> UnitDb<E> {
         policy: &RetentionPolicy,
         budget: RetentionBudget,
     ) -> Result<RetentionReport, UnitError> {
+        self.run_pass(policy, budget, Pass::Retention, None).map(|(report, _)| report)
+    }
+
+    /// One bounded pass over the units. Returns the report and where an
+    /// incomplete pass stopped (the `UNIT_HEAD` key to resume from). A
+    /// retention pass resumes from the cursor in the handle; any other pass
+    /// from `resume` and leaves the cursor alone.
+    fn run_pass(
+        &self,
+        policy: &RetentionPolicy,
+        budget: RetentionBudget,
+        pass: Pass,
+        resume: Option<Vec<u8>>,
+    ) -> Result<(RetentionReport, Option<Vec<u8>>), UnitError> {
         self.check_poisoned()?;
         policy.validate()?;
         if budget.max_units == 0 || budget.max_ops < 4 {
@@ -445,7 +516,7 @@ impl<E: TxnEngine> UnitDb<E> {
         // Pacing counts all the work of the call (planning on the snapshot
         // included), not only the time under the slot.
         let mut busy = std::time::Instant::now();
-        let taken = cursor.take();
+        let taken = if pass == Pass::Retention { cursor.take() } else { None };
         let mut report = RetentionReport { complete: true, ..RetentionReport::default() };
         // The policy epoch before the snapshot: a policy committed after it
         // is caught by the check under the write slot.
@@ -456,11 +527,12 @@ impl<E: TxnEngine> UnitDb<E> {
         if kerno_core::contract::Snapshot::get(&snap, &mark)?.is_none() {
             // No layer mark: nothing the layer wrote, nothing to prune
             // (a store with foreign keys fails at open).
-            return Ok(report);
+            return Ok((report, None));
         }
         let now = self.config().clock.now();
-        let resumable = !has_keep_for(policy);
-        let resume = taken.filter(|c| resumable && c.epoch == epoch && c.policy == *policy).map(|c| c.resume);
+        let resumable = pass == Pass::Retention && !has_keep_for(policy);
+        let resume =
+            resume.or_else(|| taken.filter(|c| resumable && c.epoch == epoch && c.policy == *policy).map(|c| c.resume));
 
         // Phase 1, without the write slot: read the heads from the resume
         // point on and plan every unit on the snapshot.
@@ -493,7 +565,8 @@ impl<E: TxnEngine> UnitDb<E> {
                         p
                     }
                 };
-                let Some(plan) = plan_unit(&snap_scan, unit, &head, hp, policy.rule(&head.unit_type), now)? else {
+                let Some(plan) = plan_unit(&snap_scan, unit, &head, hp, policy.rule(&head.unit_type), pass, now)?
+                else {
                     from = k;
                     inclusive = false;
                     continue;
@@ -564,7 +637,7 @@ impl<E: TxnEngine> UnitDb<E> {
                 let txn = cs.txn()?;
                 let txn_scan = |a: Bound<&[u8]>, b: Bound<&[u8]>, n: usize| txn.scan(a, b, n);
                 let rule = policy.rule(&head.unit_type);
-                current.extend(replan_unit(&txn_scan, p, raw, head, hp, rule, now, policy_moved)?);
+                current.extend(replan_unit(&txn_scan, p, raw, head, hp, rule, pass, now, policy_moved)?);
             }
             let chunk = current;
             // The budget again, in case a unit planned again needs more.
@@ -626,13 +699,13 @@ impl<E: TxnEngine> UnitDb<E> {
                 break 'chunks;
             }
         }
-        if let Some(k) = stop {
+        if let Some(k) = &stop {
             report.complete = false;
             if resumable {
-                *cursor = Some(RetentionCursor { policy: policy.clone(), epoch, resume: k });
+                *cursor = Some(RetentionCursor { policy: policy.clone(), epoch, resume: k.clone() });
             }
         }
-        Ok(report)
+        Ok((report, stop))
     }
 }
 
@@ -699,23 +772,67 @@ fn unit_writes(p: &Planned, take: usize) -> Result<Vec<Write>, UnitError> {
 }
 
 impl<E: TxnEngine + Reclaim> UnitDb<E> {
-    /// Asks the engine to compact the revision ranges (`REV_META` and
-    /// `REV_PAYLOAD`, design §5.1) so that what retention deleted leaves the
-    /// live files. It delegates to the engine's public directed compaction
+    /// Frees the space of deleted units and compacts the revision ranges.
+    ///
+    /// **The rule.** A unit whose head is a `Delete` tombstone has no use for
+    /// its revisions' payloads: nothing reads them but `history` and as-of
+    /// reads of its past, and a deleted unit cannot be restored. `compact`
+    /// therefore drops the `REV_PAYLOAD` of **every** revision of every
+    /// deleted unit, in `Retention` change sets (deferred durability, see
+    /// [`UnitDb::run_retention`]), whatever the unit's history policy: under
+    /// `Versioned` they were all kept, under `Audit` and `None` there is
+    /// nothing left to drop. What stays is the trail: each `REV_META` (hash,
+    /// length, kind, times, change set) and the tombstone, as after an
+    /// `Audit` period (`payload_present = 0`), so `verify_units` stays clean
+    /// and the unit's history lists its revisions without their content: an
+    /// as-of read of one of them answers [`UnitError::HistoryUnavailable`].
+    /// A caller that must keep the payloads of deleted units calls
+    /// [`UnitDb::compact_keeping`] with the rules that say which.
+    ///
+    /// Then it asks the engine to compact the revision ranges (`REV_META` and
+    /// `REV_PAYLOAD`, design §5.1) so that what was deleted leaves the live
+    /// files. It delegates to the engine's public directed compaction
     /// ([`Reclaim::compact_range`], the same call [`UnitDb::reclaim`] makes
     /// over the whole key space); an engine without it answers its own error
     /// (`InvalidArgument("unsupported")`). What a snapshot still sees stays
-    /// (I-05).
+    /// (I-05). Unlike `reclaim`, it commits change sets (one per 16 units
+    /// with something to drop, paced like retention) and reports how many
+    /// payloads it dropped. Cost: one read of the heads of all units, and of
+    /// the `REV_META` of each deleted one.
     pub fn compact(&self) -> Result<CompactReport, UnitError> {
+        self.compact_with(&RetentionPolicy::default(), true)
+    }
+
+    /// [`UnitDb::compact`], except that the payloads a retention policy keeps
+    /// stay: for a deleted unit of type `T`, the revisions that `policy.rule(T)`
+    /// keeps (as [`UnitDb::run_retention`] decides it: all of them under
+    /// `KeepAll`, the newest `n` and the revision before the tombstone under
+    /// `KeepLast(n)`, and so on; none under history policy `None`). The rest
+    /// of the payloads of deleted units go.
+    pub fn compact_keeping(&self, policy: &RetentionPolicy) -> Result<CompactReport, UnitError> {
+        self.compact_with(policy, false)
+    }
+
+    fn compact_with(&self, policy: &RetentionPolicy, keep_nothing: bool) -> Result<CompactReport, UnitError> {
         self.check_poisoned()?;
         let before = stored_bytes(&self.storage_stats());
+        let pass = Pass::DeletedPayloads { keep_nothing };
+        let (mut payloads_dropped, mut resume) = (0, None);
+        loop {
+            let (report, stop) = self.run_pass(policy, RetentionBudget::default(), pass, resume)?;
+            payloads_dropped += report.payloads_dropped;
+            if report.complete {
+                break;
+            }
+            resume = stop;
+        }
         Reclaim::compact_range(
             self.inner_engine(),
             Bound::Included(&[TAG_REV_META]),
             Bound::Excluded(&[TAG_REV_PAYLOAD + 1]),
         )?;
         let after = stored_bytes(&self.storage_stats());
-        Ok(CompactReport { stored_bytes_before: before, stored_bytes_after: after })
+        Ok(CompactReport { stored_bytes_before: before, stored_bytes_after: after, payloads_dropped })
     }
 }
 
@@ -740,7 +857,7 @@ mod tests {
 
     #[test]
     fn report_reclaimed() {
-        let r = CompactReport { stored_bytes_before: Some(10), stored_bytes_after: Some(4) };
+        let r = CompactReport { stored_bytes_before: Some(10), stored_bytes_after: Some(4), payloads_dropped: 0 };
         assert_eq!(r.bytes_reclaimed(), Some(6));
         assert_eq!(CompactReport { stored_bytes_after: None, ..r }.bytes_reclaimed(), None);
         assert_eq!(CompactReport { stored_bytes_after: Some(11), ..r }.bytes_reclaimed(), Some(0));
@@ -795,7 +912,12 @@ mod tests {
     /// `unit` planned from scratch, as on the snapshot of a pass.
     fn plan_now(db: &Db, unit: UnitId, hp: HistoryPolicy, rule: RetentionRule) -> Option<Planned> {
         planned_now(db, unit, |s, raw_head, head| {
-            Ok(plan_unit(s, unit, &head, hp, rule, NOW)?.map(|plan| Planned { unit, raw_head, head, plan }))
+            Ok(plan_unit(s, unit, &head, hp, rule, Pass::Retention, NOW)?.map(|plan| Planned {
+                unit,
+                raw_head,
+                head,
+                plan,
+            }))
         })
         .0
     }
@@ -808,7 +930,9 @@ mod tests {
         rule: RetentionRule,
         policy_moved: bool,
     ) -> (Option<Planned>, usize) {
-        planned_now(db, prev.unit, |s, raw, head| replan_unit(s, prev.clone(), raw, head, hp, rule, NOW, policy_moved))
+        planned_now(db, prev.unit, |s, raw, head| {
+            replan_unit(s, prev.clone(), raw, head, hp, rule, Pass::Retention, NOW, policy_moved)
+        })
     }
 
     const NOW: Timestamp = Timestamp(1_700_000_000_000_000);

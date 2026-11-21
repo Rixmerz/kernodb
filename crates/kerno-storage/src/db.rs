@@ -2,6 +2,7 @@
 //! threads (or their inline equivalent), snapshots and clean shutdown.
 
 use std::any::Any;
+use std::collections::HashMap;
 use std::io;
 use std::ops::Bound;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -1772,6 +1773,92 @@ fn not_ours(e: &io::Error) -> bool {
     matches!(e.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem | io::ErrorKind::Unsupported)
 }
 
+/// How long a lock-free read keeps starting again while the directory keeps
+/// changing under it, before it gives up with the last error. A count of
+/// attempts would not do: how many a read needs depends on how fast the
+/// writer is against the machine (a writer that flushes every few
+/// milliseconds made 44 of 64 necessary once).
+const READ_VIEW_PATIENCE: Duration = Duration::from_secs(30);
+
+/// What a read-only handle reads: one committed state, built without writing
+/// and without a lock.
+struct ReadView {
+    loaded: manifest::Loaded,
+    plan: recovery::Plan,
+    ctx: Arc<TableCtx>,
+    levels: Levels,
+    table_ro_compat: Option<(String, u64)>,
+    mem: Memtable,
+    last_seq: u64,
+}
+
+/// What a writer's work shows in the directory: the files present and the
+/// size of the MANIFEST. A flush, a compaction, a rotation and a checkpoint
+/// each change it; a commit does not (it only grows a WAL).
+fn fingerprint(vfs: &dyn Vfs, dir: &Path) -> Result<(recovery::Listing, u64)> {
+    let listing = list_dir(vfs, dir)?;
+    let len = match vfs.open(&dir.join(MANIFEST), kerno_core::vfs::OpenMode::Existing) {
+        Ok(f) => f.len()?,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => 0,
+        Err(e) => return Err(e.into()),
+    };
+    Ok((listing, len))
+}
+
+/// One read of the directory: the MANIFEST, the tables it names (taking
+/// `reuse`'s where it has them) and the live WALs replayed in memory.
+fn read_view_once(
+    vfs: &Arc<dyn Vfs>,
+    dir: &Path,
+    ctx_for: &dyn Fn([u8; 16]) -> Result<Arc<TableCtx>>,
+    reuse: &mut HashMap<u64, Arc<Table>>,
+) -> Result<ReadView> {
+    let listing = list_dir(&**vfs, dir)?;
+    if !listing.has_manifest {
+        return Err(refuse_without_manifest(&listing).unwrap_or_else(|| no_database(dir)));
+    }
+    let (loaded, plan) = recovery::plan(&**vfs, dir, &listing)?;
+    let ctx = ctx_for(loaded.replay.header.db_id)?;
+    let state = &loaded.replay.state;
+    let (levels, table_ro_compat) = recovery::open_tables_reusing(&ctx, state, reuse)?;
+    let (mem, last_seq) = recovery::replay_in_memory(&ctx, &plan, loaded.replay.header.db_id, state)?;
+    Ok(ReadView { loaded, plan, ctx, levels, table_ro_compat, mem, last_seq })
+}
+
+/// [`read_view_once`] for a directory a writer may be changing. A table
+/// deleted, a log rotated or a MANIFEST replaced between two of its reads
+/// shows as an error (or as a state that does not add up), so an error
+/// counts as damage only if the files and the MANIFEST are the same after it
+/// as before it; if they changed, the read starts again. Damage that stays
+/// is therefore reported as the first read found it, never skipped (strict
+/// detection), and a directory nobody writes costs one read.
+fn read_view(
+    vfs: &Arc<dyn Vfs>,
+    dir: &Path,
+    ctx_for: &dyn Fn([u8; 16]) -> Result<Arc<TableCtx>>,
+    reuse: &HashMap<u64, Arc<Table>>,
+) -> Result<ReadView> {
+    // Tables opened by an attempt that failed stay open for the next one (a
+    // file that was opened cannot vanish under the reader), so each retry
+    // opens only what the writer made since: the work of a retry shrinks to
+    // the writer's progress instead of repeating the whole open.
+    let mut opened = reuse.clone();
+    let started = Instant::now();
+    loop {
+        let before = fingerprint(&**vfs, dir)?;
+        match read_view_once(vfs, dir, ctx_for, &mut opened) {
+            Ok(view) => return Ok(view),
+            Err(e) => {
+                let changed = fingerprint(&**vfs, dir).is_ok_and(|after| after != before);
+                if !changed || started.elapsed() >= READ_VIEW_PATIENCE {
+                    return Err(e);
+                }
+                std::thread::yield_now();
+            }
+        }
+    }
+}
+
 impl KernoDb {
     /// Opens the database stored in `dir` (creating it if `dir` holds none
     /// and `cfg.create_if_missing` is set), running crash recovery if the
@@ -1781,10 +1868,20 @@ impl KernoDb {
     /// version or feature, damage) is checked before the first write. Only
     /// creating the database directory and its `LOCK` come before the lock.
     ///
-    /// With [`AccessMode::ReadOnly`], or when a file has `ro_compat` bits
-    /// this engine does not know, the handle only reads (v1.md §9.5): it
-    /// takes the exclusive `LOCK`, replays the live WALs in memory and
-    /// changes nothing else.
+    /// With [`AccessMode::ReadOnly`] the handle only reads and takes **no
+    /// lock**: any number of read-only handles, in any number of processes,
+    /// open the directory while one writer holds the exclusive `LOCK`. It
+    /// reads the MANIFEST and the tables it names, replays the live WALs in
+    /// memory (the commits the writer has written so far, durable or not)
+    /// and changes nothing; [`refresh`](KernoDb::refresh) moves it to newer
+    /// commits. If the writer flushes or compacts during the open the open
+    /// reads again, so it sees one consistent state, and it fails only on
+    /// damage that does not change between two reads (ADR in
+    /// `DESIGN.md`, "Concurrent read-only handles").
+    ///
+    /// When a file has `ro_compat` bits this engine does not know, a
+    /// read-write open takes the `LOCK`, replays in memory and only reads
+    /// too (v1.md §9.5).
     pub fn open(vfs: Arc<dyn Vfs>, dir: &Path, cfg: &Config) -> Result<KernoDb> {
         cfg.validate(vfs.is_platform_backed())?;
         let requested_read_only = cfg.access == AccessMode::ReadOnly;
@@ -1806,37 +1903,54 @@ impl KernoDb {
             vfs.create_dir_all(dir)?;
             sync_dir_entries(&*vfs, dir, &created, true)?;
         }
-        let lock = vfs.lock(&dir.join("LOCK")).map_err(|e| match e.kind() {
-            io::ErrorKind::WouldBlock => Error::Locked,
-            _ => Error::Io(e),
-        })?;
-        // Under the lock the directory cannot change: this listing is the
-        // one recovery works from.
-        let mut listing = list_dir(&*vfs, dir)?;
-        if !listing.has_manifest {
-            if let Some(e) = refuse_without_manifest(&listing) {
-                return Err(e);
-            }
-            if requested_read_only || !cfg.create_if_missing {
-                return Err(no_database(dir));
-            }
-            manifest::create(&*vfs, dir, cfg.test.db_id.unwrap_or_else(new_db_id))?;
-            listing.has_manifest = true;
-        }
-        // S-1: classify and validate everything, writing nothing.
-        let (loaded, plan) = recovery::plan(&*vfs, dir, &listing)?;
-        let db_id = loaded.replay.header.db_id;
         let stats = Arc::new(Stats::default());
-        let deleter = Deleter::inline(vfs.clone(), stats.clone());
-        let ctx = Arc::new(
-            TableCtx::new(vfs.clone(), dir.to_path_buf(), cfg.cache_bytes, stats.clone(), BLOCK_SIZE)
-                .with_bytes_per_sync(cfg.compaction.bytes_per_sync)
-                .with_bytes_per_writeback(cfg.compaction.bytes_per_writeback)
-                .with_db_id(db_id)
-                .with_block_compression(cfg.block_compression)
-                .with_deleter(deleter),
-        );
-        let (levels, table_ro_compat) = recovery::open_tables(&ctx, &loaded.replay.state)?;
+        let make_ctx = |db_id: [u8; 16]| {
+            Arc::new(
+                TableCtx::new(vfs.clone(), dir.to_path_buf(), cfg.cache_bytes, stats.clone(), BLOCK_SIZE)
+                    .with_bytes_per_sync(cfg.compaction.bytes_per_sync)
+                    .with_bytes_per_writeback(cfg.compaction.bytes_per_writeback)
+                    .with_db_id(db_id)
+                    .with_block_compression(cfg.block_compression)
+                    .with_deleter(Deleter::inline(vfs.clone(), stats.clone())),
+            )
+        };
+        // A read-only open holds no lock: the writer may change the directory
+        // while it reads, and `read_view` reads again when it does.
+        let (lock, view): (Box<dyn Any + Send + Sync>, Option<ReadView>) = if requested_read_only {
+            let ctx = std::cell::OnceCell::new();
+            let view = read_view(&vfs, dir, &|db_id| Ok(ctx.get_or_init(|| make_ctx(db_id)).clone()), &HashMap::new())?;
+            (Box::new(()), Some(view))
+        } else {
+            let lock = vfs.lock(&dir.join("LOCK")).map_err(|e| match e.kind() {
+                io::ErrorKind::WouldBlock => Error::Locked,
+                _ => Error::Io(e),
+            })?;
+            (lock, None)
+        };
+        let (loaded, plan, ctx, levels, table_ro_compat, replayed) = match view {
+            Some(v) => (v.loaded, v.plan, v.ctx, v.levels, v.table_ro_compat, Some((v.mem, v.last_seq))),
+            None => {
+                // Under the lock the directory cannot change: this listing is
+                // the one recovery works from.
+                let mut listing = list_dir(&*vfs, dir)?;
+                if !listing.has_manifest {
+                    if let Some(e) = refuse_without_manifest(&listing) {
+                        return Err(e);
+                    }
+                    if !cfg.create_if_missing {
+                        return Err(no_database(dir));
+                    }
+                    manifest::create(&*vfs, dir, cfg.test.db_id.unwrap_or_else(new_db_id))?;
+                    listing.has_manifest = true;
+                }
+                // S-1: classify and validate everything, writing nothing.
+                let (loaded, plan) = recovery::plan(&*vfs, dir, &listing)?;
+                let ctx = make_ctx(loaded.replay.header.db_id);
+                let (levels, table_ro_compat) = recovery::open_tables(&ctx, &loaded.replay.state)?;
+                (loaded, plan, ctx, levels, table_ro_compat, None)
+            }
+        };
+        let db_id = loaded.replay.header.db_id;
         let read_only = if requested_read_only {
             Some(ReadOnlyReason::Requested)
         } else {
@@ -1848,7 +1962,10 @@ impl KernoDb {
         let wal_prealloc = if cfg.wal_preallocate && read_only.is_none() { tuning.write_buffer as u64 } else { 0 };
         let floor = CHECKPOINT_FLOOR;
         let (levels, last_seq, log_number, next_file, wal, manifest_writer, mem) = if read_only.is_some() {
-            let (mem, last_seq) = recovery::replay_in_memory(&ctx, &plan, db_id, &loaded.replay.state)?;
+            let (mem, last_seq) = match replayed {
+                Some(r) => r,
+                None => recovery::replay_in_memory(&ctx, &plan, db_id, &loaded.replay.state)?,
+            };
             let writer = loaded.writer(floor);
             let state = &loaded.replay.state;
             (levels, last_seq, state.log_number, plan.next_file, WalWriter::read_only(0), writer, Arc::new(mem))
@@ -1931,6 +2048,53 @@ impl KernoDb {
     /// does not know (v1.md HDR-7).
     pub fn is_read_only(&self) -> Option<ReadOnlyReason> {
         self.inner.read_only.clone()
+    }
+
+    /// Moves a read-only handle to the newest commits in the directory and
+    /// returns the sequence it now reads. Snapshots taken before keep their
+    /// own state. It reads the way [`open`](KernoDb::open) does (no lock, no
+    /// write, read again if the writer changes the files meanwhile) and
+    /// opens only the tables it has not seen.
+    ///
+    /// `InvalidArgument` unless the handle was opened with
+    /// [`AccessMode::ReadOnly`] (a read-write handle is always current, and
+    /// one that is read-only for an unknown `ro_compat` bit holds the
+    /// `LOCK`, so nothing changes under it). `Corruption` if the directory
+    /// now holds another database. A commit the writer never made durable
+    /// may be gone after a crash of the writer, so the sequence can go down.
+    pub fn refresh(&self) -> Result<u64> {
+        let inner = &*self.inner;
+        if inner.read_only != Some(ReadOnlyReason::Requested) {
+            return Err(Error::InvalidArgument("refresh needs a handle opened with AccessMode::ReadOnly".into()));
+        }
+        inner.check_poisoned()?;
+        // One refresh at a time; a read-only handle uses this lock for nothing else.
+        let _one = inner.manifest.lock();
+        let current = inner.state.lock().version.clone();
+        let reuse: HashMap<u64, Arc<Table>> = current.levels.iter().flatten().map(|t| (t.number, t.clone())).collect();
+        let db_id = inner.ctx.db_id;
+        let view = read_view(
+            &inner.vfs,
+            &inner.dir,
+            &|id| {
+                if id == db_id {
+                    Ok(inner.ctx.clone())
+                } else {
+                    Err(Error::Corruption("the directory now holds another database (db_id changed)".into()))
+                }
+            },
+            &reuse,
+        )?;
+        bump_max(&inner.stats.l0_files_max, view.levels[0].len() as u64);
+        let version = Arc::new(Version { mem: Arc::new(view.mem), imms: Vec::new(), levels: view.levels });
+        let old = {
+            let mut st = inner.state.lock();
+            st.last_seq = view.last_seq;
+            st.durable_seq = view.last_seq;
+            std::mem::replace(&mut st.version, version)
+        };
+        drop(old);
+        Ok(view.last_seq)
     }
 
     /// The names of the files recovery found that nothing needs (orphans,

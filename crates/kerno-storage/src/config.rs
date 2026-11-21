@@ -22,12 +22,15 @@ pub enum AccessMode {
     /// Reads and writes.
     #[default]
     ReadWrite,
-    /// Reads only: the open takes the exclusive `LOCK`, classifies the
-    /// directory and replays the live WALs in memory, and never creates,
-    /// syncs, deletes or checkpoints anything (v1.md §9.5, RO-1..RO-3).
-    /// Writes fail with [`Error::ReadOnly`]. A database whose files carry
-    /// `ro_compat` bits this engine does not know opens like this even when
-    /// read-write was asked for.
+    /// Reads only: the open takes **no lock** (any number of readers, in any
+    /// number of processes, beside one writer), classifies the directory and
+    /// replays the live WALs in memory, and never creates, syncs, deletes or
+    /// checkpoints anything (v1.md §9.5, RO-2, RO-3). It sees one consistent
+    /// committed state; [`KernoDb::refresh`](crate::KernoDb::refresh) moves it
+    /// to newer commits. Writes fail with [`Error::ReadOnly`]. A database
+    /// whose files carry `ro_compat` bits this engine does not know opens
+    /// read-only even when read-write was asked for, and that open does take
+    /// the `LOCK`.
     ReadOnly,
 }
 
