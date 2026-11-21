@@ -11,10 +11,11 @@ use std::sync::RwLock;
 
 use kerno::units::assoc_rank::{VectorMetric, VectorSet};
 use kerno::units::hybrid::RRF_SCALE;
-use kerno::units::{Access, AsOf, HistoryQuery, Order, RevNo, RevisionKind, UnitAt};
+use kerno::units::{Access, AsOf, CommitSeq, HistoryQuery, Order, RevNo, RevisionKind, UnitAt};
 use kerno::{
     AccessMode, AssocQuery, Batch, CommitMeta, Config, Db, Direction, Document, Endpoint, FieldDef, FieldType,
-    FieldValue, HybridQuery, HybridWeights, Lifecycle, QueryPlan, RelationId, UnitFilter, UnitId, VectorLeg,
+    FieldValue, HybridQuery, HybridWeights, Lifecycle, QueryPlan, RelationId, RetentionPolicy, RetentionRule,
+    UnitFilter, UnitId, VectorLeg,
 };
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyValueError};
@@ -113,6 +114,40 @@ fn field_to_py<'py>(py: Python<'py>, v: &FieldValue) -> PyResult<Bound<'py, PyAn
         FieldValue::Text(t) => t.into_pyobject(py)?.into_any(),
         FieldValue::Bytes(b) => PyBytes::new(py, b).into_any(),
     })
+}
+
+/// A retention rule from its dict: exactly one of `keep_last` (a whole number), `keep_for`
+/// (seconds) or `keep_since` (a whole number). Every bad rule is a `ValueError`, never a
+/// truncated or wrapped-around number.
+fn retention_rule(rule: &Bound<'_, PyAny>) -> PyResult<RetentionRule> {
+    let bad =
+        || PyValueError::new_err("a retention rule is a dict with exactly one of keep_last, keep_for, keep_since");
+    let d = rule.cast::<PyDict>().map_err(|_| bad())?;
+    let Some((name, value)) = d.iter().next().filter(|_| d.len() == 1) else {
+        return Err(bad());
+    };
+    let name: String = name.extract().map_err(|_| bad())?;
+    // `True` is an int to Python; a rule never means it.
+    let number = !value.is_instance_of::<PyBool>();
+    let whole = || {
+        value
+            .extract::<u64>()
+            .ok()
+            .filter(|_| number && value.is_instance_of::<PyInt>())
+            .ok_or_else(|| PyValueError::new_err(format!("{name} must be a whole number, 0 or more, not {value}")))
+    };
+    match name.as_str() {
+        "keep_last" => whole().map(RetentionRule::KeepLast),
+        "keep_since" => whole().map(|s| RetentionRule::KeepSince(CommitSeq(s))),
+        "keep_for" => value
+            .extract::<f64>()
+            .ok()
+            .filter(|_| number)
+            .and_then(|secs| std::time::Duration::try_from_secs_f64(secs).ok())
+            .map(RetentionRule::KeepFor)
+            .ok_or_else(|| PyValueError::new_err(format!("keep_for is a number of seconds, 0 or more, not {value}"))),
+        _ => Err(bad()),
+    }
 }
 
 fn field_type(name: &str) -> PyResult<FieldType> {
@@ -562,6 +597,47 @@ impl Database {
         let d = PyDict::new(py);
         d.set_item("before", r.stored_bytes_before)?;
         d.set_item("after", r.stored_bytes_after)?;
+        Ok(d)
+    }
+
+    /// Prunes old revisions and returns what it removed: `{"units_retained", "revisions_pruned",
+    /// "payloads_dropped", "bytes_logically_freed", "commit_seq"}` (`commit_seq` is the last
+    /// retention commit, `None` when there was nothing to prune). `by_type` maps a unit type to
+    /// its rule and `default` is the rule of every other type; no rule keeps everything. A rule
+    /// is a dict with exactly one of `keep_last` (the newest N revisions, N >= 1), `keep_for`
+    /// (the revisions younger than that many seconds) or `keep_since` (what answers an as-of
+    /// read at that commit sequence or later). The head is always kept. Afterwards `history` from
+    /// a pruned revision and `read_as_of` before the oldest kept one raise `PrunedError`.
+    /// The policy is not stored: pass it each time. Idempotent.
+    #[pyo3(signature = (default=None, by_type=None))]
+    fn run_retention<'py>(
+        &self,
+        py: Python<'py>,
+        default: Option<Bound<'py, PyAny>>,
+        by_type: Option<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let mut policy = RetentionPolicy::all(default.map(|r| retention_rule(&r)).transpose()?.unwrap_or_default());
+        if let Some(by_type) = by_type {
+            let by_type = by_type
+                .cast::<PyDict>()
+                .map_err(|_| PyValueError::new_err("by_type is a dict of unit type to rule"))?;
+            for (unit_type, rule) in by_type.iter() {
+                let unit_type: String = unit_type
+                    .extract()
+                    .map_err(|_| PyValueError::new_err(format!("a unit type is a str, not {unit_type}")))?;
+                // `None` is no rule, as `default=None` is.
+                if !rule.is_none() {
+                    policy = policy.with_type(&unit_type, retention_rule(&rule)?);
+                }
+            }
+        }
+        let r = self.with_db(py, |db| db.run_retention(&policy).map_err(engine_error))?;
+        let d = PyDict::new(py);
+        d.set_item("units_retained", r.units_retained)?;
+        d.set_item("revisions_pruned", r.revisions_pruned)?;
+        d.set_item("payloads_dropped", r.payloads_dropped)?;
+        d.set_item("bytes_logically_freed", r.bytes_logically_freed)?;
+        d.set_item("commit_seq", r.change_set.map(|c| c.commit_seq.0))?;
         Ok(d)
     }
 

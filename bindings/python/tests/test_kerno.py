@@ -414,6 +414,73 @@ def test_find_range_orders_text_and_floats(tmp_path):
         assert [d["s"] for d in docs(db.find_range("m", "s", "b"))] == ["b", "c"]
 
 
+def test_run_retention_prunes_old_revisions(tmp_path):
+    with kerno.open(tmp_path / "db") as db:
+        note = db.store("note", "v1")
+        first_seq = db.last_commit_seq()
+        for i in range(2, 5):
+            db.update(note, f"v{i}")
+        log = db.store("log", "l1")
+        db.update(log, "l2")
+        before = db.last_commit_seq()
+
+        # Nothing is pruned before retention runs; a refused rule writes nothing.
+        assert db.read_as_of(note, first_seq).payload == b"v1"
+        bad_rules = (
+            {"keep_last": 0}, {}, {"keep_last": 1, "keep_for": 1.0}, {"keep_for": -1.0}, {"nope": 1},
+            {"keep_last": -1}, {"keep_last": 1.5}, {"keep_last": "2"}, {"keep_last": 2**70}, {"keep_last": True},
+            {"keep_last": None}, {"keep_since": -1}, {"keep_since": 1.5}, {"keep_for": "x"},
+            {"keep_for": float("nan")}, {"keep_for": float("inf")}, {"keep_for": True}, {1: 1}, 3, "keep_last",
+        )
+        for bad in bad_rules:
+            for call in (lambda: db.run_retention(by_type={"note": bad}), lambda: db.run_retention(default=bad)):
+                with pytest.raises((kerno.InvalidArgumentError, ValueError)):
+                    call()
+        for by_type in (3, ["note"], {1: {"keep_last": 1}}):
+            with pytest.raises(ValueError):
+                db.run_retention(by_type=by_type)
+        assert db.last_commit_seq() == before
+        # `None` is the same as no rule: nothing to prune.
+        assert db.run_retention(default=None, by_type={"note": None})["units_retained"] == 0
+        assert db.last_commit_seq() == before
+
+        # `note` keeps its newest two revisions; `log` has no rule and keeps everything.
+        report = db.run_retention(by_type={"note": {"keep_last": 2}})
+        assert (report["units_retained"], report["revisions_pruned"]) == (1, 2)
+        assert report["commit_seq"] == db.last_commit_seq()
+        assert db.read(note).oldest_revision == 3 and db.read(log).oldest_revision == 1
+        assert [r.revision for r in db.history(note)] == [4, 3]
+        with pytest.raises(kerno.PrunedError):
+            db.read_as_of(note, first_seq)
+        with pytest.raises(kerno.PrunedError):
+            db.history(note, from_revision=1)
+        with pytest.raises(kerno.PrunedError):
+            db.compare(note, 1, 4)
+        assert db.read(note).payload == b"v4"
+        assert db.verify()["clean"] is True
+
+        # Idempotent: a second run commits nothing.
+        seq = db.last_commit_seq()
+        again = db.run_retention(by_type={"note": {"keep_last": 2}})
+        assert (again["units_retained"], again["commit_seq"]) == (0, None)
+        assert db.last_commit_seq() == seq
+
+        # A duration rule on every type: 0 seconds keeps only the revision in force now.
+        db.run_retention(default={"keep_for": 0})
+        assert db.read(note).oldest_revision == 4 and db.read(log).oldest_revision == 2
+        assert db.verify()["clean"] is True
+
+        # `keep_since` keeps what answers as-of reads from that commit on.
+        other = db.store("memo", "m1")
+        mid = db.last_commit_seq()
+        db.update(other, "m2")
+        db.update(other, "m3")
+        db.run_retention(by_type={"memo": {"keep_since": mid}})
+        assert db.read(other).oldest_revision == 1
+        db.run_retention(by_type={"memo": {"keep_since": db.last_commit_seq()}})
+        assert db.read(other).oldest_revision == 3
+
+
 def test_history_bounds_and_order(tmp_path):
     with kerno.open(tmp_path / "db") as db:
         uid = db.store("note", "v1")

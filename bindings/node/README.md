@@ -129,11 +129,12 @@ const { units, commitSeq } = db.commit(
 
 | Call | Returns |
 |---|---|
-| `db.history(id, { limit?, withPayload? })` | the newest `limit` `Revision`s (default 100, at least 1), newest first; empty for an unknown id. `withPayload` reads and verifies each revision's content. |
+| `db.history(id, { limit?, withPayload?, fromRevision? })` | the newest `limit` `Revision`s (default 100, at least 1) from `fromRevision` on (default: the oldest kept), newest first; empty for an unknown id. `withPayload` reads and verifies each revision's content. A `fromRevision` retention pruned throws `PRUNED`. |
 | `db.readAsOf(id, commitSeq)` | the `Revision` in force once that commit committed (with its payload), or `null` when the unit did not exist yet. A deleted unit returns its tombstone. A sequence past the last commit reads the current state. Throws `PRUNED` when retention removed the revision. |
 | `db.lastCommitSeq()` | the sequence of the last commit (0 for an empty database) |
 | `db.refresh()` | on a `readOnly: true` database: pick up the commits a writer made since the open; returns the sequence now read |
 | `db.verify()` | `{ clean, commitSeq, units, revisions, relations, findings, findingsOmitted, storageError? }`. A damaged store is reported (`clean: false`), not thrown. |
+| `db.runRetention({ default?, byType? })` | prune old revisions; a rule is `{ keepLast }` (newest N), `{ keepFor }` (seconds) or `{ keepSince }` (commit sequence); returns `{ unitsRetained, revisionsPruned, payloadsDropped, bytesLogicallyFreed, commitSeq? }`. `readAsOf` of a pruned revision and `history` from one throw `PRUNED`; `history` lists what is kept. A bad rule throws `INVALID_ARGUMENT` and writes nothing; `null` is the same as no rule. The policy is not stored: pass it each time |
 | `db.compact()` | `{ before?, after? }`, the stored bytes around the compaction. History keeps deleted units' payloads, so it frees only what a retention policy dropped. |
 | `db.setFulltext(unitType, enabled)` | nothing. Turns keyword (BM25) indexing of a type on or off (off by default); its active units are indexed or cleared in the same commit. |
 | `db.fulltext(unitType)` | `boolean`: whether the type is keyword-indexed. |

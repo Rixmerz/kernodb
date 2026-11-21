@@ -14,12 +14,14 @@ use std::sync::{PoisonError, RwLock};
 
 use kerno::units::assoc_rank::{VectorMetric, VectorSet};
 use kerno::units::hybrid::Fusion;
-use kerno::units::{HistoryQuery, RevisionKind, UnitAt};
+use kerno::units::{HistoryQuery, RevNo, RevisionKind, UnitAt};
 use kerno::{
     AccessMode, AssocDirection, AssocQuery, Batch, CommitMeta, Config, Direction, Document, Endpoint, FieldDef,
-    FieldType, FieldValue, HybridQuery, HybridWeights, Lifecycle, RelationId, UnitId, VectorLeg,
+    FieldType, FieldValue, HybridQuery, HybridWeights, Lifecycle, RelationId, RetentionPolicy, RetentionRule as Rule,
+    UnitId, VectorLeg,
 };
-use napi::bindgen_prelude::{BigInt, Buffer, Either, Either5};
+use napi::JsValue;
+use napi::bindgen_prelude::{BigInt, Buffer, Either, Either5, FromNapiValue, Null, Unknown};
 use napi_derive::napi;
 
 /// The stable `code` of every error this package throws (listed in the README).
@@ -288,6 +290,8 @@ pub struct HistoryOptions {
     pub limit: Option<u32>,
     /// Read and verify each revision's content. Default `false`.
     pub with_payload: Option<bool>,
+    /// The oldest revision to list, inclusive. Default: the oldest kept. Below it throws `PRUNED`.
+    pub from_revision: Option<f64>,
 }
 
 #[napi(object)]
@@ -356,6 +360,74 @@ pub struct Committed {
 pub struct CompactReport {
     pub before: Option<i64>,
     pub after: Option<i64>,
+}
+
+/// How much history of a unit type retention keeps. Set exactly one field; `null` is the same
+/// as leaving it out.
+#[napi(object)]
+pub struct RetentionRule {
+    /// Keep the newest N revisions (a whole number, 1 or more).
+    pub keep_last: Option<Either<f64, Null>>,
+    /// Keep the revisions younger than this many seconds (0 or more).
+    pub keep_for: Option<Either<f64, Null>>,
+    /// Keep what answers an as-of read at this commit sequence (a whole number) or later.
+    pub keep_since: Option<Either<f64, Null>>,
+}
+
+/// What `runRetention` applies: `byType` gives a rule to a unit type and `default` is the rule of
+/// every other type. A type with no rule keeps everything; `null` is the same as no rule.
+#[napi(object)]
+pub struct RetentionOptions {
+    pub default: Option<Either<RetentionRule, Null>>,
+    // napi does not emit a `type` alias into index.d.ts: the TS type is spelled out.
+    #[napi(ts_type = "Record<string, RetentionRule | null> | null")]
+    pub by_type: Option<Either<RulesByType, Null>>,
+}
+
+/// The rule of each unit type named in `byType`.
+type RulesByType = HashMap<String, Either<RetentionRule, Null>>;
+
+/// The value of an optional field that may also be `null`.
+fn given<T>(v: Option<Either<T, Null>>) -> Option<T> {
+    match v {
+        Some(Either::A(t)) => Some(t),
+        _ => None,
+    }
+}
+
+/// What `runRetention` removed.
+#[napi(object)]
+pub struct RetentionReport {
+    pub units_retained: i64,
+    pub revisions_pruned: i64,
+    pub payloads_dropped: i64,
+    pub bytes_logically_freed: i64,
+    /// The sequence of the last retention commit; absent when there was nothing to prune.
+    pub commit_seq: Option<i64>,
+}
+
+impl RetentionRule {
+    fn into_rule(self) -> Result<Rule> {
+        match (given(self.keep_last), given(self.keep_for), given(self.keep_since)) {
+            (Some(n), None, None) => whole("keepLast", n).map(Rule::KeepLast),
+            (None, Some(secs), None) => std::time::Duration::try_from_secs_f64(secs)
+                .map(Rule::KeepFor)
+                .map_err(|_| invalid("keepFor is a number of seconds, 0 or more")),
+            (None, None, Some(seq)) => whole("keepSince", seq).map(|s| Rule::KeepSince(kerno::units::CommitSeq(s))),
+            _ => Err(invalid("a retention rule has exactly one of keepLast, keepFor, keepSince")),
+        }
+    }
+}
+
+/// A JS number that must be a whole number in `0..=2^53`: a fraction, a negative, NaN or an
+/// infinity is refused rather than truncated.
+fn whole(what: &str, n: f64) -> Result<u64> {
+    if n.fract() == 0.0 && (0.0..=MAX_SAFE).contains(&n) {
+        // Exact: a whole number in 0..=2^53 converts without loss.
+        Ok(n as u64)
+    } else {
+        Err(invalid(format!("{what} must be a whole number, 0 or more, not {n}")))
+    }
 }
 
 /// What `verify` found. A damaged store is reported (`clean: false`), not thrown.
@@ -794,16 +866,19 @@ impl Db {
         })
     }
 
-    /// The newest `limit` revisions of `id`, newest first; empty for an unknown unit.
+    /// The newest `limit` revisions of `id` from `fromRevision` on, newest first; empty for an
+    /// unknown unit. Throws `PRUNED` when `fromRevision` is below the oldest revision retention kept.
     #[napi]
     pub fn history(&self, id: String, options: Option<HistoryOptions>) -> Result<Vec<Revision>> {
         let id = unit_id(&id)?;
-        let options = options.unwrap_or(HistoryOptions { limit: None, with_payload: None });
+        let options = options.unwrap_or(HistoryOptions { limit: None, with_payload: None, from_revision: None });
         let limit = options.limit.unwrap_or(100) as usize;
         if limit == 0 {
             return Err(invalid("limit must be at least 1"));
         }
-        let q = HistoryQuery { with_payload: options.with_payload.unwrap_or(false), ..HistoryQuery::latest(limit) };
+        let from = options.from_revision.map(|r| whole("fromRevision", r).map(RevNo)).transpose()?;
+        let q =
+            HistoryQuery { from, with_payload: options.with_payload.unwrap_or(false), ..HistoryQuery::latest(limit) };
         match self.raw(|db| db.unit_db().history(id, q))? {
             Ok(revs) => Ok(revs.into_iter().map(Revision::from).collect()),
             Err(kerno::Error::NotFound { .. }) => Ok(Vec::new()),
@@ -879,6 +954,41 @@ impl Db {
     pub fn compact(&self) -> Result<CompactReport> {
         let r = self.with(|db| db.compact())?;
         Ok(CompactReport { before: r.stored_bytes_before.map(num), after: r.stored_bytes_after.map(num) })
+    }
+
+    /// Prunes old revisions as `options` says and returns what it removed. The head is always
+    /// kept. Afterwards `history` from a pruned revision and `readAsOf` before the oldest kept
+    /// one throw `PRUNED`. The policy is not stored: pass it each time. Idempotent.
+    #[napi(ts_args_type = "options?: RetentionOptions | null")]
+    pub fn run_retention(&self, options: Option<Unknown<'_>>) -> Result<RetentionReport> {
+        // Read the options here, not in napi's argument conversion, so a value of the wrong type
+        // is `INVALID_ARGUMENT` like every other refused rule.
+        let options = match options {
+            Some(u) if u.get_type().map_err(|e| invalid(e.reason))? != napi::ValueType::Object => {
+                return Err(invalid("runRetention options is an object"));
+            }
+            // SAFETY: `u` is an argument of this call, so its env and handle are live for the
+            // whole call, and `from_napi_value` only reads it (as napi's own conversion would).
+            Some(u) => unsafe { Option::<RetentionOptions>::from_napi_value(u.value().env, u.raw()) }
+                .map_err(|e| invalid(format!("runRetention options: {}", e.reason)))?,
+            None => None,
+        };
+        let options = options.unwrap_or(RetentionOptions { default: None, by_type: None });
+        let mut policy =
+            RetentionPolicy::all(given(options.default).map(RetentionRule::into_rule).transpose()?.unwrap_or_default());
+        for (unit_type, rule) in given(options.by_type).into_iter().flatten() {
+            if let Either::A(rule) = rule {
+                policy = policy.with_type(&unit_type, rule.into_rule()?);
+            }
+        }
+        let r = self.with(|db| db.run_retention(&policy))?;
+        Ok(RetentionReport {
+            units_retained: num(r.units_retained),
+            revisions_pruned: num(r.revisions_pruned),
+            payloads_dropped: num(r.payloads_dropped),
+            bytes_logically_freed: num(r.bytes_logically_freed),
+            commit_seq: r.change_set.map(|c| num(c.commit_seq.0)),
+        })
     }
 
     /// Turns keyword (BM25) indexing of `unitType` on or off. It is off by default; the setting

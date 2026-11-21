@@ -491,6 +491,30 @@ impl<E: TxnEngine> UnitDb<E> {
         self.run_pass(policy, budget, Pass::Retention, None).map(|(report, _)| report)
     }
 
+    /// [`UnitDb::run_retention`] with the default budget, called again until a pass
+    /// completes, and the reports added up (`change_set` is the last one, `complete` is
+    /// always `true`). Unlike a bare loop on `run_retention`, it resumes each pass at the
+    /// unit the previous one stopped at, so it also finishes under a `KeepFor` rule, whose
+    /// cursor the handle does not keep.
+    pub fn run_retention_all(&self, policy: &RetentionPolicy) -> Result<RetentionReport, UnitError> {
+        let mut total = RetentionReport { complete: true, ..RetentionReport::default() };
+        let mut resume = None;
+        loop {
+            let (r, stop) = self.run_pass(policy, RetentionBudget::default(), Pass::Retention, resume)?;
+            total.units_examined += r.units_examined;
+            total.units_retained += r.units_retained;
+            total.revisions_pruned += r.revisions_pruned;
+            total.payloads_dropped += r.payloads_dropped;
+            total.bytes_logically_freed += r.bytes_logically_freed;
+            total.change_set = r.change_set.or(total.change_set);
+            total.change_sets.extend(r.change_sets);
+            if r.complete {
+                return Ok(total);
+            }
+            resume = stop;
+        }
+    }
+
     /// One bounded pass over the units. Returns the report and where an
     /// incomplete pass stopped (the `UNIT_HEAD` key to resume from). A
     /// retention pass resumes from the cursor in the handle; any other pass
