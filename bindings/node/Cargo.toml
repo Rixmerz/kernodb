@@ -1,7 +1,7 @@
 [package]
 name = "kernodb-node"
 description = "Node.js bindings for Kerno, built with napi-rs over the `kerno` facade crate"
-version = "1.0.0-alpha.1"
+version = "1.0.0-alpha.2"
 edition = "2024"
 rust-version = "1.89"
 license = "MIT OR Apache-2.0"
@@ -17,7 +17,7 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-kerno = { package = "kernodb", path = "../../crates/kerno", version = "1.0.0-alpha.1" }
+kerno = { package = "kernodb", path = "../../crates/kerno", version = "1.0.0-alpha.2" }
 napi = { version = "3", default-features = false, features = ["napi6"] }
 napi-derive = "3"
 
