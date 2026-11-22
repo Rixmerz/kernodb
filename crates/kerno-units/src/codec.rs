@@ -63,11 +63,16 @@ pub const LAYER_VERSION_TYPE_COUNTS: u32 = 5;
 /// ADR-0021, `docs/file-format/units-v6.md`). It is written by the transaction
 /// that writes the first one, never before and never lowered.
 pub const LAYER_VERSION_SCHEMAS: u32 = 6;
-/// The newest `layer_version` this build reads and writes.
 /// `layer_version` of a database that holds a type-options record (`0x77`,
 /// ADR-0022, `docs/file-format/units-v7.md`).
 pub const LAYER_VERSION_TYPE_OPTIONS: u32 = 7;
-pub const MAX_LAYER_VERSION: u32 = LAYER_VERSION_TYPE_OPTIONS;
+/// `layer_version` of a database where a unit type has, or had, the trigram
+/// index of substring search (the `SUBSTRING` option and the `0x7a` entries,
+/// ADR-0025, `docs/file-format/units-v8.md`). It is written by the transaction
+/// that turns the option on for the first time, never before and never lowered.
+pub const LAYER_VERSION_SUBSTRING: u32 = 8;
+/// The newest `layer_version` this build reads and writes.
+pub const MAX_LAYER_VERSION: u32 = LAYER_VERSION_SUBSTRING;
 /// The lowest `layer_version` this build opens: the format cut of
 /// 1.0.0-alpha.2 (ADR-0023). Every database it creates starts here.
 pub const MIN_LAYER_VERSION: u32 = LAYER_VERSION_TYPE_OPTIONS;

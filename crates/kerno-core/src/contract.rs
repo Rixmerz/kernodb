@@ -253,6 +253,12 @@ pub trait Txn: Sized {
 
     fn put(&mut self, key: &[u8], value: &[u8]) -> Result<()>;
 
+    /// [`put`](Self::put) of buffers the caller no longer needs: an engine
+    /// may keep them instead of copying them. The default copies.
+    fn put_owned(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<()> {
+        self.put(&key, &value)
+    }
+
     fn delete(&mut self, key: &[u8]) -> Result<()>;
 
     /// Deletes `[start, end)`; `start == end` deletes nothing.

@@ -7,19 +7,22 @@
 //! touches no shared state, only its overlay: an abort, a drop and a panic in
 //! the caller's code release the slot and leave no trace.
 //!
-//! The overlay is three views of the same writes: the final value of every
-//! key written one by one (`overlay`), the ranges deleted (`ranges`, which
-//! hide the snapshot's keys, not the overlay's later writes) and the writes
-//! in order (`log`), which is what is committed as one batch.
+//! The overlay is two views of the same writes: the final value of every key
+//! written one by one (`overlay`) and the ranges deleted (`ranges`, which hide
+//! the snapshot's keys, not the overlay's later writes). Together they are
+//! the canonical form of the writes (WAL-C1): the ranges, then the points in
+//! key order, each key once. `commit` hands them to the engine as they are,
+//! so a write is copied once, into the overlay, and never sorted again.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, VecDeque};
 use std::ops::Bound;
 
 use kerno_core::contract::{Snapshot, Txn};
-use kerno_core::{Error, Result, WriteBatch};
+use kerno_core::{Error, Result};
 
 use crate::db::{Gate, Inner, KernoSnapshot, check_delete, check_put, check_range};
+use crate::format::wal::CanonicalCommit;
 use crate::stats::bump;
 
 /// Largest page read from the snapshot while a scan looks for rows that the
@@ -44,10 +47,10 @@ pub struct WriteTxn<'db> {
     /// The non-empty ranges deleted, `[start, end)`: they hide keys of the
     /// snapshot. What the overlay holds was written after them and wins.
     ranges: Vec<(Vec<u8>, Vec<u8>)>,
-    /// The writes in order, committed as they are (the engine canonicalizes
-    /// them like any batch).
-    log: WriteBatch,
-    /// Key and value bytes of `log`, for the batch limit.
+    /// How many writes were made, for the batch limit. A write that replaces
+    /// an earlier one of the same key still counts, as it did in a batch.
+    ops: usize,
+    /// Key and value bytes of those writes, for the batch limit.
     payload: usize,
     /// `None` once `commit` took it: what tells `Drop` that the transaction
     /// did not end by an abort.
@@ -61,7 +64,7 @@ impl<'db> WriteTxn<'db> {
             snapshot: Some(snapshot),
             overlay: BTreeMap::new(),
             ranges: Vec::new(),
-            log: WriteBatch::new(),
+            ops: 0,
             payload: 0,
             gate: Some(gate),
         }
@@ -138,11 +141,14 @@ impl<'db> WriteTxn<'db> {
     /// limits of the database, or the transaction would pass the limits of a
     /// batch; the write is then not made and the transaction stays usable.
     pub fn put(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
-        let limits = self.db.limits();
-        check_put(key, value, limits)?;
+        self.put_owned(key.to_vec(), value.to_vec())
+    }
+
+    /// [`put`](Self::put) that keeps the caller's buffers instead of copying them.
+    pub fn put_owned(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<()> {
+        check_put(&key, &value, self.db.limits())?;
         self.admit(key.len() + value.len())?;
-        self.log.put(key, value);
-        self.overlay.insert(key.to_vec(), Some(value.to_vec()));
+        self.overlay.insert(key, Some(value));
         Ok(())
     }
 
@@ -150,7 +156,6 @@ impl<'db> WriteTxn<'db> {
     pub fn delete(&mut self, key: &[u8]) -> Result<()> {
         check_delete(key, self.db.limits())?;
         self.admit(key.len())?;
-        self.log.delete(key);
         self.overlay.insert(key.to_vec(), None);
         Ok(())
     }
@@ -161,7 +166,6 @@ impl<'db> WriteTxn<'db> {
     pub fn delete_range(&mut self, start: &[u8], end: &[u8]) -> Result<()> {
         check_range(start, end, self.db.limits())?;
         self.admit(start.len() + end.len())?;
-        self.log.delete_range(start, end);
         if start < end {
             self.overlay.retain(|k, _| !(start <= k.as_slice() && k.as_slice() < end));
             self.ranges.push((start.to_vec(), end.to_vec()));
@@ -173,7 +177,7 @@ impl<'db> WriteTxn<'db> {
     /// the log within the batch limits (what `commit` would reject).
     fn admit(&mut self, bytes: usize) -> Result<()> {
         let limits = self.db.limits();
-        if self.log.len() >= limits.max_batch_ops {
+        if self.ops >= limits.max_batch_ops {
             return Err(Error::InvalidArgument(format!(
                 "transaction with more than {} operations exceeds the batch limit",
                 limits.max_batch_ops
@@ -186,7 +190,18 @@ impl<'db> WriteTxn<'db> {
             )));
         }
         self.payload += bytes;
+        self.ops += 1;
         Ok(())
+    }
+
+    /// The writes in canonical form (WAL-C1), taken out of the transaction:
+    /// what [`canonicalize`](crate::format::wal::canonicalize) gives for the
+    /// same writes in order, since the overlay already applied each of them.
+    fn take_canonical(&mut self) -> CanonicalCommit<Vec<u8>> {
+        let mut ranges = std::mem::take(&mut self.ranges);
+        ranges.sort_unstable();
+        ranges.dedup();
+        CanonicalCommit { ranges, points: std::mem::take(&mut self.overlay).into_iter().collect() }
     }
 
     /// Commits the writes as one batch with the next sequence and returns it,
@@ -197,9 +212,8 @@ impl<'db> WriteTxn<'db> {
     pub fn commit(mut self) -> Result<u64> {
         let gate = self.gate.take().expect("the write slot is held until the transaction ends");
         self.snapshot = None;
-        self.overlay.clear();
-        self.ranges.clear();
-        let seq = self.db.commit_txn(gate, &self.log, false)?;
+        let commit = self.take_canonical();
+        let seq = self.db.commit_txn(gate, commit, self.ops > 0, false)?;
         bump(&self.db.stats().txns_committed, 1);
         Ok(seq)
     }
@@ -218,9 +232,8 @@ impl<'db> WriteTxn<'db> {
     pub fn commit_deferred(mut self) -> Result<u64> {
         let gate = self.gate.take().expect("the write slot is held until the transaction ends");
         self.snapshot = None;
-        self.overlay.clear();
-        self.ranges.clear();
-        let seq = self.db.commit_txn(gate, &self.log, true)?;
+        let commit = self.take_canonical();
+        let seq = self.db.commit_txn(gate, commit, self.ops > 0, true)?;
         bump(&self.db.stats().txns_committed, 1);
         Ok(seq)
     }
@@ -252,6 +265,10 @@ impl Txn for WriteTxn<'_> {
 
     fn put(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
         WriteTxn::put(self, key, value)
+    }
+
+    fn put_owned(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<()> {
+        WriteTxn::put_owned(self, key, value)
     }
 
     fn delete(&mut self, key: &[u8]) -> Result<()> {

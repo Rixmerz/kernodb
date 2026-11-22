@@ -756,6 +756,39 @@ impl Database {
         self.with_db(py, |db| db.fulltext(unit_type).map_err(engine_error))
     }
 
+    /// Turns the substring (trigram) index of `unit_type` on or off. It is off by default
+    /// (ADR-0025); the setting is stored in the database, and the type's active units are
+    /// indexed (or cleared) in the same commit.
+    fn set_substring(&self, py: Python<'_>, unit_type: &str, enabled: bool) -> PyResult<()> {
+        self.with_db(py, |db| db.set_substring(unit_type, enabled).map_err(engine_error))
+    }
+
+    /// Whether `unit_type` is substring-indexed (off by default).
+    fn substring(&self, py: Python<'_>, unit_type: &str) -> PyResult<bool> {
+        self.with_db(py, |db| db.substring(unit_type).map_err(engine_error))
+    }
+
+    /// The ids of the units whose payload holds `needle`, in id order, at most `limit` (`None`:
+    /// all of them). ASCII letters match in either case, every other byte must be equal, like
+    /// SQL's `LIKE '%needle%'`. Only types turned on with `set_substring` are searched; `types`
+    /// restricts the search to those types. A search that could never match raises instead of
+    /// returning `[]`, with the errors of `search_text`.
+    #[pyo3(signature = (needle, limit=None, types=None))]
+    fn search_substring(
+        &self,
+        py: Python<'_>,
+        needle: Payload,
+        #[pyo3(from_py_with = max_rows_arg)] limit: Option<usize>,
+        types: Option<Vec<String>>,
+    ) -> PyResult<Vec<String>> {
+        let needle = into_bytes(needle);
+        self.with_db(py, |db| {
+            let names: Option<Vec<&str>> = types.as_ref().map(|t| t.iter().map(String::as_str).collect());
+            let found = db.search_substring(&needle, limit, names.as_deref()).map_err(engine_error)?;
+            Ok(found.iter().map(ToString::to_string).collect())
+        })
+    }
+
     /// The sequence of the last commit (0 for an empty database): the point to pass to
     /// `read_as_of` for "now".
     fn last_commit_seq(&self, py: Python<'_>) -> PyResult<u64> {

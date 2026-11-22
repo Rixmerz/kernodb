@@ -585,18 +585,35 @@ impl Inner {
         Ok((gate, snapshot))
     }
 
-    /// Commits the operations of a transaction as one batch, enqueuing while
-    /// the transaction still holds the write slot (so that nothing commits
-    /// between its reads and its write), then releasing the slot and waiting
-    /// for the group. An empty log returns the current sequence.
+    /// Commits the writes of a transaction, already canonical (the
+    /// transaction checked each write and the batch limits as it was made),
+    /// enqueuing while the transaction still holds the write slot (so that
+    /// nothing commits between its reads and its write), then releasing the
+    /// slot and waiting for the group. A transaction that `wrote` nothing
+    /// returns the current sequence; one whose writes cancel out still
+    /// consumes a sequence (WAL-C3).
     /// With `deferred`, the batch asks for no `fsync` of its own (see
     /// [`Work::Commit`]).
-    pub(crate) fn commit_txn(&self, gate: Gate<'_>, batch: &WriteBatch, deferred: bool) -> Result<u64> {
+    pub(crate) fn commit_txn(
+        &self,
+        gate: Gate<'_>,
+        commit: CanonicalCommit<Vec<u8>>,
+        wrote: bool,
+        deferred: bool,
+    ) -> Result<u64> {
         let started = Instant::now();
-        match self.prepare(batch, started, deferred)? {
-            Some((work, bytes)) => self.submit_gated(gate, work, bytes),
-            None => Ok(self.state.lock().last_seq),
+        let bytes = commit.encoded_len();
+        if bytes > self.limits.max_batch_bytes {
+            return Err(Error::InvalidArgument(format!(
+                "batch encodes to {bytes} bytes, over the limit of {}",
+                self.limits.max_batch_bytes
+            )));
         }
+        self.check_poisoned()?;
+        if !wrote {
+            return Ok(self.state.lock().last_seq);
+        }
+        self.submit_gated(gate, Work::Commit { commit, started, deferred }, bytes)
     }
 
     pub(crate) fn limits(&self) -> &Limits {

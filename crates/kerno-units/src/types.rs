@@ -14,13 +14,27 @@ impl UnitId {
     }
 }
 
+/// The 32 lower-case hex digits of an id. One table lookup per nibble: ids are printed for every
+/// unit and relation a binding returns, and `write!("{b:02x}")` per byte was most of that cost.
+pub fn hex32(id: &[u8; 16]) -> [u8; 32] {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = [0u8; 32];
+    for (i, b) in id.iter().enumerate() {
+        out[2 * i] = DIGITS[usize::from(b >> 4)];
+        out[2 * i + 1] = DIGITS[usize::from(b & 0x0f)];
+    }
+    out
+}
+
+fn write_hex32(id: &[u8; 16], f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    // Hex digits are ASCII, so the bytes are UTF-8.
+    f.write_str(std::str::from_utf8(&hex32(id)).map_err(|_| fmt::Error)?)
+}
+
 impl fmt::Display for UnitId {
     /// Lower-case hex, 32 digits: ids may appear in messages (I-29 allows ids).
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for b in self.0 {
-            write!(f, "{b:02x}")?;
-        }
-        Ok(())
+        write_hex32(&self.0, f)
     }
 }
 
@@ -38,10 +52,7 @@ impl RelationId {
 impl fmt::Display for RelationId {
     /// Lower-case hex, 32 digits, like [`UnitId`].
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for b in self.0 {
-            write!(f, "{b:02x}")?;
-        }
-        Ok(())
+        write_hex32(&self.0, f)
     }
 }
 
