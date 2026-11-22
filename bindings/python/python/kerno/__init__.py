@@ -23,7 +23,9 @@ from kerno._kerno import (
     SchemaExistsError,
     Relation,
     Revision,
+    TextHit,
     Unit,
+    UnknownTypeError,
     open,
 )
 
@@ -50,6 +52,8 @@ __all__ = [
     "SchemaExistsError",
     "Relation",
     "Revision",
+    "TextHit",
     "Unit",
+    "UnknownTypeError",
     "open",
 ]

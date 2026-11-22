@@ -158,7 +158,7 @@ deleted one does not.
 
 | Call | Returns |
 |---|---|
-| `db.history(id, { limit?, withPayload?, fromRevision? })` | the newest `limit` `Revision`s (default 100, at least 1) from `fromRevision` on (default: the oldest kept), newest first; empty for an unknown id. `withPayload` reads and verifies each revision's content. A `fromRevision` retention pruned throws `PRUNED`. |
+| `db.history(id, { limit?, withPayload?, fromRevision? })` | the newest `limit` `Revision`s (default 100, at least 1) from `fromRevision` on (default: the oldest kept), newest first; `NOT_FOUND` for an id no unit ever had. `withPayload` reads and verifies each revision's content. A `fromRevision` retention pruned throws `PRUNED`. |
 | `db.readAsOf(id, commitSeq)` | the `Revision` in force once that commit committed (with its payload), or `null` when the unit did not exist yet. A deleted unit returns its tombstone. A sequence past the last commit reads the current state. Throws `PRUNED` when retention removed the revision. |
 | `db.lastCommitSeq()` | the sequence of the last commit (0 for an empty database) |
 | `db.refresh()` | on a `readOnly: true` database: pick up the commits a writer made since the open; returns the sequence now read |
@@ -167,6 +167,7 @@ deleted one does not.
 | `db.compact()` | `{ before?, after? }`, the stored bytes around the compaction: `before` is the size when the call was made (every commit so far counts), `after` the size once the payloads of deleted units are dropped and their space given back. |
 | `db.setFulltext(unitType, enabled)` | nothing. Turns keyword (BM25) indexing of a type on or off (off by default); its active units are indexed or cleared in the same commit. |
 | `db.fulltext(unitType)` | `boolean`: whether the type is keyword-indexed. |
+| `db.searchText(query, { limit?, types? })` | `{ id, score }[]`, best first (`limit` default 10, at least 1), over the keyword-indexed types or only the unit types in `types`. A unit scores the same either way. It throws instead of returning `[]` when it could never match: `NOT_INDEXED` (no type, or a requested type, is indexed), `UNKNOWN_TYPE` (a type nothing ever used), `INVALID_ARGUMENT` (`limit` below 1, a query with no word, an empty `types`). |
 
 ### Schemas, indexes and documents
 
@@ -211,6 +212,7 @@ const hits = db.hybridSearch({
 | Field | Meaning |
 |---|---|
 | `text` | the keyword leg. It only searches types that have `setFulltext(type, true)`. |
+| `textTypes` | `string[]`: restricts the keyword leg to these unit types, with the errors of `searchText`. Without `text` it throws `INVALID_ARGUMENT`. |
 | `vectors` | `{ query, items, metric? }`: the vector leg ranks the `items` (`{ id, vector }`) against `query` by `'cosine'` (default) or `'dot'`. All vectors share the dimension of `query`. |
 | `relations` | `{ seeds, types?, direction?, maxDepth?, visitBudget? }`: units reached from the seed units by walking relations (`direction` `'out'`, `'in'` or `'both'`; `maxDepth` 1 to 4, default 2; `visitBudget` up to 100,000, default 10,000). Seeds must be active and are not hits. |
 | `weights` | `{ keyword?, vector?, relations? }`, 0 to 1000, default 1 each. 0 switches a leg off. |
@@ -243,7 +245,8 @@ try {
 | `CORRUPTION` | `CorruptionError` | stored bytes failed validation (a checksum or a structure rule) |
 | `INVALID_ARGUMENT` | `InvalidArgumentError` | an argument was refused: a malformed id, a type name, a limit, a bad op, a value no document can hold (`null`, a bigint outside 64 bits), a `find` value over 254 bytes |
 | `SCHEMA_EXISTS` | `SchemaExistsError` | `defineSchema` for a type that already has a different schema (the same one is accepted and writes nothing) |
-| `NOT_INDEXED` | `NotIndexedError` | `find` on a field that is not indexed; a keyword search while no type has `setFulltext` |
+| `NOT_INDEXED` | `NotIndexedError` | `find` on a field that is not indexed; `searchText` or a keyword leg while no type (or no requested type) has `setFulltext` |
+| `UNKNOWN_TYPE` | `UnknownTypeError` | `searchText`, or the `textTypes` of `hybridSearch`, names a type that no unit, schema or `setFulltext` ever named |
 | `NOT_UNIQUE` | `NotUniqueError` | `upsert` by a field the schema does not declare unique (or a type with no schema) |
 | `BAD_ENDPOINT` | `BadEndpointError` | a `relate` end that is not an earlier `store` or `upsert` op of the commit |
 | `PAYLOAD_TOO_LARGE` | `PayloadTooLargeError` | the payload is over 1 MiB |

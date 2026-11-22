@@ -47,6 +47,8 @@ enum ErrorCode {
     /// The call needs an index that is not there: a field not declared indexed, a type with no
     /// schema, or keyword search with no type switched on by `setFulltext`.
     NotIndexed,
+    /// A search names a unit type that no unit, schema or type option ever used.
+    UnknownType,
     /// `upsert` by a field the schema does not declare unique (or by a type with no schema).
     NotUnique,
     /// A batch `relate` end that is not an earlier `store` or `upsert` op of the batch.
@@ -79,6 +81,7 @@ impl ErrorCode {
             ErrorCode::ChangesetTooLarge => "CHANGESET_TOO_LARGE",
             ErrorCode::SchemaExists => "SCHEMA_EXISTS",
             ErrorCode::NotIndexed => "NOT_INDEXED",
+            ErrorCode::UnknownType => "UNKNOWN_TYPE",
             ErrorCode::NotUnique => "NOT_UNIQUE",
             ErrorCode::BadEndpoint => "BAD_ENDPOINT",
             ErrorCode::ReadOnly => "READ_ONLY",
@@ -126,6 +129,7 @@ fn engine_error(e: kerno::Error) -> JsError {
             E::ChangeSetTooLarge { .. } => ErrorCode::ChangesetTooLarge,
             E::SchemaExists { .. } => ErrorCode::SchemaExists,
             E::NotIndexed { .. } => ErrorCode::NotIndexed,
+            E::UnknownType { .. } => ErrorCode::UnknownType,
             E::NotUnique { .. } => ErrorCode::NotUnique,
             E::BadEndpoint { .. } => ErrorCode::BadEndpoint,
             E::UnitHasRelations { .. } => ErrorCode::HasRelations,
@@ -642,6 +646,9 @@ pub struct HybridWeightsInput {
 pub struct HybridQueryInput {
     /// The keyword leg. Only types with `setFulltext(type, true)` are searched.
     pub text: Option<String>,
+    /// Restricts the keyword leg to these unit types, with the errors of `searchText`. Throws
+    /// `INVALID_ARGUMENT` without `text`. The other legs are not scoped to a type.
+    pub text_types: Option<Vec<String>>,
     pub vectors: Option<VectorInput>,
     pub relations: Option<RelationsInput>,
     pub weights: Option<HybridWeightsInput>,
@@ -655,6 +662,23 @@ pub struct HybridQueryInput {
     pub candidates: Option<f64>,
     /// Hits returned, 1 to 1000. Default 10.
     pub limit: Option<f64>,
+}
+
+/// Options of `searchText`.
+#[napi(object)]
+pub struct SearchTextOptions {
+    /// Most hits, at least 1. Default 10.
+    pub limit: Option<f64>,
+    /// Search only these unit types (at least one). Default: every keyword-indexed type.
+    pub types: Option<Vec<String>>,
+}
+
+/// One hit of `searchText`.
+#[napi(object)]
+pub struct TextHit {
+    pub id: String,
+    /// The BM25 score; higher is a better match. Compare, do not interpret.
+    pub score: f64,
 }
 
 /// The 1-based rank a unit held in each leg that found it.
@@ -999,8 +1023,9 @@ impl Db {
         })
     }
 
-    /// The newest `limit` revisions of `id` from `fromRevision` on, newest first; empty for an
-    /// unknown unit. Throws `PRUNED` when `fromRevision` is below the oldest revision retention kept.
+    /// The newest `limit` revisions of `id` from `fromRevision` on, newest first. Throws `NOT_FOUND`
+    /// for a unit that never existed (not `[]`) and `PRUNED` when `fromRevision` is below the
+    /// oldest revision retention kept.
     #[napi]
     pub fn history(&self, id: String, options: Option<HistoryOptions>) -> Result<Vec<Revision>> {
         let id = unit_id(&id)?;
@@ -1012,11 +1037,8 @@ impl Db {
         let from = options.from_revision.map(|r| whole("fromRevision", r).map(RevNo)).transpose()?;
         let q =
             HistoryQuery { from, with_payload: options.with_payload.unwrap_or(false), ..HistoryQuery::latest(limit) };
-        match self.raw(|db| db.unit_db().history(id, q))? {
-            Ok(revs) => Ok(revs.into_iter().map(Revision::from).collect()),
-            Err(kerno::Error::NotFound { .. }) => Ok(Vec::new()),
-            Err(e) => Err(engine_error(e)),
-        }
+        let revs = self.with(|db| db.unit_db().history(id, q))?;
+        Ok(revs.into_iter().map(Revision::from).collect())
     }
 
     /// The revision of `id` in force once commit `commitSeq` committed, with its payload;
@@ -1136,6 +1158,21 @@ impl Db {
     #[napi]
     pub fn set_fulltext(&self, unit_type: String, enabled: bool) -> Result<()> {
         self.with(|db| db.set_fulltext(&unit_type, enabled))
+    }
+
+    /// The units whose text matches `query` (BM25, any of its words), best first. Only types with
+    /// `setFulltext(type, true)` are searched; `options.types` restricts the search to those unit
+    /// types. A search that could never match throws instead of returning `[]`: `NOT_INDEXED`
+    /// when no type is keyword-indexed or a type in `types` is not, `UNKNOWN_TYPE` for a type
+    /// nothing ever used, `INVALID_ARGUMENT` for `limit` below 1, a query with no word, or an
+    /// empty `types`. A unit scores the same with or without `types`.
+    #[napi]
+    pub fn search_text(&self, query: String, options: Option<SearchTextOptions>) -> Result<Vec<TextHit>> {
+        let (limit, types) = options.map_or((None, None), |o| (o.limit, o.types));
+        let limit = whole_u32("limit", limit)?.unwrap_or(10) as usize;
+        let names: Option<Vec<&str>> = types.as_ref().map(|t| t.iter().map(String::as_str).collect());
+        let hits = self.with(|db| db.search_text(&query, limit, names.as_deref()))?;
+        Ok(hits.into_iter().map(|h| TextHit { id: h.unit.to_string(), score: h.score }).collect())
     }
 
     /// Whether `unitType` is keyword-indexed (off by default).
@@ -1261,13 +1298,16 @@ impl Db {
     /// One query over keywords, vectors and relations, fused by weighted reciprocal rank
     /// fusion; best hit first. Wraps the engine's `hybrid_search`. A keyword signal with no type
     /// switched on by `setFulltext` throws `NOT_INDEXED` (a switched-on type with no match gives an
-    /// empty list). The search is not scoped to one type.
+    /// empty list); `textTypes` scopes the keyword leg to some unit types, with the errors of
+    /// `searchText`. The other legs are not scoped to a type.
     // ponytail: the vector leg ranks the `items` of each call by brute force; a persistent
     // vector index (HNSW) needs its own handle if a caller has more than ~100k vectors.
     #[napi]
     pub fn hybrid_search(&self, query: HybridQueryInput) -> Result<Vec<HybridHit>> {
         let mut q = HybridQuery::new(whole_u32("limit", query.limit)?.unwrap_or(10) as usize);
         q.text = query.text.as_deref();
+        let text_types: Option<Vec<&str>> = query.text_types.as_ref().map(|t| t.iter().map(String::as_str).collect());
+        q.text_types = text_types.as_deref();
         if let Some(w) = &query.weights {
             q.weights = HybridWeights {
                 keyword: whole_u32("weights.keyword", w.keyword)?.unwrap_or(1),

@@ -383,26 +383,66 @@ impl<E: Engine> UnitSnapshot<E> {
         Ok(!self.snap.scan(Bound::Included(&options), Bound::Excluded(&after), 1)?.is_empty())
     }
 
-    /// The units whose text matches `query`, best first, at most `limit`.
+    /// Whether `unit_type` has ever been used: a unit, a schema or a type option names it.
+    /// Types are implicit, so this is the only meaning "the type exists" can have.
+    fn type_known(&self, unit_type: &str) -> Result<bool, UnitError> {
+        Ok(crate::type_count::expected_one(&self.snap, unit_type)?.is_some()
+            || self.snap.get(&crate::type_options::options_key(unit_type))?.is_some()
+            || self.schema(unit_type)?.is_some())
+    }
+
+    /// The units whose text matches `query`, best first, at most `limit`, optionally only those
+    /// of the unit types in `types` (`None` searches every keyword-indexed type).
     ///
     /// The query is cut into terms like the indexed text and a unit's score
     /// is the BM25 sum over the distinct terms it holds (see the [module
-    /// documentation](self)); a unit with none of them is not a hit. An
-    /// empty query, a query without a term and `limit == 0` answer nothing, and so does a
-    /// database where no type is keyword-indexed (`set_fulltext`); [`has_keyword_index`] tells
-    /// that case apart.
+    /// documentation](self)); a unit with none of them is not a hit. The statistics behind the
+    /// score (`N`, average length) are those of the whole index, so a unit scores the same with
+    /// or without `types`. Ties are in unit id order. Reads only the posting ranges of the query
+    /// terms, the statistics record and, with `types`, the head of each scored unit.
     ///
-    /// [`has_keyword_index`]: Self::has_keyword_index
-    /// Ties are in unit id order. Reads only the posting ranges of the query
-    /// terms and the statistics record.
+    /// A search that could never match is an error, not an empty answer: see below. A database
+    /// where the query simply finds nothing answers an empty list.
     ///
     /// # Errors
     ///
-    /// `Storage(Corruption)` when a record of the index does not decode.
-    pub fn search_text(&self, query: &str, limit: usize) -> Result<Vec<TextHit>, UnitError> {
+    /// * `InvalidArgument` for `limit == 0`, a query with no term (empty, or only punctuation),
+    ///   `Some(&[])` as `types`, or an invalid type name.
+    /// * `NotIndexed` when no type is keyword-indexed (`set_fulltext`), or when a type in `types`
+    ///   is not ([`has_keyword_index`](Self::has_keyword_index) tells the first case apart).
+    /// * `UnknownType` for a type in `types` that no unit, schema or option ever named.
+    /// * `Storage(Corruption)` when a record of the index does not decode.
+    pub fn search_text(&self, query: &str, limit: usize, types: Option<&[&str]>) -> Result<Vec<TextHit>, UnitError> {
+        let invalid = |m: &str| UnitError::InvalidArgument(format!("search_text: {m}"));
+        if limit == 0 {
+            return Err(invalid("limit must be at least 1"));
+        }
         let terms: BTreeSet<String> = tokens(query).collect();
-        if terms.is_empty() || limit == 0 {
-            return Ok(Vec::new());
+        if terms.is_empty() {
+            return Err(invalid("the query has no term (it is empty or holds only punctuation)"));
+        }
+        if types.is_some_and(<[&str]>::is_empty) {
+            return Err(invalid("types is empty: give at least one unit type, or no restriction"));
+        }
+        for t in types.unwrap_or_default() {
+            if t.is_empty() || t.len() > crate::codec::MAX_UNIT_TYPE_LEN as usize {
+                return Err(invalid("a unit type name is empty or longer than 64 bytes"));
+            }
+        }
+        if !self.has_keyword_index()? {
+            return Err(UnitError::NotIndexed {
+                detail: "no unit type is keyword-indexed: turn it on for a type with set_fulltext".into(),
+            });
+        }
+        for t in types.unwrap_or_default() {
+            if !self.type_known(t)? {
+                return Err(UnitError::UnknownType { unit_type: (*t).to_string() });
+            }
+            if !self.fulltext_enabled(t)? {
+                return Err(UnitError::NotIndexed {
+                    detail: format!("unit type {t:?} is not keyword-indexed: turn it on with set_fulltext"),
+                });
+            }
         }
         let Some(raw) = self.snap.get(&STATS_KEY)? else {
             return Ok(Vec::new());
@@ -429,7 +469,22 @@ impl<E: Engine> UnitSnapshot<E> {
                 *scores.entry(unit).or_insert(0.0) += idf * tf * (K1 + 1.0) / (tf + K1 * (1.0 - B + B * dl / avg_len));
             }
         }
-        let mut hits: Vec<TextHit> = scores.into_iter().map(|(unit, score)| TextHit { unit, score }).collect();
+        let mut hits = Vec::with_capacity(scores.len());
+        for (unit, score) in scores {
+            // ponytail: one head read per scored unit when `types` is set, fine up to ~10^5 scored
+            // units; keep the type in the posting value if a restricted search is hot.
+            if let Some(types) = types {
+                let Some(u) = self.get_unit(unit)? else {
+                    return Err(UnitError::Storage(kerno_core::Error::Corruption(format!(
+                        "a POSTING of unit {unit} has no UNIT_HEAD"
+                    ))));
+                };
+                if !types.contains(&u.unit_type.as_str()) {
+                    continue;
+                }
+            }
+            hits.push(TextHit { unit, score });
+        }
         hits.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.unit.cmp(&b.unit)));
         hits.truncate(limit);
         Ok(hits)
@@ -438,7 +493,7 @@ impl<E: Engine> UnitSnapshot<E> {
 
 impl<E: TxnEngine> UnitDb<E> {
     /// [`UnitSnapshot::search_text`] on a snapshot of the latest commit.
-    pub fn search_text(&self, query: &str, limit: usize) -> Result<Vec<TextHit>, UnitError> {
-        self.snapshot()?.search_text(query, limit)
+    pub fn search_text(&self, query: &str, limit: usize, types: Option<&[&str]>) -> Result<Vec<TextHit>, UnitError> {
+        self.snapshot()?.search_text(query, limit, types)
     }
 }

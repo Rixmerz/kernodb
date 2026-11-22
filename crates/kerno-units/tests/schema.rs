@@ -288,7 +288,8 @@ fn ranges_are_in_value_order<E: Target>() {
     assert_eq!(range("i", Bound::Included(&lo), Bound::Included(&hi), 99), vec![ids[2], ids[3], ids[4], ids[5]]);
     assert_eq!(range("i", Bound::Excluded(&lo), Bound::Excluded(&hi), 99), vec![ids[3], ids[4]]);
     assert_eq!(range("i", Bound::Excluded(&lo), Bound::Unbounded, 2), vec![ids[3], ids[4]], "limit");
-    assert!(range("i", Bound::Included(&hi), Bound::Included(&lo), 99).is_empty(), "lo above hi");
+    let inverted = snap.find_range("t", "i", Bound::Included(&hi), Bound::Included(&lo), 99);
+    assert!(matches!(inverted, Err(UnitError::InvalidArgument(_))), "lo above hi can never match");
     // Floats: -0.0 and 0.0 are one value, ties by unit id.
     let zero = FieldValue::Float(0.0);
     assert_eq!(range("f", Bound::Included(&zero), Bound::Included(&zero), 9), vec![ids[2], ids[3]]);
@@ -703,7 +704,7 @@ fn lookups_page_through_many_entries<E: Target>() {
     // Distinct values across pages come in value order.
     let by_email = snap.find_range(ACCT, "email", all, none, usize::MAX).unwrap();
     assert_eq!(by_email.iter().map(|u| u.id).collect::<Vec<_>>(), ids);
-    assert!(snap.find_range(ACCT, "age", all, none, 0).unwrap().is_empty());
+    assert!(matches!(snap.find_range(ACCT, "age", all, none, 0), Err(UnitError::InvalidArgument(_))));
     clean(&db, "many entries");
     // A definition that reads the heads of many units a page at a time.
     let db = open::<E>();

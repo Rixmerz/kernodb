@@ -158,7 +158,18 @@ hits[0].keyword_score, hits[0].vector_score, hits[0].relation_score   # None: th
 Kerno does not store vectors: you pass the `{unit id: vector}` dict you keep in step with your
 units, as in the Rust API. Signals are fused by weighted reciprocal rank fusion; each adds
 `weight / (rrf_k + rank)`. Only active units are hits. Types you did not enable with
-`set_fulltext` never match the keyword signal.
+`set_fulltext` never match the keyword signal. `text_types=["note"]` narrows the keyword signal to some
+unit types.
+
+```python
+hits = db.search_text("garbage collector", limit=10)                       # TextHit(id, score), best first
+notes = db.search_text("garbage collector", types=["note", "memo"])        # only those unit types
+```
+
+`search_text` raises instead of returning `[]` when it could never match: `NotIndexedError` (no type, or a
+requested type, is keyword-indexed), `UnknownTypeError` (a type no unit, schema or `set_fulltext` ever
+named), `InvalidArgumentError` (`limit` below 1, a query with no word, an empty `types`). A search that can
+match and finds nothing returns `[]`. A unit scores the same with or without `types`.
 
 ### Read the past
 
@@ -166,7 +177,7 @@ units, as in the Rust API. Signals are fused by weighted reciprocal rank fusion;
 seq = db.last_commit_seq()
 db.update_document(uid, {"email": "a@example.com", "age": 32})
 db.read_as_of(uid, seq).payload   # the payload before the update (raw document bytes)
-db.history(uid, limit=10)         # newest first; [] for an unknown id
+db.history(uid, limit=10)         # newest first; NotFoundError for an id no unit ever had
 
 # Page through a long history: [from_revision, to_revision), newest first or order="asc"
 page = db.history(uid, limit=50)
@@ -209,18 +220,19 @@ never return wrong data.
 | `db.relations(relation_type=None)` | every live relation, in one scan. Use it instead of `related` per unit |
 | `db.query(unit_type=None, schema_version=None, lifecycle="active")` | `list[Unit]` that match, in id order. `lifecycle` is `"active"`, `"archived"`, `"deleted"` or `"all"`; the last three read every unit's head, so they cost time linear in the store |
 | `db.commit(ops, reason=None, actor=None, source=None, detailed=False)` | stored ids, or a dict with `detailed=True` |
-| `db.history(id, limit=100, with_payload=False, from_revision=None, to_revision=None, order="desc")` | `list[Revision]` (`revision`, `kind`, `commit_seq`, `created_at`, `lifecycle`, `schema_version`, `content_hash`, `payload`) in `[from_revision, to_revision)`, at most `limit`. A `from_revision` below `oldest_revision` raises `PrunedError` |
+| `db.history(id, limit=100, with_payload=False, from_revision=None, to_revision=None, order="desc")` | `list[Revision]` (`revision`, `kind`, `commit_seq`, `created_at`, `lifecycle`, `schema_version`, `content_hash`, `payload`) in `[from_revision, to_revision)`, at most `limit`. A `from_revision` below `oldest_revision` raises `PrunedError`; an id no unit ever had raises `NotFoundError` |
 | `db.compare(id, a, b)` | `Comparison` (`a`, `b`: the two `Revision`s with payloads; `same_content`). Takes the unit id, as the Rust call does |
 | `db.read_as_of(id, commit_seq)` | the `Revision` in force then, or `None` before creation. A sequence past the last commit reads now |
 | `db.set_fulltext(type, enabled)` | `None`. Keyword-index a type (off by default); its active units follow in the same commit |
 | `db.fulltext(type)` | `bool`: whether the type is keyword-indexed |
+| `db.search_text(query, limit=10, types=None)` | `list[TextHit]` (`id`, `score`), best first, over the keyword-indexed types or only those in `types`. Raises when it could never match (see above) |
 | `db.last_commit_seq()` | the sequence of the last commit |
 | `db.refresh()` | on a `read_only=True` database: pick up the commits a writer made since the open; returns the sequence now read |
 | `db.define_schema(type, fields)` / `db.create_index(type, field)` | `None` |
 | `db.store_document(type, dict)` / `db.update_document(id, dict)` / `db.read_document(id)` | id / `None` / `dict` or `None` |
 | `db.upsert(type, field, dict)` | `{"id", "outcome"}`: store the document or revise the active unit holding the same value of the unique `field`; `outcome` is `"created"`, `"updated"` or `"unchanged"` |
 | `db.find(type, field, value)` | `list[Unit]` whose indexed field equals `value` |
-| `db.find_range(type, field, low=None, high=None, limit=None)` | `list[Unit]` whose indexed field is in `[low, high]` (both included, `None` = open end), ordered by value then id. No `limit` means no cap |
+| `db.find_range(type, field, low=None, high=None, limit=None)` | `list[Unit]` whose indexed field is in `[low, high]` (both included, `None` = open end), ordered by value then id. No `limit` means no cap; `limit=0`, or `low` above `high`, raises `InvalidArgumentError` |
 | `db.execute(query)` | `{"aliases": [...], "rows": [[Unit, ...], ...]}` |
 | `db.explain(query)` | the plan `execute` would follow, without running it: `root_alias`, `root_type`, `candidates` (`access` `"type_scan"` or `"field_index"`, `field`, `cost`), `chosen` (an index into `candidates`), `joins`, `planner_version` |
 | `db.hybrid_search(text=None, vector=None, vectors=None, seeds=None, *, keyword_weight=1, vector_weight=1, relation_weight=1, limit=10, candidates=100, rrf_k=60, max_depth=2, metric="cosine")` | `list[HybridHit]`, best first: `id`, `score`, `keyword_score`, `vector_score`, `relation_score`, `keyword_rank`, `vector_rank`, `relation_rank` (a signal that missed the unit is `None`). `vector` and `vectors` go together; `metric` is `"cosine"` or `"dot"` |
@@ -251,7 +263,8 @@ Engine failures raise `kerno.KernoError` or one of its subclasses:
 | `CorruptionError` | stored bytes failed a checksum or a structure rule |
 | `InvalidArgumentError` | a bad type name, a bad whole number (negative, over 2**64 - 1, a fraction), a value no document can hold (`None`, an int outside 64 bits), a text search value over 254 bytes, `refresh` on a handle that is not read-only, ... Its subclasses below name the common cases |
 | `SchemaExistsError` | `define_schema` for a type that already has a different schema |
-| `NotIndexedError` | `find`, `find_range` on a field that is not indexed; a keyword search while no type has `set_fulltext` |
+| `NotIndexedError` | `find`, `find_range` on a field that is not indexed; `search_text` or a keyword signal while no type (or no requested type) has `set_fulltext` |
+| `UnknownTypeError` | `search_text` or `hybrid_search(text_types=)` names a type that no unit, schema or `set_fulltext` ever named |
 | `NotUniqueError` | `upsert` by a field the schema does not declare unique (or a type with no schema) |
 | `BadEndpointError` | a batch `relate` end that is not an earlier `store` or `upsert` op |
 | `PayloadTooLargeError` | a payload over 1 MiB |

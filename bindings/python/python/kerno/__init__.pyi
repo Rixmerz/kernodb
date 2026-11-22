@@ -22,7 +22,9 @@ __all__ = [
     "HybridHit",
     "Relation",
     "Revision",
+    "TextHit",
     "Unit",
+    "UnknownTypeError",
     "open",
 ]
 
@@ -39,6 +41,7 @@ class CorruptionError(KernoError): ...
 class InvalidArgumentError(KernoError): ...
 class SchemaExistsError(InvalidArgumentError): ...
 class NotIndexedError(InvalidArgumentError): ...
+class UnknownTypeError(InvalidArgumentError): ...
 class NotUniqueError(InvalidArgumentError): ...
 class BadEndpointError(InvalidArgumentError): ...
 class PayloadTooLargeError(KernoError): ...
@@ -135,6 +138,14 @@ class HybridHit:
     @property
     def relation_rank(self) -> int | None: ...
 
+class TextHit:
+    """One hit of `search_text`: a unit id and its BM25 score (higher is a better match)."""
+
+    @property
+    def id(self) -> str: ...
+    @property
+    def score(self) -> float: ...
+
 class Database:
     """An open Kerno database. Use it as a context manager, or call `close()`."""
 
@@ -168,6 +179,13 @@ class Database:
         """Whether the type is keyword-indexed (off by default)."""
     def set_fulltext(self, unit_type: str, enabled: bool) -> None:
         """Keyword-index a type or not (off by default); its units follow in the same commit."""
+    def search_text(self, query: str, limit: int = 10, types: list[str] | None = None) -> list[TextHit]:
+        """Keyword (BM25) search, best first, optionally only in the unit types `types`.
+
+        Raises instead of returning `[]` for a search that could never match: `NotIndexedError`
+        (no type, or a type in `types`, is keyword-indexed), `UnknownTypeError` (a type nothing ever
+        used), `InvalidArgumentError` (`limit < 1`, a query without a word, an empty `types`).
+        """
     def last_commit_seq(self) -> int: ...
     def refresh(self) -> int:
         """Move a `read_only=True` database to the writer's newest commits; returns the sequence it now reads.
@@ -207,7 +225,10 @@ class Database:
         high: FieldValue | None = None,
         limit: int | None = None,
     ) -> list[Unit]:
-        """Active units whose indexed field is in `[low, high]` (`None` = open end), by value."""
+        """Active units whose indexed field is in `[low, high]` (`None` = open end), by value.
+
+        `InvalidArgumentError` for `limit=0` or a range no value can be in (`low` above `high`).
+        """
     def execute(self, query: str) -> dict[str, object]: ...
     def explain(self, query: str) -> dict[str, object]:
         """How `execute` would run `query`: candidates with costs, the chosen one, the joins."""
@@ -218,6 +239,7 @@ class Database:
         vectors: dict[str, list[float]] | None = None,
         seeds: list[str] | None = None,
         *,
+        text_types: list[str] | None = None,
         keyword_weight: int = 1,
         vector_weight: int = 1,
         relation_weight: int = 1,
@@ -227,7 +249,11 @@ class Database:
         max_depth: int = 2,
         metric: Literal["cosine", "dot"] = "cosine",
     ) -> list[HybridHit]:
-        """Fuse keyword (BM25), vector and relation signals by reciprocal rank fusion."""
+        """Fuse keyword (BM25), vector and relation signals by reciprocal rank fusion.
+
+        `text_types` restricts the keyword signal to those unit types (errors as `search_text`);
+        it is an error without `text`.
+        """
     def unrelate(self, relation_id: str) -> None:
         """Remove a relation."""
     def commit(
@@ -251,7 +277,10 @@ class Database:
         to_revision: int | None = None,
         order: Literal["desc", "asc"] = "desc",
     ) -> list[Revision]:
-        """Up to `limit` revisions of `id` in `[from_revision, to_revision)`, newest first by default."""
+        """Up to `limit` revisions of `id` in `[from_revision, to_revision)`, newest first by default.
+
+        `NotFoundError` for an id no unit ever had.
+        """
     def compare(self, id: str, a: int, b: int) -> Comparison:
         """Revisions `a` and `b` of unit `id`, with payloads, and whether their content is equal."""
     def read_as_of(self, id: str, commit_seq: int) -> Revision | None:

@@ -73,7 +73,7 @@ exposes only part of it. **Gap** means there is no way to call it from that bind
 |---|---|---|---|
 | `set_fulltext(type, enabled)` | `db.set_fulltext(type, enabled)` | `db.setFulltext(type, enabled)` | Full |
 | `fulltext(type)` | `db.fulltext(type)` | `db.fulltext(type)` | Full |
-| `search_text(query, limit)` | none | none | **Gap** (both). The keyword leg is reached through `hybrid_search` |
+| `search_text(query, limit, types)` | `db.search_text(query, limit=, types=)` | `db.searchText(query, { limit, types })` | Full. `types` restricts the search to unit types; `hybrid_search` takes it as `text_types` / `textTypes` |
 | `query(filter)` | `db.query(unit_type=, schema_version=, lifecycle=)` | `db.query({ unitType, schemaVersion })` | Full. Node returns active units only, like the facade; Python also takes `lifecycle` |
 | `execute(query)` | `db.execute(query)` | `db.execute(query)` | Full |
 | `explain(query)` | `db.explain(query)` | none | **Gap** (Node) |
@@ -119,7 +119,6 @@ listed so that nothing a binding offers is missing from this page.
 ## Gaps to close
 
 - `drop_index` and `schema`: missing from both bindings.
-- `search_text`: missing from both. `hybrid_search` covers the keyword search.
 - `find_range`, `explain` and `compare`: missing from Node.
 - `open_with` and `open_with_limits` take a `Config` in Rust; the bindings expose only the read-only
   mode and the batch limit.

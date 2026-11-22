@@ -46,6 +46,12 @@ create_exception!(
 );
 create_exception!(
     _kerno,
+    UnknownTypeError,
+    InvalidArgumentError,
+    "A search names a unit type that no unit, schema or type option ever used, so nothing can match."
+);
+create_exception!(
+    _kerno,
     NotIndexedError,
     InvalidArgumentError,
     "The call needs an index that is not there: a field not declared indexed, a type with no schema, or \
@@ -120,6 +126,7 @@ fn engine_error(e: kerno::Error) -> PyErr {
         E::ChangeSetTooLarge { .. } => ChangeSetTooLargeError::new_err(msg),
         E::SchemaExists { .. } => SchemaExistsError::new_err(msg),
         E::NotIndexed { .. } => NotIndexedError::new_err(msg),
+        E::UnknownType { .. } => UnknownTypeError::new_err(msg),
         E::NotUnique { .. } => NotUniqueError::new_err(msg),
         E::BadEndpoint { .. } => BadEndpointError::new_err(msg),
         E::UnitHasRelations { .. } => HasRelationsError::new_err(msg),
@@ -127,10 +134,6 @@ fn engine_error(e: kerno::Error) -> PyErr {
         E::SchemaViolation { .. } => SchemaError::new_err(msg),
         _ => KernoError::new_err(msg),
     }
-}
-
-fn is_not_found(e: &kerno::Error) -> bool {
-    matches!(e, kerno::Error::NotFound { .. })
 }
 
 /// A whole number `0..2**N` (`N` the width of `T`) from Python, as the argument `what`. A
@@ -495,6 +498,22 @@ impl SearchHit {
     }
 }
 
+/// One hit of `search_text`: the unit's id and its BM25 score (higher is a better match).
+#[pyclass(frozen, module = "kerno", name = "TextHit")]
+struct TextHit {
+    #[pyo3(get)]
+    id: String,
+    #[pyo3(get)]
+    score: f64,
+}
+
+#[pymethods]
+impl TextHit {
+    fn __repr__(&self) -> String {
+        format!("TextHit(id={:?}, score={})", self.id, self.score)
+    }
+}
+
 /// An open Kerno database. Use it as a context manager, or call `close()`.
 #[pyclass(frozen, module = "kerno")]
 struct Database {
@@ -694,6 +713,28 @@ impl Database {
         self.with_db(py, |db| db.set_fulltext(unit_type, enabled).map_err(engine_error))
     }
 
+    /// The units whose text matches `query` (BM25, any of its words), best first, at most
+    /// `limit`. Only types turned on with `set_fulltext` are searched; `types` (a list of unit
+    /// type names) restricts the search to those types, `None` searches every indexed type.
+    /// A search that could never match raises instead of returning `[]`: `NotIndexedError` when
+    /// no type is keyword-indexed or a type in `types` is not, `UnknownTypeError` for a type
+    /// nothing ever used, `InvalidArgumentError` for `limit < 1`, a query with no
+    /// word, or an empty `types`. A unit scores the same with or without `types`.
+    #[pyo3(signature = (query, limit=10, types=None))]
+    fn search_text(
+        &self,
+        py: Python<'_>,
+        query: &str,
+        #[pyo3(from_py_with = limit_arg)] limit: usize,
+        types: Option<Vec<String>>,
+    ) -> PyResult<Vec<TextHit>> {
+        self.with_db(py, |db| {
+            let names: Option<Vec<&str>> = types.as_ref().map(|t| t.iter().map(String::as_str).collect());
+            let hits = db.search_text(query, limit, names.as_deref()).map_err(engine_error)?;
+            Ok(hits.into_iter().map(|h| TextHit { id: h.unit.to_string(), score: h.score }).collect())
+        })
+    }
+
     /// Whether `unit_type` is keyword-indexed (off by default).
     fn fulltext(&self, py: Python<'_>, unit_type: &str) -> PyResult<bool> {
         self.with_db(py, |db| db.fulltext(unit_type).map_err(engine_error))
@@ -872,7 +913,9 @@ impl Database {
 
     /// The active units of `unit_type` whose indexed `field` lies between `low` and `high`, both
     /// inclusive; `None` leaves that end open. Ordered by value, then id. `limit` caps the
-    /// result (default: no cap). Floats order as numbers, text and bytes as bytes.
+    /// result (default: no cap; 0 is an `InvalidArgumentError`). Floats order as numbers, text and
+    /// bytes as bytes. A range no value can be in (`low` above `high`) raises
+    /// `InvalidArgumentError` instead of returning `[]`.
     #[pyo3(signature = (unit_type, field, low=None, high=None, limit=None))]
     fn find_range(
         &self,
@@ -947,10 +990,12 @@ impl Database {
     ///
     /// A signal runs when its input is given and its weight is above 0; at least one must run.
     /// A keyword signal with no type switched on by `set_fulltext` raises `NotIndexedError`
-    /// (a switched-on type with no match gives an empty list). The search is not scoped to a type.
+    /// (a switched-on type with no match gives an empty list). `text_types` restricts the keyword
+    /// signal to those unit types, with the errors of `search_text`; it is an error without
+    /// `text`. The other signals are not scoped to a type.
     /// Each signal adds `weight / (rrf_k + rank)` to a unit's score. Only active units are hits.
     #[pyo3(signature = (
-        text=None, vector=None, vectors=None, seeds=None, *,
+        text=None, vector=None, vectors=None, seeds=None, *, text_types=None,
         keyword_weight=1, vector_weight=1, relation_weight=1,
         limit=10, candidates=100, rrf_k=60, max_depth=2, metric="cosine"
     ))]
@@ -962,6 +1007,7 @@ impl Database {
         vector: Option<Vec<f32>>,
         vectors: Option<HashMap<String, Vec<f32>>>,
         seeds: Option<Vec<String>>,
+        text_types: Option<Vec<String>>,
         #[pyo3(from_py_with = keyword_weight_arg)] keyword_weight: u32,
         #[pyo3(from_py_with = vector_weight_arg)] vector_weight: u32,
         #[pyo3(from_py_with = relation_weight_arg)] relation_weight: u32,
@@ -998,6 +1044,8 @@ impl Database {
         self.with_db(py, |db| {
             let mut q = HybridQuery::new(limit);
             q.text = text;
+            let names: Option<Vec<&str>> = text_types.as_ref().map(|t| t.iter().map(String::as_str).collect());
+            q.text_types = names.as_deref();
             q.vector = set.as_ref().zip(vector.as_deref()).map(|(index, query)| VectorLeg { index, query });
             q.graph = graph;
             q.weights = weights;
@@ -1137,7 +1185,8 @@ impl Database {
     /// (`order="asc"`), among those in `[from_revision, to_revision)`; a missing bound is the
     /// oldest kept or the newest. To page, pass the last revision returned as the next
     /// `to_revision` (desc) or its successor as the next `from_revision` (asc). A
-    /// `from_revision` below `Unit.oldest_revision` raises `PrunedError`. `with_payload` reads
+    /// `from_revision` below `Unit.oldest_revision` raises `PrunedError`, and an id no unit ever had
+    /// raises `NotFoundError` (not `[]`). `with_payload` reads
     /// and verifies each revision's content.
     #[pyo3(signature = (id, limit=100, with_payload=false, from_revision=None, to_revision=None, order="desc"))]
     #[allow(clippy::too_many_arguments)]
@@ -1161,10 +1210,8 @@ impl Database {
             other => return Err(PyValueError::new_err(format!("order must be 'desc' or 'asc', not {other:?}"))),
         };
         let q = HistoryQuery { from: from_revision.map(RevNo), to: to_revision.map(RevNo), order, limit, with_payload };
-        self.with_db(py, |db| match db.unit_db().history(id, q) {
-            Ok(revs) => Ok(revs.into_iter().map(Revision::from).collect()),
-            Err(e) if is_not_found(&e) => Ok(Vec::new()),
-            Err(e) => Err(engine_error(e)),
+        self.with_db(py, |db| {
+            Ok(db.unit_db().history(id, q).map_err(engine_error)?.into_iter().map(Revision::from).collect())
         })
     }
 
@@ -1296,9 +1343,11 @@ fn _kerno(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Revision>()?;
     m.add_class::<Comparison>()?;
     m.add_class::<SearchHit>()?;
+    m.add_class::<TextHit>()?;
     m.add("KernoError", m.py().get_type::<KernoError>())?;
     m.add("SchemaExistsError", m.py().get_type::<SchemaExistsError>())?;
     m.add("NotIndexedError", m.py().get_type::<NotIndexedError>())?;
+    m.add("UnknownTypeError", m.py().get_type::<UnknownTypeError>())?;
     m.add("NotUniqueError", m.py().get_type::<NotUniqueError>())?;
     m.add("BadEndpointError", m.py().get_type::<BadEndpointError>())?;
     m.add("ChangeSetTooLargeError", m.py().get_type::<ChangeSetTooLargeError>())?;

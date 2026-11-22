@@ -376,7 +376,7 @@ impl<E: Engine> UnitSnapshot<E> {
         let counted = crate::type_count::expected_one(&self.snap, unit_type)?;
         let Some((start, end)) = Key::type_range(unit_type, if counted.is_some() { None } else { schema_version })
         else {
-            return Ok(Vec::new());
+            return Err(UnitError::InvalidArgument("unit_type is not a valid unit type name".into()));
         };
         let mut out = Vec::new();
         let mut seen = 0u64;

@@ -146,6 +146,10 @@ impl fmt::Debug for VectorLeg<'_> {
 pub struct HybridQuery<'q> {
     /// The keyword leg's text.
     pub text: Option<&'q str>,
+    /// Restricts the keyword leg to these unit types (`None`: every keyword-indexed type); see
+    /// [`UnitSnapshot::search_text`]. Only the keyword leg is restricted. Setting it without a
+    /// running keyword leg is an `InvalidArgument`.
+    pub text_types: Option<&'q [&'q str]>,
     pub vector: Option<VectorLeg<'q>>,
     /// The graph leg's query. Its own `limit` bounds the traversal; the leg
     /// contributes at most `candidates` units.
@@ -167,6 +171,7 @@ impl HybridQuery<'_> {
     pub fn new(limit: usize) -> Self {
         HybridQuery {
             text: None,
+            text_types: None,
             vector: None,
             graph: None,
             weights: HybridWeights::default(),
@@ -203,6 +208,11 @@ impl HybridQuery<'_> {
                 return bad(format!("weight {weight} of the {name} leg is above {MAX_HYBRID_WEIGHT}"));
             }
         }
+        if self.text_types.is_some() && !self.runs_keyword() {
+            return bad(
+                "text_types is set but the keyword leg does not run (give text and a keyword weight above 0)".into()
+            );
+        }
         if !(self.runs_keyword() || self.runs_vector() || self.runs_graph()) {
             return bad("no leg to run (give text, vector or graph with a weight above 0)".into());
         }
@@ -215,6 +225,7 @@ impl fmt::Debug for HybridQuery<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HybridQuery")
             .field("text_bytes", &self.text.map(str::len))
+            .field("text_types", &self.text_types)
             .field("vector_dimension", &self.vector.map(|v| v.query.len()))
             .field("graph_seeds", &self.graph.as_ref().map(|g| g.seeds.len()))
             .field("weights", &self.weights)
@@ -268,7 +279,9 @@ impl<E: Engine> UnitSnapshot<E> {
     ///
     /// # Errors
     ///
-    /// `NotIndexed` for a keyword leg when no type is keyword-indexed; `InvalidArgument` for a
+    /// For a keyword leg, what [`UnitSnapshot::search_text`] raises: `NotIndexed` when no type (or
+    /// no type of `text_types`) is keyword-indexed, `UnknownType` for a type that does not exist,
+    /// and `InvalidArgument` for a text with no term; `InvalidArgument` also for a
     /// query outside its bounds, with no leg to run,
     /// whose graph leg the model rejects or whose seed is not active, or whose
     /// vector the index refuses; `Storage` when a read fails or a record is
@@ -301,13 +314,9 @@ impl<E: Engine> UnitSnapshot<E> {
 
         let mut keyword = Vec::new();
         if let (true, Some(text)) = (q.runs_keyword(), q.text) {
-            // With no type keyword-indexed the leg can never match: say so, not "no hits".
-            if !self.has_keyword_index()? {
-                return Err(UnitError::NotIndexed {
-                    detail: "no unit type is keyword-indexed: turn it on for a type with set_fulltext".into(),
-                });
-            }
-            let hits = self.search_text(text, q.candidates + seeds.len())?;
+            // `search_text` says so (`NotIndexed`, `UnknownType`, `InvalidArgument`) when the leg
+            // could never match, instead of an empty leg.
+            let hits = self.search_text(text, q.candidates + seeds.len(), q.text_types)?;
             keyword = hits.into_iter().map(|h| h.unit).filter(|u| !seeds.contains(u)).take(q.candidates).collect();
         }
 

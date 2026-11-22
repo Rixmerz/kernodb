@@ -60,7 +60,8 @@ impl<E: Engine> UnitSnapshot<E> {
     /// # Errors
     ///
     /// `InvalidArgument` when the type has no schema, the field is not declared
-    /// or not indexed, or a bound is not of the field's type; `Storage(Corruption)`
+    /// or not indexed, a bound is not of the field's type, `limit` is 0, or the bounds leave an
+    /// empty range (`lo` above `hi`, or equal with one excluded); `Storage(Corruption)`
     /// when an entry disagrees with its unit.
     pub fn find_range(
         &self,
@@ -70,7 +71,43 @@ impl<E: Engine> UnitSnapshot<E> {
         hi: Bound<&FieldValue>,
         limit: usize,
     ) -> Result<Vec<Unit>, UnitError> {
+        // A range that can hold no value, or a limit of 0, can never match: refuse, do not answer [].
+        if limit == 0 {
+            return Err(UnitError::InvalidArgument("find_range: limit must be at least 1".into()));
+        }
         let (start, end) = self.field_bounds(unit_type, field, lo, hi)?;
+        if start >= end {
+            return Err(UnitError::InvalidArgument("find_range: the range is empty (low is above high)".into()));
+        }
+        self.scan_range(unit_type, field, start, end, limit)
+    }
+
+    /// The scan behind [`find_range`](Self::find_range), without its refusal of an empty range: the
+    /// query language derives bounds from a predicate (`n > i64::MAX`), and no unit matching it is
+    /// then a true answer.
+    pub(crate) fn find_range_lenient(
+        &self,
+        unit_type: &str,
+        field: &str,
+        lo: Bound<&FieldValue>,
+        hi: Bound<&FieldValue>,
+        limit: usize,
+    ) -> Result<Vec<Unit>, UnitError> {
+        let (start, end) = self.field_bounds(unit_type, field, lo, hi)?;
+        if start >= end {
+            return Ok(Vec::new());
+        }
+        self.scan_range(unit_type, field, start, end, limit)
+    }
+
+    fn scan_range(
+        &self,
+        unit_type: &str,
+        field: &str,
+        start: Vec<u8>,
+        end: Vec<u8>,
+        limit: usize,
+    ) -> Result<Vec<Unit>, UnitError> {
         let mut out = Vec::new();
         let mut cursor = start;
         let mut inclusive = true;

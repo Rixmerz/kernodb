@@ -363,7 +363,7 @@ fn the_query_language_joins_filters_orders_and_explains_through_a_reopen() {
 
 fn keyword_hits(db: &Db, query: &str) -> Vec<kerno::UnitId> {
     let snapshot = db.unit_db().snapshot().unwrap();
-    snapshot.search_text(query, 10).unwrap().into_iter().map(|hit| hit.unit).collect()
+    snapshot.search_text(query, 10, None).unwrap().into_iter().map(|hit| hit.unit).collect()
 }
 
 #[test]
@@ -478,6 +478,7 @@ fn a_batch_applies_every_operation_in_one_commit() {
 fn a_batch_that_fails_writes_nothing() {
     let dir = TempDir::new();
     let db = Db::open(dir.db()).unwrap();
+    db.set_fulltext("note", true).unwrap(); // so the keyword asserts below can see a leak
     let id = db.store("note", "original").unwrap();
     let before = db.unit_db().raw_seq().unwrap();
 
@@ -746,6 +747,74 @@ fn a_lookup_that_can_never_match_is_an_error_not_an_empty_answer() {
     assert!(matches!(db.hybrid_search(&query), Err(Error::NotIndexed { .. })));
     db.set_fulltext("lim", true).unwrap();
     assert!(db.hybrid_search(&query).unwrap().is_empty(), "a keyword-indexed type with no match is just empty");
+}
+
+#[test]
+fn search_text_refuses_a_search_that_could_never_match() {
+    let dir = TempDir::new();
+    let db = Db::open(dir.db()).unwrap();
+    db.store("note", "needle in a haystack").unwrap();
+    assert!(matches!(db.search_text("needle", 10, None), Err(Error::NotIndexed { .. })), "nothing is indexed");
+    db.set_fulltext("note", true).unwrap();
+    assert_eq!(db.search_text("needle", 10, None).unwrap().len(), 1);
+    assert!(db.search_text("absent", 10, None).unwrap().is_empty(), "a real empty answer");
+    for (query, limit) in [("needle", 0), ("", 10), (" ,, ", 10)] {
+        assert!(matches!(db.search_text(query, limit, None), Err(Error::InvalidArgument(_))), "{query:?} {limit}");
+    }
+    assert!(matches!(db.search_text("needle", 10, Some(&[])), Err(Error::InvalidArgument(_))));
+}
+
+#[test]
+fn search_text_and_hybrid_search_restrict_to_unit_types() {
+    let dir = TempDir::new();
+    let db = Db::open(dir.db()).unwrap();
+    for t in ["note", "memo"] {
+        db.set_fulltext(t, true).unwrap();
+    }
+    let note = db.store("note", "shared words here").unwrap();
+    let memo = db.store("memo", "shared words there").unwrap();
+    db.store("plain", "shared words nowhere").unwrap(); // exists, never indexed
+
+    let ids = |types: Option<&[&str]>| -> Vec<kerno::UnitId> {
+        db.search_text("shared", 10, types).unwrap().into_iter().map(|h| h.unit).collect()
+    };
+    assert_eq!(ids(Some(&["note"])), vec![note]);
+    assert_eq!(ids(Some(&["memo"])), vec![memo]);
+    assert_eq!(ids(Some(&["note", "memo"])), ids(None));
+    assert_eq!(ids(None).len(), 2);
+    assert!(matches!(db.search_text("shared", 10, Some(&["ghost"])), Err(Error::UnknownType { .. })));
+    assert!(matches!(db.search_text("shared", 10, Some(&["plain"])), Err(Error::NotIndexed { .. })));
+
+    let types: &[&str] = &["note"];
+    let mut query = HybridQuery::new(5);
+    query.text = Some("shared");
+    query.text_types = Some(types);
+    assert_eq!(db.hybrid_search(&query).unwrap().iter().map(|h| h.unit).collect::<Vec<_>>(), vec![note]);
+    let ghost: &[&str] = &["ghost"];
+    query.text_types = Some(ghost);
+    assert!(matches!(db.hybrid_search(&query), Err(Error::UnknownType { .. })));
+    // `text_types` with no keyword leg to apply it to is refused, not ignored.
+    let mut no_leg = HybridQuery::new(5);
+    no_leg.text_types = Some(types);
+    no_leg.graph = Some(AssocQuery::new(vec![note], 1, 10, 100));
+    assert!(matches!(db.hybrid_search(&no_leg), Err(Error::InvalidArgument(_))));
+}
+
+#[test]
+fn a_range_or_name_nothing_can_match_is_an_error_not_an_empty_answer() {
+    let dir = TempDir::new();
+    let db = Db::open(dir.db()).unwrap();
+    db.define_schema("user", vec![FieldDef::new("age", FieldType::Int).indexed()]).unwrap();
+    let (ten, thirty) = (FieldValue::Int(10), FieldValue::Int(30));
+    let range = |lo, hi, limit| db.find_range("user", "age", lo, hi, limit);
+    assert!(range(Bound::Included(&ten), Bound::Included(&thirty), 5).unwrap().is_empty(), "a possible range");
+    assert!(matches!(range(Bound::Included(&thirty), Bound::Included(&ten), 5), Err(Error::InvalidArgument(_))));
+    assert!(matches!(range(Bound::Excluded(&ten), Bound::Excluded(&ten), 5), Err(Error::InvalidArgument(_))));
+    assert!(matches!(range(Bound::Unbounded, Bound::Unbounded, 0), Err(Error::InvalidArgument(_))));
+    let a = db.store("a", "x").unwrap();
+    assert!(matches!(db.related(a, Direction::Out, Some("")), Err(Error::InvalidArgument(_))));
+    let long = "r".repeat(300);
+    assert!(matches!(db.related(a, Direction::Out, Some(&long)), Err(Error::InvalidArgument(_))));
 }
 
 #[test]

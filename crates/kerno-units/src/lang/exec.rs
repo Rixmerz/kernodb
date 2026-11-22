@@ -185,9 +185,10 @@ impl<E: Engine> UnitSnapshot<E> {
                     self.query(&UnitFilter { unit_type: Some(q.root.unit_type.clone()), schema_version: None })?;
                 (out.units, Some(out.path))
             }
-            Access::FieldIndex { field } => {
-                (self.find_range(&q.root.unit_type, field, pick.lo.as_ref(), pick.hi.as_ref(), usize::MAX)?, None)
-            }
+            Access::FieldIndex { field } => (
+                self.find_range_lenient(&q.root.unit_type, field, pick.lo.as_ref(), pick.hi.as_ref(), usize::MAX)?,
+                None,
+            ),
         };
         // The canonical order of rows is by unit id, whatever order the path reads in.
         roots.sort_by_key(|u| u.id);

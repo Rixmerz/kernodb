@@ -114,7 +114,7 @@ fn fused_scores_are_the_weighted_rrf_of_the_leg_ranks() {
     let snap = f.snap();
     let hits = all_legs(&f);
 
-    let keyword: Vec<UnitId> = snap.search_text("rust", 100).unwrap().into_iter().map(|h| h.unit).collect();
+    let keyword: Vec<UnitId> = snap.search_text("rust", 100, None).unwrap().into_iter().map(|h| h.unit).collect();
     let vector: Vec<UnitId> =
         f.ann.search(&RUST, 100).unwrap().into_iter().map(|h| h.unit).filter(|u| *u != f.s).collect();
     let graph: Vec<UnitId> = snap

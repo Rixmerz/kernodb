@@ -910,7 +910,7 @@ impl<E: Engine> UnitSnapshot<E> {
             Direction::In => TAG_REL_IN,
         };
         let Some((start, end)) = Key::adjacency_range(tag, unit, relation_type) else {
-            return Ok(Vec::new());
+            return Err(UnitError::InvalidArgument("relation_type is not a valid relation type name".into()));
         };
         // K1: the counts the scan must meet, by type (P1).
         let expected = crate::adj_count::expected(&self.snap, unit, dir, relation_type)?;

@@ -55,8 +55,9 @@ export declare class Db {
    */
   commit(ops: Array<CommitOp>, options?: CommitOptions | undefined | null): Committed
   /**
-   * The newest `limit` revisions of `id` from `fromRevision` on, newest first; empty for an
-   * unknown unit. Throws `PRUNED` when `fromRevision` is below the oldest revision retention kept.
+   * The newest `limit` revisions of `id` from `fromRevision` on, newest first. Throws `NOT_FOUND`
+   * for a unit that never existed (not `[]`) and `PRUNED` when `fromRevision` is below the
+   * oldest revision retention kept.
    */
   history(id: string, options?: HistoryOptions | undefined | null): Array<Revision>
   /**
@@ -97,6 +98,15 @@ export declare class Db {
    * same commit. `hybridSearch`'s keyword leg only sees types that have it on.
    */
   setFulltext(unitType: string, enabled: boolean): void
+  /**
+   * The units whose text matches `query` (BM25, any of its words), best first. Only types with
+   * `setFulltext(type, true)` are searched; `options.types` restricts the search to those unit
+   * types. A search that could never match throws instead of returning `[]`: `NOT_INDEXED`
+   * when no type is keyword-indexed or a type in `types` is not, `UNKNOWN_TYPE` for a type
+   * nothing ever used, `INVALID_ARGUMENT` for `limit` below 1, a query with no word, or an
+   * empty `types`. A unit scores the same with or without `types`.
+   */
+  searchText(query: string, options?: SearchTextOptions | undefined | null): Array<TextHit>
   /** Whether `unitType` is keyword-indexed (off by default). */
   fulltext(unitType: string): boolean
   /**
@@ -137,7 +147,8 @@ export declare class Db {
    * One query over keywords, vectors and relations, fused by weighted reciprocal rank
    * fusion; best hit first. Wraps the engine's `hybrid_search`. A keyword signal with no type
    * switched on by `setFulltext` throws `NOT_INDEXED` (a switched-on type with no match gives an
-   * empty list). The search is not scoped to one type.
+   * empty list); `textTypes` scopes the keyword leg to some unit types, with the errors of
+   * `searchText`. The other legs are not scoped to a type.
    */
   hybridSearch(query: HybridQueryInput): Array<HybridHit>
   /**
@@ -262,6 +273,11 @@ export interface HybridHit {
 export interface HybridQueryInput {
   /** The keyword leg. Only types with `setFulltext(type, true)` are searched. */
   text?: string
+  /**
+   * Restricts the keyword leg to these unit types, with the errors of `searchText`. Throws
+   * `INVALID_ARGUMENT` without `text`. The other legs are not scoped to a type.
+   */
+  textTypes?: Array<string>
   vectors?: VectorInput
   relations?: RelationsInput
   weights?: HybridWeightsInput
@@ -394,6 +410,21 @@ export interface Revision {
    * revision has one.
    */
   payload?: Buffer
+}
+
+/** Options of `searchText`. */
+export interface SearchTextOptions {
+  /** Most hits, at least 1. Default 10. */
+  limit?: number
+  /** Search only these unit types (at least one). Default: every keyword-indexed type. */
+  types?: Array<string>
+}
+
+/** One hit of `searchText`. */
+export interface TextHit {
+  id: string
+  /** The BM25 score; higher is a better match. Compare, do not interpret. */
+  score: number
 }
 
 /** A unit as of its latest revision. */

@@ -91,7 +91,7 @@
 //! let rust = db.store("note", "Rust has no garbage collector")?;
 //! db.store("config", "garbage collector settings")?; // not indexed, never a hit
 //!
-//! let hits = db.search_text("garbage collector", 10)?;
+//! let hits = db.search_text("garbage collector", 10, None)?;
 //! assert_eq!(hits.len(), 1);
 //! assert_eq!(hits[0].unit, rust);
 //! assert!(db.fulltext("note")? && !db.fulltext("config")?);
@@ -1007,31 +1007,36 @@ impl Db {
         self.units.snapshot()?.reference_relations(|r| relation_type.is_none_or(|t| t == r.relation_type))
     }
 
-    /// Turns keyword (BM25) indexing of `unit_type` off (`enabled = false`) or back on.
+    /// Turns keyword (BM25) indexing of `unit_type` on (`enabled = true`) or back off.
     ///
-    /// Every payload that is valid UTF-8 is indexed by default, in the commit that writes it.
-    /// For data nobody searches by keyword that costs most of the write time and a large share
-    /// of the disk. The setting is stored in the database (layer version 7, ADR-0022), so it
-    /// holds across opens, and a build that predates it refuses the database instead of
-    /// misreading it. It can change only while the type has no active unit, so the index never
-    /// disagrees with the units.
+    /// Keyword indexing is off by default: the index costs write time and disk for data nobody
+    /// searches by keyword. Turning it on indexes the type's active units in the same commit, and
+    /// turning it off removes their entries, so the index never disagrees with the units. The
+    /// setting is stored in the database (layer version 7, ADR-0022), so it holds across opens,
+    /// and a build that predates it refuses the database instead of misreading it.
     ///
     /// # Errors
     ///
-    /// `InvalidArgument` when the type has active units or its name is invalid.
+    /// `InvalidArgument` when the type name is invalid.
     pub fn set_fulltext(&self, unit_type: &str, enabled: bool) -> Result<()> {
         self.units.set_fulltext(unit_type, enabled, ChangeMeta::default()).map(|_| ())
     }
 
     /// The units whose text matches `query` by keyword (BM25, any of the words), best first, at
-    /// most `limit`. Only the types turned on with [`Db::set_fulltext`] are searched; the index is
-    /// off by default. For keywords fused with vectors and relations, see [`Db::hybrid_search`].
+    /// most `limit`. Only the types turned on with [`Db::set_fulltext`] are searched; `types`
+    /// restricts the search further to those unit types (`None`: every keyword-indexed type).
+    /// For keywords fused with vectors and relations, see [`Db::hybrid_search`].
+    ///
+    /// A search that could never match raises instead of answering an empty list.
     ///
     /// # Errors
     ///
-    /// The engine fails or finds the index damaged.
-    pub fn search_text(&self, query: &str, limit: usize) -> Result<Vec<TextHit>> {
-        self.units.snapshot()?.search_text(query, limit)
+    /// `NotIndexed` when no type is keyword-indexed or a type in `types` is not;
+    /// `UnknownType` for a type in `types` that no unit, schema or option ever named;
+    /// `InvalidArgument` for `limit == 0`, a query with no word, an empty `types`, or an invalid
+    /// type name; the engine fails or finds the index damaged.
+    pub fn search_text(&self, query: &str, limit: usize, types: Option<&[&str]>) -> Result<Vec<TextHit>> {
+        self.units.snapshot()?.search_text(query, limit, types)
     }
 
     /// Whether `unit_type` is keyword-indexed (see [`Db::set_fulltext`]; off by default).
@@ -1088,8 +1093,9 @@ impl Db {
     ///
     /// # Errors
     ///
-    /// `NotIndexed` when the keyword leg runs and no type is keyword-indexed ([`Db::set_fulltext`]),
-    /// since it can then never match. `InvalidArgument` for a query outside its bounds or with no
+    /// What [`Db::search_text`] raises when the keyword leg runs and could never match:
+    /// `NotIndexed` (no type, or no type of `text_types`, is keyword-indexed, see
+    /// [`Db::set_fulltext`]) or `UnknownType`. `InvalidArgument` for a query outside its bounds or with no
     /// leg to run, a graph leg the
     /// model rejects or whose seed is not active, or a vector the index refuses; the engine
     /// fails or finds a record corrupt.

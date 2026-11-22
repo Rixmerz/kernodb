@@ -126,7 +126,8 @@ fn create_and_read<E: TxnEngine>() {
     assert!(snap.relations_of(u[1], Direction::Out, Some("refines")).unwrap().is_empty());
     // A type that is a prefix of another matches only its own entries.
     assert!(snap.relations_of(u[0], Direction::Out, Some("cite")).unwrap().is_empty());
-    assert!(snap.relations_of(u[0], Direction::Out, Some("")).unwrap().is_empty());
+    // A name no relation can have is refused, not answered with nothing.
+    assert!(matches!(snap.relations_of(u[0], Direction::Out, Some("")), Err(UnitError::InvalidArgument(_))));
     assert_equivalent(&snap, &u, &["cites", "refines", "cite"]);
     assert_clean(&db, "after relations");
 

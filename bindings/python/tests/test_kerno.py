@@ -187,7 +187,8 @@ def test_update_if_changed_and_restore_with_provenance(tmp_path):
 def test_missing_ids_and_future_sequences_do_not_raise(tmp_path):
     with kerno.open(tmp_path / "db") as db:
         a = db.store("n", "v1")
-        assert db.history("0" * 32) == []
+        with pytest.raises(kerno.NotFoundError):  # an id no unit ever had is not "no revisions"
+            db.history("0" * 32)
         assert db.read_as_of("0" * 32, 1) is None
         assert db.read_as_of(a, 10**12).payload == b"v1"
         with pytest.raises(kerno.NotFoundError):
@@ -397,7 +398,11 @@ def test_find_range_is_inclusive_and_open_ended(tmp_path):
         assert ages(high=20) == [5, 10, 20]  # open below
         assert ages() == [5, 10, 20, 30, 40]
         assert ages(low=10, limit=2) == [10, 20]
-        assert ages(low=31, high=39) == []
+        assert ages(low=31, high=39) == []  # a range that can hold values, with none stored
+        with pytest.raises(kerno.InvalidArgumentError):  # a range no value can be in
+            db.find_range("user", "age", low=30, high=10)
+        with pytest.raises(kerno.InvalidArgumentError):
+            db.find_range("user", "age", limit=0)
         db.delete(ids[20])
         assert ages(low=10, high=30) == [10, 30]  # deleted units drop out of the index
         with pytest.raises(kerno.InvalidArgumentError):
@@ -509,7 +514,8 @@ def test_history_bounds_and_order(tmp_path):
         assert revs(limit=2, order="asc", from_revision=asc1[-1] + 1) == [3, 4]
         with pytest.raises(ValueError):
             db.history(uid, order="sideways")
-        assert db.history("00" * 16, order="asc") == []
+        with pytest.raises(kerno.NotFoundError):
+            db.history("00" * 16, order="asc")
 
 
 def test_compare_two_revisions(tmp_path):
@@ -783,8 +789,60 @@ def test_the_indexed_text_limit_is_254_bytes_and_the_error_names_it(tmp_path):
                 db.upsert("lim", "key", {"key": too_long})
 
 
+def test_search_text_raises_when_it_could_never_match(tmp_path):
+    with kerno.open(tmp_path / "db") as db:
+        db.store("note", "needle in a haystack")
+        with pytest.raises(kerno.NotIndexedError):  # off by default: no type is searchable
+            db.search_text("needle")
+        db.set_fulltext("note", True)
+        assert [h.id for h in db.search_text("needle")] != []
+        assert db.search_text("absent") == []  # indexed, nothing matches: a real empty answer
+        for call in (
+            lambda: db.search_text("needle", limit=0),
+            lambda: db.search_text(""),
+            lambda: db.search_text(" ,, "),
+            lambda: db.search_text("needle", types=[]),
+        ):
+            with pytest.raises(kerno.InvalidArgumentError):
+                call()
+        db.set_fulltext("note", False)
+        with pytest.raises(kerno.NotIndexedError):
+            db.search_text("needle")
+
+
+def test_search_text_restricted_to_types(tmp_path):
+    with kerno.open(tmp_path / "db") as db:
+        for t in ("note", "memo"):
+            db.set_fulltext(t, True)
+        note = db.store("note", "shared words here")
+        memo = db.store("memo", "shared words there")
+        db.store("plain", "shared words nowhere")  # not indexed
+        assert {h.id for h in db.search_text("shared")} == {note, memo}
+        assert [h.id for h in db.search_text("shared", types=["note"])] == [note]
+        assert [h.id for h in db.search_text("shared", types=["memo"])] == [memo]
+        both = db.search_text("shared", types=["note", "memo"])
+        assert [(h.id, h.score) for h in both] == [(h.id, h.score) for h in db.search_text("shared")]
+        # the score does not depend on the restriction
+        only = db.search_text("shared", types=["note"])[0]
+        assert only.score == next(h.score for h in db.search_text("shared") if h.id == note)
+        assert len(db.search_text("shared", limit=1, types=["memo"])) == 1
+        with pytest.raises(kerno.UnknownTypeError):
+            db.search_text("shared", types=["ghost"])
+        with pytest.raises(kerno.UnknownTypeError):
+            db.search_text("shared", types=["note", "ghost"])
+        with pytest.raises(kerno.NotIndexedError):  # exists, not keyword-indexed
+            db.search_text("shared", types=["plain"])
+        # hybrid_search shares the semantics through text_types
+        assert [h.id for h in db.hybrid_search("shared", text_types=["note"])] == [note]
+        with pytest.raises(kerno.UnknownTypeError):
+            db.hybrid_search("shared", text_types=["ghost"])
+        with pytest.raises(kerno.InvalidArgumentError):  # text_types without a keyword leg
+            db.hybrid_search(vector=[1.0], vectors={note: [1.0]}, text_types=["note"])
+
+
 def test_distinct_cases_raise_distinct_error_classes(tmp_path):
     hierarchy = {
+        kerno.UnknownTypeError: kerno.InvalidArgumentError,
         kerno.SchemaExistsError: kerno.InvalidArgumentError,
         kerno.NotIndexedError: kerno.InvalidArgumentError,
         kerno.NotUniqueError: kerno.InvalidArgumentError,

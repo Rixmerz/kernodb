@@ -58,8 +58,11 @@ database, and turning it on for a type that already has units indexes them in th
 db.set_fulltext("note", true)?;
 let rust = db.store("note", "Rust has no garbage collector")?;
 db.store("config", "garbage collector settings")?; // not indexed, never a hit
-let hits = db.search_text("garbage collector", 10)?; // best first
+let hits = db.search_text("garbage collector", 10, None)?; // best first, every indexed type
 assert_eq!(hits[0].unit, rust);
+// Only some unit types: `UnknownType` for a type nothing ever used, `NotIndexed` for one that is off.
+let notes = db.search_text("garbage collector", 10, Some(&["note"]))?;
+assert_eq!(notes.len(), 1);
 ```
 
 Indexing costs writes several times over and about 3.5x the disk, so turn it on only for the types
@@ -69,7 +72,8 @@ you search by text. `db.fulltext(type)` says whether a type is indexed.
 
 `Db::hybrid_search` answers one query over keywords (BM25), vectors and relations, fused by weighted
 reciprocal rank fusion (`k = 60`; each leg has weight 1 by default, and a weight of 0 switches that leg off).
-The keyword leg reads only the types turned on with `set_fulltext`.
+The keyword leg reads only the types turned on with `set_fulltext`, and `HybridQuery::text_types` narrows it to some of them.
+With no indexed type the leg raises `NotIndexed` instead of answering no hits.
 The vector leg is an index you own and keep in step with your units: a `kerno::units::AnnIndex` (HNSW) or,
 for exact search, a `kerno::units::assoc_rank::VectorSet`. Units that are not active are never hits.
 A complete query is in `crates/kerno/tests/db.rs` (`hybrid_search_fuses_text_hnsw_and_graph`).

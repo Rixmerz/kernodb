@@ -250,6 +250,11 @@ pub enum UnitError {
     NotIndexed {
         detail: String,
     },
+    /// A search or read names a unit type the database has never seen: no unit, schema or
+    /// type option has ever used it, so nothing can match.
+    UnknownType {
+        unit_type: String,
+    },
     /// An upsert by a field its type's schema does not declare unique (or by a type with no
     /// schema at all).
     NotUnique {
@@ -300,6 +305,7 @@ impl fmt::Display for UnitError {
                 write!(f, "the unit type {unit_type:?} already has a different schema")
             }
             UnitError::NotIndexed { detail } => write!(f, "no index: {detail}"),
+            UnitError::UnknownType { unit_type } => write!(f, "unknown unit type {unit_type:?}"),
             UnitError::NotUnique { detail } => write!(f, "no unique key: {detail}"),
             UnitError::BadEndpoint { detail } => write!(f, "bad relation end: {detail}"),
             UnitError::IndexNotReady { state, watermark: Some(w) } => {

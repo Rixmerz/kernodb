@@ -118,8 +118,8 @@ What the facade does not cover is in `kerno::units` (the complete `kerno-units` 
 
 ### Search by keyword (opt-in per type)
 
-No type is in the keyword (BM25) index until you turn it on, so `search_text` finds nothing at first (and
-`hybrid_search` with a keyword leg refuses with `NotIndexed` while no type is on, rather than answer no hits):
+No type is in the keyword (BM25) index until you turn it on, so `search_text` and the keyword leg of
+`hybrid_search` refuse with `NotIndexed` while no type is on, rather than answer no hits:
 
 ```rust
 use kerno::Db;
@@ -130,7 +130,7 @@ fn main() -> Result<(), kerno::Error> {
     let rust = db.store("note", "Rust has no garbage collector")?;
     db.store("config", "garbage collector settings")?; // not indexed: never a hit
 
-    let hits = db.search_text("garbage collector", 10)?;
+    let hits = db.search_text("garbage collector", 10, None)?;
     println!("hits: {}, first is the note: {}", hits.len(), hits[0].unit == rust);
     db.close()?;
     Ok(())
@@ -145,7 +145,8 @@ hits: 1, first is the note: true
 
 - `set_fulltext(type, true)` turns the index on for one type, and `false` turns it off again. Either way the type's active units follow in the same commit. `fulltext(type)` says which it is.
 - Indexing costs writes several times over and about 3.5x the disk, so turn it on only for the types you search by text.
-- `search_text(query, limit)` returns `TextHit`s (`unit`, `score`), best first. `hybrid_search` fuses the same keyword leg with vectors and relations.
+- `search_text(query, limit, types)` returns `TextHit`s (`unit`, `score`), best first. `types` is `None` for every indexed type, or `Some(&["note", "memo"])` to search only those unit types; the score of a unit is the same either way. `hybrid_search` fuses the same keyword leg with vectors and relations, and takes the same restriction in `HybridQuery::text_types`.
+- A search that could never match raises: `NotIndexed` when no type (or a requested type) is indexed, `UnknownType` for a type nothing ever used, `InvalidArgument` for `limit` 0, a query with no word or an empty `types`. A search that can match and finds nothing returns an empty list.
 
 ### Upgrading from 1.0.0-alpha.1
 

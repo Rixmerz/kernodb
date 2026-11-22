@@ -178,7 +178,7 @@ fn layer_version(dir: &std::path::Path) -> u32 {
 }
 
 fn search(db: &Db, q: &str) -> Vec<kerno::UnitId> {
-    db.search_text(q, 10).unwrap().iter().map(|h| h.unit).collect()
+    db.search_text(q, 10, None).unwrap().iter().map(|h| h.unit).collect()
 }
 
 #[test]
@@ -186,7 +186,8 @@ fn keyword_index_is_off_by_default_and_on_per_type() {
     let dir = TempDir::new();
     let db = Db::open(&dir.0).unwrap();
     let a = db.store("sym", "alpha beta").unwrap();
-    assert!(search(&db, "alpha").is_empty(), "no type is indexed by default");
+    let off = db.search_text("alpha", 10, None);
+    assert!(matches!(off, Err(kerno::Error::NotIndexed { .. })), "no type is indexed by default: {off:?}");
     db.set_fulltext("note", true).unwrap();
     db.set_fulltext("note", true).unwrap(); // same state: nothing written
     let n = db.store("note", "alpha beta").unwrap();
@@ -219,7 +220,8 @@ fn switching_a_type_with_units_reindexes_them_in_one_commit() {
     db.commit(Batch::new().unarchive(c)).unwrap();
     assert_eq!(search(&db, "archived"), vec![c]);
     db.set_fulltext("note", false).unwrap();
-    assert!(search(&db, "rust").is_empty(), "turning it off removes the entries");
+    let off = db.search_text("rust", 10, None);
+    assert!(matches!(off, Err(kerno::Error::NotIndexed { .. })), "turning it off removes the entries: {off:?}");
     assert!(db.verify().unwrap().is_clean(), "{:?}", db.verify().unwrap().findings);
 }
 

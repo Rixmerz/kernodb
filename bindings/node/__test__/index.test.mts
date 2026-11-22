@@ -330,7 +330,7 @@ test('history lists revisions newest first, with limit and withPayload', () => {
 
   assert.deepEqual(db.history(id, { limit: 2 }).map((r) => r.revision), [3, 2])
   assert.equal(db.history(id, { withPayload: true })[0]?.payload?.toString(), 'v3')
-  assert.deepEqual(db.history(MISSING), [])
+  assert.equal(codeOf(() => db.history(MISSING)), 'NOT_FOUND') // never existed: not an empty history
 })
 
 test('readAsOf reads the revision in force at a commit', () => {
@@ -557,6 +557,50 @@ test('execute runs the query language and returns rows of units', () => {
   assert.deepEqual(joined.aliases, ['u', 't'])
   assert.deepEqual(joined.rows.map((r) => r.map((u) => u.id)), [[old, team]])
   assert.equal(codeOf(() => db.execute('NOT A QUERY')), 'INVALID_ARGUMENT')
+})
+
+// ---- searchText ----
+
+test('searchText throws when it could never match, and answers [] when it merely finds nothing', () => {
+  db.store('note', 'needle in a haystack')
+  assert.equal(codeOf(() => db.searchText('needle')), 'NOT_INDEXED') // off by default
+  db.setFulltext('note', true)
+  assert.equal(db.searchText('needle').length, 1)
+  assert.deepEqual(db.searchText('absent'), []) // indexed, nothing matches: a real empty answer
+  assert.equal(codeOf(() => db.searchText('needle', { limit: 0 })), 'INVALID_ARGUMENT')
+  assert.equal(codeOf(() => db.searchText('needle', { limit: 1.5 })), 'INVALID_ARGUMENT')
+  assert.equal(codeOf(() => db.searchText('')), 'INVALID_ARGUMENT')
+  assert.equal(codeOf(() => db.searchText(' ,, ')), 'INVALID_ARGUMENT')
+  assert.equal(codeOf(() => db.searchText('needle', { types: [] })), 'INVALID_ARGUMENT')
+  db.setFulltext('note', false)
+  assert.equal(codeOf(() => db.searchText('needle')), 'NOT_INDEXED')
+})
+
+test('searchText restricted to unit types', () => {
+  db.setFulltext('note', true)
+  db.setFulltext('memo', true)
+  const note = db.store('note', 'shared words here')
+  const memo = db.store('memo', 'shared words there')
+  db.store('plain', 'shared words nowhere') // not indexed
+  assert.deepEqual(db.searchText('shared').map((h) => h.id).sort(), [note, memo].sort())
+  assert.deepEqual(db.searchText('shared', { types: ['note'] }).map((h) => h.id), [note])
+  assert.deepEqual(db.searchText('shared', { types: ['memo'] }).map((h) => h.id), [memo])
+  const both = db.searchText('shared', { types: ['note', 'memo'] })
+  assert.deepEqual(both, db.searchText('shared'))
+  // a unit scores the same with or without the restriction
+  const only = db.searchText('shared', { types: ['note'] })[0]!
+  assert.equal(only.score, db.searchText('shared').find((h) => h.id === note)!.score)
+  assert.equal(db.searchText('shared', { limit: 1, types: ['memo'] }).length, 1)
+  assert.equal(codeOf(() => db.searchText('shared', { types: ['ghost'] })), 'UNKNOWN_TYPE')
+  assert.equal(codeOf(() => db.searchText('shared', { types: ['note', 'ghost'] })), 'UNKNOWN_TYPE')
+  assert.equal(codeOf(() => db.searchText('shared', { types: ['plain'] })), 'NOT_INDEXED') // exists, not indexed
+  // hybridSearch shares the semantics through textTypes
+  assert.deepEqual(db.hybridSearch({ text: 'shared', textTypes: ['note'] }).map((h) => h.id), [note])
+  assert.equal(codeOf(() => db.hybridSearch({ text: 'shared', textTypes: ['ghost'] })), 'UNKNOWN_TYPE')
+  assert.equal(
+    codeOf(() => db.hybridSearch({ vectors: { query: [1], items: [{ id: note, vector: [1] }] }, textTypes: ['note'] })),
+    'INVALID_ARGUMENT', // textTypes without a keyword leg
+  )
 })
 
 // ---- hybridSearch ----

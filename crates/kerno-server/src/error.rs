@@ -118,6 +118,7 @@ impl From<UnitError> for ApiError {
             UnitError::InvalidArgument(_)
             | UnitError::SchemaExists { .. }
             | UnitError::NotIndexed { .. }
+            | UnitError::UnknownType { .. }
             | UnitError::NotUnique { .. }
             | UnitError::BadEndpoint { .. } => Kind::InvalidRequest,
             UnitError::SchemaViolation { .. } => Kind::SchemaViolation,
@@ -157,6 +158,7 @@ mod tests {
             (Error::InvalidArgument("x".into()), Kind::InvalidRequest),
             (Error::SchemaExists { unit_type: "t".into() }, Kind::InvalidRequest),
             (Error::NotIndexed { detail: "x".into() }, Kind::InvalidRequest),
+            (Error::UnknownType { unit_type: "t".into() }, Kind::InvalidRequest),
             (Error::NotUnique { detail: "x".into() }, Kind::InvalidRequest),
             (Error::BadEndpoint { detail: "x".into() }, Kind::InvalidRequest),
             (Error::SchemaViolation { detail: "x".into() }, Kind::SchemaViolation),

@@ -68,7 +68,7 @@ fn change(db: &UnitDb<E>, f: impl FnOnce(&mut ChangeSet<'_, E>)) {
 }
 
 fn found(db: &UnitDb<E>, query: &str) -> Vec<UnitId> {
-    db.search_text(query, 100).unwrap().into_iter().map(|h| h.unit).collect()
+    db.search_text(query, 100, None).unwrap().into_iter().map(|h| h.unit).collect()
 }
 
 fn assert_clean(db: &UnitDb<E>) {
@@ -116,7 +116,7 @@ fn one_document_scores_the_closed_form() {
     let db = open(&disk);
     let a = store(&db, b"solitary");
     // N = 1, n = 1, tf = 1, dl = avgdl: idf = ln(4/3), the tf factor is 1.
-    let hits = db.search_text("solitary", 5).unwrap();
+    let hits = db.search_text("solitary", 5, None).unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].unit, a);
     assert!((hits[0].score - (4.0f64 / 3.0).ln()).abs() < 1e-12, "score {}", hits[0].score);
@@ -168,7 +168,7 @@ fn ranking_follows_bm25_on_a_small_corpus() {
     assert_clean(&db);
     for query in [&["quick", "fox"][..], &["lazy", "dog"], &["fox"], &["the"], &["über", "café"], &["absent"]] {
         let want = reference(&corpus, query);
-        let got = db.search_text(&query.join(" "), 100).unwrap();
+        let got = db.search_text(&query.join(" "), 100, None).unwrap();
         assert_eq!(got.len(), want.len(), "query {query:?}: {got:?} against {want:?}");
         for (g, (u, s)) in got.iter().zip(&want) {
             assert_eq!(g.unit, *u, "query {query:?}: order differs");
@@ -194,33 +194,101 @@ fn limit_ties_and_empty_queries() {
     let b = store(&db, b"same words");
     let c = store(&db, b"same words same");
     store(&db, b"other");
-    let all = db.search_text("same", 10).unwrap();
+    let all = db.search_text("same", 10, None).unwrap();
     assert_eq!(all.len(), 3);
     // Equal scores come in unit id order.
     let at = |u: UnitId| all.iter().position(|h| h.unit == u).unwrap();
     assert_eq!(all[at(a)].score, all[at(b)].score);
     assert!(at(a) < at(b), "equal scores: lower unit id first");
     assert!(at(c) < at(a), "a higher tf in a text of the same size ranks first");
-    assert_eq!(db.search_text("same", 1).unwrap().len(), 1);
-    assert_eq!(db.search_text("same", 2).unwrap(), all[..2]);
-    assert!(db.search_text("same", 0).unwrap().is_empty());
-    assert!(db.search_text("", 10).unwrap().is_empty());
-    assert!(db.search_text("  ,, ", 10).unwrap().is_empty());
-    assert!(db.search_text("missing", 10).unwrap().is_empty());
+    assert_eq!(db.search_text("same", 1, None).unwrap().len(), 1);
+    assert_eq!(db.search_text("same", 2, None).unwrap(), all[..2]);
+    assert!(db.search_text("missing", 10, None).unwrap().is_empty());
+    // A search that could never match is refused, not answered with nothing.
+    for (query, limit) in [("same", 0), ("", 10), ("  ,, ", 10)] {
+        assert!(matches!(db.search_text(query, limit, None), Err(UnitError::InvalidArgument(_))), "{query:?} {limit}");
+    }
+}
+
+fn store_as(db: &UnitDb<E>, unit_type: &str, payload: &[u8]) -> UnitId {
+    let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
+    let id = cs.create(NewUnit { unit_type: unit_type.into(), ..new_unit(payload) }).unwrap();
+    cs.commit().unwrap();
+    id
+}
+
+#[test]
+fn a_search_with_no_keyword_index_is_not_indexed() {
+    let disk = SimVfs::new(40);
+    let db = open_plain(&disk, 1);
+    store_as(&db, "note", b"same words");
+    assert!(matches!(db.search_text("same", 10, None), Err(UnitError::NotIndexed { .. })));
+    // Restricting to a type does not hide it: the check on the database comes first.
+    assert!(matches!(db.search_text("same", 10, Some(&["note"])), Err(UnitError::NotIndexed { .. })));
+    db.set_fulltext("note", true, ChangeMeta::default()).unwrap();
+    assert_eq!(db.search_text("same", 10, None).unwrap().len(), 1);
+    // Off again: no type is indexed once more.
+    db.set_fulltext("note", false, ChangeMeta::default()).unwrap();
+    assert!(matches!(db.search_text("same", 10, None), Err(UnitError::NotIndexed { .. })));
+}
+
+#[test]
+fn a_search_restricted_to_types_finds_only_those_types() {
+    let disk = SimVfs::new(41);
+    let db = open(&disk);
+    db.set_fulltext("memo", true, ChangeMeta::default()).unwrap();
+    db.set_fulltext("empty_on", true, ChangeMeta::default()).unwrap();
+    let note = store_as(&db, "note", b"shared words here");
+    let memo = store_as(&db, "memo", b"shared words there");
+    let plain = store_as(&db, "plain", b"shared words nowhere"); // never indexed
+    let _ = plain;
+    let all: Vec<UnitId> = db.search_text("shared", 10, None).unwrap().iter().map(|h| h.unit).collect();
+    assert_eq!(all.len(), 2);
+    let only = |types: &[&str]| -> Vec<TextHit> { db.search_text("shared", 10, Some(types)).unwrap() };
+    assert_eq!(only(&["note"]).iter().map(|h| h.unit).collect::<Vec<_>>(), vec![note]);
+    assert_eq!(only(&["memo"]).iter().map(|h| h.unit).collect::<Vec<_>>(), vec![memo]);
+    // Several types: the same hits and scores as no restriction.
+    let both = only(&["note", "memo"]);
+    assert_eq!(both, db.search_text("shared", 10, None).unwrap());
+    // A unit scores the same with or without the restriction (whole-index statistics).
+    let unrestricted = db.search_text("shared", 10, None).unwrap();
+    assert_eq!(only(&["note"])[0].score, unrestricted.iter().find(|h| h.unit == note).unwrap().score);
+    // The limit counts after the restriction.
+    assert_eq!(db.search_text("shared", 1, Some(&["memo"])).unwrap().len(), 1);
+    // A type that is on but holds no match is an empty answer, a real one.
+    assert!(only(&["empty_on"]).is_empty());
+}
+
+#[test]
+fn a_restriction_that_could_never_match_is_refused() {
+    let disk = SimVfs::new(42);
+    let db = open(&disk);
+    store_as(&db, "plain", b"shared words"); // exists, but not keyword-indexed
+    store(&db, b"shared words");
+    let err = |types: &[&str]| db.search_text("shared", 10, Some(types)).unwrap_err();
+    assert!(matches!(err(&["ghost"]), UnitError::UnknownType { unit_type } if unit_type == "ghost"));
+    assert!(matches!(err(&["note", "ghost"]), UnitError::UnknownType { .. }), "one unknown type refuses all");
+    assert!(matches!(err(&["plain"]), UnitError::NotIndexed { .. }), "a known type that is not indexed");
+    assert!(matches!(err(&[]), UnitError::InvalidArgument(_)), "an empty list names no type");
+    assert!(matches!(err(&[""]), UnitError::InvalidArgument(_)));
+    assert!(matches!(err(&[&"x".repeat(65)]), UnitError::InvalidArgument(_)));
+    // A type that was only ever named by its option is known.
+    db.set_fulltext("fresh", true, ChangeMeta::default()).unwrap();
+    assert!(db.search_text("shared", 10, Some(&["fresh"])).unwrap().is_empty());
 }
 
 #[test]
 fn a_database_without_text_answers_nothing_and_writes_nothing() {
     let disk = SimVfs::new(4);
     let db = open(&disk);
-    assert!(db.search_text("anything", 5).unwrap().is_empty());
+    assert!(db.search_text("anything", 5, None).unwrap().is_empty());
     let binary = store(&db, &[0xff, 0xfe, 0xfd]);
     let blank = store(&db, b" ... ");
     for id in [binary, blank] {
         assert_eq!(db.raw_get(&doc_key(id)).unwrap(), None);
     }
     assert_eq!(db.raw_get(&STATS_KEY).unwrap(), None, "no text, no statistics record");
-    assert!(db.search_text("anything", 5).unwrap().is_empty());
+    assert!(db.search_text("anything", 5, None).unwrap().is_empty());
     assert_clean(&db);
 }
 
@@ -242,7 +310,7 @@ fn the_index_follows_update_archive_restore_and_delete() {
     assert_eq!(db.raw_get(&posting_key("alpha", a)).unwrap(), None, "the old posting is gone");
     assert_clean(&db);
     // A snapshot keeps the index it was taken at.
-    assert_eq!(before.search_text("alpha", 5).unwrap().len(), 1);
+    assert_eq!(before.search_text("alpha", 5, None).unwrap().len(), 1);
 
     change(&db, |cs| {
         cs.archive(b, None).unwrap();
@@ -326,7 +394,7 @@ fn an_aborted_change_set_leaves_no_entry() {
 // ------------------------------------------------------------- recovery
 
 fn snapshot_of(db: &UnitDb<E>) -> BTreeMap<&'static str, Vec<TextHit>> {
-    ["quick fox", "lazy", "the", "über"].into_iter().map(|q| (q, db.search_text(q, 100).unwrap())).collect()
+    ["quick fox", "lazy", "the", "über"].into_iter().map(|q| (q, db.search_text(q, 100, None).unwrap())).collect()
 }
 
 #[test]
