@@ -52,7 +52,7 @@ jobs:
       - name: Install the wheel and run the tests (Alpine)
         if: matrix.musl
         run: |
-          docker run --rm -v "$PWD/bindings/python:/w" -w /w python:3.12-alpine sh -euc '
+          docker run --rm -v "$PWD:/w" -w /w/bindings/python python:3.12-alpine sh -euc '
             pip install pytest
             pip install --no-index --find-links dist kernodb
             python -m pytest tests'
