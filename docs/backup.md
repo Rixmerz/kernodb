@@ -142,6 +142,7 @@ All four take `--json`. Exit status: 0 success, 1 failure, 2 a wrong command lin
 | URL | Store |
 |---|---|
 | `file:///absolute/dir` | A directory: a mounted volume or an NFS share. Objects are written to a temporary name, synced and renamed. |
+| `file:///C:/dir` | The same on Windows (`C:\dir`). There, `file://C:\dir` and `file://C:/dir`, a native path written after `file://`, name the same directory; on other systems they are refused. |
 | `s3://bucket/prefix` | S3 or an S3-compatible store, path-style, signed with AWS Signature Version 4. |
 
 S3 is configured by the environment only, so no secret is on a command line or in a log:

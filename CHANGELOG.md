@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **The CLI test target compiles on Windows** (#8): the test of a non-Unicode argument built it with `std::os::unix::ffi::OsStrExt`; it now builds a byte that is not UTF-8 on Unix and an unpaired UTF-16 surrogate on Windows.
 - **The backup recovery test runs on Windows** (#9): it killed the server with the Unix `kill` command; it now uses `Child::kill` (SIGKILL on Unix, TerminateProcess on Windows).
 - **The readiness tests run on Windows** (#10): they renamed a database directory the server held open, which Windows refuses. The tests now serve the database through a link (a symlink on Unix, a directory junction on Windows) and remove it, which keeps what they assert: `/readyz` 503 while the directory is gone, `/livez` 200.
+- **Windows backup URLs and the binaries' tests** (Windows CI run 44965725461): `open_store` takes `file://C:\dir` and `file://C:/dir` on Windows (a drive path written straight after `file://`) as well as `file:///C:/dir`; a `file://` URL that is not an absolute path is still refused. The `kerno` tests built backup URLs as `file://` + the native path, which is not a URL on Windows; they now build `file:///C:/...`. The `kerno-server` tests that read the whole stderr or counted `WARN` lines no longer trip over the durability warning that every start logs off Linux.
 - **CI**: the Windows job now also runs the tests of `kerno-cli`, `kerno-mcp` and `kerno-server`, so a regression in those targets shows up there.
 
 ## [1.0.0-alpha.2] - 2026-11-21
