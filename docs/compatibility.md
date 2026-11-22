@@ -1,6 +1,6 @@
 # Compatibility promise for 1.0
 
-**Status: proposed.** Kerno is at version 1.0.0-alpha.2 (an alpha, not 1.0) and the project owner declares 1.0
+**Status: proposed.** Kerno is at version 1.0.0-alpha.3 (an alpha, not 1.0) and the project owner declares 1.0
 (ROADMAP, Phase D). Until then nothing here binds anyone. This document is the
 promise that takes effect on that declaration, so the owner can approve it, or
 change it, before it does. ADR-0010 left the semver policy open until a stable

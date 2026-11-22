@@ -10,7 +10,7 @@ The guides [Kerno as a revisioned history next to another database](https://gith
 and [one unit per entity, keyed by a logical key](https://github.com/Rixmerz/kernodb/blob/main/docs/guides/one-unit-per-entity.md)
 have Python examples. Every call they use exists here under its camelCase name (see the coverage table).
 
-> **Alpha: 1.0.0-alpha.2.** It does not open databases written by alpha.1 (see
+> **Alpha: 1.0.0-alpha.3.** It does not open databases written by alpha.1 (see
 > [Upgrading](#upgrading-from-100-alpha1)). The keyword index is opt-in per type. The on-disk format v1 is frozen
 > ([ADR-0013](https://github.com/Rixmerz/kernodb/blob/main/docs/adr/0013-format-v1-and-engine-protocol.md)).
 > There is no 1.0 release and no stability promise yet for the API. Benchmarks and long fuzzing runs are not yet certified.

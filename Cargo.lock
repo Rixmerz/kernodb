@@ -185,7 +185,7 @@ dependencies = [
 
 [[package]]
 name = "chat-history"
-version = "1.0.0-alpha.2"
+version = "1.0.0-alpha.3"
 dependencies = [
  "kernodb",
 ]
@@ -366,7 +366,7 @@ dependencies = [
 
 [[package]]
 name = "document-store"
-version = "1.0.0-alpha.2"
+version = "1.0.0-alpha.3"
 dependencies = [
  "kernodb",
 ]
@@ -934,7 +934,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "kerno-backup"
-version = "1.0.0-alpha.2"
+version = "1.0.0-alpha.3"
 dependencies = [
  "blake3",
  "kernodb",
@@ -950,7 +950,7 @@ dependencies = [
 
 [[package]]
 name = "kerno-cli"
-version = "1.0.0-alpha.2"
+version = "1.0.0-alpha.3"
 dependencies = [
  "kerno-backup",
  "kernodb-core",
@@ -961,7 +961,7 @@ dependencies = [
 
 [[package]]
 name = "kerno-mcp"
-version = "1.0.0-alpha.2"
+version = "1.0.0-alpha.3"
 dependencies = [
  "kernodb-core",
  "kernodb-storage",
@@ -972,7 +972,7 @@ dependencies = [
 
 [[package]]
 name = "kerno-server"
-version = "1.0.0-alpha.2"
+version = "1.0.0-alpha.3"
 dependencies = [
  "bytes",
  "http-body-util",
@@ -1001,7 +1001,7 @@ dependencies = [
 
 [[package]]
 name = "kerno-testkit"
-version = "1.0.0-alpha.2"
+version = "1.0.0-alpha.3"
 dependencies = [
  "crc32c",
  "kernodb-core",
@@ -1010,7 +1010,7 @@ dependencies = [
 
 [[package]]
 name = "kernodb"
-version = "1.0.0-alpha.2"
+version = "1.0.0-alpha.3"
 dependencies = [
  "kernodb-core",
  "kernodb-storage",
@@ -1019,11 +1019,11 @@ dependencies = [
 
 [[package]]
 name = "kernodb-core"
-version = "1.0.0-alpha.2"
+version = "1.0.0-alpha.3"
 
 [[package]]
 name = "kernodb-storage"
-version = "1.0.0-alpha.2"
+version = "1.0.0-alpha.3"
 dependencies = [
  "crc32c",
  "crossbeam-skiplist",
@@ -1040,7 +1040,7 @@ dependencies = [
 
 [[package]]
 name = "kernodb-units"
-version = "1.0.0-alpha.2"
+version = "1.0.0-alpha.3"
 dependencies = [
  "blake3",
  "crc32c",
@@ -2075,7 +2075,7 @@ dependencies = [
 
 [[package]]
 name = "spike-bench"
-version = "1.0.0-alpha.2"
+version = "1.0.0-alpha.3"
 dependencies = [
  "fjall",
  "hdrhistogram",
@@ -2092,7 +2092,7 @@ dependencies = [
 
 [[package]]
 name = "spike-btree"
-version = "1.0.0-alpha.2"
+version = "1.0.0-alpha.3"
 dependencies = [
  "crc32c",
  "parking_lot",
@@ -2102,7 +2102,7 @@ dependencies = [
 
 [[package]]
 name = "spike-core"
-version = "1.0.0-alpha.2"
+version = "1.0.0-alpha.3"
 dependencies = [
  "kerno-testkit",
  "kernodb-core",
@@ -2110,7 +2110,7 @@ dependencies = [
 
 [[package]]
 name = "spike-lsm"
-version = "1.0.0-alpha.2"
+version = "1.0.0-alpha.3"
 dependencies = [
  "crc32c",
  "crossbeam-skiplist",

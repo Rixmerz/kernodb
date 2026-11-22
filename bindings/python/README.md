@@ -7,7 +7,7 @@ its data in a directory on disk. There is no server.
 
 The package is `kernodb`; the module you import is `kerno`.
 
-> **Alpha (1.0.0a2).** It does not open databases written by 1.0.0a1 (see
+> **Alpha (1.0.0a3).** It does not open databases written by 1.0.0a1 (see
 > [Upgrading](#upgrading-from-100-alpha1)), and the keyword index is opt-in per type. The on-disk
 > format is frozen, the API is not. Expect breaking changes between alpha releases. See the [changelog](https://github.com/Rixmerz/kernodb/blob/main/CHANGELOG.md).
 

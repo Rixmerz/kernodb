@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.0-alpha.3] - 2026-11-21
+
 ### Added
 
 - **Docs for the facade and the bindings** (#2, section 5): [`docs/bindings-coverage.md`](docs/bindings-coverage.md) lists every public call of the `kerno` facade and whether the Python and Node bindings expose it, under which name (gaps: `drop_index`, `schema`, `search_text` in both; `find_range`, `explain` and `compare` in Node). Guides: [Kerno as a revisioned history next to another database](docs/guides/history-alongside.md) and [one unit per entity, keyed by a logical key](docs/guides/one-unit-per-entity.md). The binding READMEs now say that a read-only open takes no lock.

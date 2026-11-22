@@ -6,37 +6,36 @@
 
 **Where Kerno is going:** see the [product roadmap](ROADMAP.md): the 1.0 declaration, a query language and a cloud server mode.
 
-> **Alpha: 1.0.0-alpha.2.** This is a public alpha, not a 1.0 release.
+> **Alpha: 1.0.0-alpha.3.** This is a public alpha, not a 1.0 release.
 >
-> - **It does not open databases written by 1.0.0-alpha.1**: export with alpha.1 and import with alpha.2 ([compatibility](docs/compatibility.md#0-before-10-the-alpha2-format-cut)).
+> - **It opens databases written by 1.0.0-alpha.2, not those of 1.0.0-alpha.1**: export with alpha.1 and import with alpha.2 or later ([compatibility](docs/compatibility.md#0-before-10-the-alpha2-format-cut)).
 > - **Keyword search is opt-in per unit type**: `set_fulltext(type, true)` in Rust, Python and Node, or `kerno-server --fulltext <types>`.
 > - The on-disk format v1 is frozen ([ADR-0013](docs/adr/0013-format-v1-and-engine-protocol.md)), and the test vectors fail if one of its bytes changes. The freeze does not promise compatibility of the API.
 > - Narrative-thread search is an experiment. It lives only in `experiments/` and is not part of any published package.
 > - Benchmarks and long fuzzing runs are not yet certified.
 > - There is no stability promise yet for the API. Whether and when to declare 1.0 is reserved to the project owner.
 
-## What is new in 1.0.0-alpha.2
+## What is new in 1.0.0-alpha.3
 
 | | |
 |---|---|
-| **Format cut** (breaking) | alpha.1 databases are refused; every database starts at units layer 7 ([ADR-0023](docs/adr/0023-format-v2-cut-for-alpha2.md)) |
-| **Keyword index opt-in** (breaking) | no type is BM25-indexed until `set_fulltext(type, true)`; types that are not indexed write 4–6x faster and take 3.5x less disk |
-| **LZ4 blocks** | tables are compressed when that makes them smaller: a real store went from 66 MB to 35 MB |
-| **Batch API** | relations inside a batch, cascading deletes, `update_if_changed`, archive / restore, provenance, `last_commit_seq`, `relations(type)` |
-| **Python and Node** | the full facade, plus schemas, documents, `find`, `execute`, hybrid search and typed errors; the two bindings match call for call |
-| **Server** | `--fulltext <types>`, and `GET`/`PUT /v1/types/{type}/fulltext`; the TypeScript and Python clients have `setFulltext` / `set_fulltext` |
-| **Windows** | the Python client and server test harnesses run there; `file:///C:/...` backup URLs fixed |
+| **Upsert by a unique field** | `upsert(type, field, document)` in Rust, Python and Node revises the unit that holds the key or creates one; also a batch op |
+| **`refresh`** | a read-only open in another process sees a writer's new commits after `refresh()`, from every public surface |
+| **Retention** | `run_retention` / `runRetention` prune old revisions per unit type (`keep_last`, `keep_for`, `keep_since`); pruned reads answer `PRUNED` |
+| **Windows** | `kerno`, `kerno-mcp` and `kerno-server` start there (with a warning that durability is not verified; `KERNO_REQUIRE_VERIFIED_DURABILITY=1` refuses instead), and `file://C:\dir` backup URLs work |
+| **Node** | numeric options that are fractions, negative or NaN are refused with `INVALID_ARGUMENT` instead of truncated |
 
-The full list is in the [changelog](CHANGELOG.md), and the measurements against SQLite are in
+The on-disk format does not change: alpha.3 opens alpha.2 databases. The full list is in the
+[changelog](CHANGELOG.md), and the measurements against SQLite are in
 [docs/testing/python-vs-sqlite.md](docs/testing/python-vs-sqlite.md).
 
 ## Install
 
-The alpha is published with the pre-release version `1.0.0-alpha.2`. Each registry needs its own syntax to get it:
+The alpha is published with the pre-release version `1.0.0-alpha.3`. Each registry needs its own syntax to get it:
 
 | Package | Registry | Install |
 |---|---|---|
-| `kernodb` (with `kernodb-core`, `kernodb-storage`, `kernodb-units`) | crates.io | `cargo add kernodb@1.0.0-alpha.2` (imported as `kerno`) |
+| `kernodb` (with `kernodb-core`, `kernodb-storage`, `kernodb-units`) | crates.io | `cargo add kernodb@1.0.0-alpha.3` (imported as `kerno`) |
 | `@rixmerz/kernodb` (Node.js bindings) | npm | `npm install @rixmerz/kernodb@alpha` |
 | `kernodb` (Python bindings, imported as `kerno`) | PyPI | `pip install --pre kernodb` |
 
