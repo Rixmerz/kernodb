@@ -230,9 +230,8 @@ hits.
 
 Every failure is a plain `Error` with a stable string `code` (and a message). Match on `code`, not on the message.
 A numeric option that is not a whole number in range (a string, `null`, a fraction, a negative, `NaN`) is `INVALID_ARGUMENT`.
-An argument of the wrong JS type where the types ask for a string, boolean, array or object (`undefined` for a
-`string`, for example) is refused by napi itself before the engine is reached, with its own `code` (`StringExpected`,
-`BooleanExpected`, `ArrayExpected`, `InvalidArg`) or a `TypeError`:
+An argument of the wrong JS type (`undefined` or `null` for a `string`, a non-array for an array, ...) is `INVALID_ARGUMENT`
+too: the package entry point turns napi's own `StringExpected`/`InvalidArg` errors and `TypeError`s into it.
 
 ```js
 try {
@@ -309,7 +308,7 @@ You need a Rust toolchain (1.89 or later) and pnpm. From `bindings/node`:
 
 ```sh
 pnpm install
-pnpm build   # compiles the addon and regenerates index.js and index.d.ts
+pnpm build   # compiles the addon and regenerates binding.js (the loader, wrapped by the hand-written index.js) and index.d.ts
 pnpm test    # type-checks the types, then runs the tests against the built addon
 ```
 

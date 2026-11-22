@@ -510,11 +510,31 @@ def test_document_integers_are_64_bit(db: kerno.Database) -> None:
         with pytest.raises(kerno.InvalidArgumentError):
             db.store_document("d", {"n": v})  # type: ignore[dict-item]  # a list of ints is not bytes
     assert db.read_document(db.store_document("d", {"y": bytearray(b"\x01\x02")})) == {"y": b"\x01\x02"}
-    for payload in ([], [1, 2, 3], (1, 2)):
-        with pytest.raises(TypeError):
+    for payload in ([], [1, 2, 3], (1, 2), None, 42, 1.5, {}, object()):
+        with pytest.raises(kerno.InvalidArgumentError):
             db.store("t", payload)  # type: ignore[arg-type]
-        with pytest.raises(TypeError):
+        with pytest.raises(kerno.InvalidArgumentError):
             db.commit([("store", "t", payload)])
+    for payload in (memoryview(b"abc"), bytearray(b"abc"), b"abc"):
+        assert db.read(db.store("t", payload)).payload == b"abc"  # type: ignore[union-attr]
+
+
+def test_wrong_typed_arguments_are_invalid_argument_errors_not_type_errors(db: kerno.Database) -> None:
+    uid = db.store("n", "x")
+    for call in (
+        lambda: db.store("note", None),
+        lambda: db.store(None, "x"),
+        lambda: db.read(None),
+        lambda: db.read(5),
+        lambda: db.commit(None),
+        lambda: db.commit([None]),
+        lambda: db.update(uid, None),
+        lambda: kerno.open(None),
+        lambda: db.store("t", "\ud800"),
+        lambda: db.store("\ud800", "p"),
+    ):
+        with pytest.raises(kerno.InvalidArgumentError):
+            call()  # type: ignore[arg-type]
 
 
 def test_counters_are_whole_numbers_from_0_to_2_pow_64_minus_1(db: kerno.Database) -> None:
@@ -722,7 +742,7 @@ def test_empty_and_odd_op_lists(db: kerno.Database) -> None:
     seq = db.last_commit_seq()
     assert db.commit([], detailed=True)["units"] == [] and db.last_commit_seq() == seq, "nothing to write: no commit"
     for ops in ([()], [("store",)], [("store", 1, 2)], ["store"], [None], [1], [("relate", 0)]):
-        with pytest.raises((kerno.KernoError, ValueError, TypeError)):
+        with pytest.raises((kerno.KernoError, ValueError)):
             db.commit(ops)  # type: ignore[arg-type]
     for reason in ("", "r" * 1025):
         with pytest.raises(kerno.InvalidArgumentError):
@@ -747,17 +767,13 @@ def strings() -> list[Any]:
 
 
 def _verdict(call: Callable[[], object]) -> str:
-    """ok, or the exception name when it is one the docs name; anything else is a failure."""
+    """ok, kerno or value; anything else (a bare TypeError, UnicodeEncodeError, a panic) propagates and fails."""
     try:
         call()
     except kerno.KernoError:
         return "kerno"
     except ValueError:  # malformed id, direction, order, lifecycle, closed handle (documented)
         return "value"
-    except UnicodeEncodeError:  # a lone surrogate cannot be UTF-8 (raised by Python before the engine)
-        return "unicode"
-    except TypeError:  # a wrong Python type for the argument (raised by Python before the engine)
-        return "type"
     return "ok"  # any other exception, a panic (BaseException) included, propagates and fails the test
 
 
@@ -816,7 +832,7 @@ def test_every_call_survives_every_odd_string_and_number(
         ("hybrid.text", lambda v: db.hybrid_search(v)),
         ("hybrid.text_types", lambda v: db.hybrid_search("a", text_types=[v])),
         ("hybrid.seeds", lambda v: db.hybrid_search(seeds=[v])),
-        ("hybrid.vectors", lambda v: db.hybrid_search(vector=[1.0], vectors={v: [1.0]})),
+        ("hybrid.vectors", lambda v: db.hybrid_search(vector=[1.0], vectors={str(v): [1.0]})),
         ("hybrid.metric", lambda v: db.hybrid_search(vector=[1.0], vectors={a: [1.0]}, metric=v)),
         ("commit.type", lambda v: db.commit([("store", v, "p")])),
         ("commit.payload", lambda v: db.commit([("store", "t", v)])),
@@ -827,12 +843,15 @@ def test_every_call_survives_every_odd_string_and_number(
         ("commit.relate.type", lambda v: db.commit([("store", "t", "p"), ("relate", 0, 0, v)])),
         ("commit.opname", lambda v: db.commit([(v, a)])),
         ("commit.upsert.value", lambda v: db.commit([("upsert", "user", "email", {"email": v})])),
-        ("run_retention.by_type", lambda v: db.run_retention(by_type={v: {"keep_last": 1}})),
+        ("run_retention.by_type", lambda v: db.run_retention(by_type={str(v): {"keep_last": 1}})),
         ("open.path", lambda v: kerno.open(v)),
     ]
     for name, call in s:
         for v in strings():
-            _verdict(lambda: call(v))  # noqa: B023 - called at once
+            if name == "store_document.key" and isinstance(v, (list, dict)):
+                continue  # Python itself cannot build a dict with an unhashable key
+            verdict = _verdict(lambda: call(v))  # noqa: B023 - called at once
+            assert verdict in {"ok", "kerno", "value"}, f"{name}({v!r}) gave {verdict}"
     # number slots: every bad value is a typed Kerno error (never OverflowError, TypeError or a silent success)
     n: list[tuple[str, Callable[[Any], object]]] = [
         ("history.limit", lambda v: db.history(a, limit=v)),
@@ -894,9 +913,9 @@ def test_unusual_unicode_round_trips_and_sizes_count_bytes(db: kerno.Database) -
         assert unit is not None and unit.unit_type == text and unit.payload == text.encode()
         assert [u.id for u in db.query(text)] == [uid]
     for lone in ("\ud800", "\udfff", "a\udc00"):
-        with pytest.raises((kerno.KernoError, UnicodeEncodeError, TypeError)):
+        with pytest.raises(kerno.InvalidArgumentError):
             db.store("t", lone)  # a str that is not UTF-8 never reaches the engine
-        with pytest.raises((kerno.KernoError, UnicodeEncodeError)):
+        with pytest.raises(kerno.InvalidArgumentError):
             db.store(lone, "p")
     db.define_schema("u", [{"name": "k", "type": "text", "indexed": True}])
     db.store_document("u", {"k": "😀" * 63 + "ab"})  # 254 bytes
@@ -1331,3 +1350,22 @@ def test_a_reader_never_sees_half_of_a_change_set(tmp_path: Path) -> None:
             t.join()
         assert errors == [] and torn == []
         assert len(writer.query("pair")) == 300
+
+
+# ---------------------------------------------------------------- docs/guides
+
+
+@pytest.mark.parametrize(
+    ("guide", "expected"),
+    [
+        ("history-alongside.md", ["as of rename: b'{\"name\": \"Ada Lovelace\"}'", "reader after refresh: 5", "PrunedError:"]),
+        ("one-unit-per-entity.md", ["same document: unchanged", "new name: updated", "after delete, upsert: created"]),
+    ],
+)
+def test_every_guide_example_runs_and_prints_what_the_guide_shows(guide: str, expected: list[str], capfd) -> None:
+    blocks = fenced(ROOT / "docs" / "guides" / guide, "python")
+    assert len(blocks) == 1, "a new python block in a guide needs its own expected output here"
+    exec(compile(blocks[0], guide, "exec"), {"__name__": "__guide__"})  # noqa: S102 - our own docs
+    out = capfd.readouterr().out
+    for line in expected:
+        assert line in out, f"{guide}: {line!r} missing from:\n{out}"

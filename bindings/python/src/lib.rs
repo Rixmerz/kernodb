@@ -199,9 +199,9 @@ fn to_field(v: &Bound<'_, PyAny>) -> PyResult<FieldValue> {
         Ok(FieldValue::Float(v.extract()?))
     } else if v.is_instance_of::<PyString>() {
         Ok(FieldValue::Text(v.extract()?))
-    } else if let Ok(b) = v.extract::<PyBackedBytes>() {
-        // Only `bytes` and `bytearray`: a list or tuple of small ints is not bytes.
-        Ok(FieldValue::Bytes(b.to_vec()))
+    } else if let Ok(Payload(b)) = v.extract::<Payload>() {
+        // Only byte buffers: a list or tuple of small ints is not bytes.
+        Ok(FieldValue::Bytes(b))
     } else {
         Err(InvalidArgumentError::new_err(format!(
             "unsupported field value {v}: a field is a bool, int, float, str or bytes"
@@ -296,10 +296,27 @@ fn parse_id(hex: &str) -> PyResult<[u8; 16]> {
 }
 
 /// What `store` accepts as content: text is stored as its UTF-8 bytes.
-#[derive(FromPyObject)]
-enum Payload {
-    Text(String),
-    Bytes(PyBackedBytes),
+struct Payload(Vec<u8>);
+
+impl<'a, 'py> FromPyObject<'a, 'py> for Payload {
+    type Error = PyErr;
+
+    /// A `str`, or anything that exposes a byte buffer (`bytes`, `bytearray`, `memoryview`).
+    /// A list of ints is not bytes; every other value is an `InvalidArgumentError`, never a `TypeError`.
+    fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+        if obj.is_instance_of::<PyString>() {
+            return Ok(Payload(obj.extract::<String>()?.into_bytes()));
+        }
+        // The buffer API is not in the stable ABI, so a memoryview is copied out with `tobytes()`.
+        let bytes = if obj.get_type().name()?.extract::<String>()? == "memoryview" {
+            obj.call_method0("tobytes")?
+        } else {
+            obj.to_owned().into_any().to_owned()
+        };
+        bytes.extract::<PyBackedBytes>().map(|b| Payload(b.to_vec())).map_err(|_| {
+            InvalidArgumentError::new_err("a payload is a str or a bytes-like object (bytes, bytearray, memoryview)")
+        })
+    }
 }
 
 /// `{"id": hex, "outcome": "created" | "updated" | "unchanged"}`.
@@ -326,10 +343,7 @@ fn lifecycle_name(l: Lifecycle) -> &'static str {
 }
 
 fn into_bytes(p: Payload) -> Vec<u8> {
-    match p {
-        Payload::Text(s) => s.into_bytes(),
-        Payload::Bytes(b) => b.to_vec(),
-    }
+    p.0
 }
 
 /// One revision of a unit, from `history` or `read_as_of`.

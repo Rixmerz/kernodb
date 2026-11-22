@@ -278,9 +278,9 @@ Engine failures raise `kerno.KernoError` or one of its subclasses:
 A malformed id, direction, order, lifecycle, metric, retention rule or batch op (a tuple that names no op or
 has the wrong number of items), a `vector` without `vectors` (or the reverse), or a call on a closed database,
 raises `ValueError`. An argument of the wrong Python type (`None` or an `int` for a `str`, a `list` for a
-payload) raises `TypeError`, and a `str` with a lone surrogate, which has no UTF-8 form, raises
-`UnicodeEncodeError` (or the `TypeError` of the payload): Python rejects those before the engine is reached.
-A payload or document `bytes` value is `bytes` or `bytearray`, never a list of ints.
+payload), or a `str` with a lone surrogate, which has no UTF-8 form, raises `InvalidArgumentError`
+(never a bare `TypeError` or `UnicodeEncodeError`).
+A payload or document `bytes` value is `bytes`, `bytearray` or a `memoryview`, never a list of ints.
 
 ## Performance
 

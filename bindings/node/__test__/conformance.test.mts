@@ -687,20 +687,15 @@ const NUMBERS: unknown[] = [
   undefined, null, 0, -1, 1, 2 ** 31, 2 ** 32, 2 ** 53, 2 ** 53 + 2, 2 ** 63, 2 ** 64, -(2 ** 63), 1.5, Number.NaN, Number.POSITIVE_INFINITY,
   Number.NEGATIVE_INFINITY, -0, true, false, '1', Buffer.from('1'), [], {}, 2n ** 63n, 2n ** 64n, Symbol('n'),
 ]
-// what napi itself throws for a value of the wrong JS type (before the engine is reached)
-const WRONG_TYPE = new Set(['StringExpected', 'BooleanExpected', 'ArrayExpected', 'ObjectExpected', 'InvalidArg', 'NumberExpected', 'GenericFailure'])
 const KERNO_CODES = new Set([
   'NOT_FOUND', 'DELETED', 'LOCKED', 'CORRUPTION', 'INVALID_ARGUMENT', 'SCHEMA_EXISTS', 'NOT_INDEXED', 'UNKNOWN_TYPE', 'NOT_UNIQUE', 'BAD_ENDPOINT',
   'PAYLOAD_TOO_LARGE', 'CHANGESET_TOO_LARGE', 'READ_ONLY', 'DATABASE_NOT_FOUND', 'HAS_RELATIONS', 'PRUNED', 'SCHEMA', 'CLOSED', 'KERNO',
 ])
 
-/** `fn` either works, throws a documented code, or (for a wrong JS type, `strict` off) throws what napi throws for it. */
-function survives(label: string, fn: () => unknown, strict: boolean): void {
+/** `fn` either works or throws an Error with a documented Kerno `code`: never napi's own `StringExpected`, `InvalidArg` or a code-less TypeError. */
+function survives(label: string, fn: () => unknown): void {
   const out = outcome(fn)
-  if (out === 'ok' || KERNO_CODES.has(out)) return
-  // a value that is not an object where an object is required: napi's own TypeError, with no code
-  if (!strict && (WRONG_TYPE.has(out) || out === 'no-code:TypeError')) return
-  assert.fail(`${label} threw ${out}`)
+  if (out !== 'ok' && !KERNO_CODES.has(out)) assert.fail(`${label} threw ${out}`)
 }
 
 test('every call survives every odd string, with a documented code', () => {
@@ -761,7 +756,7 @@ test('every call survives every odd string, with a documented code', () => {
     ['runRetention.byType', (v) => loose(db).runRetention({ byType: { [typeof v === 'symbol' ? 's' : String(v)]: { keepLast: 1 } } })],
     ['open.path', (v) => { const h = loose({ open } as unknown as Db).open(typeof v === 'string' ? join(dir, 'p', v) : v); if (h) (h as Db).close() }],
   ]
-  for (const [label, call] of calls) for (const v of STRINGS) survives(`${label}(${show(v)})`, () => call(v), false)
+  for (const [label, call] of calls) for (const v of STRINGS) survives(`${label}(${show(v)})`, () => call(v))
 })
 
 test('every numeric option accepts a whole number or throws INVALID_ARGUMENT, whatever it is given', () => {
@@ -934,4 +929,28 @@ test('the coverage table names the Node calls that exist', () => {
     for (const m of node.matchAll(/\bdb\.(\w+)\(/g)) assert.ok(methods.has(m[1]!), `the coverage table lists db.${m[1]}() for Node, which does not exist`)
   }
   for (const gap of ['dropIndex', 'schema', 'findRange', 'explain', 'compare', 'searchTextTypes']) assert.ok(!methods.has(gap), gap)
+})
+
+// docs/guides: the guides are Python scripts (run by the Python conformance suite). A guide that
+// gains a JS/TS example must have it executed here, so this fails until that is done.
+test('the guides carry no JS or TS example that the Node suite does not run', () => {
+  for (const guide of ['history-alongside.md', 'one-unit-per-entity.md']) {
+    const text = readFileSync(new URL(`docs/guides/${guide}`, ROOT), 'utf8')
+    assert.equal(/```(js|javascript|ts|typescript)\b/.test(text), false, `${guide} has a JS/TS block`)
+  }
+})
+
+test('a wrong JS type is INVALID_ARGUMENT, never a napi error or a code-less TypeError', () => {
+  const d = db as unknown as Record<string, (...a: unknown[]) => unknown>
+  for (const call of [
+    () => d.store(undefined, 'x'),
+    () => d.store('note', null),
+    () => d.store('note', 42),
+    () => d.read(undefined),
+    () => d.commit([null]),
+    () => d.commit(undefined),
+    () => (open as (p: unknown) => unknown)(undefined),
+  ]) {
+    assert.equal(outcome(call), 'INVALID_ARGUMENT')
+  }
 })
