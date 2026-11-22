@@ -734,6 +734,7 @@ test('a numeric option that is a fraction, a negative or NaN is refused, never t
   // A whole number is still accepted, and nothing was written by the refusals.
   assert.equal(db.history(a, { limit: 1 }).length, 1)
   assert.equal(db.readAsOf(a, db.lastCommitSeq())?.revision, 2)
+})
 
 function defineUsers(): void {
   db.defineSchema('user', [
