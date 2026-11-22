@@ -454,6 +454,8 @@ fn serving_beyond_loopback_without_protection_is_warned_about() {
             .map(|l| serde_json::from_str::<Value>(l).unwrap())
             .filter(|l| l["level"] == "WARN")
             .map(|l| l["fields"]["message"].as_str().unwrap().to_owned())
+            // Off Linux every start also logs the durability warning (issue #7): another test checks it.
+            .filter(|m| m != kerno::storage::UNVERIFIED_WARNING)
             .collect::<Vec<_>>()
     };
     let tenants = Tenants::new();

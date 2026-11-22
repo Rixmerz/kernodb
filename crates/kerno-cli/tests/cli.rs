@@ -1127,8 +1127,11 @@ fn open_more(dir: &Path) -> UnitDb<KernoDb> {
     UnitDb::from_engine(engine, &UnitConfig::with_sources(clock, Arc::new(CounterIds::new(1000)))).unwrap()
 }
 
+/// A `file://` URL for `path`: `file:///srv/x` on Unix, `file:///C:/x` on Windows, where
+/// `file://` + the native path (`file://C:\x`) is not the URL form.
 fn url_of(path: &Path) -> String {
-    format!("file://{}", path.display())
+    let p = path.display().to_string().replace('\\', "/");
+    if p.starts_with('/') { format!("file://{p}") } else { format!("file:///{p}") }
 }
 
 /// One more change set on an open database.
@@ -1261,6 +1264,21 @@ fn restore_refuses_a_destination_in_use_and_a_point_the_backup_does_not_reach() 
     let r = run_in(&t.path("empty-store"), &["restore", &url_of(&t.path("nothing"))]);
     assert_eq!(r.code, 1, "{}", r.out);
     assert_eq!(r.err.trim_end(), "kerno: the store has no base backup");
+}
+
+/// `file://` written straight before a native path is a URL only where the path starts with `/`.
+/// On Windows (`file://C:\x`) the location is taken for the drive path it plainly means.
+#[test]
+fn a_native_path_after_file_scheme_names_the_same_store() {
+    let t = TempDir::new();
+    build(&t.db(), true);
+    let native = format!("file://{}", t.path("store").display());
+    let r = run_in(&t.db(), &["backup", &native]);
+    assert_eq!(r.code, 0, "{native}: {}", r.err);
+    // The URL form of the same directory reads what the native form wrote.
+    let listed = run_in(&t.path("not-a-database"), &["backups", &url_of(&t.path("store"))]);
+    assert_eq!(listed.code, 0, "{}", listed.err);
+    assert!(listed.out.contains("base at commit "), "{}", listed.out);
 }
 
 #[test]
