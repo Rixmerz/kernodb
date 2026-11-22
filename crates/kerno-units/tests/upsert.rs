@@ -74,7 +74,7 @@ fn create_update_unchanged<E: Target>() {
 
 fn a_field_that_is_not_unique_is_refused<E: Target>() {
     let db = open::<E>();
-    let invalid = |r: Result<Upserted, UnitError>| matches!(r, Err(UnitError::InvalidArgument(_)));
+    let invalid = |r: Result<Upserted, UnitError>| matches!(r, Err(UnitError::NotUnique { .. }));
     // Indexed but not unique, not indexed at all, not in the schema.
     for field in ["age", "name", "nope"] {
         assert!(invalid(upsert(&db, field, doc("a@x.io", "Ada"))), "{field}");

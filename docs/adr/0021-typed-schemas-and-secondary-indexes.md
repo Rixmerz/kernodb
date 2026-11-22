@@ -96,6 +96,8 @@ value layouts below are normative; they are pinned byte for byte by `record_layo
   name order. `envelope` is `0x01 0x00`. `flags`: bit 0 `required`, bit 1 `unique`, bit 2 `indexed`; any higher bit,
   or `unique` without `indexed`, is invalid.
 * A type has at most one schema, defined once. After that only the `indexed` flag of a non-unique field changes.
+  Defining the same schema again (field order aside) is accepted and writes nothing; a different one is
+  `SchemaExists`.
 
 ### `FIELD_INDEX` entry (`0x79`)
 
@@ -113,7 +115,8 @@ value layouts below are normative; they are pinned byte for byte by `record_layo
 | Float | the `f64` bits BE, all bits flipped when the sign bit is set and the sign bit set otherwise; `-0.0` is stored as `0.0` |
 | Text, Bytes | each byte as is, except `0x00` written `0x00 0xFF`; then the terminator `0x00 0x00` |
 
-* An indexed value whose encoding exceeds 256 bytes is refused, so a key is at most 403 bytes and always fits the
+* An indexed value whose encoding exceeds 256 bytes is refused (for `Text` and `Bytes` the encoding adds the
+  two-byte terminator and doubles each `0x00`, so at most **254 bytes** of text or bytes fit; the error says so), so a key is at most 403 bytes and always fits the
   engine's 512-byte key limit.
 
 `0x77` stays unassigned: `crates/kerno-units/tests/verify.rs` uses it as its "tag of a newer layer" (UNIT-2) sample.

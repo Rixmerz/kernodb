@@ -446,7 +446,13 @@ fn quality<E: Target>(set: &Set) -> Res<Lines> {
                 h.vector = Some(VectorLeg { index: &vector_set, query: &qf });
             }
             h.graph = graph.then(|| query.clone());
-            Ok(snap.hybrid_search(&h)?.iter().map(|hit| corpus_id[&hit.unit]).collect())
+            // No type of this corpus is keyword-indexed (ADR-0023), so the keyword arms are empty;
+            // `hybrid_search` now says so (`NotIndexed`) instead of answering no hits. The frozen
+            // figures keep their meaning, so the refusal is read as the empty list it replaced.
+            match snap.hybrid_search(&h) {
+                Err(kerno_units::UnitError::NotIndexed { .. }) => Ok(Vec::new()),
+                hits => Ok(hits?.iter().map(|hit| corpus_id[&hit.unit]).collect()),
+            }
         };
         let as_ids = |units: &mut dyn Iterator<Item = UnitId>| -> Vec<u32> { units.map(|u| corpus_id[&u]).collect() };
 

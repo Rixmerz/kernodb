@@ -1,7 +1,10 @@
 """Kerno: an embedded database of units, the relations between them, and queries over both."""
 
 from kerno._kerno import (
+    BadEndpointError,
+    ChangeSetTooLargeError,
     Comparison,
+    DatabaseNotFoundError,
     HybridHit,
     CorruptionError,
     Database,
@@ -11,9 +14,13 @@ from kerno._kerno import (
     KernoError,
     LockedError,
     NotFoundError,
+    NotIndexedError,
+    NotUniqueError,
     PayloadTooLargeError,
     PrunedError,
+    ReadOnlyError,
     SchemaError,
+    SchemaExistsError,
     Relation,
     Revision,
     Unit,
@@ -21,7 +28,10 @@ from kerno._kerno import (
 )
 
 __all__ = [
+    "BadEndpointError",
+    "ChangeSetTooLargeError",
     "Comparison",
+    "DatabaseNotFoundError",
     "HybridHit",
     "CorruptionError",
     "Database",
@@ -31,9 +41,13 @@ __all__ = [
     "KernoError",
     "LockedError",
     "NotFoundError",
+    "NotIndexedError",
+    "NotUniqueError",
     "PayloadTooLargeError",
     "PrunedError",
+    "ReadOnlyError",
     "SchemaError",
+    "SchemaExistsError",
     "Relation",
     "Revision",
     "Unit",

@@ -155,16 +155,24 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
     ///
     /// # Errors
     ///
-    /// `InvalidArgument` when the type has no schema or `field` is not declared `unique` in it;
+    /// `NotUnique` when the type has no schema or `field` is not declared `unique` in it;
     /// `SchemaViolation` when the payload is not a record the schema accepts or has no value in
     /// `field`; otherwise as [`create`](Self::create) and [`update`](Self::update).
     pub fn upsert(&mut self, new: NewUnit, field: &str) -> Result<Upserted, UnitError> {
-        let (schema, at) = self.field_of(&new.unit_type, field)?;
-        if !schema.fields()[at].unique {
-            return Err(UnitError::InvalidArgument(format!(
-                "field {field:?} is not declared unique in the schema of {:?}",
-                new.unit_type
-            )));
+        check_type(&new.unit_type)?;
+        let not_unique = |detail: String| UnitError::NotUnique { detail };
+        let Some(schema) = self.read_schema(&new.unit_type)? else {
+            return Err(not_unique(format!("the unit type {:?} has no schema", new.unit_type)));
+        };
+        match schema.field(field) {
+            Some(def) if def.unique => {}
+            Some(_) => {
+                return Err(not_unique(format!(
+                    "field {field:?} is not declared unique in the schema of {:?}",
+                    new.unit_type
+                )));
+            }
+            None => return Err(not_unique(format!("the schema of {:?} has no field {field:?}", new.unit_type))),
         }
         let mut prefix = field_prefix(&new.unit_type, field);
         prefix.extend_from_slice(&upsert_key(&new.payload, field)?);
@@ -285,8 +293,8 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
     ///
     /// # Errors
     ///
-    /// `InvalidArgument` for an invalid type or schema, or a type that has one
-    /// already; `SchemaViolation` for an existing unit the schema refuses;
+    /// `InvalidArgument` for an invalid type or schema; `SchemaExists` for a type that has a
+    /// different schema already (the same schema again is a no-op); `SchemaViolation` for an existing unit the schema refuses;
     /// `ChangeSetTooLarge` when the entries exceed the engine's batch limits.
     pub fn define_schema(&mut self, unit_type: &str, fields: Vec<FieldDef>) -> Result<(), UnitError> {
         self.guarded(|s| s.define_schema_unguarded(unit_type, fields))
@@ -296,8 +304,9 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         self.txn()?;
         check_type(unit_type)?;
         let schema = Schema::new(fields)?;
-        if self.read_schema(unit_type)?.is_some() {
-            return Err(UnitError::InvalidArgument("the unit type already has a schema".into()));
+        if let Some(have) = self.read_schema(unit_type)? {
+            // The same schema again changes nothing, so a caller can define on every start.
+            return if have == schema { Ok(()) } else { Err(UnitError::SchemaExists { unit_type: unit_type.into() }) };
         }
         let units = self.typed_units(unit_type, &schema)?;
         let entries = self.backfill(unit_type, &schema, &units, None)?;

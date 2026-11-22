@@ -11,9 +11,13 @@ __all__ = [
     "KernoError",
     "LockedError",
     "NotFoundError",
+    "NotIndexedError",
+    "NotUniqueError",
     "PayloadTooLargeError",
     "PrunedError",
+    "ReadOnlyError",
     "SchemaError",
+    "SchemaExistsError",
     "Comparison",
     "HybridHit",
     "Relation",
@@ -33,7 +37,14 @@ class DeletedError(KernoError): ...
 class LockedError(KernoError): ...
 class CorruptionError(KernoError): ...
 class InvalidArgumentError(KernoError): ...
+class SchemaExistsError(InvalidArgumentError): ...
+class NotIndexedError(InvalidArgumentError): ...
+class NotUniqueError(InvalidArgumentError): ...
+class BadEndpointError(InvalidArgumentError): ...
 class PayloadTooLargeError(KernoError): ...
+class ChangeSetTooLargeError(PayloadTooLargeError): ...
+class ReadOnlyError(KernoError): ...
+class DatabaseNotFoundError(KernoError): ...
 class HasRelationsError(KernoError): ...
 class PrunedError(KernoError): ...
 class SchemaError(KernoError): ...
@@ -159,8 +170,12 @@ class Database:
         """Keyword-index a type or not (off by default); its units follow in the same commit."""
     def last_commit_seq(self) -> int: ...
     def refresh(self) -> int:
-        """Move a `read_only=True` database to the writer's newest commits; returns the sequence it now reads."""
-    def compact(self) -> dict[str, int]: ...
+        """Move a `read_only=True` database to the writer's newest commits; returns the sequence it now reads.
+
+        Raises `InvalidArgumentError` on a read-write handle (it is always current)."""
+    def compact(self) -> dict[str, int]:
+        """Drop deleted units' payloads and compact; returns the stored bytes `before` (at call time, every
+        commit counted) and `after`."""
     def run_retention(
         self, default: RetentionRule | None = None, by_type: dict[str, RetentionRule] | None = None
     ) -> dict[str, int | None]:
@@ -169,18 +184,21 @@ class Database:
         Returns `units_retained`, `revisions_pruned`, `payloads_dropped`, `bytes_logically_freed` and
         `commit_seq` (`None` when nothing was pruned). `history` from a pruned revision and
         `read_as_of` before the oldest kept one raise `PrunedError`. The policy is not stored."""
-    def define_schema(self, unit_type: str, fields: list[dict[str, object]]) -> None: ...
+    def define_schema(self, unit_type: str, fields: list[dict[str, object]]) -> None:
+        """Give a type a schema. The same schema again is a no-op; a different one raises `SchemaExistsError`."""
     def create_index(self, unit_type: str, field: str) -> None: ...
     def store_document(self, unit_type: str, document: dict[str, FieldValue]) -> str: ...
     def upsert(self, unit_type: str, field: str, document: dict[str, FieldValue]) -> dict[str, str]:
         """Store `document`, or revise the active unit holding the same value of the unique `field`.
 
         Returns `{"id": ..., "outcome": "created" | "updated" | "unchanged"}`. Raises
-        `InvalidArgumentError` when `field` is not declared unique and `SchemaError` when the
+        `NotUniqueError` when `field` is not declared unique and `SchemaError` when the
         document has no value in it."""
     def update_document(self, id: str, document: dict[str, FieldValue]) -> None: ...
     def read_document(self, id: str) -> dict[str, FieldValue] | None: ...
-    def find(self, unit_type: str, field: str, value: FieldValue) -> list[Unit]: ...
+    def find(self, unit_type: str, field: str, value: FieldValue) -> list[Unit]:
+        """Active units whose indexed `field` equals `value`. `NotIndexedError` for a field that is not indexed;
+        `InvalidArgumentError` for a value over 254 bytes, which no unit can hold."""
     def find_range(
         self,
         unit_type: str,
@@ -220,7 +238,10 @@ class Database:
         source: str | bytes | None = None,
         detailed: bool = False,
     ) -> list[str] | dict[str, object]:
-        """Commit ops atomically (see the README for the op list)."""
+        """Commit ops atomically (see the README for the op list).
+
+        A `relate` end is a unit id or the position in `ops` of an earlier `store` or `upsert` op;
+        any other position raises `BadEndpointError` and writes nothing."""
     def history(
         self,
         id: str,
@@ -248,4 +269,7 @@ class Database:
     ) -> bool: ...
 
 def open(path: str | PathLike[str], read_only: bool = False, max_batch_ops: int | None = None) -> Database:
-    """Open the database in `path`, creating it when `path` holds none."""
+    """Open the database in `path`, creating it when `path` holds none.
+
+    `read_only=True` takes no lock and opens beside a live writer; it reads the state at open time until
+    `refresh()`. Writes raise `ReadOnlyError`; a missing database raises `DatabaseNotFoundError`."""

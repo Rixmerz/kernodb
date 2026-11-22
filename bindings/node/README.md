@@ -117,8 +117,10 @@ are recorded with every revision of the commit.
 | `'unrelate'` | `relationId` |
 | `'upsert'` | `unitType`, `field`, `document`: see "Upsert by a unique field" |
 
-A relation end (`from`, `to`) is a unit id, or the 0-based index of an earlier `store` op in
-the same commit:
+A relation end (`from`, `to`) is a unit id, or the 0-based position in the list of an earlier `store`
+or `upsert` op of the same commit (every op counts, not only the stores; an upsert names the unit it
+created, revised or found unchanged). Any other position (a later op, an update, a relation, past the
+end) throws `BAD_ENDPOINT` and nothing is written:
 
 ```js
 const { units, commitSeq } = db.commit(
@@ -148,7 +150,7 @@ db.history(id).map((r) => r.kind)                                               
 
 In `commit`, `{ op: 'upsert', unitType, field, document }` runs in the same change set as the other
 ops, and several upserts of one key in a commit make one unit (the last document wins). A field
-that is not declared `unique`, or a type with no schema, throws `INVALID_ARGUMENT`; a document
+that is not declared `unique`, or a type with no schema, throws `NOT_UNIQUE`; a document
 with no value in the field throws `SCHEMA`. Only active units hold a key: an archived or
 deleted one does not.
 
@@ -162,7 +164,7 @@ deleted one does not.
 | `db.refresh()` | on a `readOnly: true` database: pick up the commits a writer made since the open; returns the sequence now read |
 | `db.verify()` | `{ clean, commitSeq, units, revisions, relations, findings, findingsOmitted, storageError? }`. A damaged store is reported (`clean: false`), not thrown. |
 | `db.runRetention({ default?, byType? })` | prune old revisions; a rule is `{ keepLast }` (newest N), `{ keepFor }` (seconds) or `{ keepSince }` (commit sequence); returns `{ unitsRetained, revisionsPruned, payloadsDropped, bytesLogicallyFreed, commitSeq? }`. `readAsOf` of a pruned revision and `history` from one throw `PRUNED`; `history` lists what is kept. A bad rule throws `INVALID_ARGUMENT` and writes nothing; `null` is the same as no rule. The policy is not stored: pass it each time |
-| `db.compact()` | `{ before?, after? }`, the stored bytes around the compaction. History keeps deleted units' payloads, so it frees only what a retention policy dropped. |
+| `db.compact()` | `{ before?, after? }`, the stored bytes around the compaction: `before` is the size when the call was made (every commit so far counts), `after` the size once the payloads of deleted units are dropped and their space given back. |
 | `db.setFulltext(unitType, enabled)` | nothing. Turns keyword (BM25) indexing of a type on or off (off by default); its active units are indexed or cleared in the same commit. |
 | `db.fulltext(unitType)` | `boolean`: whether the type is keyword-indexed. |
 
@@ -239,8 +241,15 @@ try {
 | `DELETED` | `DeletedError` | the unit is deleted (or not in the lifecycle the call needs) |
 | `LOCKED` | `LockedError` | another handle or process holds the database directory |
 | `CORRUPTION` | `CorruptionError` | stored bytes failed validation (a checksum or a structure rule) |
-| `INVALID_ARGUMENT` | `InvalidArgumentError` | an argument was refused: a malformed id, a type name, a limit, a batch, a bad op |
+| `INVALID_ARGUMENT` | `InvalidArgumentError` | an argument was refused: a malformed id, a type name, a limit, a bad op, a value no document can hold (`null`, a bigint outside 64 bits), a `find` value over 254 bytes |
+| `SCHEMA_EXISTS` | `SchemaExistsError` | `defineSchema` for a type that already has a different schema (the same one is accepted and writes nothing) |
+| `NOT_INDEXED` | `NotIndexedError` | `find` on a field that is not indexed; a keyword search while no type has `setFulltext` |
+| `NOT_UNIQUE` | `NotUniqueError` | `upsert` by a field the schema does not declare unique (or a type with no schema) |
+| `BAD_ENDPOINT` | `BadEndpointError` | a `relate` end that is not an earlier `store` or `upsert` op of the commit |
 | `PAYLOAD_TOO_LARGE` | `PayloadTooLargeError` | the payload is over 1 MiB |
+| `CHANGESET_TOO_LARGE` | `ChangeSetTooLargeError` | a commit over 10,000 ops (see `maxBatchOps`) or over the engine's bytes per commit |
+| `READ_ONLY` | `ReadOnlyError` | a write through a handle opened with `readOnly: true` |
+| `DATABASE_NOT_FOUND` | `DatabaseNotFoundError` | `readOnly: true` on a directory with no database |
 | `HAS_RELATIONS` | `HasRelationsError` | the unit still has live relations; unrelate them or use `cascade` |
 | `PRUNED` | `PrunedError` | retention removed the revision asked for (`readAsOf`, or `history` from a pruned `fromRevision`) |
 | `SCHEMA` | `SchemaError` | the type's schema refused the document, or the payload is not a document |

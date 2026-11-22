@@ -261,7 +261,13 @@ async fn a_schema_is_defined_and_typed_units_hold_every_field_type() {
     );
     assert_eq!(c.get_schema(pb::SchemaRequest { unit_type: "user".into() }).await.unwrap().into_inner(), defined);
     assert_eq!(c.get_schema(pb::SchemaRequest { unit_type: "none".into() }).await.unwrap_err().code(), Code::NotFound);
-    assert_eq!(c.define_schema(user_schema()).await.unwrap_err().code(), Code::InvalidArgument);
+    // The same schema again is accepted (nothing is written); a different one is refused.
+    assert_eq!(c.define_schema(user_schema()).await.unwrap().into_inner(), defined);
+    let other = pb::Schema {
+        unit_type: "user".into(),
+        fields: vec![pb::FieldDef { name: "x".into(), field_type: pb::FieldType::Int.into(), ..Default::default() }],
+    };
+    assert_eq!(c.define_schema(other).await.unwrap_err().code(), Code::InvalidArgument);
     let untyped =
         pb::Schema { unit_type: "t".into(), fields: vec![pb::FieldDef { name: "x".into(), ..Default::default() }] };
     assert_eq!(c.define_schema(untyped).await.unwrap_err().code(), Code::InvalidArgument);

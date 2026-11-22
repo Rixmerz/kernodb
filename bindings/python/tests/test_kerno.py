@@ -267,7 +267,7 @@ def test_relations_bulk_read(tmp_path):
 
 def test_max_batch_ops(tmp_path):
     with kerno.open(tmp_path / "a") as db:
-        with pytest.raises(kerno.InvalidArgumentError):
+        with pytest.raises(kerno.ChangeSetTooLargeError):
             db.commit([("store", "n", b"\xff")] * 10_001)
     # One operation more than the default cap, so the raised cap is what lets it through.
     with kerno.open(tmp_path / "b", max_batch_ops=12_000) as db:
@@ -343,7 +343,8 @@ def test_hybrid_search_validates_its_input(tmp_path):
 def test_hybrid_search_keyword_leg_follows_set_fulltext(tmp_path):
     with kerno.open(tmp_path / "db") as db:
         db.store("doc", "needle")
-        assert db.hybrid_search("needle") == []  # off by default
+        with pytest.raises(kerno.NotIndexedError):  # off by default: a keyword search can never match
+            db.hybrid_search("needle")
     with kerno.open(tmp_path / "db2") as db:
         db.set_fulltext("doc", True)
         uid = db.store("doc", "needle")
@@ -692,3 +693,243 @@ def test_the_guide_scripts_run_as_written(guide: str, expected: list[str], capfd
     out = capfd.readouterr().out
     for line in expected:
         assert line in out, f"{guide}: {line!r} missing from the output:\n{out}"
+
+
+# ---- gaps an outside user found in 1.0.0a3 (K1 to K10) ----
+
+
+def _files(db):
+    db.define_schema("file", [{"name": "path", "type": "text", "required": True, "unique": True}, {"name": "language", "type": "text"}])
+    db.define_schema("sym", [{"name": "qn", "type": "text", "required": True, "unique": True}])
+
+
+def test_a_relate_end_is_the_position_of_an_earlier_store_or_upsert(tmp_path):
+    # K1: the op list is the index space, so an upsert in the middle is index 1, not skipped.
+    with kerno.open(tmp_path / "db") as db:
+        _files(db)
+        out = db.commit(
+            [
+                ("store", "free", "A"),
+                ("upsert", "file", "path", {"path": "g.py"}),
+                ("store", "free", "B"),
+                ("relate", 0, 1, "meant_for_g"),
+            ],
+            detailed=True,
+        )
+        a, _b = out["units"]
+        (edge,) = db.related(a, "out", "meant_for_g")
+        assert edge.to_id == out["upserts"][0]["id"]
+        # K2: two typed upserts and a relation between them go in one commit.
+        out = db.commit(
+            [("upsert", "file", "path", {"path": "a.py"}), ("upsert", "sym", "qn", {"qn": "a.f"}), ("relate", 0, 1, "defines")],
+            detailed=True,
+        )
+        file_id, sym_id = (u["id"] for u in out["upserts"])
+        assert [r.to_id for r in db.related(file_id, "out", "defines")] == [sym_id]
+        # An upsert that finds its unit unchanged is a valid end as well.
+        again = db.commit([("upsert", "file", "path", {"path": "a.py"}), ("store", "free", "C"), ("relate", 1, 0, "of")], detailed=True)
+        assert again["upserts"][0] == {"id": file_id, "outcome": "unchanged"}
+        assert db.related(again["units"][0], "out", "of")[0].to_id == file_id
+
+
+def test_a_wrong_relate_index_is_an_error_never_a_silent_link(tmp_path):
+    with kerno.open(tmp_path / "db") as db:
+        _files(db)
+        unit = db.store("free", "kept")
+        seq = db.last_commit_seq()
+        store = ("store", "free", "x")
+        for ops in (
+            [store, ("relate", 0, 2, "r"), store],  # a later op
+            [store, ("relate", 0, 1, "r")],  # the relation itself
+            [("update", unit, "y"), store, ("relate", 0, 1, "r")],  # an update creates no unit
+            [store, ("relate", 0, 0, "r"), ("relate", 1, 0, "r")],  # a relation creates no unit
+            [store, ("delete", unit), ("relate", 0, 1, "r")],  # nor does a delete
+            [store, ("relate", 0, 99, "r")],  # past the end
+        ):
+            with pytest.raises(kerno.BadEndpointError) as caught:
+                db.commit(ops)
+            assert isinstance(caught.value, kerno.InvalidArgumentError)
+            assert "Endpoint" not in str(caught.value), "no Rust enum names in the message"
+            assert db.last_commit_seq() == seq, "a refused batch writes nothing"
+
+
+@pytest.mark.parametrize("end", [-1, True, 2**64, 1.5, None])
+def test_a_relate_end_that_is_not_an_index_or_an_id_is_invalid_argument(tmp_path, end):
+    with kerno.open(tmp_path / "db") as db:
+        with pytest.raises(kerno.InvalidArgumentError):
+            db.commit([("store", "free", "x"), ("relate", 0, end, "r")])
+
+
+def test_compact_before_is_the_size_at_call_time(tmp_path):
+    with kerno.open(tmp_path / "db") as db:
+        db.define_schema("row", [{"name": "body", "type": "text"}])
+        for i in range(100):
+            db.store_document("row", {"body": ("%d " % i) * 200})
+        first = db.compact()
+        assert first["before"] > 5_000, first  # was 0: the units were still in the write buffer
+        for i in range(1000):
+            db.store_document("row", {"body": ("%d " % i) * 200})
+        second = db.compact()
+        assert second["before"] > 5 * first["after"], (first, second)  # was equal to first["after"]
+
+
+def test_the_indexed_text_limit_is_254_bytes_and_the_error_names_it(tmp_path):
+    with kerno.open(tmp_path / "db") as db:
+        db.define_schema("lim", [{"name": "key", "type": "text", "required": True, "unique": True}])
+        db.upsert("lim", "key", {"key": "a" * 254})
+        db.upsert("lim", "key", {"key": "é" * 127})  # characters do not count: 254 bytes
+        for too_long in ("a" * 255, "é" * 128):
+            with pytest.raises(kerno.SchemaError, match="254 bytes"):
+                db.upsert("lim", "key", {"key": too_long})
+
+
+def test_distinct_cases_raise_distinct_error_classes(tmp_path):
+    hierarchy = {
+        kerno.SchemaExistsError: kerno.InvalidArgumentError,
+        kerno.NotIndexedError: kerno.InvalidArgumentError,
+        kerno.NotUniqueError: kerno.InvalidArgumentError,
+        kerno.BadEndpointError: kerno.InvalidArgumentError,
+        kerno.ChangeSetTooLargeError: kerno.PayloadTooLargeError,
+        kerno.ReadOnlyError: kerno.KernoError,
+        kerno.DatabaseNotFoundError: kerno.KernoError,
+    }
+    for cls, parent in hierarchy.items():
+        assert issubclass(cls, parent) and cls is not parent
+    with kerno.open(tmp_path / "db", max_batch_ops=5) as db:
+        db.define_schema("tag", [{"name": "label", "type": "text"}])
+        db.define_schema("person", [{"name": "email", "type": "text", "unique": True}])
+        with pytest.raises(kerno.SchemaExistsError):
+            db.define_schema("tag", [{"name": "label", "type": "text"}, {"name": "extra", "type": "int"}])
+        with pytest.raises(kerno.NotUniqueError):
+            db.upsert("tag", "label", {"label": "a"})
+        with pytest.raises(kerno.NotIndexedError):
+            db.find("tag", "label", "a")
+        with pytest.raises(kerno.NotIndexedError):
+            db.find_range("tag", "label", "a", "z")
+        with pytest.raises(kerno.ChangeSetTooLargeError):
+            db.commit([("store", "n", "1")] * 6)
+        with pytest.raises(kerno.InvalidArgumentError) as caught:
+            db.store_document("tag", {"label": "x"}) and db.define_schema("ev", [{"name": "f", "type": "float"}]) or db.store_document("ev", {"f": float("nan")})
+        assert type(caught.value) is kerno.InvalidArgumentError  # NaN stays the generic class
+        with pytest.raises(kerno.InvalidArgumentError) as refresh:
+            db.refresh()  # a handle that is not read-only
+        assert type(refresh.value) is kerno.InvalidArgumentError
+    path = tmp_path / "ro"
+    with kerno.open(path) as w:
+        w.store("n", "a")
+        with kerno.open(path, read_only=True) as r:
+            with pytest.raises(kerno.ReadOnlyError):
+                r.store("n", "b")
+            with pytest.raises(kerno.ReadOnlyError):
+                r.commit([("store", "n", "b")])
+    with pytest.raises(kerno.DatabaseNotFoundError) as missing:
+        kerno.open(tmp_path / "missing" / "nothing", read_only=True)
+    assert "create_if_missing" not in str(missing.value)
+
+
+def test_define_schema_with_the_same_fields_is_idempotent(tmp_path):
+    fields = [{"name": "email", "type": "text", "required": True, "unique": True}, {"name": "name", "type": "text"}]
+    with kerno.open(tmp_path / "db") as db:
+        db.define_schema("person", fields)
+        seq = db.last_commit_seq()
+        db.define_schema("person", fields)
+        db.define_schema("person", list(reversed(fields)))
+        assert db.last_commit_seq() == seq, "the same schema writes nothing"
+        with pytest.raises(kerno.SchemaExistsError):
+            db.define_schema("person", fields + [{"name": "age", "type": "int"}])
+        with pytest.raises(kerno.SchemaExistsError):
+            db.define_schema("person", [{"name": "email", "type": "text"}, {"name": "name", "type": "text"}])
+
+
+def test_searches_that_can_never_match_raise(tmp_path):
+    with kerno.open(tmp_path / "db") as db:
+        db.define_schema("lim", [{"name": "key", "type": "text", "required": True, "unique": True}])
+        db.upsert("lim", "key", {"key": "a" * 254})
+        assert len(db.find("lim", "key", "a" * 254)) == 1
+        with pytest.raises(kerno.InvalidArgumentError, match="too long"):
+            db.find("lim", "key", "b" * 300)  # no unit can hold it
+        assert len(db.find_range("lim", "key", None, "b" * 300)) == 1  # a bound this long still means something
+        with pytest.raises(kerno.NotIndexedError, match="set_fulltext"):
+            db.hybrid_search(text="ada")  # no type is keyword-indexed
+        db.set_fulltext("lim", True)
+        assert db.hybrid_search(text="ada") == []  # indexed, nothing matches: a real empty answer
+
+
+@pytest.mark.parametrize("value", [None, 2**64, 2**63, -(2**63) - 1, [1.5], {"a": 1}, object()])
+def test_a_field_value_a_document_cannot_hold_raises_a_kerno_error(tmp_path, value):
+    with kerno.open(tmp_path / "db") as db:
+        db.define_schema("ev", [{"name": "i", "type": "int"}, {"name": "k", "type": "text", "unique": True}])
+        for call in (
+            lambda: db.store_document("ev", {"i": value}),
+            lambda: db.update_document(db.store_document("ev", {"i": 1}), {"i": value}),
+            lambda: db.upsert("ev", "k", {"k": "x", "i": value}),
+            lambda: db.commit([("upsert", "ev", "k", {"k": "x", "i": value})]),
+            lambda: db.find("ev", "i", value),
+            lambda: db.find_range("ev", "i", value, None),
+        ):
+            with pytest.raises(kerno.KernoError):
+                call()
+
+
+def test_the_edges_of_a_64_bit_integer_are_accepted(tmp_path):
+    with kerno.open(tmp_path / "db") as db:
+        db.define_schema("ev", [{"name": "i", "type": "int", "indexed": True}])
+        low, high = db.store_document("ev", {"i": -(2**63)}), db.store_document("ev", {"i": 2**63 - 1})
+        assert [u.id for u in db.find("ev", "i", 2**63 - 1)] == [high]
+        assert [u.id for u in db.find("ev", "i", -(2**63))] == [low]
+
+
+@pytest.mark.parametrize("bad", [-1, 2**64, 1.5, "5", True])
+def test_a_whole_number_argument_out_of_range_or_of_the_wrong_kind_is_invalid_argument(tmp_path, bad):
+    # Issue #11: every unsigned parameter refuses a bad value with a Kerno error that names it.
+    with kerno.open(tmp_path / "db") as db:
+        uid = db.store("n", "a")
+        db.define_schema("n2", [{"name": "v", "type": "int", "indexed": True}])
+        calls = {
+            "limit": [
+                lambda: db.history(uid, limit=bad),
+                lambda: db.hybrid_search("x", limit=bad),
+                lambda: db.find_range("n2", "v", limit=bad),
+            ],
+            "from_revision": [lambda: db.history(uid, from_revision=bad)],
+            "to_revision": [lambda: db.history(uid, to_revision=bad)],
+            "a": [lambda: db.compare(uid, bad, 1)],
+            "b": [lambda: db.compare(uid, 1, bad)],
+            "commit_seq": [lambda: db.read_as_of(uid, bad)],
+            "schema_version": [lambda: db.query("n", schema_version=bad)],
+            "candidates": [lambda: db.hybrid_search("x", candidates=bad)],
+            "rrf_k": [lambda: db.hybrid_search("x", rrf_k=bad)],
+            "max_depth": [lambda: db.hybrid_search("x", max_depth=bad)],
+            "keyword_weight": [lambda: db.hybrid_search("x", keyword_weight=bad)],
+            "vector_weight": [lambda: db.hybrid_search("x", vector_weight=bad)],
+            "relation_weight": [lambda: db.hybrid_search("x", relation_weight=bad)],
+            "max_batch_ops": [lambda: kerno.open(tmp_path / "other", max_batch_ops=bad)],
+            "revision": [lambda: db.commit([("restore", uid, bad)])],
+        }
+        seq = db.last_commit_seq()
+        for name, group in calls.items():
+            for call in group:
+                with pytest.raises(kerno.InvalidArgumentError, match=name):
+                    call()
+        assert db.last_commit_seq() == seq, "a refused call writes nothing"
+
+
+def test_a_pruned_read_says_which_number_is_a_revision_and_which_a_commit(tmp_path):
+    with kerno.open(tmp_path / "db") as db:
+        db.define_schema("cfg", [{"name": "v", "type": "int"}])
+        uid = db.store_document("cfg", {"v": 0})
+        seqs = [db.last_commit_seq()]
+        for i in range(1, 5):
+            db.update_document(uid, {"v": i})
+            seqs.append(db.last_commit_seq())
+        db.run_retention(default={"keep_last": 2})
+        with pytest.raises(kerno.PrunedError) as caught:
+            db.read_as_of(uid, seqs[0])
+        message = str(caught.value)
+        assert f"commit {seqs[0]}" in message and "revision 4" in message, message
+
+
+def test_the_open_docstring_says_a_reader_opens_beside_a_writer():
+    doc = kerno.open.__doc__
+    assert "still holds" not in doc and "one handle at a time" not in doc
+    assert "takes no lock" in doc and "refresh" in doc

@@ -29,6 +29,9 @@ pub enum Error {
     Incompatible(String),
     /// A write was attempted through a handle that only reads.
     ReadOnly(String),
+    /// The directory holds no database (no `MANIFEST`) and the open was not allowed to create
+    /// one. The text is the directory.
+    NoDatabase(String),
 }
 
 impl Error {
@@ -47,6 +50,7 @@ impl fmt::Display for Error {
             Error::Poisoned(m) => write!(f, "handle poisoned by an earlier fatal error: {m}"),
             Error::Incompatible(m) => write!(f, "incompatible format: {m}"),
             Error::ReadOnly(m) => write!(f, "read-only: {m}"),
+            Error::NoDatabase(dir) => write!(f, "no database in {dir}"),
         }
     }
 }

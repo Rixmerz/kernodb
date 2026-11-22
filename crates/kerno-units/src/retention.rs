@@ -192,8 +192,9 @@ pub struct RetentionReport {
 }
 
 /// What [`UnitDb::compact`] did. The sizes are the engine's live table
-/// bytes (the sum of its `l<N>_bytes` statistics); `None` when the engine
-/// reports none. Files a snapshot still pins are not in the live set but are
+/// bytes (the sum of its `l<N>_bytes` statistics) as of the call: `before`
+/// is read after the write buffer is written out, so it counts every commit
+/// made up to the call; `None` when the engine reports none. Files a snapshot still pins are not in the live set but are
 /// still on disk until that snapshot goes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CompactReport {
@@ -839,6 +840,10 @@ impl<E: TxnEngine + Reclaim> UnitDb<E> {
 
     fn compact_with(&self, policy: &RetentionPolicy, keep_nothing: bool) -> Result<CompactReport, UnitError> {
         self.check_poisoned()?;
+        // The engine counts only bytes in its live files, and a commit sits in memory until the
+        // buffer is written out: flush first (`compact_range` does it anyway), so `before` is
+        // the size of everything stored when the call was made, not of the last flush.
+        Reclaim::flush(self.inner_engine())?;
         let before = stored_bytes(&self.storage_stats());
         let pass = Pass::DeletedPayloads { keep_nothing };
         let (mut payloads_dropped, mut resume) = (0, None);

@@ -28,7 +28,7 @@ The example below is runnable Python: it uses `sqlite3` from the standard librar
 | insert a row | `("store", type, payload)` |
 | update a row | `("update", id, payload)` |
 | delete a row | `("delete", id)`, or `("delete_cascade", id)` to remove its relations too |
-| a foreign key or edge | `("relate", from, to, relation_type)`; an end can be a unit stored earlier in the same commit, by its index in the ops |
+| a foreign key or edge | `("relate", from, to, relation_type)`; an end is a unit id, or the position in the ops list of an earlier `store` or `upsert` op of the same commit (a later op, an update or a relation there raises `BadEndpointError`) |
 | remove an edge | `("unrelate", relation_id)` |
 
 A unit with live relations refuses a plain `delete` with `HasRelationsError`. Either remove the

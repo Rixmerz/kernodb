@@ -98,6 +98,10 @@ pub const MAX_FIELDS: usize = 64;
 pub const MAX_FIELD_NAME_LEN: usize = 64;
 /// Bytes of the encoded value of an indexed field.
 pub const MAX_INDEXED_VALUE_LEN: usize = 256;
+/// Bytes of text (or bytes) an indexed field can hold: the encoding of `Text` and `Bytes` adds a
+/// two-byte terminator, so 254 fit under [`MAX_INDEXED_VALUE_LEN`]. A `0x00` byte is written as
+/// two, so a value with `n` of them holds `n` fewer.
+pub const MAX_INDEXED_TEXT_LEN: usize = MAX_INDEXED_VALUE_LEN - 2;
 const MAX_TYPE_LEN: usize = crate::codec::MAX_UNIT_TYPE_LEN as usize;
 
 // -------------------------------------------------------------- field types
@@ -456,7 +460,11 @@ impl Schema {
                 continue;
             };
             let Some(enc) = value.index_bytes().filter(|e| e.len() <= MAX_INDEXED_VALUE_LEN) else {
-                return Err(format!("the value of indexed field {:?} is too long to index", def.name));
+                return Err(format!(
+                    "the value of indexed field {:?} is too long to index: at most {MAX_INDEXED_TEXT_LEN} bytes of \
+                     text or bytes (each 0x00 byte counts twice)",
+                    def.name
+                ));
             };
             out.push((i, enc));
         }

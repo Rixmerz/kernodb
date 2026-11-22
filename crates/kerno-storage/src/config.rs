@@ -849,8 +849,8 @@ mod tests {
         let sim = SimVfs::new(1);
         let cfg = Config { allow_unverified_platform: true, access: AccessMode::ReadOnly, ..Config::default() };
         match KernoDb::open(sim.as_vfs(), Path::new("/db"), &cfg) {
-            Err(Error::InvalidArgument(m)) => assert!(m.contains("no database"), "{m}"),
-            other => panic!("expected InvalidArgument, got {:?}", other.err()),
+            Err(Error::NoDatabase(m)) => assert!(m.contains("/db"), "{m}"),
+            other => panic!("expected NoDatabase, got {:?}", other.err()),
         }
         assert_eq!(sim.mutating_ops(), 0);
         assert!(!sim.as_vfs().exists(Path::new("/db")).unwrap());
@@ -870,13 +870,13 @@ mod tests {
         let vfs = sim.as_vfs();
         let cfg = Config { create_if_missing: false, ..Config::default() };
         // Missing directory.
-        assert!(matches!(KernoDb::open(vfs.clone(), Path::new("/db"), &cfg), Err(Error::InvalidArgument(_))));
+        assert!(matches!(KernoDb::open(vfs.clone(), Path::new("/db"), &cfg), Err(Error::NoDatabase(_))));
         assert_eq!(sim.mutating_ops(), 0);
         assert!(!vfs.exists(Path::new("/db")).unwrap());
         // Existing directory without a database: still untouched.
         vfs.create_dir_all(Path::new("/db")).unwrap();
         let before = sim.mutating_ops();
-        assert!(matches!(KernoDb::open(vfs.clone(), Path::new("/db"), &cfg), Err(Error::InvalidArgument(_))));
+        assert!(matches!(KernoDb::open(vfs.clone(), Path::new("/db"), &cfg), Err(Error::NoDatabase(_))));
         assert_eq!(sim.mutating_ops(), before);
         assert!(vfs.list(Path::new("/db")).unwrap().is_empty());
     }

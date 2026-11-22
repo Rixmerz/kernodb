@@ -73,15 +73,16 @@ export declare class Db {
   lastCommitSeq(): number
   /**
    * Moves a database opened with `readOnly: true` to the commits the writer made since it
-   * opened (or since the last refresh); returns the commit sequence it now reads. Throws on a
-   * handle that is not read-only.
+   * opened (or since the last refresh); returns the commit sequence it now reads. Throws
+   * `INVALID_ARGUMENT` on a handle that is not read-only (a read-write handle is always current).
    */
   refresh(): number
   /** Checks every record of the units layer. A damaged store is reported, not thrown. */
   verify(): VerifyReport
   /**
-   * Compacts the revision ranges. History keeps deleted units' payloads, so this frees only
-   * what a retention policy dropped.
+   * Drops the payloads of deleted units and compacts the revision ranges. A deleted unit keeps
+   * its history entries but not their payloads. Returns the stored bytes before (at call time)
+   * and after.
    */
   compact(): CompactReport
   /**
@@ -98,7 +99,13 @@ export declare class Db {
   setFulltext(unitType: string, enabled: boolean): void
   /** Whether `unitType` is keyword-indexed (off by default). */
   fulltext(unitType: string): boolean
-  /** Gives `unitType` a schema. */
+  /**
+   * Gives `unitType` a schema. Defining the schema the type has already (field order aside) is
+   * accepted and writes nothing, so a program can define on every start; a different one throws
+   * `SCHEMA_EXISTS`. A field indexed later with `createIndex` makes the first field list a
+   * different schema. An indexed text or bytes value holds at most 254 bytes (a 0x00 byte counts
+   * twice); a longer one throws `SCHEMA` on write.
+   */
   defineSchema(unitType: string, fields: Array<FieldSpec>): void
   /** Indexes `field` of `unitType` (it must be in the type's schema). */
   createIndex(unitType: string, field: string): void
@@ -110,7 +117,7 @@ export declare class Db {
   /**
    * Stores `document` as a `unitType` unit, or revises the active unit that already holds the
    * same value of `field`, a field the type's schema declares `unique`. Throws
-   * `INVALID_ARGUMENT` when `field` is not declared unique (or the type has no schema) and
+   * `NOT_UNIQUE` when `field` is not declared unique (or the type has no schema) and
    * `SCHEMA` when the schema refuses the document or it has no value in `field`.
    */
   upsert(unitType: string, field: string, document: Record<string, boolean | number | bigint | string | Buffer>): Upserted
@@ -118,13 +125,19 @@ export declare class Db {
   updateDocument(id: string, document: Record<string, boolean | number | bigint | string | Buffer>): void
   /** The payload of `id` decoded as a document, or `null` for an unknown or deleted unit. */
   readDocument(id: string): Record<string, boolean | number | bigint | string | Buffer> | null
-  /** The units of `unitType` whose indexed `field` equals `value`. */
+  /**
+   * The units of `unitType` whose indexed `field` equals `value`. Throws `NOT_INDEXED` when
+   * `field` is not indexed and `INVALID_ARGUMENT` for a text or bytes `value` over 254 bytes (no
+   * unit can hold it; the answer is not an empty list).
+   */
   find(unitType: string, field: string, value: boolean | number | bigint | string | Buffer): Array<Unit>
   /** Runs a query of the Kerno query language. */
   execute(query: string): QueryResult
   /**
    * One query over keywords, vectors and relations, fused by weighted reciprocal rank
-   * fusion; best hit first. Wraps the engine's `hybrid_search`.
+   * fusion; best hit first. Wraps the engine's `hybrid_search`. A keyword signal with no type
+   * switched on by `setFulltext` throws `NOT_INDEXED` (a switched-on type with no match gives an
+   * empty list). The search is not scoped to one type.
    */
   hybridSearch(query: HybridQueryInput): Array<HybridHit>
   /**
@@ -149,8 +162,10 @@ export declare class Db {
  * | `unrelate` | `relationId` |
  * | `upsert` | `unitType`, `field`, `document` |
  *
- * A relation end (`from`, `to`) is a unit id, or the 0-based index of an earlier `store` op of
- * the same commit.
+ * A relation end (`from`, `to`) is a unit id, or the 0-based position in the list of an earlier
+ * `store` or `upsert` op of the same commit (every op counts, not only the stores). An upsert names
+ * the unit it created, revised or found unchanged. Any other position (a later op, an update, a
+ * relation, past the end) throws `BAD_ENDPOINT` and nothing is written.
  */
 export interface CommitOp {
   op: 'store' | 'update' | 'delete' | 'delete_cascade' | 'archive' | 'unarchive' | 'restore' | 'relate' | 'unrelate' | 'upsert'
@@ -190,13 +205,20 @@ export interface Committed {
   relations: Array<string>
   /** Updates and upserts skipped because the payload was already the current one. */
   unchanged: number
-  /** What each `upsert` op did, in order. An upserted unit is not in `units`. */
+  /**
+   * What each `upsert` op did, in order. An upserted unit is not in `units`. Several upserts of
+   * one key make one unit: each reports its id and one outcome (`created` when the first made it).
+   */
   upserts: Array<Upserted>
   /** The sequence of the commit; absent when nothing was written. */
   commitSeq?: number
 }
 
-/** What `compact` measured; `null` when the engine does not know. */
+/**
+ * What `compact` measured, in stored bytes; `null` when the engine does not know. `before` is
+ * the size when the call was made (every commit so far counts; the write buffer is written out
+ * first), `after` the size once the space is given back.
+ */
 export interface CompactReport {
   before?: number
   after?: number
@@ -278,8 +300,9 @@ export declare function open(path: string, options?: OpenOptions | undefined | n
 
 export interface OpenOptions {
   /**
-   * Open without writing anything to the directory. It still holds the directory's lock.
-   * Default `false`.
+   * Write nothing and take no lock: it opens beside a live writer and reads the commits made up
+   * to the moment it opened (`refresh()` shows later ones). A write throws `READ_ONLY`, and a
+   * directory with no database throws `DATABASE_NOT_FOUND`. Default `false`.
    */
   readOnly?: boolean
   /** The most operations one `commit` may hold. Default 10,000. */

@@ -340,6 +340,13 @@ pub trait TestHooks {
 /// `Err(Error::InvalidArgument("unsupported"))`, as in [`TestHooks`], so an
 /// engine that does not implement it says so instead of doing nothing.
 pub trait Reclaim {
+    /// Writes everything the write buffer holds out to the live files, so that a size taken
+    /// afterwards counts every commit made so far. The default does nothing, for an engine that
+    /// buffers no writes.
+    fn flush(&self) -> Result<()> {
+        Ok(())
+    }
+
     /// Writes what the active write buffer holds and compacts every file
     /// that overlaps `(start, end)`, level by level, until no level above the
     /// last overlaps it.
