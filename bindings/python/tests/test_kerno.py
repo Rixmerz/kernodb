@@ -583,3 +583,92 @@ def test_query_lifecycle_pages_past_one_engine_page(tmp_path):
         assert sorted(u.id for u in db.query(lifecycle="deleted")) == sorted(ids[::2])
         assert len(db.query(lifecycle="all")) == 300
         assert len(db.query()) == 150
+
+
+def _users(db):
+    db.define_schema(
+        "user",
+        [
+            {"name": "email", "type": "text", "unique": True},
+            {"name": "name", "type": "text"},
+            {"name": "age", "type": "int", "indexed": True},
+        ],
+    )
+
+
+def test_upsert_creates_updates_and_leaves_an_unchanged_unit_alone(tmp_path):
+    with kerno.open(tmp_path / "db") as db:
+        _users(db)
+        made = db.upsert("user", "email", {"email": "a@x.io", "name": "Ada"})
+        assert made["outcome"] == "created"
+        same = db.upsert("user", "email", {"email": "a@x.io", "name": "Ada"})
+        assert same == {"id": made["id"], "outcome": "unchanged"}
+        assert [r.kind for r in db.history(made["id"], order="asc")] == ["create"]
+        newer = db.upsert("user", "email", {"email": "a@x.io", "name": "Ada L."})
+        assert newer == {"id": made["id"], "outcome": "updated"}
+        assert [r.kind for r in db.history(made["id"], order="asc")] == ["create", "update"]
+        assert db.read_document(made["id"])["name"] == "Ada L."
+        other = db.upsert("user", "email", {"email": "b@x.io", "name": "Bob"})
+        assert other["id"] != made["id"] and other["outcome"] == "created"
+        assert len(db.find("user", "email", "a@x.io")) == 1
+
+
+def test_upsert_refuses_a_field_that_is_not_unique_and_a_missing_key(tmp_path):
+    with kerno.open(tmp_path / "db") as db:
+        _users(db)
+        doc = {"email": "a@x.io", "name": "Ada", "age": 36}
+        for field in ("age", "name", "nope"):  # indexed only, plain, not in the schema
+            with pytest.raises(kerno.InvalidArgumentError):
+                db.upsert("user", field, doc)
+        with pytest.raises(kerno.InvalidArgumentError):
+            db.upsert("bare", "email", doc)  # a type with no schema
+        with pytest.raises(kerno.SchemaError):
+            db.upsert("user", "email", {"name": "Ada"})
+        with pytest.raises(kerno.InvalidArgumentError):
+            db.commit([("store", "note", "kept out"), ("upsert", "user", "name", doc)])
+        assert db.query() == []
+        with pytest.raises(ValueError):
+            db.commit([("upsert", "user", "email", "not a dict")])
+        with pytest.raises(ValueError):
+            db.commit([("upsert", "user", "email")])
+
+
+def test_upsert_in_a_commit_is_atomic_and_one_key_twice_is_one_unit(tmp_path):
+    with kerno.open(tmp_path / "db") as db:
+        _users(db)
+        note = db.store("note", "v1")
+        out = db.commit(
+            [
+                ("upsert", "user", "email", {"email": "a@x.io", "name": "first"}),
+                ("upsert", "user", "email", {"email": "b@x.io", "name": "Bob"}),
+                ("upsert", "user", "email", {"email": "a@x.io", "name": "second"}),
+                ("update", note, "v2"),
+            ],
+            detailed=True,
+        )
+        a, b, a_again = out["upserts"]
+        assert a == a_again and a["id"] != b["id"] and a["outcome"] == "created"
+        assert out["units"] == [] and out["commit_seq"] == db.last_commit_seq()
+        assert db.read_document(a["id"])["name"] == "second"
+        assert [r.kind for r in db.history(a["id"])] == ["create"]
+        assert len(db.find("user", "email", "a@x.io")) == 1
+        # An op after the upsert fails: the upsert is not visible either.
+        seq = db.last_commit_seq()
+        with pytest.raises(kerno.NotFoundError):
+            db.commit([("upsert", "user", "email", {"email": "c@x.io"}), ("update", "0" * 32, "x")])
+        assert db.find("user", "email", "c@x.io") == [] and db.last_commit_seq() == seq
+        # Plain (not detailed) commit still returns the stored ids only.
+        assert db.commit([("upsert", "user", "email", {"email": "a@x.io", "name": "third"})]) == []
+        assert db.read_document(a["id"])["name"] == "third"
+
+
+def test_upsert_keeps_one_unit_across_a_reopen(tmp_path):
+    with kerno.open(tmp_path / "db") as db:
+        _users(db)
+        first = db.upsert("user", "email", {"email": "a@x.io", "name": "Ada"})
+        db.upsert("user", "email", {"email": "a@x.io", "name": "Ada L."})
+    with kerno.open(tmp_path / "db") as db:
+        again = db.upsert("user", "email", {"email": "a@x.io", "name": "Ada L."})
+        assert again == {"id": first["id"], "outcome": "unchanged"}
+        assert len(db.find("user", "email", "a@x.io")) == 1
+        assert [r.kind for r in db.history(first["id"], order="asc")] == ["create", "update"]

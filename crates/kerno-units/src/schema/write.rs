@@ -7,10 +7,13 @@ use std::ops::Bound;
 use kerno_core::contract::{Txn, TxnEngine};
 
 use super::{
-    Document, FieldDef, Schema, decode_entry_key, entry_key, entry_value, field_prefix, prefix_bounds, schema_key,
+    Document, FieldDef, FieldValue, Schema, decode_entry_key, entry_key, entry_value, field_prefix, prefix_bounds,
+    schema_key,
 };
 use crate::codec::{Key, TAG_UNIT_HEAD, UnitHead};
-use crate::db::{ChangeMeta, ChangeSet, CommitInfo, UnitDb, Write, context, corruption, key, load_unit};
+use crate::db::{
+    ChangeMeta, ChangeSet, CommitInfo, NewUnit, UnitDb, UnitUpdate, Write, context, corruption, key, load_unit,
+};
 use crate::error::UnitError;
 use crate::types::{Lifecycle, UnitId};
 
@@ -32,6 +35,38 @@ fn check_type(unit_type: &str) -> Result<(), UnitError> {
             crate::codec::MAX_UNIT_TYPE_LEN
         )))
     }
+}
+
+/// What [`ChangeSet::upsert`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UpsertOutcome {
+    /// No active unit held the key: a new unit was stored.
+    Created,
+    /// The unit holding the key got a new revision.
+    Updated,
+    /// The unit holding the key already had this payload: nothing was written.
+    Unchanged,
+}
+
+/// The unit [`ChangeSet::upsert`] stored or found, and what happened to it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Upserted {
+    pub id: UnitId,
+    pub outcome: UpsertOutcome,
+}
+
+/// The index encoding of the value `payload` holds in `field`: what two payloads must share to
+/// be the same key of [`ChangeSet::upsert`].
+///
+/// # Errors
+///
+/// `SchemaViolation` when `payload` is not a record or has no value in `field`.
+pub fn upsert_key(payload: &[u8], field: &str) -> Result<Vec<u8>, UnitError> {
+    let record = Document::parse(payload).map_err(|m| violation(format!("upsert payload: {m}")))?;
+    record
+        .get(field)
+        .and_then(FieldValue::index_bytes)
+        .ok_or_else(|| violation(format!("upsert payload has no value for the unique field {field:?}")))
 }
 
 /// A unit of a typed unit type that is not deleted, with its record.
@@ -110,6 +145,42 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
             out.push(Write::Put(entry_key(&head.unit_type, name(*i), enc, unit), entry_value()));
         }
         Ok(out)
+    }
+
+    /// Stores `new` unless an `Active` unit of its type already holds the value `new.payload` has
+    /// in the unique `field`; then that unit is updated to `new.payload` (and left alone when it
+    /// has it already). The lookup reads this change set's own writes, so a key stored earlier in
+    /// it is found, but a unit already revised in this change set cannot be revised again
+    /// (`InvalidArgument`; the `kerno` facade's `Batch` merges repeated keys first).
+    ///
+    /// # Errors
+    ///
+    /// `InvalidArgument` when the type has no schema or `field` is not declared `unique` in it;
+    /// `SchemaViolation` when the payload is not a record the schema accepts or has no value in
+    /// `field`; otherwise as [`create`](Self::create) and [`update`](Self::update).
+    pub fn upsert(&mut self, new: NewUnit, field: &str) -> Result<Upserted, UnitError> {
+        let (schema, at) = self.field_of(&new.unit_type, field)?;
+        if !schema.fields()[at].unique {
+            return Err(UnitError::InvalidArgument(format!(
+                "field {field:?} is not declared unique in the schema of {:?}",
+                new.unit_type
+            )));
+        }
+        let mut prefix = field_prefix(&new.unit_type, field);
+        prefix.extend_from_slice(&upsert_key(&new.payload, field)?);
+        let (start, end) = prefix_bounds(&prefix);
+        let held = self.txn()?.scan(Bound::Included(&start), Bound::Excluded(&end), 1)?;
+        let Some((k, _)) = held.first() else {
+            let id = self.create(new)?;
+            return Ok(Upserted { id, outcome: UpsertOutcome::Created });
+        };
+        let (_, _, _, id) = decode_entry_key(k).map_err(|e| context(e, "FIELD_INDEX"))?;
+        let current = self.get_unit(id)?.and_then(|u| u.payload);
+        if current.as_deref() == Some(new.payload.as_slice()) {
+            return Ok(Upserted { id, outcome: UpsertOutcome::Unchanged });
+        }
+        self.update(id, UnitUpdate { payload: new.payload, schema_version: None, metadata: None }, None)?;
+        Ok(Upserted { id, outcome: UpsertOutcome::Updated })
     }
 
     /// Refuses when an `Active` unit other than `unit` already holds `value`.

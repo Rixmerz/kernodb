@@ -23,7 +23,7 @@ use kerno_testkit::vfs::{CrashKind, SimVfs};
 use kerno_units::*;
 
 const ACCT: &str = "acct";
-const STEPS: u64 = 7;
+const STEPS: u64 = 8;
 
 fn doc(name: &str, age: i64, email: &str) -> Vec<u8> {
     Document::new()
@@ -84,9 +84,14 @@ fn run_step<E: TxnEngine>(db: &UnitDb<E>, ids: &StepIds, step: u64) -> Result<()
         6 => {
             cs.unarchive(at(1, 2), None)?;
         }
-        _ => {
+        7 => {
             cs.drop_index(ACCT, "name")?;
             cs.update(at(2, 1), update(doc("e", 2, "e@x")), None)?;
+        }
+        _ => {
+            // An upsert that revises a unit and one that stores a new one, in one change set.
+            cs.upsert(new_unit(doc("e", 3, "e@x")), "email")?;
+            cs.upsert(new_unit(doc("z", 1, "z@x")), "email")?;
         }
     }
     cs.commit().map(|_| ())
@@ -204,6 +209,18 @@ fn schema_every_point<E: Target>(kind: CrashKind) {
                 .expect("find")
                 .len();
             assert_eq!(dup.is_err(), taken == 1, "{ctx}: a unique value is refused exactly when it is held");
+            // Upserting the key of the last step resolves to the one unit it holds, whether or not
+            // the step survived the crash: never a second unit.
+            ids.start_step(102);
+            let mut cs = db.begin_changeset(ChangeMeta::default()).expect("begin");
+            let done =
+                cs.upsert(new_unit(doc("z", 2, "z@x")), "email").unwrap_or_else(|e| panic!("{ctx}: upsert: {e}"));
+            cs.commit().unwrap_or_else(|e| panic!("{ctx}: commit: {e}"));
+            let (want_id, want) =
+                if s >= STEPS { (at(8, 1), UpsertOutcome::Updated) } else { (done.id, UpsertOutcome::Created) };
+            assert_eq!((done.id, done.outcome), (want_id, want), "{ctx}: the upsert after recovery");
+            let held = db.snapshot().expect("snapshot").find_by_field(ACCT, "email", &FieldValue::Text("z@x".into()));
+            assert_eq!(held.expect("find").len(), 1, "{ctx}: one unit holds the key");
             ids.start_step(101);
             let mut cs = db.begin_changeset(ChangeMeta::default()).expect("begin");
             cs.create(new_unit(doc("fresh", 7, "fresh@x"))).unwrap_or_else(|e| panic!("{ctx}: a new unit: {e}"));
