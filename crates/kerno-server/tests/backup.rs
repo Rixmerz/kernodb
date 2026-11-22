@@ -158,9 +158,7 @@ fn a_server_that_died_takes_a_new_base_when_it_starts_again() {
     let server = Server::launch(&args, None);
     wait_for(&server, "kerno_backup_bases_total", 1);
     note(&server, &[], "before the crash");
-    let status = std::process::Command::new("kill").args(["-KILL", &server.id().to_string()]).status().unwrap();
-    assert!(status.success());
-    drop(server);
+    assert!(!server.kill().success(), "the server was killed, not stopped");
 
     let again = Server::launch(&args, None);
     // The engine replayed the commit and deleted its log, so only a new base has it.
@@ -241,7 +239,11 @@ fn a_bad_backup_flag_or_location_stops_the_server_before_it_listens() {
             .stdin(std::process::Stdio::null())
             .output()
             .unwrap();
-        (out.status.code(), String::from_utf8(out.stdout).unwrap(), String::from_utf8(out.stderr).unwrap())
+        // Off Linux the server logs the durability warning (issue #7) once the logger is up, before
+        // it looks at the backup location; it is not what is under test, the error line is.
+        let err = String::from_utf8(out.stderr).unwrap();
+        let err: Vec<&str> = err.lines().filter(|l| !l.contains(kerno::storage::UNVERIFIED_WARNING)).collect();
+        (out.status.code(), String::from_utf8(out.stdout).unwrap(), err.join("\n"))
     };
     let (code, out, err) = run(&["--backup-interval", "5"]);
     assert_eq!((code, out.as_str()), (Some(1), ""));

@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use kerno_core::vfs::StdVfs;
-use kerno_storage::KernoDb;
+use kerno_storage::{Config, KernoDb, PlatformPolicy};
 use kerno_units::{
     AssocDirection, AssocError, AssocQuery, ChangeMeta, Direction, HistoryQuery, MAX_ASSOC_DEPTH, MAX_ASSOC_LIMIT,
     MAX_ASSOC_VISITS, NewUnit, PublicId, RelationProvenance, Unit, UnitConfig, UnitDb, UnitError, UnitFilter, UnitId,
@@ -59,9 +59,19 @@ impl Memory {
     /// Opens the database in `dir`, creating the directory and the database if
     /// they do not exist. The engine creates the missing directories itself and
     /// syncs their entries, so nothing here may create them first.
+    ///
+    /// Where `Sync` durability is not verified (anywhere but Linux) the database opens anyway and
+    /// one line on stderr says so; `KERNO_REQUIRE_VERIFIED_DURABILITY=1` refuses instead. Stdout
+    /// is the protocol, so nothing else may reach it.
     pub fn open(dir: &Path) -> Result<Self, String> {
-        let db = UnitDb::<KernoDb>::open(StdVfs::shared(), dir, &UnitConfig::default())
-            .map_err(|e| format!("cannot open the database in {}: {e}", dir.display()))?;
+        let policy = PlatformPolicy::from_env(true);
+        let cfg = Config { allow_unverified_platform: policy.allow_unverified_platform, ..Config::default() };
+        let cannot = |e: &dyn std::fmt::Display| format!("cannot open the database in {}: {e}", dir.display());
+        let engine = KernoDb::open(StdVfs::shared(), dir, &cfg).map_err(|e| cannot(&e))?;
+        let db = UnitDb::from_engine(engine, &UnitConfig::default()).map_err(|e| cannot(&e))?;
+        if let Some(warning) = policy.warning {
+            eprintln!("kerno-mcp: warning: {warning}");
+        }
         Ok(Memory { db })
     }
 

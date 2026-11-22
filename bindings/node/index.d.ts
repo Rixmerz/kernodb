@@ -107,6 +107,13 @@ export declare class Db {
    * returns its id; the type's schema, if any, validates it.
    */
   storeDocument(unitType: string, document: Record<string, boolean | number | bigint | string | Buffer>): string
+  /**
+   * Stores `document` as a `unitType` unit, or revises the active unit that already holds the
+   * same value of `field`, a field the type's schema declares `unique`. Throws
+   * `INVALID_ARGUMENT` when `field` is not declared unique (or the type has no schema) and
+   * `SCHEMA` when the schema refuses the document or it has no value in `field`.
+   */
+  upsert(unitType: string, field: string, document: Record<string, boolean | number | bigint | string | Buffer>): Upserted
   /** Replaces the payload of `id` with a document. */
   updateDocument(id: string, document: Record<string, boolean | number | bigint | string | Buffer>): void
   /** The payload of `id` decoded as a document, or `null` for an unknown or deleted unit. */
@@ -140,12 +147,13 @@ export declare class Db {
  * | `restore` | `id`, `revision` |
  * | `relate` | `from`, `to`, `relationType`, optional `unique` |
  * | `unrelate` | `relationId` |
+ * | `upsert` | `unitType`, `field`, `document` |
  *
  * A relation end (`from`, `to`) is a unit id, or the 0-based index of an earlier `store` op of
  * the same commit.
  */
 export interface CommitOp {
-  op: 'store' | 'update' | 'delete' | 'delete_cascade' | 'archive' | 'unarchive' | 'restore' | 'relate' | 'unrelate'
+  op: 'store' | 'update' | 'delete' | 'delete_cascade' | 'archive' | 'unarchive' | 'restore' | 'relate' | 'unrelate' | 'upsert'
   unitType?: string
   payload?: string | Buffer
   id?: string
@@ -159,6 +167,10 @@ export interface CommitOp {
   unique?: boolean
   /** `unrelate`: the relation to remove. */
   relationId?: string
+  /** `upsert`: the unique field of `unitType`'s schema that keys the unit. */
+  field?: string
+  /** `upsert`: the document to store, or to revise the keyed unit to. */
+  document?: Record<string, boolean | number | bigint | string | Buffer>
 }
 
 export interface CommitOptions {
@@ -176,8 +188,10 @@ export interface Committed {
   units: Array<string>
   /** The ids of the relations it created (or, for a unique relate, found), in order. */
   relations: Array<string>
-  /** Updates skipped because the payload was already the current one. */
+  /** Updates and upserts skipped because the payload was already the current one. */
   unchanged: number
+  /** What each `upsert` op did, in order. An upserted unit is not in `units`. */
+  upserts: Array<Upserted>
   /** The sequence of the commit; absent when nothing was written. */
   commitSeq?: number
 }
@@ -388,6 +402,17 @@ export interface UnitFilter {
 export interface UpdateOptions {
   /** An identical payload writes nothing. Default `false`. */
   ifChanged?: boolean
+}
+
+/** What an upsert did to the unit its key names. */
+export interface Upserted {
+  /** 32 hex digits. */
+  id: string
+  /**
+   * `created`: no active unit held the key. `updated`: the unit got a new revision.
+   * `unchanged`: it had this document already, nothing was written.
+   */
+  outcome: 'created' | 'updated' | 'unchanged'
 }
 
 /** The vector leg of `hybridSearch`: the vectors to rank, and the one to rank them against. */

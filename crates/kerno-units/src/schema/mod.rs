@@ -76,6 +76,8 @@ mod read;
 mod tests;
 mod write;
 
+pub use write::{UpsertOutcome, Upserted, upsert_key};
+
 use std::collections::BTreeMap;
 
 use crate::error::{DecodeError, UnitError, UnitRule};

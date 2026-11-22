@@ -586,6 +586,45 @@ impl Config {
     }
 }
 
+/// The environment variable that makes the Kerno binaries (`kerno`, `kerno-mcp`, `kerno-server`)
+/// refuse to open a database on a platform where [`Durability::Sync`] is not verified.
+pub const REQUIRE_VERIFIED_ENV: &str = "KERNO_REQUIRE_VERIFIED_DURABILITY";
+
+/// What the binaries print, as a warning, when they run with unverified durability.
+pub const UNVERIFIED_WARNING: &str = "durability is not verified on this platform: commits are still synced to disk, \
+     but a crash or power loss may lose acknowledged writes; set KERNO_REQUIRE_VERIFIED_DURABILITY=1 to refuse \
+     to run here";
+
+/// What a binary does where the guarantees of [`Durability::Sync`] are verified on Linux only: it
+/// keeps `Sync`, the strongest mode there is, opens anyway and warns, unless the environment
+/// asks for verified durability, and then the open is refused as [`Config`] refuses it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlatformPolicy {
+    /// The value for [`Config::allow_unverified_platform`].
+    pub allow_unverified_platform: bool,
+    /// A one-line warning for stderr, once the database is open: set when durability is not
+    /// verified, the open is allowed and it can write.
+    pub warning: Option<&'static str>,
+}
+
+impl PlatformPolicy {
+    /// `verified`: the platform's `Sync` is verified. `require`: the value of
+    /// [`REQUIRE_VERIFIED_ENV`], where unset, empty and `0` mean "not required". `writes`: the
+    /// open can change the database; a read-only open puts no data at risk, so it does not warn.
+    pub fn decide(verified: bool, require: Option<&str>, writes: bool) -> Self {
+        let required = require.is_some_and(|v| !v.is_empty() && v != "0");
+        PlatformPolicy {
+            allow_unverified_platform: !required,
+            warning: (!verified && !required && writes).then_some(UNVERIFIED_WARNING),
+        }
+    }
+
+    /// [`decide`](Self::decide) for this build's platform and this process's environment.
+    pub fn from_env(writes: bool) -> Self {
+        Self::decide(cfg!(target_os = "linux"), std::env::var(REQUIRE_VERIFIED_ENV).ok().as_deref(), writes)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::any::Any;
@@ -615,6 +654,49 @@ mod tests {
         assert_eq!(c.max_immutable_memtables, 4);
         assert_eq!(c.compaction, CompactionConfig::default());
         assert_eq!((c.compaction.level_base_bytes, c.compaction.target_file_size), (None, None));
+    }
+
+    #[test]
+    fn an_unverified_platform_opens_and_warns_unless_verified_durability_is_required() {
+        let allowed = |warning| PlatformPolicy { allow_unverified_platform: true, warning };
+        // Unverified and writing: open anyway, say so.
+        assert_eq!(PlatformPolicy::decide(false, None, true), allowed(Some(UNVERIFIED_WARNING)));
+        // Not required: unset, empty and "0" are the same.
+        for off in [Some(""), Some("0")] {
+            assert_eq!(PlatformPolicy::decide(false, off, true), allowed(Some(UNVERIFIED_WARNING)), "{off:?}");
+        }
+        // A read-only open writes nothing, so there is nothing to warn about.
+        assert_eq!(PlatformPolicy::decide(false, None, false), allowed(None));
+        // Required: no opt-in, so the engine refuses the open, and no warning to print.
+        for on in [Some("1"), Some("true"), Some("yes")] {
+            let refused = PlatformPolicy { allow_unverified_platform: false, warning: None };
+            assert_eq!(PlatformPolicy::decide(false, on, true), refused, "{on:?}");
+            assert_eq!(PlatformPolicy::decide(false, on, false), refused, "{on:?}");
+        }
+        // Verified (Linux): never a warning, whatever the environment says.
+        assert_eq!(PlatformPolicy::decide(true, None, true).warning, None);
+        assert_eq!(PlatformPolicy::decide(true, Some("1"), true).warning, None);
+        // The warning is one line and names the variable that refuses instead.
+        assert!(!UNVERIFIED_WARNING.contains('\n') && UNVERIFIED_WARNING.contains(REQUIRE_VERIFIED_ENV));
+    }
+
+    #[test]
+    fn the_policy_decides_whether_a_default_config_opens_off_linux() {
+        // Where the platform is verified the opt-in changes nothing; where it is not, the opt-in is
+        // exactly what lets `Sync` open, and requiring verified durability takes it away.
+        let sim = SimVfs::new(7);
+        for (require, opens) in [(None, true), (Some("1"), cfg!(target_os = "linux"))] {
+            let policy = PlatformPolicy::decide(cfg!(target_os = "linux"), require, true);
+            let cfg = Config { allow_unverified_platform: policy.allow_unverified_platform, ..Config::default() };
+            let vfs = sim.as_platform_vfs();
+            match KernoDb::open(vfs, Path::new("db"), &cfg) {
+                Ok(db) => {
+                    assert!(opens, "{require:?}");
+                    db.close().unwrap();
+                }
+                Err(e) => assert!(!opens && e.to_string().contains("durability not verified"), "{require:?}: {e}"),
+            }
+        }
     }
 
     #[test]

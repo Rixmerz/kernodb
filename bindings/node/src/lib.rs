@@ -316,13 +316,14 @@ pub struct CommitOptions {
 /// | `restore` | `id`, `revision` |
 /// | `relate` | `from`, `to`, `relationType`, optional `unique` |
 /// | `unrelate` | `relationId` |
+/// | `upsert` | `unitType`, `field`, `document` |
 ///
 /// A relation end (`from`, `to`) is a unit id, or the 0-based index of an earlier `store` op of
 /// the same commit.
 #[napi(object)]
 pub struct CommitOp {
     #[napi(
-        ts_type = "'store' | 'update' | 'delete' | 'delete_cascade' | 'archive' | 'unarchive' | 'restore' | 'relate' | 'unrelate'"
+        ts_type = "'store' | 'update' | 'delete' | 'delete_cascade' | 'archive' | 'unarchive' | 'restore' | 'relate' | 'unrelate' | 'upsert'"
     )]
     pub op: String,
     pub unit_type: Option<String>,
@@ -340,6 +341,33 @@ pub struct CommitOp {
     pub unique: Option<bool>,
     /// `unrelate`: the relation to remove.
     pub relation_id: Option<String>,
+    /// `upsert`: the unique field of `unitType`'s schema that keys the unit.
+    pub field: Option<String>,
+    /// `upsert`: the document to store, or to revise the keyed unit to.
+    #[napi(ts_type = "Record<string, boolean | number | bigint | string | Buffer>")]
+    pub document: Option<HashMap<String, Field>>,
+}
+
+/// What an upsert did to the unit its key names.
+#[napi(object)]
+pub struct Upserted {
+    /// 32 hex digits.
+    pub id: String,
+    /// `created`: no active unit held the key. `updated`: the unit got a new revision.
+    /// `unchanged`: it had this document already, nothing was written.
+    #[napi(ts_type = "'created' | 'updated' | 'unchanged'")]
+    pub outcome: String,
+}
+
+impl From<&kerno::Upserted> for Upserted {
+    fn from(u: &kerno::Upserted) -> Self {
+        let outcome = match u.outcome {
+            kerno::UpsertOutcome::Created => "created",
+            kerno::UpsertOutcome::Updated => "updated",
+            kerno::UpsertOutcome::Unchanged => "unchanged",
+        };
+        Upserted { id: u.id.to_string(), outcome: outcome.to_owned() }
+    }
 }
 
 /// What a `commit` wrote.
@@ -349,8 +377,10 @@ pub struct Committed {
     pub units: Vec<String>,
     /// The ids of the relations it created (or, for a unique relate, found), in order.
     pub relations: Vec<String>,
-    /// Updates skipped because the payload was already the current one.
+    /// Updates and upserts skipped because the payload was already the current one.
     pub unchanged: u32,
+    /// What each `upsert` op did, in order. An upserted unit is not in `units`.
+    pub upserts: Vec<Upserted>,
     /// The sequence of the commit; absent when nothing was written.
     pub commit_seq: Option<i64>,
 }
@@ -651,7 +681,7 @@ fn need<T>(v: Option<T>, op: &str, field: &str) -> Result<T> {
     v.ok_or_else(|| invalid(format!("op {op:?}: `{field}` is missing")))
 }
 
-fn add_op(batch: &mut Batch, op: CommitOp) -> Result<()> {
+fn add_op(db: &Db, batch: &mut Batch, op: CommitOp) -> Result<()> {
     let name = op.op.clone();
     let name = name.as_str();
     let id = |op: &CommitOp| -> Result<UnitId> { unit_id(&need(op.id.clone(), name, "id")?) };
@@ -701,6 +731,11 @@ fn add_op(batch: &mut Batch, op: CommitOp) -> Result<()> {
         }
         "unrelate" => {
             batch.unrelate(relation_id(&need(op.relation_id, name, "relationId")?)?);
+        }
+        "upsert" => {
+            let (t, field) = (need(op.unit_type, name, "unitType")?, need(op.field, name, "field")?);
+            let doc = db.to_document(&t, need(op.document, name, "document")?)?;
+            batch.upsert(&t, &field, doc.encode().map_err(engine_error)?);
         }
         other => return Err(invalid(format!("unknown commit op {other:?}"))),
     }
@@ -854,7 +889,7 @@ impl Db {
     pub fn commit(&self, ops: Vec<CommitOp>, options: Option<CommitOptions>) -> Result<Committed> {
         let mut batch = Batch::new();
         for op in ops {
-            add_op(&mut batch, op)?;
+            add_op(self, &mut batch, op)?;
         }
         let options = options.unwrap_or(CommitOptions { reason: None, actor: None, source: None });
         let meta = CommitMeta {
@@ -867,6 +902,7 @@ impl Db {
             units: done.units.iter().map(ToString::to_string).collect(),
             relations: done.relations.iter().map(ToString::to_string).collect(),
             unchanged: u32::try_from(done.unchanged).unwrap_or(u32::MAX),
+            upserts: done.upserts.iter().map(Upserted::from).collect(),
             commit_seq: done.commit_seq.map(num),
         })
     }
@@ -1049,6 +1085,24 @@ impl Db {
     ) -> Result<String> {
         let doc = self.to_document(&unit_type, document)?;
         self.with(|db| db.store_document(&unit_type, &doc)).map(|id| id.to_string())
+    }
+
+    /// Stores `document` as a `unitType` unit, or revises the active unit that already holds the
+    /// same value of `field`, a field the type's schema declares `unique`. Throws
+    /// `INVALID_ARGUMENT` when `field` is not declared unique (or the type has no schema) and
+    /// `SCHEMA` when the schema refuses the document or it has no value in `field`.
+    #[napi]
+    pub fn upsert(
+        &self,
+        unit_type: String,
+        field: String,
+        #[napi(ts_arg_type = "Record<string, boolean | number | bigint | string | Buffer>")] document: HashMap<
+            String,
+            Field,
+        >,
+    ) -> Result<Upserted> {
+        let doc = self.to_document(&unit_type, document)?;
+        self.with(|db| db.upsert_document(&unit_type, &field, &doc)).map(|u| Upserted::from(&u))
     }
 
     /// Replaces the payload of `id` with a document.

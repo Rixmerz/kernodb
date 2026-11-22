@@ -53,8 +53,15 @@ struct Run {
     err: String,
 }
 
-fn kerno_once(args: &[&str]) -> Run {
-    let o = Command::new(env!("CARGO_BIN_EXE_kerno")).args(args).output().unwrap();
+/// `require` is the value of `KERNO_REQUIRE_VERIFIED_DURABILITY` for this run; the variable is
+/// otherwise removed, so the environment of whoever runs the tests changes nothing.
+fn kerno_once(args: &[&str], require: Option<&str>) -> Run {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_kerno"));
+    cmd.env_remove(kerno_storage::REQUIRE_VERIFIED_ENV).args(args);
+    if let Some(v) = require {
+        cmd.env(kerno_storage::REQUIRE_VERIFIED_ENV, v);
+    }
+    let o = cmd.output().unwrap();
     Run {
         code: o.status.code().unwrap(),
         out: String::from_utf8(o.stdout).unwrap(),
@@ -65,15 +72,19 @@ fn kerno_once(args: &[&str]) -> Run {
 /// Runs `kerno`, trying again while a lock is held that nobody holds on purpose. The tests share one
 /// process: a child that another test's thread forked inherits that test's lock file until its `exec`,
 /// so a database can look locked for a moment after its handle was closed.
-fn kerno(args: &[&str]) -> Run {
+fn kerno_requiring(args: &[&str], require: Option<&str>) -> Run {
     for _ in 0..200 {
-        let r = kerno_once(args);
+        let r = kerno_once(args, require);
         if r.code != 1 || !r.err.contains("locked by another handle") {
             return r;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    kerno_once(args)
+    kerno_once(args, require)
+}
+
+fn kerno(args: &[&str]) -> Run {
+    kerno_requiring(args, None)
 }
 
 fn run_in(dir: &Path, args: &[&str]) -> Run {
@@ -110,8 +121,10 @@ struct Fixture {
 
 /// Opens the engine, waiting out a lock that a handle closed a moment ago has not released yet.
 fn open_engine(dir: &Path, cfg: &Config) -> KernoDb {
+    // Windows is not a verified platform: these tests are about the tool, not the guarantee.
+    let cfg = Config { allow_unverified_platform: true, ..cfg.clone() };
     for _ in 0..500 {
-        match KernoDb::open(StdVfs::shared(), dir, cfg) {
+        match KernoDb::open(StdVfs::shared(), dir, &cfg) {
             Err(kerno_core::Error::Locked) => std::thread::sleep(std::time::Duration::from_millis(10)),
             other => return other.unwrap(),
         }
@@ -327,10 +340,25 @@ fn a_wrong_argument_count_says_how_many_were_expected_and_the_usage() {
     }
 }
 
+/// A path argument that is not Unicode: a byte that is not UTF-8 on Unix, an unpaired surrogate on
+/// Windows (its arguments are UTF-16).
+fn not_unicode() -> std::ffi::OsString {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        std::ffi::OsString::from_vec(b"/tmp/\xff".to_vec())
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStringExt;
+        std::ffi::OsString::from_wide(&[u16::from(b'C'), u16::from(b':'), u16::from(b'\\'), 0xD800])
+    }
+}
+
 #[test]
 fn an_argument_that_is_not_unicode_is_a_usage_error_not_a_panic() {
-    use std::os::unix::ffi::OsStrExt;
-    let bad = std::ffi::OsStr::from_bytes(b"/tmp/\xff");
+    let bad = not_unicode();
+    assert!(bad.to_str().is_none());
     let o = Command::new(env!("CARGO_BIN_EXE_kerno")).arg(bad).arg("stats").output().unwrap();
     let err = String::from_utf8(o.stderr).unwrap();
     assert_eq!(o.status.code(), Some(2), "{err}");
@@ -1007,6 +1035,38 @@ fn reclaim_compacts_the_live_files_keeps_the_data_and_says_it_is_not_an_erase() 
     assert_eq!(run_in(&t.db(), &["reclaim", "extra"]).code, 2);
 }
 
+#[test]
+fn unverified_durability_warns_on_a_write_and_the_environment_can_refuse_to_run() {
+    let t = TempDir::new();
+    build_with_tables(&t.db(), false);
+    let dir = t.db();
+    let d = dir.to_str().unwrap();
+    // Linux is the one platform where `Sync` is verified; everywhere else a command that writes
+    // says so, once, on stderr, and a command that only reads does not.
+    let warning = format!("kerno: warning: {}", kerno_storage::UNVERIFIED_WARNING);
+    let (read, write) = (kerno(&[d, "stats"]), kerno(&[d, "reclaim"]));
+    assert_eq!((read.code, write.code), (0, 0), "{} {}", read.err, write.err);
+    assert_eq!(read.err, "");
+    assert_eq!(write.err.trim_end(), if cfg!(target_os = "linux") { "" } else { warning.as_str() });
+    // Not required: "0" and "" are the same as unset.
+    for off in ["0", ""] {
+        assert_eq!(kerno_requiring(&[d, "reclaim"], Some(off)).code, 0, "{off:?}");
+    }
+    // Required: where the platform is verified nothing changes; elsewhere the open is refused with
+    // the one line a failure prints and no warning.
+    for command in ["stats", "reclaim"] {
+        let r = kerno_requiring(&[d, command], Some("1"));
+        if cfg!(target_os = "linux") {
+            assert_eq!((r.code, r.err.as_str()), (0, ""), "{command}");
+        } else {
+            assert_eq!(r.code, 1, "{command}: {}", r.err);
+            assert!(r.err.starts_with("kerno: cannot open "), "{command}: {}", r.err);
+            assert!(r.err.contains("durability not verified on this platform"), "{command}: {}", r.err);
+            assert!(r.err.trim_end().lines().count() == 1, "{command}: {}", r.err);
+        }
+    }
+}
+
 // ------------------------------------------------------------ read-only
 
 #[test]
@@ -1050,7 +1110,7 @@ fn query_reads_beside_a_handle_that_holds_the_database_and_stats_and_verify_do_n
     assert!(r.out.contains("3 unit(s) of type \"note\""), "{}", r.out);
     // `stats` and `verify` inspect the files, need a quiet directory and keep the exclusive lock.
     for args in [&["stats"][..], &["verify"]] {
-        let r = kerno_once(&[&[t.db().to_str().unwrap()], args].concat());
+        let r = kerno_once(&[&[t.db().to_str().unwrap()], args].concat(), None);
         assert_eq!(r.code, 1, "{args:?}: {} {}", r.out, r.err);
         assert!(r.err.starts_with("kerno: ") && r.err.contains("locked by another handle"), "{}", r.err);
     }
@@ -1067,8 +1127,11 @@ fn open_more(dir: &Path) -> UnitDb<KernoDb> {
     UnitDb::from_engine(engine, &UnitConfig::with_sources(clock, Arc::new(CounterIds::new(1000)))).unwrap()
 }
 
+/// A `file://` URL for `path`: `file:///srv/x` on Unix, `file:///C:/x` on Windows, where
+/// `file://` + the native path (`file://C:\x`) is not the URL form.
 fn url_of(path: &Path) -> String {
-    format!("file://{}", path.display())
+    let p = path.display().to_string().replace('\\', "/");
+    if p.starts_with('/') { format!("file://{p}") } else { format!("file:///{p}") }
 }
 
 /// One more change set on an open database.
@@ -1110,7 +1173,7 @@ fn backup_ship_and_restore_rebuild_the_database_while_a_handle_holds_the_origina
     // `backup` opens the database read-only, which takes no lock, so it works beside the holder.
     // It goes to a store of its own so the base of `url` stays the one `ship` and `restore` build on.
     let beside = url_of(&t.path("beside"));
-    let r = kerno_once(&[t.db().to_str().unwrap(), "backup", &beside]);
+    let r = kerno_once(&[t.db().to_str().unwrap(), "backup", &beside], None);
     assert_eq!(r.code, 0, "{} {}", r.out, r.err);
     assert!(r.out.starts_with("backed up commit "), "{}", r.out);
     let shipped = json_of(&t.db(), &["ship", &url]);
@@ -1201,6 +1264,21 @@ fn restore_refuses_a_destination_in_use_and_a_point_the_backup_does_not_reach() 
     let r = run_in(&t.path("empty-store"), &["restore", &url_of(&t.path("nothing"))]);
     assert_eq!(r.code, 1, "{}", r.out);
     assert_eq!(r.err.trim_end(), "kerno: the store has no base backup");
+}
+
+/// `file://` written straight before a native path is a URL only where the path starts with `/`.
+/// On Windows (`file://C:\x`) the location is taken for the drive path it plainly means.
+#[test]
+fn a_native_path_after_file_scheme_names_the_same_store() {
+    let t = TempDir::new();
+    build(&t.db(), true);
+    let native = format!("file://{}", t.path("store").display());
+    let r = run_in(&t.db(), &["backup", &native]);
+    assert_eq!(r.code, 0, "{native}: {}", r.err);
+    // The URL form of the same directory reads what the native form wrote.
+    let listed = run_in(&t.path("not-a-database"), &["backups", &url_of(&t.path("store"))]);
+    assert_eq!(listed.code, 0, "{}", listed.err);
+    assert!(listed.out.contains("base at commit "), "{}", listed.out);
 }
 
 #[test]

@@ -38,6 +38,15 @@ database read-only (`AccessMode::ReadOnly`): they create, sync, delete and chang
 One process holds a directory at a time: while another handle is open, every command fails with
 "database is locked by another handle".
 
+**Windows and macOS.** The durability of `Sync` is verified on Linux only. Elsewhere `kerno` still
+opens the database, and a command that writes (`reclaim`, `import`) prints one line on stderr after
+it opened, `kerno: warning: durability is not verified on this platform ...`; a command that only
+reads prints nothing. Set `KERNO_REQUIRE_VERIFIED_DURABILITY=1` to make every command that opens a
+database fail instead (`kerno: cannot open <dir>: invalid argument: durability not verified on this
+platform`, exit 1); `restore` (it builds its copy with `Buffered` durability), `ship` and `backups`
+ignore it.
+See [docs/compatibility.md](../../docs/compatibility.md#24-durability-on-platforms-other-than-linux).
+
 **Output.** The read commands print text; with `--json` they print one JSON document with the
 same facts. A unit is named by its 32-digit hex id (what every command prints) or by its public
 id (`k1_...`). A payload (or metadata) is shown as text when it is valid UTF-8, otherwise as hex

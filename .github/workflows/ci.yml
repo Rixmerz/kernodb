@@ -109,7 +109,7 @@ jobs:
   # best effort until this job is green and the owner keeps Windows in the
   # binary set (docs/release.md).
   windows:
-    name: windows build and engine tests
+    name: windows build, engine and binaries tests
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -117,6 +117,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked -p kerno-cli -p kerno-mcp
       - run: cargo test --locked -p kernodb-core -p kernodb-storage
+      # The binaries' own tests: the CLI, the MCP server and the HTTP/gRPC server (issues #7 to #10).
+      - run: cargo test --locked -p kerno-cli -p kerno-mcp -p kerno-server --all-features --no-fail-fast
 
   # Dependency audit (threat T-10): advisories, licences, bans and sources
   # as set in deny.toml.

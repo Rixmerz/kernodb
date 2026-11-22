@@ -309,7 +309,7 @@ test('commit records reason, actor and source with the revision', () => {
 test('commit with no ops writes nothing and reports no sequence', () => {
   const done = db.commit([])
   assert.equal(done.commitSeq, undefined)
-  assert.deepEqual(done, { units: [], relations: [], unchanged: 0 })
+  assert.deepEqual(done, { units: [], relations: [], unchanged: 0, upserts: [] })
   assert.equal(db.lastCommitSeq(), 0)
 })
 
@@ -734,4 +734,86 @@ test('a numeric option that is a fraction, a negative or NaN is refused, never t
   // A whole number is still accepted, and nothing was written by the refusals.
   assert.equal(db.history(a, { limit: 1 }).length, 1)
   assert.equal(db.readAsOf(a, db.lastCommitSeq())?.revision, 2)
+
+function defineUsers(): void {
+  db.defineSchema('user', [
+    { name: 'email', type: 'text', unique: true },
+    { name: 'name', type: 'text' },
+    { name: 'age', type: 'int', indexed: true },
+  ])
+}
+
+const kinds = (id: string) => db.history(id).map((r) => r.kind).reverse()
+
+test('upsert creates, updates, and leaves an unchanged unit alone', () => {
+  defineUsers()
+  const made = db.upsert('user', 'email', { email: 'a@x.io', name: 'Ada' })
+  assert.equal(made.outcome, 'created')
+  assert.deepEqual(db.upsert('user', 'email', { email: 'a@x.io', name: 'Ada' }), { id: made.id, outcome: 'unchanged' })
+  assert.deepEqual(kinds(made.id), ['create'])
+  assert.deepEqual(db.upsert('user', 'email', { email: 'a@x.io', name: 'Ada L.' }), { id: made.id, outcome: 'updated' })
+  assert.deepEqual(kinds(made.id), ['create', 'update'])
+  assert.equal(db.readDocument(made.id)?.name, 'Ada L.')
+  const other = db.upsert('user', 'email', { email: 'b@x.io', name: 'Bob' })
+  assert.notEqual(other.id, made.id)
+  assert.equal(other.outcome, 'created')
+  assert.equal(db.find('user', 'email', 'a@x.io').length, 1)
+})
+
+test('upsert refuses a field that is not unique and a document without the key', () => {
+  defineUsers()
+  const doc = { email: 'a@x.io', name: 'Ada', age: 36 }
+  for (const field of ['age', 'name', 'nope']) {
+    assert.equal(codeOf(() => db.upsert('user', field, doc)), 'INVALID_ARGUMENT', field)
+  }
+  assert.equal(codeOf(() => db.upsert('bare', 'email', doc)), 'INVALID_ARGUMENT')
+  assert.equal(codeOf(() => db.upsert('user', 'email', { name: 'Ada' })), 'SCHEMA')
+  const ops = [
+    { op: 'store' as const, unitType: 'note', payload: 'kept out' },
+    { op: 'upsert' as const, unitType: 'user', field: 'name', document: doc },
+  ]
+  assert.equal(codeOf(() => db.commit(ops)), 'INVALID_ARGUMENT')
+  assert.equal(db.query().length, 0)
+  assert.equal(codeOf(() => db.commit([{ op: 'upsert', unitType: 'user', field: 'email' }])), 'INVALID_ARGUMENT')
+})
+
+test('upsert in a commit is atomic and one key twice is one unit', () => {
+  defineUsers()
+  const note = db.store('note', 'v1')
+  const out = db.commit([
+    { op: 'upsert', unitType: 'user', field: 'email', document: { email: 'a@x.io', name: 'first' } },
+    { op: 'upsert', unitType: 'user', field: 'email', document: { email: 'b@x.io', name: 'Bob' } },
+    { op: 'upsert', unitType: 'user', field: 'email', document: { email: 'a@x.io', name: 'second' } },
+    { op: 'update', id: note, payload: 'v2' },
+  ])
+  const [a, b, again] = out.upserts
+  assert.deepEqual(a, again)
+  assert.notEqual(a.id, b.id)
+  assert.equal(a.outcome, 'created')
+  assert.deepEqual(out.units, [])
+  assert.equal(out.commitSeq, db.lastCommitSeq())
+  assert.equal(db.readDocument(a.id)?.name, 'second')
+  assert.deepEqual(kinds(a.id), ['create'])
+  assert.equal(db.find('user', 'email', 'a@x.io').length, 1)
+
+  // An op after the upsert fails: the upsert is not visible either.
+  const seq = db.lastCommitSeq()
+  const bad = [
+    { op: 'upsert' as const, unitType: 'user', field: 'email', document: { email: 'c@x.io' } },
+    { op: 'update' as const, id: MISSING, payload: 'x' },
+  ]
+  assert.equal(codeOf(() => db.commit(bad)), 'NOT_FOUND')
+  assert.equal(db.find('user', 'email', 'c@x.io').length, 0)
+  assert.equal(db.lastCommitSeq(), seq)
+})
+
+test('upsert keeps one unit across a close and reopen', () => {
+  defineUsers()
+  const first = db.upsert('user', 'email', { email: 'a@x.io', name: 'Ada' })
+  db.upsert('user', 'email', { email: 'a@x.io', name: 'Ada L.' })
+  db.close()
+  db = open(dir)
+  assert.deepEqual(db.upsert('user', 'email', { email: 'a@x.io', name: 'Ada L.' }), { id: first.id, outcome: 'unchanged' })
+  assert.equal(db.find('user', 'email', 'a@x.io').length, 1)
+  assert.deepEqual(kinds(first.id), ['create', 'update'])
 })

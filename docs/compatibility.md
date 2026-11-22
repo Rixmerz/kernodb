@@ -128,6 +128,36 @@ sequence above 1,000,000. An export holds no schemas, indexes or derived data,
 so a restore is: import into a new database, turn on the keyword index of the types you search
 (`set_fulltext`), redefine schemas and indexes, and rebuild derived data.
 
+### 2.4 Durability on platforms other than Linux
+
+The guarantees of `Durability::Sync` (an acknowledged commit survives a crash or a power loss)
+are verified on **Linux (ext4, xfs)** only; macOS and Windows are not verified. The library
+refuses to open with `Sync` there unless `Config::allow_unverified_platform` is set. The binaries
+(`kerno`, `kerno-mcp`, `kerno-server`) have to run on the platforms the release archives are
+built for, so they behave the same way everywhere:
+
+- **They open the database with `Sync` anyway**, the strongest mode the engine has (every
+  commit is synced to disk: `fdatasync` on Unix, a flush of the file's buffers on Windows), and the crash tests of that
+  mode do not run on the platform. On Windows the entries of a directory are not flushed
+  separately (NTFS journals them).
+- **They say so once**: one warning line on stderr (`kerno-mcp: warning: durability is not
+  verified on this platform: ...`; a JSON log line for `kerno-server`). `kerno` warns only for a
+  command that writes (`reclaim`, `import`); a command that only reads puts no data at risk.
+  Nothing is printed on Linux.
+- **`KERNO_REQUIRE_VERIFIED_DURABILITY=1` refuses instead**: the binary fails to open with
+  `invalid argument: durability not verified on this platform` and writes nothing. Unset, empty
+  and `0` mean "not required". Of the `kerno` commands, `restore` (which builds its copy with
+  `Buffered` durability), `ship` and `backups` ignore it; the others open a database and obey it.
+
+`kerno::Db::open` and the Python and Node bindings already open with `Sync` on every platform
+without a message; they never refused. The test that keeps this is
+the end-to-end tests of the three binaries (`unverified_durability_is_a_warning_and_the_environment_can_refuse_to_run`
+in `kerno-mcp`, `unverified_durability_warns_on_a_write_and_the_environment_can_refuse_to_run` in
+`kerno-cli`, `unverified_durability_is_one_logged_warning_and_the_environment_can_refuse_to_start` in
+`kerno-server`), which expect the behaviour of the platform they run on, and
+`an_unverified_platform_opens_and_warns_unless_verified_durability_is_required` (`kerno-storage`),
+the decision itself, which runs on Linux too.
+
 ## 3. Upgrade and downgrade
 
 | You want | Do |

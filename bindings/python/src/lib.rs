@@ -15,7 +15,7 @@ use kerno::units::{Access, AsOf, CommitSeq, HistoryQuery, Order, RevNo, Revision
 use kerno::{
     AccessMode, AssocQuery, Batch, CommitMeta, Config, Db, Direction, Document, Endpoint, FieldDef, FieldType,
     FieldValue, HybridQuery, HybridWeights, Lifecycle, QueryPlan, RelationId, RetentionPolicy, RetentionRule,
-    UnitFilter, UnitId, VectorLeg,
+    UnitFilter, UnitId, UpsertOutcome, Upserted, VectorLeg,
 };
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyValueError};
@@ -188,6 +188,21 @@ fn parse_id(hex: &str) -> PyResult<[u8; 16]> {
 enum Payload {
     Text(String),
     Bytes(Vec<u8>),
+}
+
+/// `{"id": hex, "outcome": "created" | "updated" | "unchanged"}`.
+fn upserted_dict<'py>(py: Python<'py>, u: &Upserted) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("id", u.id.to_string())?;
+    d.set_item(
+        "outcome",
+        match u.outcome {
+            UpsertOutcome::Created => "created",
+            UpsertOutcome::Updated => "updated",
+            UpsertOutcome::Unchanged => "unchanged",
+        },
+    )?;
+    Ok(d)
 }
 
 fn lifecycle_name(l: Lifecycle) -> &'static str {
@@ -678,6 +693,24 @@ impl Database {
         self.with_db(py, |db| Ok(db.store_document(unit_type, &doc).map_err(engine_error)?.to_string()))
     }
 
+    /// Stores `document` as a `unit_type` unit, or revises the active unit that already holds the
+    /// same value of `field`, a field the type's schema declares `unique`. Returns `{"id",
+    /// "outcome"}`, the outcome being "created", "updated" or "unchanged" (the unit had this
+    /// document already: no revision is written). Raises `InvalidArgumentError` when `field` is
+    /// not declared unique (or the type has no schema) and `SchemaError` when the schema refuses
+    /// the document or it has no value in `field`.
+    fn upsert<'py>(
+        &self,
+        py: Python<'py>,
+        unit_type: &str,
+        field: &str,
+        document: Bound<'py, PyDict>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let doc = to_document(&document)?;
+        let done = self.with_db(py, |db| db.upsert_document(unit_type, field, &doc).map_err(engine_error))?;
+        upserted_dict(py, &done)
+    }
+
     /// Replaces the payload of `id` with a document.
     fn update_document(&self, py: Python<'_>, id: &str, document: Bound<'_, PyDict>) -> PyResult<()> {
         let id = UnitId(parse_id(id)?);
@@ -883,10 +916,14 @@ impl Database {
     /// `("store", unit_type, payload)`, `("update", id, payload)`, `("update_if_changed", id,
     /// payload)`, `("delete", id)`, `("delete_cascade", id)`, `("unrelate", relation_id)`,
     /// `("relate", from, to, type)`, `("relate_unique", from, to, type)`, `("archive", id)`,
-    /// `("unarchive", id)` or `("restore", id, revision)`. A relation end is a unit id or the
+    /// `("unarchive", id)`, `("restore", id, revision)` or `("upsert", unit_type, field,
+    /// document)` (see `upsert`; several upserts of one key in a batch make one unit and the last
+    /// document wins; an upserted unit is not in the stored ids, so read it from `upserts`). A
+    /// relation end is a unit id or the
     /// index (0-based) of an earlier "store" op of the batch. `reason`, `actor` and `source` are
     /// recorded with every revision. Returns the ids of the stored units, or with
-    /// `detailed=True` a dict: `units`, `relations`, `unchanged`, `commit_seq`.
+    /// `detailed=True` a dict: `units`, `relations`, `unchanged`, `upserts` (one `{"id",
+    /// "outcome"}` per upsert op), `commit_seq`.
     #[pyo3(signature = (ops, reason=None, actor=None, source=None, detailed=false))]
     fn commit<'py>(
         &self,
@@ -946,6 +983,14 @@ impl Database {
                     let rev: u64 = op.get_item(2)?.extract()?;
                     batch.restore(id_at(op, 1)?, rev);
                 }
+                ("upsert", 4) => {
+                    let t: String = op.get_item(1)?.extract()?;
+                    let field: String = op.get_item(2)?.extract()?;
+                    let doc = to_document(op.get_item(3)?.cast::<PyDict>().map_err(|_| {
+                        PyValueError::new_err("an upsert op's document is a dict of bool/int/float/str/bytes")
+                    })?)?;
+                    batch.upsert(&t, &field, doc.encode().map_err(engine_error)?);
+                }
                 _ => return Err(PyValueError::new_err(format!("unknown or malformed batch op: {op}"))),
             }
         }
@@ -959,6 +1004,8 @@ impl Database {
         d.set_item("units", units)?;
         d.set_item("relations", done.relations.iter().map(RelationId::to_string).collect::<Vec<_>>())?;
         d.set_item("unchanged", done.unchanged)?;
+        let upserts = done.upserts.iter().map(|u| upserted_dict(py, u)).collect::<PyResult<Vec<_>>>()?;
+        d.set_item("upserts", upserts)?;
         d.set_item("commit_seq", done.commit_seq)?;
         Ok(d.into_any())
     }

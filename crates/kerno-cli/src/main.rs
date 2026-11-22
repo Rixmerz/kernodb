@@ -204,7 +204,10 @@ fn help() -> String {
          \x20      kerno import <file> <new-dir>\n\
          \x20      kerno <dir> <command> --help\n\n\
          Read commands open the database read-only and never write (I-18); `--json` prints JSON.\n\
-         Exit status: 0 success, 1 failure or findings, 2 usage error.\n\n\
+         Exit status: 0 success, 1 failure or findings, 2 usage error.\n\
+         Off Linux, durability is not verified: a command that writes warns on stderr; set\n\
+         KERNO_REQUIRE_VERIFIED_DURABILITY=1 to make a command that opens a database refuse instead\n\
+         (restore, ship and backups ignore it).\n\n\
          commands:\n",
     );
     for spec in SPECS {

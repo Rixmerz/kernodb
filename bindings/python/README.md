@@ -80,13 +80,34 @@ out = db.commit(
     reason="index run 42", actor="indexer",    # recorded with every revision
     detailed=True,
 )
-out["units"], out["relations"], out["unchanged"], out["commit_seq"]
+out["units"], out["relations"], out["unchanged"], out["upserts"], out["commit_seq"]
 ```
 
 All batch ops: `("store", type, payload)`, `("update", id, payload)`,
 `("update_if_changed", id, payload)`, `("delete", id)`, `("delete_cascade", id)`,
 `("unrelate", relation_id)`, `("relate", from, to, type)`, `("relate_unique", from, to, type)`,
-`("archive", id)`, `("unarchive", id)`, `("restore", id, revision)`.
+`("archive", id)`, `("unarchive", id)`, `("restore", id, revision)`,
+`("upsert", type, field, document)` (see below; its result is in `out["upserts"]`, not `units`).
+
+### Keep one unit per natural key (upsert)
+
+Ids are random, so a logical key (an email, a path) needs a lookup. Declare the field `unique`
+and `upsert` does it for you: it revises the active unit that holds the same value, or stores a
+new one.
+
+```python
+db.define_schema("user", [{"name": "email", "type": "text", "unique": True}, {"name": "name", "type": "text"}])
+r = db.upsert("user", "email", {"email": "a@example.com", "name": "Ada"})
+r                      # {"id": "...", "outcome": "created"}
+db.upsert("user", "email", {"email": "a@example.com", "name": "Ada"})["outcome"]     # "unchanged": no revision
+db.upsert("user", "email", {"email": "a@example.com", "name": "Ada L."})["outcome"]  # "updated": a new revision
+db.history(r["id"], order="asc")                 # create, update
+```
+
+In `commit`, `("upsert", type, field, document)` runs in the same change set as the other ops, and
+several upserts of one key in a batch make one unit (the last document wins). A field that is
+not declared `unique` raises `InvalidArgumentError`; a document without a value in it raises
+`SchemaError`. Only active units hold a key: an archived or deleted one does not.
 
 ### Look things up by a field
 
@@ -191,6 +212,7 @@ never return wrong data.
 | `db.refresh()` | on a `read_only=True` database: pick up the commits a writer made since the open; returns the sequence now read |
 | `db.define_schema(type, fields)` / `db.create_index(type, field)` | `None` |
 | `db.store_document(type, dict)` / `db.update_document(id, dict)` / `db.read_document(id)` | id / `None` / `dict` or `None` |
+| `db.upsert(type, field, dict)` | `{"id", "outcome"}`: store the document or revise the active unit holding the same value of the unique `field`; `outcome` is `"created"`, `"updated"` or `"unchanged"` |
 | `db.find(type, field, value)` | `list[Unit]` whose indexed field equals `value` |
 | `db.find_range(type, field, low=None, high=None, limit=None)` | `list[Unit]` whose indexed field is in `[low, high]` (both included, `None` = open end), ordered by value then id. No `limit` means no cap |
 | `db.execute(query)` | `{"aliases": [...], "rows": [[Unit, ...], ...]}` |

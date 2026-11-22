@@ -9,7 +9,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-use common::{Reply, Server, TempDir, raw_request, tls_args, tls_file};
+use common::{Reply, Server, TempDir, link_dir, raw_request, tls_args, tls_file, unlink_dir};
 use kerno_server::auth::hash_hex;
 use kerno_server::grpc::{AUTHORIZATION_KEY, ERROR_CODE_KEY, pb};
 use pb::kerno_client::KernoClient;
@@ -292,28 +292,73 @@ fn the_probes_answer_without_a_token() {
 #[test]
 fn readiness_fails_while_a_tenant_directory_is_gone_and_liveness_does_not() {
     let tenants = Tenants::new();
+    // globex is the second database the server holds: every one is checked, not only the first. It
+    // is served through a link, so that the test can take its directory away (see `link_dir`).
+    let (real, link) = (tenants.dir.0.join("globex-real"), tenants.root().join("globex"));
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::create_dir_all(tenants.root()).unwrap();
+    link_dir(&real, &link);
     let server = tenants.start(&[]);
     assert_eq!(server.get("/readyz").status, 200);
-    // globex is the second database the server holds: every one is checked, not only the first.
-    let (dir, moved) = (tenants.root().join("globex"), tenants.root().join("globex-moved"));
-    std::fs::rename(&dir, &moved).unwrap();
+    unlink_dir(&link);
     let ready = server.get("/readyz");
     assert_eq!(ready.status, 503);
     assert_eq!(ready.json(), json!({ "error": { "code": "unavailable", "message": "a database directory is gone" } }));
     assert_eq!(server.get("/livez").status, 200);
-    std::fs::rename(&moved, &dir).unwrap();
+    link_dir(&real, &link);
     assert_eq!(server.get("/readyz").status, 200);
 }
 
 #[test]
 fn readiness_of_one_database_checks_its_directory() {
     let dir = TempDir::new();
-    let server = Server::start(&dir.db());
+    let (real, link) = (dir.0.join("real"), dir.0.join("db"));
+    std::fs::create_dir(&real).unwrap();
+    link_dir(&real, &link);
+    let server = Server::start(&link);
     assert_eq!(server.get("/readyz").status, 200);
-    let moved = dir.0.join("moved");
-    std::fs::rename(dir.db(), &moved).unwrap();
+    unlink_dir(&link);
     assert_eq!(server.get("/readyz").status, 503);
-    std::fs::rename(&moved, dir.db()).unwrap();
+    assert_eq!(server.get("/livez").status, 200);
+    link_dir(&real, &link);
+    assert_eq!(server.get("/readyz").status, 200);
+}
+
+/// Only Linux verifies `Sync` durability. Elsewhere the server must still start (issue #7) and log
+/// one warning, however many databases it opens, and it refuses to start only when asked to.
+#[test]
+fn unverified_durability_is_one_logged_warning_and_the_environment_can_refuse_to_start() {
+    let verified = cfg!(target_os = "linux");
+    let warning = kerno::storage::UNVERIFIED_WARNING;
+    let tenants = Tenants::new();
+    let server = tenants.start(&[]);
+    assert_eq!(server.get("/readyz").status, 200);
+    assert!(server.stop().success());
+    let warned = tenants.log_lines().iter().filter(|l| l["fields"]["message"] == warning).count();
+    assert_eq!(warned, usize::from(!verified), "two tenants, one warning where durability is unverified");
+
+    let env = |value| [(kerno::storage::REQUIRE_VERIFIED_ENV, value)];
+    let dir = TempDir::new();
+    let db = dir.db();
+    let server = Server::launch_with_env(&["--db", db.to_str().unwrap()], None, &env("0"));
+    assert_eq!(server.get("/readyz").status, 200);
+    assert!(server.stop().success());
+    // Required: a verified platform starts as before, any other refuses to start.
+    if verified {
+        let server = Server::launch_with_env(&["--db", db.to_str().unwrap()], None, &env("1"));
+        assert_eq!(server.get("/readyz").status, 200);
+        assert!(server.stop().success());
+    } else {
+        let out = Command::new(env!("CARGO_BIN_EXE_kerno-server"))
+            .env(kerno::storage::REQUIRE_VERIFIED_ENV, "1")
+            .args(["--listen", "127.0.0.1:0", "--db", db.to_str().unwrap()])
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success() && out.stdout.is_empty(), "{err}");
+        assert!(err.contains("durability not verified on this platform"), "{err}");
+    }
 }
 
 #[test]
@@ -409,6 +454,8 @@ fn serving_beyond_loopback_without_protection_is_warned_about() {
             .map(|l| serde_json::from_str::<Value>(l).unwrap())
             .filter(|l| l["level"] == "WARN")
             .map(|l| l["fields"]["message"].as_str().unwrap().to_owned())
+            // Off Linux every start also logs the durability warning (issue #7): another test checks it.
+            .filter(|m| m != kerno::storage::UNVERIFIED_WARNING)
             .collect::<Vec<_>>()
     };
     let tenants = Tenants::new();
