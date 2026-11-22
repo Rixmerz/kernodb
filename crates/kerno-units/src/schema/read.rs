@@ -5,7 +5,10 @@ use std::ops::Bound;
 
 use kerno_core::contract::{Engine, Snapshot};
 
-use super::{Document, FieldValue, Schema, decode_entry_key, field_prefix, prefix_bounds, schema_key};
+use super::{
+    Document, FieldValue, MAX_INDEXED_TEXT_LEN, MAX_INDEXED_VALUE_LEN, Schema, decode_entry_key, field_prefix,
+    prefix_bounds, schema_key,
+};
 use crate::db::{Unit, UnitSnapshot, context, corruption};
 use crate::error::UnitError;
 use crate::types::Lifecycle;
@@ -31,8 +34,18 @@ impl<E: Engine> UnitSnapshot<E> {
     ///
     /// # Errors
     ///
-    /// As [`find_range`](Self::find_range).
+    /// As [`find_range`](Self::find_range), and `InvalidArgument` for a text or bytes `value` too
+    /// long to index (no unit can hold it).
     pub fn find_by_field(&self, unit_type: &str, field: &str, value: &FieldValue) -> Result<Vec<Unit>, UnitError> {
+        // A value too long to index can never have been stored, so "no unit" would be a wrong
+        // answer to a wrong question. (A range bound this long is meaningful and still allowed.)
+        self.field_bounds(unit_type, field, Bound::Included(value), Bound::Included(value))?;
+        if value.index_bytes().is_some_and(|e| e.len() > MAX_INDEXED_VALUE_LEN) {
+            return Err(UnitError::InvalidArgument(format!(
+                "the value is too long to be indexed (at most {MAX_INDEXED_TEXT_LEN} bytes of text or bytes, each \
+                 0x00 byte counting twice), so no unit can hold it"
+            )));
+        }
         self.find_range(unit_type, field, Bound::Included(value), Bound::Included(value), usize::MAX)
     }
 
@@ -99,11 +112,12 @@ impl<E: Engine> UnitSnapshot<E> {
         hi: Bound<&FieldValue>,
     ) -> Result<(Vec<u8>, Vec<u8>), UnitError> {
         let invalid = |m: String| UnitError::InvalidArgument(m);
+        let not_indexed = |detail: String| UnitError::NotIndexed { detail };
         let Some(schema) = self.schema(unit_type)? else {
-            return Err(invalid("the unit type has no schema".into()));
+            return Err(not_indexed("the unit type has no schema".into()));
         };
         let Some(def) = schema.field(field).filter(|f| f.indexed) else {
-            return Err(invalid(format!("field {field:?} is not an indexed field of the schema")));
+            return Err(not_indexed(format!("field {field:?} is not an indexed field of the schema")));
         };
         let prefix = field_prefix(unit_type, field);
         // The bounds of one value are `[prefix ‖ enc, prefix ‖ enc ‖ 0xFF…)`.

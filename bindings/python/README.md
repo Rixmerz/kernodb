@@ -21,6 +21,9 @@ and the [coverage of the `kerno` facade in the Python and Node bindings](https:/
 pip install --pre kernodb        # --pre: only alpha versions exist so far
 ```
 
+The package is named `kernodb` but the module you import is `kerno` (`import kerno`); `import kernodb`
+raises `ModuleNotFoundError`.
+
 Wheels are published for CPython 3.9+ (one abi3 wheel per platform) on Linux x86_64 and
 aarch64 (glibc; musl from the next release), macOS x86_64 and arm64, and Windows x86_64.
 On any other platform pip builds from the source distribution, which needs a Rust toolchain.
@@ -72,7 +75,7 @@ out = db.commit(
     [
         ("store", "symbol", payload_a),        # op 0
         ("store", "symbol", payload_b),        # op 1
-        ("relate", 0, 1, "calls"),             # an end can be an earlier "store" of this batch
+        ("relate", 0, 1, "calls"),             # an end is the position of an earlier "store" or "upsert" op
         ("relate", existing_id, 0, "calls"),   # ... or an existing unit id
         ("update_if_changed", other_id, new),  # writes nothing if the payload is the same
         ("delete_cascade", old_id),            # removes its relations too
@@ -122,7 +125,10 @@ db.read_document(uid)                          # -> {"email": ..., "age": 31}
 db.execute("FIND user AS u WHERE u.age > 30")  # the query language: {"aliases", "rows"}
 ```
 
-Field types: `bool`, `int`, `float`, `text`, `bytes`. A type has one schema, defined once.
+Field types: `bool`, `int`, `float`, `text`, `bytes`. A type has one schema. Defining the same fields again (in any order) is accepted and writes nothing, so
+you can define on every start; different fields raise `SchemaExistsError`. A field indexed later with
+`create_index` makes the first field list a different schema. An indexed text or bytes value holds at most
+254 bytes (a 0x00 byte counts twice); a longer one raises `SchemaError`.
 Indexes can be added later with `create_index`. The query language is described in
 [docs/query-language.md](https://github.com/Rixmerz/kernodb/blob/main/docs/query-language.md).
 
@@ -192,7 +198,7 @@ never return wrong data.
 
 | Call | Returns |
 |------|---------|
-| `kerno.open(path, read_only=False, max_batch_ops=None)` | a `Database`. A read-only open writes nothing and takes no lock, so it runs beside a writer (see `refresh`). `max_batch_ops` changes the 10,000-operation limit of one `commit` |
+| `kerno.open(path, read_only=False, max_batch_ops=None)` | a `Database`. A read-only open writes nothing and takes no lock, so it runs beside a writer and reads the commits made up to the open (see `refresh`); a write on it raises `ReadOnlyError`, and a directory with no database raises `DatabaseNotFoundError`. `max_batch_ops` changes the 10,000-operation limit of one `commit` |
 | `db.store(unit_type, payload)` | the new unit's id |
 | `db.read(id)` | `Unit` (`id`, `unit_type`, `schema_version`, `lifecycle`, `revision`, `oldest_revision`, `payload`) or `None`. `oldest_revision` is the oldest revision retention still keeps |
 | `db.update(id, payload, if_changed=False)` | `True` when a revision was written |
@@ -219,7 +225,7 @@ never return wrong data.
 | `db.explain(query)` | the plan `execute` would follow, without running it: `root_alias`, `root_type`, `candidates` (`access` `"type_scan"` or `"field_index"`, `field`, `cost`), `chosen` (an index into `candidates`), `joins`, `planner_version` |
 | `db.hybrid_search(text=None, vector=None, vectors=None, seeds=None, *, keyword_weight=1, vector_weight=1, relation_weight=1, limit=10, candidates=100, rrf_k=60, max_depth=2, metric="cosine")` | `list[HybridHit]`, best first: `id`, `score`, `keyword_score`, `vector_score`, `relation_score`, `keyword_rank`, `vector_rank`, `relation_rank` (a signal that missed the unit is `None`). `vector` and `vectors` go together; `metric` is `"cosine"` or `"dot"` |
 | `db.verify()` | `dict`: `clean`, `commit_seq`, `units`, `revisions`, `relations`, `findings`, maybe `storage_error` |
-| `db.compact()` | `{"before", "after"}` stored bytes |
+| `db.compact()` | `{"before", "after"}` stored bytes: `before` is the size when the call was made (every commit so far counts), `after` the size once the space of deleted units' payloads and retention is given back |
 | `db.run_retention(default=None, by_type=None)` | prune old revisions; a rule is a dict with one of `keep_last` (newest N), `keep_for` (seconds) or `keep_since` (commit sequence); returns `{"units_retained", "revisions_pruned", "payloads_dropped", "bytes_logically_freed", "commit_seq"}`. Pruned revisions raise `PrunedError` in `read_as_of`, `history(from_revision=)` and `compare`. A bad rule raises `ValueError` and writes nothing; a `None` rule is no rule. The policy is not stored: pass it each time |
 | `db.close()` | `None`. Closing twice is harmless |
 
@@ -243,8 +249,15 @@ Engine failures raise `kerno.KernoError` or one of its subclasses:
 | `DeletedError` | the unit is deleted (or not in the lifecycle the call needs) |
 | `LockedError` | another handle or process holds the directory |
 | `CorruptionError` | stored bytes failed a checksum or a structure rule |
-| `InvalidArgumentError` | a bad type name, a batch over 10,000 ops, an op that names no earlier store, ... |
+| `InvalidArgumentError` | a bad type name, a bad whole number (negative, over 2**64 - 1, a fraction), a value no document can hold (`None`, an int outside 64 bits), a text search value over 254 bytes, `refresh` on a handle that is not read-only, ... Its subclasses below name the common cases |
+| `SchemaExistsError` | `define_schema` for a type that already has a different schema |
+| `NotIndexedError` | `find`, `find_range` on a field that is not indexed; a keyword search while no type has `set_fulltext` |
+| `NotUniqueError` | `upsert` by a field the schema does not declare unique (or a type with no schema) |
+| `BadEndpointError` | a batch `relate` end that is not an earlier `store` or `upsert` op |
 | `PayloadTooLargeError` | a payload over 1 MiB |
+| `ChangeSetTooLargeError` | a batch over 10,000 ops (see `max_batch_ops`) or over the engine's bytes per commit; a `PayloadTooLargeError` |
+| `ReadOnlyError` | a write through a handle opened with `read_only=True` |
+| `DatabaseNotFoundError` | `read_only=True` on a directory with no database |
 | `HasRelationsError` | deleting a unit that still has relations, without `cascade` |
 | `PrunedError` | retention removed the revision asked for |
 | `SchemaError` | the type's schema refused a document, or a typed unit got a payload that is not a document |
@@ -299,8 +312,11 @@ never sees half of a change set.
 - One change set: 10,000 operations by default (`kerno.open(path, max_batch_ops=...)` changes it, up to 2^20); the engine also limits the bytes of one commit.
 - `find` and `find_range` return active units only. The Rust API has no index of archived or
   deleted units, so `query(lifecycle=...)` reads every unit's head instead of looking one up.
-- Deleting a unit keeps its revisions (and their payloads) until a retention policy drops them,
-  so deletes do not shrink the store. `compact()` reclaims only what retention removed.
+- Deleting a unit keeps its revisions' history entries; `compact()` drops the payloads of deleted units
+  (an as-of read of one of their old revisions is then no longer possible) and gives their space back.
+  Until you call it, deletes do not shrink the store.
+- An indexed text or bytes value holds at most 254 bytes (a 0x00 byte counts twice).
+- Integers in documents are 64-bit (-2**63 to 2**63 - 1); a counter, limit or revision argument is a whole number from 0 to 2**64 - 1.
 
 ## Upgrading from 1.0.0-alpha.1
 

@@ -268,7 +268,8 @@ impl<E: Engine> UnitSnapshot<E> {
     ///
     /// # Errors
     ///
-    /// `InvalidArgument` for a query outside its bounds, with no leg to run,
+    /// `NotIndexed` for a keyword leg when no type is keyword-indexed; `InvalidArgument` for a
+    /// query outside its bounds, with no leg to run,
     /// whose graph leg the model rejects or whose seed is not active, or whose
     /// vector the index refuses; `Storage` when a read fails or a record is
     /// damaged.
@@ -300,6 +301,12 @@ impl<E: Engine> UnitSnapshot<E> {
 
         let mut keyword = Vec::new();
         if let (true, Some(text)) = (q.runs_keyword(), q.text) {
+            // With no type keyword-indexed the leg can never match: say so, not "no hits".
+            if !self.has_keyword_index()? {
+                return Err(UnitError::NotIndexed {
+                    detail: "no unit type is keyword-indexed: turn it on for a type with set_fulltext".into(),
+                });
+            }
             let hits = self.search_text(text, q.candidates + seeds.len())?;
             keyword = hits.into_iter().map(|h| h.unit).filter(|u| !seeds.contains(u)).take(q.candidates).collect();
         }

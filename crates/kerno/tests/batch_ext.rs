@@ -36,7 +36,7 @@ fn relations_commit_with_their_units() {
     let a = db.store("n", "a").unwrap();
     let mut b = Batch::new();
     b.store("n", "b").store("n", "c");
-    b.relate(Endpoint::Stored(0), Endpoint::Stored(1), "next").relate(a, Endpoint::Stored(0), "next");
+    b.relate(Endpoint::Op(0), Endpoint::Op(1), "next").relate(a, Endpoint::Op(0), "next");
     let done = db.commit_with(&b, &CommitMeta::default()).unwrap();
     assert_eq!(done.units.len(), 2);
     assert_eq!(done.relations.len(), 2);
@@ -44,7 +44,7 @@ fn relations_commit_with_their_units() {
     assert_eq!(done.commit_seq, Some(db.last_commit_seq().unwrap()));
 
     let mut bad = Batch::new();
-    bad.relate(a, Endpoint::Stored(5), "next");
+    bad.relate(a, Endpoint::Op(5), "next");
     assert!(db.commit(&bad).is_err());
     assert_eq!(db.related(a, Direction::Out, None).unwrap().len(), 1, "a refused batch writes nothing");
 }
@@ -248,4 +248,103 @@ fn record_layout_is_pinned() {
     assert!(kerno::units::type_options::check_shape(b"\x77\x04note", &[1, 0, 2]).is_err(), "unknown bit");
     assert!(kerno::units::type_options::check_shape(b"\x77\x04note", &[2, 0, 1]).is_err(), "newer envelope");
     assert!(kerno::units::type_options::check_shape(b"\x77\x05note", &[1, 0, 1]).is_err(), "bad length");
+}
+
+fn user_schema(db: &Db) {
+    let fields = vec![
+        kerno::FieldDef::new("email", kerno::FieldType::Text).unique().required(),
+        kerno::FieldDef::new("name", kerno::FieldType::Text),
+    ];
+    db.define_schema("user", fields).expect("define the schema");
+}
+
+fn user(email: &str) -> Vec<u8> {
+    kerno::Document::new().with("email", kerno::FieldValue::Text(email.into())).encode().expect("encode")
+}
+
+#[test]
+fn an_upsert_is_a_relate_end_in_the_same_batch() {
+    let dir = TempDir::new();
+    let db = Db::open(&dir.0).unwrap();
+    user_schema(&db);
+
+    // store A, upsert g, store B, relate(0, 1) must link A to the upserted unit, not to B.
+    let mut b = Batch::new();
+    b.store("n", "A").upsert("user", "email", user("g@x.io")).store("n", "B");
+    b.relate(Endpoint::Op(0), Endpoint::Op(1), "meant_for_g");
+    let done = db.commit_with(&b, &CommitMeta::default()).unwrap();
+    let edge = &db.related(done.units[0], Direction::Out, Some("meant_for_g")).unwrap()[0];
+    assert_eq!(edge.to, done.upserts[0].id, "index 1 is the upsert, not the second store");
+
+    // two typed upserts and a relation between them, in one commit.
+    let mut b = Batch::new();
+    b.upsert("user", "email", user("a@x.io")).upsert("user", "email", user("b@x.io"));
+    b.relate(Endpoint::Op(0), Endpoint::Op(1), "knows");
+    let done = db.commit_with(&b, &CommitMeta::default()).unwrap();
+    let edge = &db.related(done.upserts[0].id, Direction::Out, Some("knows")).unwrap()[0];
+    assert_eq!(edge.to, done.upserts[1].id);
+}
+
+#[test]
+fn a_relate_end_that_is_not_an_earlier_unit_creating_op_is_an_error_and_writes_nothing() {
+    let dir = TempDir::new();
+    let db = Db::open(&dir.0).unwrap();
+    user_schema(&db);
+    let a = db.store("n", "a").unwrap();
+    let seq = db.last_commit_seq().unwrap();
+    let refused = |build: &dyn Fn(&mut Batch)| {
+        let mut b = Batch::new();
+        build(&mut b);
+        let err = db.commit(&b).unwrap_err();
+        assert!(matches!(err, kerno::Error::BadEndpoint { .. }), "{err:?}");
+        assert_eq!(db.last_commit_seq().unwrap(), seq, "a refused batch writes nothing");
+        err.to_string()
+    };
+
+    // A later operation, the relation itself, and an index past the end.
+    refused(&|b| {
+        b.relate(a, Endpoint::Op(1), "r").store("n", "x");
+    });
+    refused(&|b| {
+        b.store("n", "x").relate(Endpoint::Op(1), Endpoint::Op(0), "r");
+    });
+    refused(&|b| {
+        b.store("n", "x").relate(Endpoint::Op(0), Endpoint::Op(9), "r");
+    });
+    // Operations that create no unit: an update, a relation, a delete.
+    let said = refused(&|b| {
+        b.update(a, "again").store("n", "x").relate(Endpoint::Op(0), Endpoint::Op(1), "r");
+    });
+    assert!(said.contains("creates no unit"), "{said}");
+    refused(&|b| {
+        b.store("n", "x").relate(a, Endpoint::Op(0), "r").relate(a, Endpoint::Op(1), "r");
+    });
+    refused(&|b| {
+        b.store("n", "x").delete(a).relate(Endpoint::Op(0), Endpoint::Op(1), "r");
+    });
+}
+
+#[test]
+fn an_upsert_of_an_existing_unit_is_a_relate_end_too() {
+    let dir = TempDir::new();
+    let db = Db::open(&dir.0).unwrap();
+    user_schema(&db);
+    let known = db
+        .upsert_document(
+            "user",
+            "email",
+            &kerno::Document::new().with("email", kerno::FieldValue::Text("k@x.io".into())),
+        )
+        .unwrap();
+
+    // The second upsert of the key finds the unit (unchanged); a repeated key is one unit.
+    let mut b = Batch::new();
+    b.store("n", "first").upsert("user", "email", user("k@x.io")).upsert("user", "email", user("k@x.io"));
+    b.relate(Endpoint::Op(0), Endpoint::Op(1), "to_known").relate(Endpoint::Op(0), Endpoint::Op(2), "to_known_again");
+    let done = db.commit_with(&b, &CommitMeta::default()).unwrap();
+    assert_eq!(done.upserts[0].id, known.id);
+    assert_eq!(done.upserts[1].id, known.id);
+    let out = db.related(done.units[0], Direction::Out, None).unwrap();
+    assert_eq!(out.len(), 2);
+    assert!(out.iter().all(|r| r.to == known.id));
 }

@@ -65,7 +65,7 @@ fn config(access: AccessMode) -> Config {
 
 // An open may succeed or fail with Corruption or Incompatible; any other
 // error kind, and any panic, is a finding. The one exception is a read-only
-// open of an image with no MANIFEST: "no database" is InvalidArgument by
+// open of an image with no MANIFEST: "no database" is NoDatabase by
 // design (a read-only open never creates), so it is not a finding.
 fuzz_target!(|data: &[u8]| {
     let image = image_of(data);
@@ -74,7 +74,7 @@ fuzz_target!(|data: &[u8]| {
         let no_database = access == AccessMode::ReadOnly && !image.files.contains_key(&Path::new(DIR).join("MANIFEST"));
         match KernoDb::open(disk.as_vfs(), Path::new(DIR), &config(access)) {
             Ok(_) | Err(Error::Corruption(_)) | Err(Error::Incompatible(_)) => {}
-            Err(Error::InvalidArgument(_)) if no_database => {}
+            Err(Error::NoDatabase(_)) if no_database => {}
             Err(e) => panic!("open returned an unexpected error kind: {e:?}"),
         }
     }

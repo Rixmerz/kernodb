@@ -115,7 +115,11 @@ impl From<UnitError> for ApiError {
     fn from(e: UnitError) -> Self {
         let kind = match &e {
             UnitError::NotFound { .. } | UnitError::RelationNotFound { .. } => Kind::NotFound,
-            UnitError::InvalidArgument(_) => Kind::InvalidRequest,
+            UnitError::InvalidArgument(_)
+            | UnitError::SchemaExists { .. }
+            | UnitError::NotIndexed { .. }
+            | UnitError::NotUnique { .. }
+            | UnitError::BadEndpoint { .. } => Kind::InvalidRequest,
             UnitError::SchemaViolation { .. } => Kind::SchemaViolation,
             UnitError::Conflict { .. } => Kind::RevisionConflict,
             UnitError::Deleted { .. } | UnitError::UnitHasRelations { .. } | UnitError::AlreadyExists { .. } => {
@@ -151,6 +155,10 @@ mod tests {
             (Error::NotFound { unit: UNIT }, Kind::NotFound),
             (Error::RelationNotFound { relation: RELATION }, Kind::NotFound),
             (Error::InvalidArgument("x".into()), Kind::InvalidRequest),
+            (Error::SchemaExists { unit_type: "t".into() }, Kind::InvalidRequest),
+            (Error::NotIndexed { detail: "x".into() }, Kind::InvalidRequest),
+            (Error::NotUnique { detail: "x".into() }, Kind::InvalidRequest),
+            (Error::BadEndpoint { detail: "x".into() }, Kind::InvalidRequest),
             (Error::SchemaViolation { detail: "x".into() }, Kind::SchemaViolation),
             (Error::Conflict { unit: UNIT, expected: RevNo(1), found: RevNo(2) }, Kind::RevisionConflict),
             (Error::Deleted { unit: UNIT }, Kind::Conflict),

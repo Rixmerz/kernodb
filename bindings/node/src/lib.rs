@@ -21,7 +21,9 @@ use kerno::{
     UnitId, VectorLeg,
 };
 use napi::JsValue;
-use napi::bindgen_prelude::{BigInt, Buffer, Either, Either5, FromNapiValue, Null, Unknown};
+use napi::bindgen_prelude::{
+    BigInt, Buffer, Either, Either5, FromNapiValue, Null, ToNapiValue, TypeName, Unknown, ValidateNapiValue,
+};
 use napi_derive::napi;
 
 /// The stable `code` of every error this package throws (listed in the README).
@@ -34,10 +36,25 @@ enum ErrorCode {
     Locked,
     /// Stored bytes failed validation.
     Corruption,
-    /// An argument was refused: a bad id, a type name, a limit, a batch.
+    /// An argument was refused: a bad id, a type name, a limit, a value no document can hold.
     InvalidArgument,
     /// The payload is larger than 1 MiB.
     PayloadTooLarge,
+    /// One commit holds more operations (10,000 by default, see `maxBatchOps`) or bytes than it may.
+    ChangesetTooLarge,
+    /// `defineSchema` for a type that already has a different schema (the same one is accepted).
+    SchemaExists,
+    /// The call needs an index that is not there: a field not declared indexed, a type with no
+    /// schema, or keyword search with no type switched on by `setFulltext`.
+    NotIndexed,
+    /// `upsert` by a field the schema does not declare unique (or by a type with no schema).
+    NotUnique,
+    /// A batch `relate` end that is not an earlier `store` or `upsert` op of the batch.
+    BadEndpoint,
+    /// A write went through a handle opened with `readOnly: true`.
+    ReadOnly,
+    /// The directory holds no database and `readOnly: true` never creates one.
+    DatabaseNotFound,
     /// The unit still has live relations; unrelate them or use `cascade`.
     HasRelations,
     /// Retention removed the revision asked for.
@@ -59,6 +76,13 @@ impl ErrorCode {
             ErrorCode::Corruption => "CORRUPTION",
             ErrorCode::InvalidArgument => "INVALID_ARGUMENT",
             ErrorCode::PayloadTooLarge => "PAYLOAD_TOO_LARGE",
+            ErrorCode::ChangesetTooLarge => "CHANGESET_TOO_LARGE",
+            ErrorCode::SchemaExists => "SCHEMA_EXISTS",
+            ErrorCode::NotIndexed => "NOT_INDEXED",
+            ErrorCode::NotUnique => "NOT_UNIQUE",
+            ErrorCode::BadEndpoint => "BAD_ENDPOINT",
+            ErrorCode::ReadOnly => "READ_ONLY",
+            ErrorCode::DatabaseNotFound => "DATABASE_NOT_FOUND",
             ErrorCode::HasRelations => "HAS_RELATIONS",
             ErrorCode::Pruned => "PRUNED",
             ErrorCode::Schema => "SCHEMA",
@@ -87,12 +111,23 @@ fn engine_error(e: kerno::Error) -> JsError {
         ErrorCode::Locked
     } else if e.is_corruption() {
         ErrorCode::Corruption
+    } else if e.is_read_only() {
+        ErrorCode::ReadOnly
+    } else if e.is_no_database() {
+        ErrorCode::DatabaseNotFound
+    } else if e.is_engine_argument() {
+        ErrorCode::InvalidArgument
     } else {
         match e {
             E::NotFound { .. } | E::RelationNotFound { .. } | E::RevisionNotFound { .. } => ErrorCode::NotFound,
             E::Deleted { .. } => ErrorCode::Deleted,
             E::PayloadTooLarge { .. } => ErrorCode::PayloadTooLarge,
-            E::InvalidArgument(_) | E::ChangeSetTooLarge { .. } => ErrorCode::InvalidArgument,
+            E::InvalidArgument(_) => ErrorCode::InvalidArgument,
+            E::ChangeSetTooLarge { .. } => ErrorCode::ChangesetTooLarge,
+            E::SchemaExists { .. } => ErrorCode::SchemaExists,
+            E::NotIndexed { .. } => ErrorCode::NotIndexed,
+            E::NotUnique { .. } => ErrorCode::NotUnique,
+            E::BadEndpoint { .. } => ErrorCode::BadEndpoint,
             E::UnitHasRelations { .. } => ErrorCode::HasRelations,
             E::Pruned { .. } => ErrorCode::Pruned,
             E::SchemaViolation { .. } => ErrorCode::Schema,
@@ -259,8 +294,9 @@ pub struct UnitFilter {
 
 #[napi(object)]
 pub struct OpenOptions {
-    /// Open without writing anything to the directory. It still holds the directory's lock.
-    /// Default `false`.
+    /// Write nothing and take no lock: it opens beside a live writer and reads the commits made up
+    /// to the moment it opened (`refresh()` shows later ones). A write throws `READ_ONLY`, and a
+    /// directory with no database throws `DATABASE_NOT_FOUND`. Default `false`.
     pub read_only: Option<bool>,
     /// The most operations one `commit` may hold. Default 10,000.
     pub max_batch_ops: Option<f64>,
@@ -318,8 +354,10 @@ pub struct CommitOptions {
 /// | `unrelate` | `relationId` |
 /// | `upsert` | `unitType`, `field`, `document` |
 ///
-/// A relation end (`from`, `to`) is a unit id, or the 0-based index of an earlier `store` op of
-/// the same commit.
+/// A relation end (`from`, `to`) is a unit id, or the 0-based position in the list of an earlier
+/// `store` or `upsert` op of the same commit (every op counts, not only the stores). An upsert names
+/// the unit it created, revised or found unchanged. Any other position (a later op, an update, a
+/// relation, past the end) throws `BAD_ENDPOINT` and nothing is written.
 #[napi(object)]
 pub struct CommitOp {
     #[napi(
@@ -345,7 +383,7 @@ pub struct CommitOp {
     pub field: Option<String>,
     /// `upsert`: the document to store, or to revise the keyed unit to.
     #[napi(ts_type = "Record<string, boolean | number | bigint | string | Buffer>")]
-    pub document: Option<HashMap<String, Field>>,
+    pub document: Option<HashMap<String, Cell>>,
 }
 
 /// What an upsert did to the unit its key names.
@@ -379,13 +417,16 @@ pub struct Committed {
     pub relations: Vec<String>,
     /// Updates and upserts skipped because the payload was already the current one.
     pub unchanged: u32,
-    /// What each `upsert` op did, in order. An upserted unit is not in `units`.
+    /// What each `upsert` op did, in order. An upserted unit is not in `units`. Several upserts of
+    /// one key make one unit: each reports its id and one outcome (`created` when the first made it).
     pub upserts: Vec<Upserted>,
     /// The sequence of the commit; absent when nothing was written.
     pub commit_seq: Option<i64>,
 }
 
-/// What `compact` measured; `null` when the engine does not know.
+/// What `compact` measured, in stored bytes; `null` when the engine does not know. `before` is
+/// the size when the call was made (every commit so far counts; the write buffer is written out
+/// first), `after` the size once the space is given back.
 #[napi(object)]
 pub struct CompactReport {
     pub before: Option<i64>,
@@ -498,6 +539,53 @@ pub struct FieldSpec {
 /// A value of a document field. A whole number is an `int` unless the type's schema declares
 /// the field `float`; a `bigint` is always an `int`.
 pub type Field = Either5<bool, f64, BigInt, String, Buffer>;
+
+/// A value as JS gave it where a document takes one. `None` when it is not a boolean, number,
+/// bigint, string or Buffer (`null`, `undefined`, an array, an object): [`cell`] then refuses it
+/// with `INVALID_ARGUMENT`, where napi alone would throw its own `InvalidArg` before any of this
+/// code runs.
+pub struct Cell(Option<Field>);
+
+impl TypeName for Cell {
+    fn type_name() -> &'static str {
+        "Cell"
+    }
+
+    fn value_type() -> napi::ValueType {
+        napi::ValueType::Unknown
+    }
+}
+
+impl ValidateNapiValue for Cell {
+    unsafe fn validate(
+        _env: napi::sys::napi_env,
+        _value: napi::sys::napi_value,
+    ) -> napi::Result<napi::sys::napi_value> {
+        Ok(std::ptr::null_mut())
+    }
+}
+
+impl FromNapiValue for Cell {
+    unsafe fn from_napi_value(env: napi::sys::napi_env, value: napi::sys::napi_value) -> napi::Result<Self> {
+        // SAFETY: `env` and `value` come from napi for this call, as `from_napi_value` requires.
+        Ok(Cell(unsafe { Field::from_napi_value(env, value) }.ok()))
+    }
+}
+
+impl ToNapiValue for Cell {
+    unsafe fn to_napi_value(env: napi::sys::napi_env, value: Self) -> napi::Result<napi::sys::napi_value> {
+        // SAFETY: as above; a `Cell` is only ever read from JS, so the `None` arm is never sent back.
+        match value.0 {
+            Some(field) => unsafe { Field::to_napi_value(env, field) },
+            None => unsafe { Null::to_napi_value(env, Null) },
+        }
+    }
+}
+
+/// The value of `name` as a [`Field`], or `INVALID_ARGUMENT` when JS gave something else.
+fn cell(name: &str, c: Cell) -> Result<Field> {
+    c.0.ok_or_else(|| invalid(format!("field {name:?} is not a boolean, number, bigint, string or Buffer")))
+}
 
 /// The result of `execute`: one `Unit` per alias in each row.
 #[napi(object)]
@@ -617,11 +705,11 @@ impl Db {
     }
 
     /// A JS document as a `Document`, with each number typed by the schema of `unit_type`.
-    fn to_document(&self, unit_type: &str, doc: HashMap<String, Field>) -> Result<Document> {
+    fn to_document(&self, unit_type: &str, doc: HashMap<String, Cell>) -> Result<Document> {
         let mut out = Document::new();
         for (name, value) in doc {
             let hint = self.field_hint(unit_type, &name)?;
-            out = out.with(name.clone(), to_field(&name, value, hint)?);
+            out = out.with(name.clone(), to_field(&name, cell(&name, value)?, hint)?);
         }
         Ok(out)
     }
@@ -672,7 +760,7 @@ fn field_type(name: &str) -> Result<FieldType> {
 fn endpoint(v: Option<Either<String, f64>>, what: &str) -> Result<Endpoint> {
     match v {
         Some(Either::A(hex)) => Ok(Endpoint::Unit(unit_id(&hex)?)),
-        Some(Either::B(n)) => Ok(Endpoint::Stored(whole(what, n)? as usize)),
+        Some(Either::B(n)) => Ok(Endpoint::Op(whole(what, n)? as usize)),
         None => Err(invalid(format!("relate: `{what}` is missing"))),
     }
 }
@@ -942,9 +1030,14 @@ impl Db {
         match self.with(|db| db.read_as_of(id, seq))? {
             UnitAt::Absent => Ok(None),
             UnitAt::Present(r) | UnitAt::DeletedAt(r) => Ok(Some(Revision::from(r))),
-            UnitAt::Pruned { oldest } => {
-                Err(coded(ErrorCode::Pruned, format!("revision pruned by retention; oldest kept is {}", oldest.0)))
-            }
+            UnitAt::Pruned { oldest } => Err(coded(
+                ErrorCode::Pruned,
+                format!(
+                    "commit {seq} predates the oldest kept revision (revision {}): retention pruned what it read. \
+                         `readAsOf` takes a commit sequence; `history` and `compare` take revision numbers",
+                    oldest.0
+                ),
+            )),
         }
     }
 
@@ -956,8 +1049,8 @@ impl Db {
     }
 
     /// Moves a database opened with `readOnly: true` to the commits the writer made since it
-    /// opened (or since the last refresh); returns the commit sequence it now reads. Throws on a
-    /// handle that is not read-only.
+    /// opened (or since the last refresh); returns the commit sequence it now reads. Throws
+    /// `INVALID_ARGUMENT` on a handle that is not read-only (a read-write handle is always current).
     #[napi]
     pub fn refresh(&self) -> Result<i64> {
         self.with(|db| db.refresh()).map(num)
@@ -993,8 +1086,9 @@ impl Db {
         }
     }
 
-    /// Compacts the revision ranges. History keeps deleted units' payloads, so this frees only
-    /// what a retention policy dropped.
+    /// Drops the payloads of deleted units and compacts the revision ranges. A deleted unit keeps
+    /// its history entries but not their payloads. Returns the stored bytes before (at call time)
+    /// and after.
     #[napi]
     pub fn compact(&self) -> Result<CompactReport> {
         let r = self.with(|db| db.compact())?;
@@ -1050,7 +1144,11 @@ impl Db {
         self.with(|db| db.fulltext(&unit_type))
     }
 
-    /// Gives `unitType` a schema.
+    /// Gives `unitType` a schema. Defining the schema the type has already (field order aside) is
+    /// accepted and writes nothing, so a program can define on every start; a different one throws
+    /// `SCHEMA_EXISTS`. A field indexed later with `createIndex` makes the first field list a
+    /// different schema. An indexed text or bytes value holds at most 254 bytes (a 0x00 byte counts
+    /// twice); a longer one throws `SCHEMA` on write.
     #[napi]
     pub fn define_schema(&self, unit_type: String, fields: Vec<FieldSpec>) -> Result<()> {
         let mut defs = Vec::with_capacity(fields.len());
@@ -1084,7 +1182,7 @@ impl Db {
         unit_type: String,
         #[napi(ts_arg_type = "Record<string, boolean | number | bigint | string | Buffer>")] document: HashMap<
             String,
-            Field,
+            Cell,
         >,
     ) -> Result<String> {
         let doc = self.to_document(&unit_type, document)?;
@@ -1093,7 +1191,7 @@ impl Db {
 
     /// Stores `document` as a `unitType` unit, or revises the active unit that already holds the
     /// same value of `field`, a field the type's schema declares `unique`. Throws
-    /// `INVALID_ARGUMENT` when `field` is not declared unique (or the type has no schema) and
+    /// `NOT_UNIQUE` when `field` is not declared unique (or the type has no schema) and
     /// `SCHEMA` when the schema refuses the document or it has no value in `field`.
     #[napi]
     pub fn upsert(
@@ -1102,7 +1200,7 @@ impl Db {
         field: String,
         #[napi(ts_arg_type = "Record<string, boolean | number | bigint | string | Buffer>")] document: HashMap<
             String,
-            Field,
+            Cell,
         >,
     ) -> Result<Upserted> {
         let doc = self.to_document(&unit_type, document)?;
@@ -1116,7 +1214,7 @@ impl Db {
         id: String,
         #[napi(ts_arg_type = "Record<string, boolean | number | bigint | string | Buffer>")] document: HashMap<
             String,
-            Field,
+            Cell,
         >,
     ) -> Result<()> {
         let id = unit_id(&id)?;
@@ -1134,16 +1232,18 @@ impl Db {
         Ok(Some(doc.iter().map(|(k, v)| (k.to_owned(), from_field(v))).collect()))
     }
 
-    /// The units of `unitType` whose indexed `field` equals `value`.
+    /// The units of `unitType` whose indexed `field` equals `value`. Throws `NOT_INDEXED` when
+    /// `field` is not indexed and `INVALID_ARGUMENT` for a text or bytes `value` over 254 bytes (no
+    /// unit can hold it; the answer is not an empty list).
     #[napi]
     pub fn find(
         &self,
         unit_type: String,
         field: String,
-        #[napi(ts_arg_type = "boolean | number | bigint | string | Buffer")] value: Field,
+        #[napi(ts_arg_type = "boolean | number | bigint | string | Buffer")] value: Cell,
     ) -> Result<Vec<Unit>> {
         let hint = self.field_hint(&unit_type, &field)?;
-        let value = to_field(&field, value, hint)?;
+        let value = to_field(&field, cell(&field, value)?, hint)?;
         let units = self.with(|db| db.find(&unit_type, &field, &value))?;
         Ok(units.into_iter().map(Unit::from).collect())
     }
@@ -1159,7 +1259,9 @@ impl Db {
     }
 
     /// One query over keywords, vectors and relations, fused by weighted reciprocal rank
-    /// fusion; best hit first. Wraps the engine's `hybrid_search`.
+    /// fusion; best hit first. Wraps the engine's `hybrid_search`. A keyword signal with no type
+    /// switched on by `setFulltext` throws `NOT_INDEXED` (a switched-on type with no match gives an
+    /// empty list). The search is not scoped to one type.
     // ponytail: the vector leg ranks the `items` of each call by brute force; a persistent
     // vector index (HNSW) needs its own handle if a caller has more than ~100k vectors.
     #[napi]

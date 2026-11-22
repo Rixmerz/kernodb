@@ -240,6 +240,25 @@ pub enum UnitError {
     SchemaViolation {
         detail: String,
     },
+    /// `define_schema` for a type that already has a *different* schema. The same schema again
+    /// is accepted and writes nothing.
+    SchemaExists {
+        unit_type: String,
+    },
+    /// A lookup or search needs an index that is not there: the type has no schema, the field
+    /// is not declared indexed, or no type is keyword-indexed (`detail` says which).
+    NotIndexed {
+        detail: String,
+    },
+    /// An upsert by a field its type's schema does not declare unique (or by a type with no
+    /// schema at all).
+    NotUnique {
+        detail: String,
+    },
+    /// A relation end of a batch that names no earlier operation that creates a unit.
+    BadEndpoint {
+        detail: String,
+    },
 }
 
 impl fmt::Display for UnitError {
@@ -277,6 +296,12 @@ impl fmt::Display for UnitError {
             ),
             UnitError::PublicIdTaken => f.write_str("a public id would name two units"),
             UnitError::SchemaViolation { detail } => write!(f, "refused by the schema: {detail}"),
+            UnitError::SchemaExists { unit_type } => {
+                write!(f, "the unit type {unit_type:?} already has a different schema")
+            }
+            UnitError::NotIndexed { detail } => write!(f, "no index: {detail}"),
+            UnitError::NotUnique { detail } => write!(f, "no unique key: {detail}"),
+            UnitError::BadEndpoint { detail } => write!(f, "bad relation end: {detail}"),
             UnitError::IndexNotReady { state, watermark: Some(w) } => {
                 write!(f, "the primary index is {state:?} (watermark {w}); rebuild it or use the reference path")
             }
@@ -299,6 +324,22 @@ impl UnitError {
     /// refusal of the request.
     pub fn is_corruption(&self) -> bool {
         matches!(self, UnitError::Storage(kerno_core::Error::Corruption(_)))
+    }
+
+    /// Whether a write went through a handle that only reads (`AccessMode::ReadOnly`).
+    pub fn is_read_only(&self) -> bool {
+        matches!(self, UnitError::Storage(kerno_core::Error::ReadOnly(_)))
+    }
+
+    /// Whether the directory holds no database and the open was not allowed to create one.
+    pub fn is_no_database(&self) -> bool {
+        matches!(self, UnitError::Storage(kerno_core::Error::NoDatabase(_)))
+    }
+
+    /// Whether the engine refused an argument (a `Config`, a call that needs another handle
+    /// mode), as opposed to a layer refusal such as [`UnitError::InvalidArgument`].
+    pub fn is_engine_argument(&self) -> bool {
+        matches!(self, UnitError::Storage(kerno_core::Error::InvalidArgument(_)))
     }
 }
 

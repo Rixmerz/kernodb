@@ -306,11 +306,16 @@ pub type Result<T> = std::result::Result<T, Error>;
 const SCHEMA_VERSION: u32 = 1;
 
 /// One end of a relation added by [`Batch::relate`]: a unit that exists already, or the unit
-/// stored by the `n`-th [`Batch::store`] of the same batch (counting from 0).
+/// an earlier operation of the same batch creates.
+///
+/// `Op(n)` names the operation at position `n` of the batch (counting every operation added,
+/// from 0, not only the stores). It must come before the relation and be a [`Batch::store`] or a
+/// [`Batch::upsert`]; anything else is `BadEndpoint` and the batch writes nothing. An upsert
+/// names the unit it created, revised or found unchanged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Endpoint {
     Unit(UnitId),
-    Stored(usize),
+    Op(usize),
 }
 
 impl From<UnitId> for Endpoint {
@@ -409,8 +414,8 @@ impl Batch {
         self
     }
 
-    /// Adds a declared relation from `from` to `to`. Either end can be a unit stored earlier in
-    /// this batch ([`Endpoint::Stored`]).
+    /// Adds a declared relation from `from` to `to`. Either end can be a unit an earlier
+    /// operation of this batch stored or upserted ([`Endpoint::Op`], the operation's position).
     pub fn relate(&mut self, from: impl Into<Endpoint>, to: impl Into<Endpoint>, relation_type: &str) -> &mut Self {
         let (from, to) = (from.into(), to.into());
         self.ops.push(Op::Relate { from, to, relation_type: relation_type.to_owned(), unique: false });
@@ -453,8 +458,10 @@ impl Batch {
     /// gets `payload` as a new revision, or nothing is written when it has that payload already
     /// (counted in [`Committed::unchanged`]); when no active unit holds the value a new unit is
     /// stored. [`Committed::upserts`] says which happened and the id. Several upserts of one key
-    /// in a batch resolve to one unit and the last payload wins. The unit an upsert stores is not
-    /// in [`Committed::units`], so it does not count for [`Endpoint::Stored`].
+    /// in a batch resolve to one unit and the last payload wins, and each of them reports that
+    /// unit's id and one outcome (`Created` when the first made it). The unit an upsert stores is
+    /// not in [`Committed::units`], but it can be a relation end: [`Endpoint::Op`] names it by
+    /// the position of the upsert in the batch.
     ///
     /// [`Db::commit`] fails with `InvalidArgument` when `field` is not declared unique (or the
     /// type has no schema), and with `SchemaViolation` when `payload` has no value in it.
@@ -626,8 +633,8 @@ impl Db {
     ///
     /// # Errors
     ///
-    /// As [`Db::commit`]; `InvalidArgument` for an [`Endpoint::Stored`] that names no earlier
-    /// store of the batch, or provenance fields over their limits.
+    /// As [`Db::commit`]; `BadEndpoint` for an [`Endpoint::Op`] that is not an earlier store or
+    /// upsert of the batch, and `InvalidArgument` for provenance fields over their limits.
     pub fn commit_with(&self, batch: impl Borrow<Batch>, meta: &CommitMeta) -> Result<Committed> {
         let ops = &batch.borrow().ops;
         if ops.is_empty() {
@@ -665,23 +672,30 @@ impl Db {
         let mut unrelated: HashSet<RelationId> = HashSet::new();
         let mut related: Vec<(UnitId, UnitId, String, RelationId)> = Vec::new();
         let mut wrote = false;
-        let resolve = |e: Endpoint, stored: &[UnitId]| -> Result<UnitId> {
+        // The unit each operation created (a store, or an upsert whatever its outcome), by the
+        // operation's position: what `Endpoint::Op` indexes.
+        let mut made: Vec<Option<UnitId>> = vec![None; ops.len()];
+        let resolve = |e: Endpoint, at: usize, made: &[Option<UnitId>]| -> Result<UnitId> {
+            let bad = |why: &str| Error::BadEndpoint { detail: format!("operation {at} relates operation {why}") };
             match e {
                 Endpoint::Unit(id) => Ok(id),
-                Endpoint::Stored(n) => stored.get(n).copied().ok_or_else(|| {
-                    Error::InvalidArgument(format!("Endpoint::Stored({n}) names no earlier store of the batch"))
-                }),
+                Endpoint::Op(n) if n >= at => Err(bad(&format!("{n}, which is not an earlier operation"))),
+                Endpoint::Op(n) => {
+                    made[n].ok_or_else(|| bad(&format!("{n}, which creates no unit (only a store or an upsert does)")))
+                }
             }
         };
         for (i, op) in ops.iter().enumerate() {
             match op {
                 Op::Store { unit_type, payload } => {
-                    out.units.push(changes.create(NewUnit {
+                    let id = changes.create(NewUnit {
                         unit_type: unit_type.clone(),
                         schema_version: SCHEMA_VERSION,
                         metadata: Vec::new(),
                         payload: payload.clone(),
-                    })?);
+                    })?;
+                    out.units.push(id);
+                    made[i] = Some(id);
                     wrote = true;
                 }
                 Op::Update { id, payload, if_changed } => {
@@ -721,7 +735,7 @@ impl Db {
                     }
                 }
                 Op::Relate { from, to, relation_type, unique } => {
-                    let (from, to) = (resolve(*from, &out.units)?, resolve(*to, &out.units)?);
+                    let (from, to) = (resolve(*from, i, &made)?, resolve(*to, i, &made)?);
                     if *unique {
                         let in_batch = related
                             .iter()
@@ -783,6 +797,7 @@ impl Db {
                             done
                         }
                     };
+                    made[i] = Some(done.id);
                     out.upserts.push(done);
                 }
             }
@@ -1073,7 +1088,9 @@ impl Db {
     ///
     /// # Errors
     ///
-    /// `InvalidArgument` for a query outside its bounds or with no leg to run, a graph leg the
+    /// `NotIndexed` when the keyword leg runs and no type is keyword-indexed ([`Db::set_fulltext`]),
+    /// since it can then never match. `InvalidArgument` for a query outside its bounds or with no
+    /// leg to run, a graph leg the
     /// model rejects or whose seed is not active, or a vector the index refuses; the engine
     /// fails or finds a record corrupt.
     pub fn hybrid_search(&self, query: &HybridQuery<'_>) -> Result<Vec<HybridHit>> {

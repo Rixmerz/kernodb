@@ -305,8 +305,8 @@ fn ranges_are_in_value_order<E: Target>() {
     // What cannot be asked.
     let wrong = FieldValue::Text("x".into());
     assert!(matches!(snap.find_by_field("t", "i", &wrong), Err(UnitError::InvalidArgument(_))));
-    assert!(matches!(snap.find_by_field("t", "nope", &wrong), Err(UnitError::InvalidArgument(_))));
-    assert!(matches!(snap.find_by_field("none", "i", &wrong), Err(UnitError::InvalidArgument(_))));
+    assert!(matches!(snap.find_by_field("t", "nope", &wrong), Err(UnitError::NotIndexed { .. })));
+    assert!(matches!(snap.find_by_field("none", "i", &wrong), Err(UnitError::NotIndexed { .. })));
     assert!(matches!(snap.find_by_field("t", "f", &FieldValue::Float(f64::NAN)), Err(UnitError::InvalidArgument(_))));
     clean(&db, "ranges");
 }
@@ -342,8 +342,13 @@ fn a_definition_backfills_or_refuses<E: Target>() {
     assert_eq!(found(&db, "age", &FieldValue::Int(1)), vec![a]);
     assert!(found(&db, "age", &FieldValue::Int(2)).is_empty(), "the archived unit has no entry");
     clean(&db, "backfilled");
-    // A second schema for a type is refused.
-    assert!(matches!(db.define_schema(ACCT, acct_fields(), ChangeMeta::default()), Err(UnitError::InvalidArgument(_))));
+    // The same schema again is accepted and writes nothing; a different one for the type is refused.
+    let defined = raw(&db);
+    db.define_schema(ACCT, acct_fields(), ChangeMeta::default()).expect("the same schema is a no-op");
+    assert_eq!(raw(&db), defined, "defining the same schema again writes nothing");
+    let other = vec![FieldDef::new("name", FieldType::Text)];
+    assert!(matches!(db.define_schema(ACCT, other, ChangeMeta::default()), Err(UnitError::SchemaExists { .. })));
+    assert_eq!(raw(&db), defined, "a refused definition writes nothing");
 }
 
 /// `create_index` backfills one field and `drop_index` removes its entries; a
@@ -355,7 +360,7 @@ fn create_and_drop_index<E: Target>() {
     let b = create(&db, doc("beta", 2, "b@x")).unwrap();
     let entries = stored(&db, 0x79).len();
     let by_name = |db: &UnitDb<E>| db.snapshot().unwrap().find_by_field(ACCT, "name", &text("beta"));
-    assert!(matches!(by_name(&db), Err(UnitError::InvalidArgument(_))), "name is not indexed yet");
+    assert!(matches!(by_name(&db), Err(UnitError::NotIndexed { .. })), "name is not indexed yet");
     db.create_index(ACCT, "name", ChangeMeta::default()).unwrap();
     assert_eq!(stored(&db, 0x79).len(), entries + 2);
     assert_eq!(by_name(&db).unwrap().iter().map(|u| u.id).collect::<Vec<_>>(), vec![b]);
@@ -370,7 +375,7 @@ fn create_and_drop_index<E: Target>() {
     assert!(matches!(db.drop_index(ACCT, "note", ChangeMeta::default()), Err(UnitError::InvalidArgument(_))));
     db.drop_index(ACCT, "name", ChangeMeta::default()).unwrap();
     assert_eq!(stored(&db, 0x79).len(), entries);
-    assert!(matches!(by_name(&db), Err(UnitError::InvalidArgument(_))));
+    assert!(matches!(by_name(&db), Err(UnitError::NotIndexed { .. })));
     clean(&db, "dropped");
     // The definition is in the change set that carries it: aborting it drops it.
     let before = raw(&db);

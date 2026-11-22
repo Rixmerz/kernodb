@@ -60,12 +60,14 @@ mod tokenize;
 mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Bound;
 
 use kerno_core::contract::{Engine, Snapshot, Txn, TxnEngine};
 
 use crate::codec::{Key, UnitHead};
 use crate::db::{ChangeSet, UnitDb, UnitSnapshot, Write, context, scan_all};
 use crate::error::{DecodeError, UnitError, UnitRule};
+use crate::type_options::TAG_TYPE_OPTIONS;
 use crate::types::{Lifecycle, UnitId};
 use tokenize::{Doc, analyze};
 
@@ -374,12 +376,23 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
 // --------------------------------------------------------------- query
 
 impl<E: Engine> UnitSnapshot<E> {
+    /// Whether any unit type has keyword indexing on (`set_fulltext`). The index is opt-in per
+    /// type, so a search with none on can never find anything.
+    pub fn has_keyword_index(&self) -> Result<bool, UnitError> {
+        let (options, after) = ([TAG_TYPE_OPTIONS], [TAG_TYPE_OPTIONS + 1]);
+        Ok(!self.snap.scan(Bound::Included(&options), Bound::Excluded(&after), 1)?.is_empty())
+    }
+
     /// The units whose text matches `query`, best first, at most `limit`.
     ///
     /// The query is cut into terms like the indexed text and a unit's score
     /// is the BM25 sum over the distinct terms it holds (see the [module
     /// documentation](self)); a unit with none of them is not a hit. An
-    /// empty query, a query without a term and `limit == 0` answer nothing.
+    /// empty query, a query without a term and `limit == 0` answer nothing, and so does a
+    /// database where no type is keyword-indexed (`set_fulltext`); [`has_keyword_index`] tells
+    /// that case apart.
+    ///
+    /// [`has_keyword_index`]: Self::has_keyword_index
     /// Ties are in unit id order. Reads only the posting ranges of the query
     /// terms and the statistics record.
     ///

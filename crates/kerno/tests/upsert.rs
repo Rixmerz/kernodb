@@ -102,12 +102,12 @@ fn a_field_that_is_not_unique_is_refused_and_nothing_is_written() {
     // Indexed but not unique, not indexed, not in the schema, and a type with no schema.
     for (unit_type, field) in [("user", "age"), ("user", "name"), ("user", "nope"), ("bare", "email")] {
         let r = db.upsert(unit_type, field, payload.clone());
-        assert!(matches!(r, Err(Error::InvalidArgument(_))), "{unit_type}.{field}: {r:?}");
+        assert!(matches!(r, Err(Error::NotUnique { .. })), "{unit_type}.{field}: {r:?}");
     }
     // In a batch the refusal abandons the stores before it.
     let mut batch = Batch::new();
     batch.store("note", "kept out").upsert("user", "name", payload);
-    assert!(matches!(db.commit(&batch), Err(Error::InvalidArgument(_))));
+    assert!(matches!(db.commit(&batch), Err(Error::NotUnique { .. })));
     assert!(db.query(&Default::default()).unwrap().is_empty(), "nothing was written");
 }
 

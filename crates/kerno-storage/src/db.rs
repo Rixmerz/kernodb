@@ -1669,6 +1669,10 @@ impl kerno_core::contract::Refresh for KernoDb {
 }
 
 impl kerno_core::contract::Reclaim for KernoDb {
+    fn flush(&self) -> Result<()> {
+        self.inner.flush_all()
+    }
+
     fn compact_range(&self, start: Bound<&[u8]>, end: Bound<&[u8]>) -> Result<()> {
         KernoDb::compact_range(self, start, end).map(drop)
     }
@@ -1691,7 +1695,7 @@ impl KernoDb {
 }
 
 fn no_database(dir: &Path) -> Error {
-    Error::InvalidArgument(format!("{}: no database (no {MANIFEST}) and create_if_missing is false", dir.display()))
+    Error::NoDatabase(dir.display().to_string())
 }
 
 /// The directory that holds `path`'s entry. For a relative path with a

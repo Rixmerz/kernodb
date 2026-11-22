@@ -20,7 +20,10 @@ ids are random, so the key must be a field of the unit.
 
 `("upsert", type, field, document)` is also a batch op, so many entities (and relations to them) go
 in one commit. Its result is in `out["upserts"]` (with `detailed=True`), not in `out["units"]`.
-Several upserts of one key in a batch make one unit, and the last document wins. A raw
+A `relate` op can name an upsert by its position in the ops list: `("upsert", "file", "path", {...}),
+("upsert", "sym", "qn", {...}), ("relate", 0, 1, "defines")` links the two units. Several upserts of one key
+in a batch make one unit, and the last document wins; each reports that unit's id and one outcome
+(`created` when the first made it). A raw
 `("store", type, payload)` of a typed type is still refused by the schema
 (`SchemaError: not a record`): use `upsert` or `store_document`.
 

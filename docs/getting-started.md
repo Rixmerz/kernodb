@@ -118,7 +118,8 @@ What the facade does not cover is in `kerno::units` (the complete `kerno-units` 
 
 ### Search by keyword (opt-in per type)
 
-No type is in the keyword (BM25) index until you turn it on, so `search_text` finds nothing at first:
+No type is in the keyword (BM25) index until you turn it on, so `search_text` finds nothing at first (and
+`hybrid_search` with a keyword leg refuses with `NotIndexed` while no type is on, rather than answer no hits):
 
 ```rust
 use kerno::Db;

@@ -452,8 +452,8 @@ test('setFulltext switches keyword search on and off per type', () => {
   const note = db.store('note', 'the quick brown fox')
   const keywords = () => db.hybridSearch({ text: 'fox' }).map((h) => h.id)
 
-  // Off by default: no unit is keyword-indexed.
-  assert.deepEqual(keywords(), [])
+  // Off by default: no unit is keyword-indexed, so a keyword search can never match.
+  assert.equal(codeOf(keywords), 'NOT_INDEXED')
   assert.equal(db.fulltext('note'), false)
   db.setFulltext('note', true)
   assert.equal(db.fulltext('note'), true)
@@ -462,7 +462,7 @@ test('setFulltext switches keyword search on and off per type', () => {
   const later = db.store('note', 'another fox')
   assert.deepEqual(keywords().sort(), [note, later].sort())
   db.setFulltext('note', false)
-  assert.deepEqual(keywords(), [])
+  assert.equal(codeOf(keywords), 'NOT_INDEXED') // nothing is keyword-indexed again
 })
 
 // ---- schemas, indexes, documents ----
@@ -534,7 +534,7 @@ test('createIndex and find look units up by an indexed field', () => {
   assert.equal(db.find('user', 'city', 'Rome').length, 0)
 
   // `age` is not indexed yet: createIndex builds it over the existing units.
-  assert.equal(codeOf(() => db.find('user', 'age', 36)), 'INVALID_ARGUMENT')
+  assert.equal(codeOf(() => db.find('user', 'age', 36)), 'NOT_INDEXED')
   db.createIndex('user', 'age')
   assert.deepEqual(db.find('user', 'age', 36).map((u) => u.id).sort(), [ada, bob].sort())
   assert.equal(codeOf(() => db.createIndex('user', 'nope')), 'INVALID_ARGUMENT')
@@ -695,7 +695,7 @@ test('open with maxBatchOps caps the operations of one commit', () => {
   db = open(dir, { maxBatchOps: 2 })
   const ops = (n: number) => Array.from({ length: n }, () => ({ op: 'store' as const, unitType: 'note', payload: 'x' }))
   assert.equal(db.commit(ops(2)).units.length, 2)
-  assert.equal(codeOf(() => db.commit(ops(3))), 'INVALID_ARGUMENT')
+  assert.equal(codeOf(() => db.commit(ops(3))), 'CHANGESET_TOO_LARGE')
 })
 
 test('a numeric option that is a fraction, a negative or NaN is refused, never truncated or wrapped', () => {
@@ -713,7 +713,7 @@ test('a numeric option that is a fraction, a negative or NaN is refused, never t
     if (!wide) assert.equal(codeOf(() => db.commit([{ op: 'restore', id: a, revision: n }])), 'INVALID_ARGUMENT', `restore ${why}`)
     assert.equal(
       codeOf(() => db.commit([{ op: 'store', unitType: 'n', payload: 'x' }, { op: 'relate', from: 0, to: n, relationType: 'r' }])),
-      'INVALID_ARGUMENT',
+      wide ? 'BAD_ENDPOINT' : 'INVALID_ARGUMENT', // 2**33 is a whole number, just not the position of an op
       `relate end ${why}`,
     )
     for (const key of ['limit', 'rrfK', 'candidates'] as const) {
@@ -765,15 +765,15 @@ test('upsert refuses a field that is not unique and a document without the key',
   defineUsers()
   const doc = { email: 'a@x.io', name: 'Ada', age: 36 }
   for (const field of ['age', 'name', 'nope']) {
-    assert.equal(codeOf(() => db.upsert('user', field, doc)), 'INVALID_ARGUMENT', field)
+    assert.equal(codeOf(() => db.upsert('user', field, doc)), 'NOT_UNIQUE', field)
   }
-  assert.equal(codeOf(() => db.upsert('bare', 'email', doc)), 'INVALID_ARGUMENT')
+  assert.equal(codeOf(() => db.upsert('bare', 'email', doc)), 'NOT_UNIQUE')
   assert.equal(codeOf(() => db.upsert('user', 'email', { name: 'Ada' })), 'SCHEMA')
   const ops = [
     { op: 'store' as const, unitType: 'note', payload: 'kept out' },
     { op: 'upsert' as const, unitType: 'user', field: 'name', document: doc },
   ]
-  assert.equal(codeOf(() => db.commit(ops)), 'INVALID_ARGUMENT')
+  assert.equal(codeOf(() => db.commit(ops)), 'NOT_UNIQUE')
   assert.equal(db.query().length, 0)
   assert.equal(codeOf(() => db.commit([{ op: 'upsert', unitType: 'user', field: 'email' }])), 'INVALID_ARGUMENT')
 })
@@ -817,4 +817,121 @@ test('upsert keeps one unit across a close and reopen', () => {
   assert.deepEqual(db.upsert('user', 'email', { email: 'a@x.io', name: 'Ada L.' }), { id: first.id, outcome: 'unchanged' })
   assert.equal(db.find('user', 'email', 'a@x.io').length, 1)
   assert.deepEqual(kinds(first.id), ['create', 'update'])
+})
+
+// ---- gaps an outside user found in 1.0.0-alpha.3 ----
+
+test('a relate end is the position of an earlier store or upsert op', () => {
+  db.defineSchema('file', [{ name: 'path', type: 'text', required: true, unique: true }])
+  db.defineSchema('sym', [{ name: 'qn', type: 'text', required: true, unique: true }])
+  // store A, upsert g, store B, relate(0, 1) links A to the upserted unit, not to B.
+  const out = db.commit([
+    { op: 'store', unitType: 'free', payload: 'A' },
+    { op: 'upsert', unitType: 'file', field: 'path', document: { path: 'g.py' } },
+    { op: 'store', unitType: 'free', payload: 'B' },
+    { op: 'relate', from: 0, to: 1, relationType: 'meant_for_g' },
+  ])
+  assert.deepEqual(db.related(out.units[0], 'out', 'meant_for_g').map((r) => r.to), [out.upserts[0].id])
+  // two typed upserts and a relation between them in one commit.
+  const typed = db.commit([
+    { op: 'upsert', unitType: 'file', field: 'path', document: { path: 'a.py' } },
+    { op: 'upsert', unitType: 'sym', field: 'qn', document: { qn: 'a.f' } },
+    { op: 'relate', from: 0, to: 1, relationType: 'defines' },
+  ])
+  assert.deepEqual(db.related(typed.upserts[0].id, 'out').map((r) => r.to), [typed.upserts[1].id])
+})
+
+test('a wrong relate position is BAD_ENDPOINT and writes nothing', () => {
+  const unit = db.store('free', 'kept')
+  const seq = db.lastCommitSeq()
+  const store = { op: 'store' as const, unitType: 'free', payload: 'x' }
+  const relate = (from: number, to: number) => ({ op: 'relate' as const, from, to, relationType: 'r' })
+  for (const ops of [
+    [store, relate(0, 2), store], // a later op
+    [store, relate(0, 1)], // the relation itself
+    [{ op: 'update' as const, id: unit, payload: 'y' }, store, relate(0, 1)], // an update creates no unit
+    [store, relate(0, 0), relate(1, 0)], // nor does a relation
+    [store, relate(0, 99)], // past the end
+  ]) {
+    assert.equal(codeOf(() => db.commit(ops)), 'BAD_ENDPOINT')
+    assert.equal(db.lastCommitSeq(), seq)
+  }
+})
+
+test('compact reports the size at call time', () => {
+  db.defineSchema('row', [{ name: 'body', type: 'text' }])
+  for (let i = 0; i < 100; i++) db.storeDocument('row', { body: `${i} `.repeat(200) })
+  const first = db.compact()
+  assert.ok((first.before ?? 0) > 5000, `before ${first.before}`) // was 0: the units were still in memory
+  for (let i = 0; i < 1000; i++) db.storeDocument('row', { body: `${i} `.repeat(200) })
+  const second = db.compact()
+  assert.ok((second.before ?? 0) > 5 * (first.after ?? 0), `before ${second.before}, previous after ${first.after}`)
+})
+
+test('the indexed text limit is 254 bytes and the error names it', () => {
+  db.defineSchema('lim', [{ name: 'key', type: 'text', required: true, unique: true }])
+  db.upsert('lim', 'key', { key: 'a'.repeat(254) })
+  assert.throws(() => db.upsert('lim', 'key', { key: 'a'.repeat(255) }), /254 bytes/)
+})
+
+test('distinct cases throw distinct codes', () => {
+  db.defineSchema('tag', [{ name: 'label', type: 'text' }])
+  assert.equal(codeOf(() => db.defineSchema('tag', [{ name: 'label', type: 'text' }, { name: 'x', type: 'int' }])), 'SCHEMA_EXISTS')
+  assert.equal(codeOf(() => db.upsert('tag', 'label', { label: 'a' })), 'NOT_UNIQUE')
+  assert.equal(codeOf(() => db.find('tag', 'label', 'a')), 'NOT_INDEXED')
+  db.close()
+  db = open(dir, { maxBatchOps: 2 })
+  const ops = Array.from({ length: 3 }, () => ({ op: 'store' as const, unitType: 'note', payload: 'x' }))
+  assert.equal(codeOf(() => db.commit(ops)), 'CHANGESET_TOO_LARGE')
+  db.store('note', 'kept')
+  const reader = open(dir, { readOnly: true })
+  try {
+    assert.equal(codeOf(() => reader.store('note', 'no')), 'READ_ONLY')
+    assert.equal(codeOf(() => reader.commit([{ op: 'store', unitType: 'note', payload: 'x' }])), 'READ_ONLY')
+  } finally {
+    reader.close()
+  }
+  assert.equal(codeOf(() => open(`${dir}-missing`, { readOnly: true })), 'DATABASE_NOT_FOUND')
+  assert.equal(codeOf(() => db.refresh()), 'INVALID_ARGUMENT') // a handle that is not read-only
+})
+
+test('defineSchema with the same fields is idempotent', () => {
+  const fields = [
+    { name: 'email', type: 'text' as const, required: true, unique: true },
+    { name: 'name', type: 'text' as const },
+  ]
+  db.defineSchema('person', fields)
+  const seq = db.lastCommitSeq()
+  db.defineSchema('person', fields)
+  db.defineSchema('person', [...fields].reverse())
+  assert.equal(db.lastCommitSeq(), seq)
+  assert.equal(codeOf(() => db.defineSchema('person', [{ name: 'email', type: 'text' }])), 'SCHEMA_EXISTS')
+})
+
+test('searches that can never match throw', () => {
+  db.defineSchema('lim', [{ name: 'key', type: 'text', required: true, unique: true }])
+  db.upsert('lim', 'key', { key: 'a'.repeat(254) })
+  assert.equal(db.find('lim', 'key', 'a'.repeat(254)).length, 1)
+  assert.equal(codeOf(() => db.find('lim', 'key', 'b'.repeat(300))), 'INVALID_ARGUMENT')
+  assert.equal(codeOf(() => db.hybridSearch({ text: 'ada' })), 'NOT_INDEXED')
+  db.setFulltext('lim', true)
+  assert.deepEqual(db.hybridSearch({ text: 'ada' }), [])
+})
+
+test('a field value no document can hold throws INVALID_ARGUMENT, never a raw napi error', () => {
+  db.defineSchema('ev', [{ name: 'i', type: 'int' }])
+  const bad: unknown[] = [null, 2n ** 64n, 2n ** 63n, -(2n ** 63n) - 1n, [1.5], { a: 1 }, 2 ** 70, NaN]
+  for (const value of bad) {
+    assert.equal(codeOf(() => db.storeDocument('ev', { i: value as never })), 'INVALID_ARGUMENT', String(value))
+  }
+  db.storeDocument('ev', { i: 2n ** 63n - 1n })
+  db.storeDocument('ev', { i: -(2n ** 63n) })
+})
+
+test('a pruned read says which number is a revision and which a commit', () => {
+  const id = db.store('cfg', 'v0')
+  const first = db.lastCommitSeq()
+  for (let i = 1; i < 5; i++) db.update(id, `v${i}`)
+  db.runRetention({ default: { keepLast: 2 } })
+  assert.throws(() => db.readAsOf(id, first), new RegExp(`commit ${first}.*revision 4`))
 })

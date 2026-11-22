@@ -304,14 +304,14 @@ fn definitions_over_existing_units_backfill_or_refuse() {
     db.define_schema("user", vec![FieldDef::new("email", FieldType::Text), FieldDef::new("age", FieldType::Int)])
         .unwrap();
     // `age` was not indexed: asking is an error, not an empty answer.
-    assert!(matches!(db.find("user", "age", &FieldValue::Int(36)), Err(Error::InvalidArgument(_))));
+    assert!(matches!(db.find("user", "age", &FieldValue::Int(36)), Err(Error::NotIndexed { .. })));
     db.create_index("user", "age").unwrap();
     assert_eq!(db.find("user", "age", &FieldValue::Int(36)).unwrap()[0].id, ada);
     assert!(matches!(db.create_index("user", "age"), Err(Error::InvalidArgument(_))));
     assert!(matches!(db.create_index("user", "nope"), Err(Error::InvalidArgument(_))));
     db.drop_index("user", "age").unwrap();
-    assert!(matches!(db.find("user", "age", &FieldValue::Int(36)), Err(Error::InvalidArgument(_))));
-    assert!(matches!(db.define_schema("user", user_fields()), Err(Error::InvalidArgument(_))));
+    assert!(matches!(db.find("user", "age", &FieldValue::Int(36)), Err(Error::NotIndexed { .. })));
+    assert!(matches!(db.define_schema("user", user_fields()), Err(Error::SchemaExists { .. })));
     assert!(db.unit_db().verify_units().unwrap().is_clean());
 }
 
@@ -660,4 +660,137 @@ fn run_retention_prunes_old_revisions_and_they_answer_pruned() {
     assert_eq!(db.get(note).unwrap().unwrap().oldest, RevNo(4));
     assert_eq!(db.get(keep).unwrap().unwrap().oldest, RevNo(2));
     assert!(db.verify().unwrap().is_clean());
+}
+
+// ---- gaps an outside user found in 1.0.0-alpha.3 ----
+
+#[test]
+fn compact_reports_the_size_at_call_time_not_the_size_at_the_last_flush() {
+    let dir = TempDir::new();
+    let db = Db::open(dir.db()).unwrap();
+    let blob = |n: usize| "x".repeat(1000 + n);
+    for i in 0..100 {
+        db.store("blob", blob(i)).unwrap();
+    }
+    // Nothing was flushed yet: every commit is still in the write buffer. (The payloads
+    // compress, so the stored size is a fraction of the 100 KB written.)
+    let first = db.compact().unwrap();
+    let (before1, after1) = (first.stored_bytes_before.unwrap(), first.stored_bytes_after.unwrap());
+    assert!(before1 > 5_000, "100 units are stored when compact is called, not {before1} bytes");
+    assert!(before1.abs_diff(after1) < before1, "before {before1} and after {after1} measure the same data");
+
+    for i in 0..1000 {
+        db.store("blob", blob(i)).unwrap();
+    }
+    let before2 = db.compact().unwrap().stored_bytes_before.unwrap();
+    assert!(before2 > 5 * after1, "1000 more units must show in before ({before2}, after {after1} units)");
+}
+
+#[test]
+fn defining_the_same_schema_again_is_a_no_op_and_a_different_one_is_schema_exists() {
+    let dir = TempDir::new();
+    let db = Db::open(dir.db()).unwrap();
+    db.define_schema("user", user_fields()).unwrap();
+    let seq = db.last_commit_seq().unwrap();
+
+    // The same fields, listed in another order, are the same schema: nothing is written.
+    db.define_schema("user", user_fields().into_iter().rev().collect()).unwrap();
+    assert_eq!(db.last_commit_seq().unwrap(), seq);
+
+    let more = user_fields().into_iter().chain([FieldDef::new("name", FieldType::Text)]).collect();
+    let changed = db.define_schema("user", more);
+    assert!(matches!(changed, Err(Error::SchemaExists { .. })), "{changed:?}");
+    assert_eq!(db.last_commit_seq().unwrap(), seq);
+
+    // Once a field is indexed later, the schema in force is not the one first defined.
+    db.define_schema("tag", vec![FieldDef::new("label", FieldType::Text)]).unwrap();
+    db.create_index("tag", "label").unwrap();
+    let old = db.define_schema("tag", vec![FieldDef::new("label", FieldType::Text)]);
+    assert!(matches!(old, Err(Error::SchemaExists { .. })), "{old:?}");
+    db.define_schema("tag", vec![FieldDef::new("label", FieldType::Text).indexed()]).unwrap();
+}
+
+#[test]
+fn the_indexed_text_limit_is_254_bytes_and_the_error_says_so() {
+    let dir = TempDir::new();
+    let db = Db::open(dir.db()).unwrap();
+    db.define_schema("lim", vec![FieldDef::new("key", FieldType::Text).unique().required()]).unwrap();
+    let doc = |n: usize| Document::new().with("key", FieldValue::Text("a".repeat(n)));
+    db.store_document("lim", &doc(254)).unwrap();
+    let Err(Error::SchemaViolation { detail }) = db.store_document("lim", &doc(255)) else {
+        panic!("255 bytes must be refused");
+    };
+    assert!(detail.contains("254 bytes"), "the error names the limit: {detail}");
+    // A text of 254 bytes and one of 254 two-byte characters differ: the limit is in bytes.
+    assert_eq!(kerno::units::schema::MAX_INDEXED_TEXT_LEN, 254);
+}
+
+#[test]
+fn a_lookup_that_can_never_match_is_an_error_not_an_empty_answer() {
+    let dir = TempDir::new();
+    let db = Db::open(dir.db()).unwrap();
+    db.define_schema("lim", vec![FieldDef::new("key", FieldType::Text).unique().required()]).unwrap();
+    db.store_document("lim", &Document::new().with("key", FieldValue::Text("a".repeat(254)))).unwrap();
+
+    let long = FieldValue::Text("b".repeat(300));
+    assert!(matches!(db.find("lim", "key", &long), Err(Error::InvalidArgument(_))));
+    let longest = FieldValue::Text("a".repeat(254));
+    assert_eq!(db.find("lim", "key", &longest).unwrap().len(), 1);
+    // A range bound this long still means something: everything up to it.
+    let hits = db.find_range("lim", "key", Bound::Unbounded, Bound::Included(&long), 10).unwrap();
+    assert_eq!(hits.len(), 1);
+
+    // Keyword search with no type switched on can never match.
+    let mut query = HybridQuery::new(5);
+    query.text = Some("ada");
+    assert!(matches!(db.hybrid_search(&query), Err(Error::NotIndexed { .. })));
+    db.set_fulltext("lim", true).unwrap();
+    assert!(db.hybrid_search(&query).unwrap().is_empty(), "a keyword-indexed type with no match is just empty");
+}
+
+#[test]
+fn distinct_refusals_have_distinct_errors() {
+    let dir = TempDir::new();
+    let db = Db::open(dir.db()).unwrap();
+    db.define_schema("tag", vec![FieldDef::new("label", FieldType::Text)]).unwrap();
+    let one = Document::new().with("label", FieldValue::Text("a".into()));
+    let upsert = db.upsert_document("tag", "label", &one);
+    assert!(matches!(upsert, Err(Error::NotUnique { .. })), "{upsert:?}");
+    let find = db.find("tag", "label", &FieldValue::Text("a".into()));
+    assert!(matches!(find, Err(Error::NotIndexed { .. })), "{find:?}");
+    let range = db.find_range("tag", "label", Bound::Unbounded, Bound::Unbounded, 1);
+    assert!(matches!(range, Err(Error::NotIndexed { .. })), "{range:?}");
+
+    let mut big = Batch::new();
+    for _ in 0..3 {
+        big.store("n", "x");
+    }
+    let small = TempDir::new();
+    let tiny = Db::open_with_limits(small.db(), Config::default(), 2).unwrap();
+    assert!(matches!(tiny.commit(&big), Err(Error::ChangeSetTooLarge { .. })));
+}
+
+#[test]
+fn a_write_on_a_read_only_handle_and_a_missing_database_are_named() {
+    let dir = TempDir::new();
+    Db::open(dir.db()).unwrap().close().unwrap();
+    let read_only = Config {
+        access: AccessMode::ReadOnly,
+        create_if_missing: false,
+        allow_unverified_platform: true,
+        ..Config::default()
+    };
+    let db = Db::open_with(dir.db(), read_only.clone()).unwrap();
+    let err = db.store("note", "no").unwrap_err();
+    assert!(err.is_read_only(), "{err:?}");
+    assert!(!err.is_no_database() && !err.is_locked());
+    let refresh = Db::open(dir.db()).unwrap();
+    // refresh on a handle that is not read-only is the engine refusing an argument.
+    assert!(refresh.refresh().unwrap_err().is_engine_argument());
+    drop(refresh);
+
+    let empty = TempDir::new();
+    let missing = Db::open_with(empty.db().join("none"), read_only).err().expect("no database there");
+    assert!(missing.is_no_database(), "{missing:?}");
+    assert!(!missing.to_string().contains("create_if_missing"), "{missing}");
 }

@@ -254,6 +254,7 @@ pub(crate) fn replicate(e: &Error) -> Error {
         Error::Poisoned(m) => Error::Poisoned(m.clone()),
         Error::Incompatible(m) => Error::Incompatible(m.clone()),
         Error::ReadOnly(m) => Error::ReadOnly(m.clone()),
+        Error::NoDatabase(m) => Error::NoDatabase(m.clone()),
         // `Error` is non-exhaustive: keep the text of a variant added later.
         other => Error::Poisoned(other.to_string()),
     }

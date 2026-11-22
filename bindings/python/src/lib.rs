@@ -38,7 +38,45 @@ create_exception!(
     KernoError,
     "The engine refused an argument (a type name, a limit, a batch)."
 );
+create_exception!(
+    _kerno,
+    SchemaExistsError,
+    InvalidArgumentError,
+    "`define_schema` for a type that already has a different schema (the same schema again is accepted)."
+);
+create_exception!(
+    _kerno,
+    NotIndexedError,
+    InvalidArgumentError,
+    "The call needs an index that is not there: a field not declared indexed, a type with no schema, or \
+     keyword search with no type switched on by `set_fulltext`."
+);
+create_exception!(
+    _kerno,
+    NotUniqueError,
+    InvalidArgumentError,
+    "`upsert` by a field the type's schema does not declare unique (or by a type with no schema)."
+);
+create_exception!(
+    _kerno,
+    BadEndpointError,
+    InvalidArgumentError,
+    "A batch `relate` end that is not an earlier `store` or `upsert` op of the batch."
+);
 create_exception!(_kerno, PayloadTooLargeError, KernoError, "The payload is larger than the limit (1 MiB by default).");
+create_exception!(
+    _kerno,
+    ChangeSetTooLargeError,
+    PayloadTooLargeError,
+    "A batch holds more operations (10,000 by default, see `max_batch_ops`) or bytes than one commit may."
+);
+create_exception!(_kerno, ReadOnlyError, KernoError, "A write went through a handle opened with `read_only=True`.");
+create_exception!(
+    _kerno,
+    DatabaseNotFoundError,
+    KernoError,
+    "The directory holds no database and `read_only=True` never creates one."
+);
 create_exception!(
     _kerno,
     HasRelationsError,
@@ -65,11 +103,25 @@ fn engine_error(e: kerno::Error) -> PyErr {
     if e.is_corruption() {
         return CorruptionError::new_err(msg);
     }
+    if e.is_read_only() {
+        return ReadOnlyError::new_err(msg);
+    }
+    if e.is_no_database() {
+        return DatabaseNotFoundError::new_err(msg);
+    }
+    if e.is_engine_argument() {
+        return InvalidArgumentError::new_err(msg);
+    }
     match e {
         E::NotFound { .. } | E::RelationNotFound { .. } | E::RevisionNotFound { .. } => NotFoundError::new_err(msg),
         E::Deleted { .. } => DeletedError::new_err(msg),
         E::PayloadTooLarge { .. } => PayloadTooLargeError::new_err(msg),
-        E::InvalidArgument(_) | E::ChangeSetTooLarge { .. } => InvalidArgumentError::new_err(msg),
+        E::InvalidArgument(_) => InvalidArgumentError::new_err(msg),
+        E::ChangeSetTooLarge { .. } => ChangeSetTooLargeError::new_err(msg),
+        E::SchemaExists { .. } => SchemaExistsError::new_err(msg),
+        E::NotIndexed { .. } => NotIndexedError::new_err(msg),
+        E::NotUnique { .. } => NotUniqueError::new_err(msg),
+        E::BadEndpoint { .. } => BadEndpointError::new_err(msg),
         E::UnitHasRelations { .. } => HasRelationsError::new_err(msg),
         E::Pruned { .. } => PrunedError::new_err(msg),
         E::SchemaViolation { .. } => SchemaError::new_err(msg),
@@ -81,12 +133,64 @@ fn is_not_found(e: &kerno::Error) -> bool {
     matches!(e, kerno::Error::NotFound { .. })
 }
 
-/// A Python value as a document field: bool, int, float, str or bytes.
+/// A whole number `0..2**N` (`N` the width of `T`) from Python, as the argument `what`. A
+/// negative, too large, fractional, `bool` or non-number value is an `InvalidArgumentError` that
+/// names `what`: the binding never lets an `OverflowError` or `TypeError` out for a number it was
+/// given.
+fn unsigned<T: TryFrom<u64>>(what: &str, v: &Bound<'_, PyAny>) -> PyResult<T> {
+    let bits = std::mem::size_of::<T>() * 8;
+    let whole = v.is_instance_of::<PyInt>() && !v.is_instance_of::<PyBool>();
+    whole.then(|| v.extract::<u64>().ok().and_then(|n| T::try_from(n).ok())).flatten().ok_or_else(|| {
+        InvalidArgumentError::new_err(format!("{what} must be a whole number from 0 to 2**{bits} - 1, not {v}"))
+    })
+}
+
+/// [`unsigned`], or `None` for Python's `None`.
+fn maybe_unsigned<T: TryFrom<u64>>(what: &str, v: &Bound<'_, PyAny>) -> PyResult<Option<T>> {
+    if v.is_none() { Ok(None) } else { unsigned(what, v).map(Some) }
+}
+
+/// Defines the extractor of one whole-number parameter, for `#[pyo3(from_py_with = ...)]`: pyo3
+/// hands an extractor only the value, so each parameter gets one that knows its name.
+macro_rules! whole_arg {
+    ($name:ident, $what:literal, $ty:ty) => {
+        fn $name(v: &Bound<'_, PyAny>) -> PyResult<$ty> {
+            unsigned($what, v)
+        }
+    };
+    (maybe $name:ident, $what:literal, $ty:ty) => {
+        fn $name(v: &Bound<'_, PyAny>) -> PyResult<Option<$ty>> {
+            maybe_unsigned($what, v)
+        }
+    };
+}
+
+whole_arg!(limit_arg, "limit", usize);
+whole_arg!(maybe max_rows_arg, "limit", usize);
+whole_arg!(maybe schema_version_arg, "schema_version", u32);
+whole_arg!(maybe from_revision_arg, "from_revision", u64);
+whole_arg!(maybe to_revision_arg, "to_revision", u64);
+whole_arg!(revision_a_arg, "a", u64);
+whole_arg!(revision_b_arg, "b", u64);
+whole_arg!(commit_seq_arg, "commit_seq", u64);
+whole_arg!(keyword_weight_arg, "keyword_weight", u32);
+whole_arg!(vector_weight_arg, "vector_weight", u32);
+whole_arg!(relation_weight_arg, "relation_weight", u32);
+whole_arg!(candidates_arg, "candidates", usize);
+whole_arg!(rrf_k_arg, "rrf_k", u32);
+whole_arg!(max_depth_arg, "max_depth", u32);
+whole_arg!(maybe max_batch_ops_arg, "max_batch_ops", usize);
+
+/// A Python value as a document field: bool, int (64 bits), float, str or bytes. Anything else
+/// is an `InvalidArgumentError`, as is an int outside `-2**63 .. 2**63 - 1`.
 fn to_field(v: &Bound<'_, PyAny>) -> PyResult<FieldValue> {
     if v.is_instance_of::<PyBool>() {
         Ok(FieldValue::Bool(v.extract()?))
     } else if v.is_instance_of::<PyInt>() {
-        Ok(FieldValue::Int(v.extract()?))
+        let fits = v.extract::<i64>();
+        fits.map(FieldValue::Int).map_err(|_| {
+            InvalidArgumentError::new_err(format!("the integer {v} does not fit 64 bits (-2**63 to 2**63 - 1)"))
+        })
     } else if v.is_instance_of::<PyFloat>() {
         Ok(FieldValue::Float(v.extract()?))
     } else if v.is_instance_of::<PyString>() {
@@ -94,7 +198,9 @@ fn to_field(v: &Bound<'_, PyAny>) -> PyResult<FieldValue> {
     } else if let Ok(b) = v.extract::<Vec<u8>>() {
         Ok(FieldValue::Bytes(b))
     } else {
-        Err(PyValueError::new_err(format!("unsupported field value: {v}")))
+        Err(InvalidArgumentError::new_err(format!(
+            "unsupported field value {v}: a field is a bool, int, float, str or bytes"
+        )))
     }
 }
 
@@ -161,12 +267,13 @@ fn field_type(name: &str) -> PyResult<FieldType> {
     })
 }
 
-/// A relation end in a batch: a unit id (hex), or the index of an earlier "store" op.
+/// A relation end in a batch: a unit id (hex), or the position in the op list of an earlier
+/// "store" or "upsert" op.
 fn endpoint(v: &Bound<'_, PyAny>) -> PyResult<Endpoint> {
-    if let Ok(n) = v.extract::<usize>() {
-        Ok(Endpoint::Stored(n))
-    } else {
+    if v.is_instance_of::<PyString>() {
         Ok(Endpoint::Unit(UnitId(parse_id(&v.extract::<String>()?)?)))
+    } else {
+        Ok(Endpoint::Op(unsigned("a relate end", v)?))
     }
 }
 
@@ -504,7 +611,7 @@ impl Database {
         &self,
         py: Python<'_>,
         unit_type: Option<&str>,
-        schema_version: Option<u32>,
+        #[pyo3(from_py_with = schema_version_arg)] schema_version: Option<u32>,
         lifecycle: &str,
     ) -> PyResult<Vec<Unit>> {
         let wanted = match lifecycle {
@@ -600,13 +707,17 @@ impl Database {
 
     /// Moves a database opened with `read_only=True` to the commits the writer made since it
     /// opened (or since the last refresh); returns the commit sequence it now reads. Raises
-    /// `KernoError` on a handle that is not read-only.
+    /// `InvalidArgumentError` on a handle that is not read-only (a read-write handle is always
+    /// current).
     fn refresh(&self, py: Python<'_>) -> PyResult<u64> {
         self.with_db(py, |db| db.refresh().map_err(engine_error))
     }
 
-    /// Compacts the revision ranges; returns `{"before": bytes, "after": bytes}`. History keeps
-    /// deleted units' payloads, so this frees only what a retention policy dropped.
+    /// Drops the payloads of deleted units, compacts the revision ranges and returns the stored
+    /// bytes as `{"before": bytes, "after": bytes}`. `before` is the size when the call was made,
+    /// counting every commit so far (the write buffer is written out first); `after` is the size
+    /// once the space is given back. A deleted unit keeps its history entries but not their
+    /// payloads, so an as-of read of one of its old revisions is no longer possible.
     fn compact<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let r = self.with_db(py, |db| db.compact().map_err(engine_error))?;
         let d = PyDict::new(py);
@@ -657,7 +768,12 @@ impl Database {
     }
 
     /// Gives `unit_type` a schema. `fields` is a list of dicts: `name`, `type` ("bool", "int",
-    /// "float", "text", "bytes"), and optional `required`, `unique`, `indexed` booleans.
+    /// "float", "text", "bytes"), and optional `required`, `unique`, `indexed` booleans (`unique`
+    /// implies `indexed`). Defining the schema the type has already (field order aside) is
+    /// accepted and writes nothing, so a program can define on every start; a different one
+    /// raises `SchemaExistsError`. A field added to the index later with `create_index` makes the
+    /// first field list a different schema. An indexed text or bytes value holds at most 254
+    /// bytes (a 0x00 byte counts twice); a longer one raises `SchemaError` on write.
     fn define_schema(&self, py: Python<'_>, unit_type: &str, fields: Vec<Bound<'_, PyDict>>) -> PyResult<()> {
         let mut defs = Vec::new();
         for f in &fields {
@@ -731,7 +847,9 @@ impl Database {
         Ok(Some(d))
     }
 
-    /// The active units of `unit_type` whose indexed `field` equals `value`.
+    /// The active units of `unit_type` whose indexed `field` equals `value`. Raises
+    /// `NotIndexedError` when `field` is not indexed and `InvalidArgumentError` for a text or
+    /// bytes `value` over 254 bytes (no unit can hold it; the answer is not an empty list).
     fn find(&self, py: Python<'_>, unit_type: &str, field: &str, value: Bound<'_, PyAny>) -> PyResult<Vec<Unit>> {
         let v = to_field(&value)?;
         self.with_db(py, |db| {
@@ -763,7 +881,7 @@ impl Database {
         field: &str,
         low: Option<Bound<'_, PyAny>>,
         high: Option<Bound<'_, PyAny>>,
-        limit: Option<usize>,
+        #[pyo3(from_py_with = max_rows_arg)] limit: Option<usize>,
     ) -> PyResult<Vec<Unit>> {
         let end = |v: &Option<Bound<'_, PyAny>>| -> PyResult<Range<FieldValue>> {
             Ok(match v {
@@ -828,6 +946,8 @@ impl Database {
     /// - relation: units reached from the `seeds` over at most `max_depth` hops.
     ///
     /// A signal runs when its input is given and its weight is above 0; at least one must run.
+    /// A keyword signal with no type switched on by `set_fulltext` raises `NotIndexedError`
+    /// (a switched-on type with no match gives an empty list). The search is not scoped to a type.
     /// Each signal adds `weight / (rrf_k + rank)` to a unit's score. Only active units are hits.
     #[pyo3(signature = (
         text=None, vector=None, vectors=None, seeds=None, *,
@@ -842,13 +962,13 @@ impl Database {
         vector: Option<Vec<f32>>,
         vectors: Option<HashMap<String, Vec<f32>>>,
         seeds: Option<Vec<String>>,
-        keyword_weight: u32,
-        vector_weight: u32,
-        relation_weight: u32,
-        limit: usize,
-        candidates: usize,
-        rrf_k: u32,
-        max_depth: u32,
+        #[pyo3(from_py_with = keyword_weight_arg)] keyword_weight: u32,
+        #[pyo3(from_py_with = vector_weight_arg)] vector_weight: u32,
+        #[pyo3(from_py_with = relation_weight_arg)] relation_weight: u32,
+        #[pyo3(from_py_with = limit_arg)] limit: usize,
+        #[pyo3(from_py_with = candidates_arg)] candidates: usize,
+        #[pyo3(from_py_with = rrf_k_arg)] rrf_k: u32,
+        #[pyo3(from_py_with = max_depth_arg)] max_depth: u32,
         metric: &str,
     ) -> PyResult<Vec<SearchHit>> {
         let metric = match metric {
@@ -918,9 +1038,12 @@ impl Database {
     /// `("relate", from, to, type)`, `("relate_unique", from, to, type)`, `("archive", id)`,
     /// `("unarchive", id)`, `("restore", id, revision)` or `("upsert", unit_type, field,
     /// document)` (see `upsert`; several upserts of one key in a batch make one unit and the last
-    /// document wins; an upserted unit is not in the stored ids, so read it from `upserts`). A
-    /// relation end is a unit id or the
-    /// index (0-based) of an earlier "store" op of the batch. `reason`, `actor` and `source` are
+    /// document wins, and each op of the key reports that unit's id and one outcome: `created`
+    /// when the first made it; an upserted unit is not in the stored ids, so read it from
+    /// `upserts`). A relation end is a unit id or the position (0-based, counting every op in
+    /// the list) of an earlier "store" or "upsert" op, which names the unit it created, revised
+    /// or found unchanged. Any other position (a later op, an update, a relation, past the end)
+    /// raises `BadEndpointError` and nothing is written. `reason`, `actor` and `source` are
     /// recorded with every revision. Returns the ids of the stored units, or with
     /// `detailed=True` a dict: `units`, `relations`, `unchanged`, `upserts` (one `{"id",
     /// "outcome"}` per upsert op), `commit_seq`.
@@ -980,7 +1103,7 @@ impl Database {
                     batch.unarchive(id_at(op, 1)?);
                 }
                 ("restore", 3) => {
-                    let rev: u64 = op.get_item(2)?.extract()?;
+                    let rev: u64 = unsigned("a restore op's revision", &op.get_item(2)?)?;
                     batch.restore(id_at(op, 1)?, rev);
                 }
                 ("upsert", 4) => {
@@ -1022,10 +1145,10 @@ impl Database {
         &self,
         py: Python<'_>,
         id: &str,
-        limit: usize,
+        #[pyo3(from_py_with = limit_arg)] limit: usize,
         with_payload: bool,
-        from_revision: Option<u64>,
-        to_revision: Option<u64>,
+        #[pyo3(from_py_with = from_revision_arg)] from_revision: Option<u64>,
+        #[pyo3(from_py_with = to_revision_arg)] to_revision: Option<u64>,
         order: &str,
     ) -> PyResult<Vec<Revision>> {
         let id = UnitId(parse_id(id)?);
@@ -1048,7 +1171,13 @@ impl Database {
     /// Revisions `a` and `b` of unit `id`, with their verified payloads, and whether their
     /// content is the same. Raises `NotFoundError` for an unknown unit or revision and
     /// `PrunedError` for a revision retention removed.
-    fn compare(&self, py: Python<'_>, id: &str, a: u64, b: u64) -> PyResult<Comparison> {
+    fn compare(
+        &self,
+        py: Python<'_>,
+        id: &str,
+        #[pyo3(from_py_with = revision_a_arg)] a: u64,
+        #[pyo3(from_py_with = revision_b_arg)] b: u64,
+    ) -> PyResult<Comparison> {
         let id = UnitId(parse_id(id)?);
         let c = self.with_db(py, |db| db.unit_db().compare(id, RevNo(a), RevNo(b)).map_err(engine_error))?;
         Ok(Comparison {
@@ -1061,14 +1190,21 @@ impl Database {
     /// The revision of `id` in force once commit `commit_seq` committed, with its payload;
     /// `None` when the unit did not exist yet (or never did). A deleted unit returns its
     /// tombstone. A sequence after the last commit reads the current state.
-    fn read_as_of(&self, py: Python<'_>, id: &str, commit_seq: u64) -> PyResult<Option<Revision>> {
+    fn read_as_of(
+        &self,
+        py: Python<'_>,
+        id: &str,
+        #[pyo3(from_py_with = commit_seq_arg)] commit_seq: u64,
+    ) -> PyResult<Option<Revision>> {
         let id = UnitId(parse_id(id)?);
         self.with_db(py, |db| match db.read_as_of(id, commit_seq).map_err(engine_error)? {
             UnitAt::Absent => Ok(None),
             UnitAt::Present(r) | UnitAt::DeletedAt(r) => Ok(Some(Revision::from(r))),
-            UnitAt::Pruned { oldest } => {
-                Err(PrunedError::new_err(format!("revision pruned by retention; oldest kept is {}", oldest.0)))
-            }
+            UnitAt::Pruned { oldest } => Err(PrunedError::new_err(format!(
+                "commit {commit_seq} predates the oldest kept revision (revision {}): retention pruned what it \
+                     read. `read_as_of` takes a commit sequence; `history` and `compare` take revision numbers",
+                oldest.0
+            ))),
         })
     }
 
@@ -1119,12 +1255,20 @@ impl Database {
 
 /// Opens the database in `path`, creating it when `path` holds none.
 ///
-/// `read_only=True` opens without writing anything to the directory (it still holds the
-/// directory's lock: one handle at a time). `max_batch_ops` raises (or lowers) the most
-/// operations one `commit` may hold (default 10,000).
+/// `read_only=True` writes nothing to the directory and takes no lock, so it opens beside a live
+/// writer (one read-write handle at a time holds the lock; a second raises `LockedError`). A
+/// read-only handle reads the commits made up to the moment it opened; call `refresh()` to see
+/// later ones. It raises `ReadOnlyError` on a write and `DatabaseNotFoundError` when the
+/// directory holds no database (it never creates one). `max_batch_ops` raises (or lowers) the
+/// most operations one `commit` may hold (default 10,000).
 #[pyfunction]
 #[pyo3(signature = (path, read_only=false, max_batch_ops=None))]
-fn open(py: Python<'_>, path: PathBuf, read_only: bool, max_batch_ops: Option<usize>) -> PyResult<Database> {
+fn open(
+    py: Python<'_>,
+    path: PathBuf,
+    read_only: bool,
+    #[pyo3(from_py_with = max_batch_ops_arg)] max_batch_ops: Option<usize>,
+) -> PyResult<Database> {
     let db = py
         .detach(|| {
             let config = if read_only {
@@ -1153,6 +1297,13 @@ fn _kerno(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Comparison>()?;
     m.add_class::<SearchHit>()?;
     m.add("KernoError", m.py().get_type::<KernoError>())?;
+    m.add("SchemaExistsError", m.py().get_type::<SchemaExistsError>())?;
+    m.add("NotIndexedError", m.py().get_type::<NotIndexedError>())?;
+    m.add("NotUniqueError", m.py().get_type::<NotUniqueError>())?;
+    m.add("BadEndpointError", m.py().get_type::<BadEndpointError>())?;
+    m.add("ChangeSetTooLargeError", m.py().get_type::<ChangeSetTooLargeError>())?;
+    m.add("ReadOnlyError", m.py().get_type::<ReadOnlyError>())?;
+    m.add("DatabaseNotFoundError", m.py().get_type::<DatabaseNotFoundError>())?;
     m.add("NotFoundError", m.py().get_type::<NotFoundError>())?;
     m.add("DeletedError", m.py().get_type::<DeletedError>())?;
     m.add("LockedError", m.py().get_type::<LockedError>())?;
