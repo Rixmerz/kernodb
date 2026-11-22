@@ -35,6 +35,12 @@ on ADDR`) to stdout, with the port it really got; its logs are JSON lines on std
 with an error. On SIGINT or SIGTERM it stops accepting, lets the requests in flight finish (the HTTP side
 waits at most 10 seconds), closes the database and exits 0.
 
+**Windows and macOS.** The durability of `Sync` is verified on Linux only. Elsewhere the server
+still starts and logs one warning (`level` `WARN`, `message` `durability is not verified on this
+platform ...`), however many databases it opens. Set `KERNO_REQUIRE_VERIFIED_DURABILITY=1` to
+make it refuse to start instead (`durability not verified on this platform`, exit 1). See
+[docs/compatibility.md](../../docs/compatibility.md#24-durability-on-platforms-other-than-linux).
+
 Building needs no `protoc`: `build.rs` compiles `proto/kerno/v1/kerno.proto` with `protox`.
 
 ## HTTP API

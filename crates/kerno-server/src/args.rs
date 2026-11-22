@@ -18,7 +18,9 @@ pub const USAGE: &str = "usage: kerno-server --db <dir> [options]\n\
     \x20                     (file:///dir or s3://bucket/prefix; a tenant's backups go under its name)\n\
     --backup-interval <s> seconds between shipments; default 5\n\
     --fulltext <types>    unit types to keyword-index, comma-separated (off by default)\n\
-    hash-token            print the SHA-256 of the token read on stdin, for the tokens file";
+    hash-token            print the SHA-256 of the token read on stdin, for the tokens file\n\
+    Off Linux, durability is not verified: it starts anyway and logs a warning; set\n\
+    KERNO_REQUIRE_VERIFIED_DURABILITY=1 to refuse to start there.";
 
 /// Where the HTTP API listens unless `--listen` says otherwise: the loopback interface only, because
 /// `--db` serves without authentication.

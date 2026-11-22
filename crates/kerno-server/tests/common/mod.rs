@@ -105,7 +105,11 @@ impl Server {
     /// [`Server::launch`] with extra environment variables for the server process.
     pub fn launch_with_env(args: &[&str], log: Option<&Path>, env: &[(&str, &str)]) -> Server {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_kerno-server"));
-        cmd.envs(env.iter().copied()).env_remove("KERNO_SERVER_DB").args(["--listen", "127.0.0.1:0"]).args(args);
+        cmd.env_remove(kerno::storage::REQUIRE_VERIFIED_ENV)
+            .envs(env.iter().copied())
+            .env_remove("KERNO_SERVER_DB")
+            .args(["--listen", "127.0.0.1:0"])
+            .args(args);
         // The keyword index is off by default (ADR-0023): the suites search these types.
         if !args.iter().any(|a| a.starts_with("--fulltext")) && !args.contains(&"hash-token") {
             cmd.args(["--fulltext", FULLTEXT_TYPES]);
@@ -161,8 +165,11 @@ impl Server {
         parse_reply(&answer)
     }
 
-    pub fn id(&self) -> u32 {
-        self.child.id()
+    /// Kills the server without a word, as a crash does (SIGKILL on Unix, TerminateProcess on
+    /// Windows): no shutdown, no last shipment. Waits, so the next start finds its files released.
+    pub fn kill(mut self) -> ExitStatus {
+        self.child.kill().unwrap();
+        self.child.wait().unwrap()
     }
 
     pub fn request(&self, method: &str, path: &str, body: Option<&Value>) -> Reply {
@@ -245,6 +252,35 @@ pub fn parse_reply(raw: &[u8]) -> Reply {
     let headers =
         lines.filter_map(|l| l.split_once(':')).map(|(k, v)| (k.trim().to_owned(), v.trim().to_owned())).collect();
     Reply { status, headers, body: raw[split..].to_vec() }
+}
+
+/// Makes `link` a directory that leads to `target`, which must exist. A test that wants a database
+/// directory to go missing under a running server cannot rename the directory: Windows refuses to
+/// rename one that holds open files. It serves the database through a link instead and removes
+/// the link; the open files are in `target` and stay where they are.
+#[cfg(unix)]
+pub fn link_dir(target: &Path, link: &Path) {
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+/// A junction, not a symbolic link: it needs no privilege.
+#[cfg(windows)]
+pub fn link_dir(target: &Path, link: &Path) {
+    let made = Command::new("cmd").args(["/C", "mklink", "/J"]).arg(link).arg(target).output().unwrap();
+    assert!(
+        made.status.success(),
+        "mklink: {}{}",
+        String::from_utf8_lossy(&made.stdout),
+        String::from_utf8_lossy(&made.stderr)
+    );
+}
+
+/// Removes the link [`link_dir`] made, and nothing it leads to.
+pub fn unlink_dir(link: &Path) {
+    #[cfg(unix)]
+    std::fs::remove_file(link).unwrap();
+    #[cfg(windows)]
+    std::fs::remove_dir(link).unwrap();
 }
 
 /// Sends the graceful stop request of the platform to process `pid`.

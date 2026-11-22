@@ -40,7 +40,7 @@ impl Drop for TempDir {
 
 fn binary() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_kerno-mcp"));
-    cmd.env_remove("KERNO_MCP_DB");
+    cmd.env_remove("KERNO_MCP_DB").env_remove(kerno_storage::REQUIRE_VERIFIED_ENV);
     cmd
 }
 
@@ -413,4 +413,37 @@ fn without_a_database_the_server_says_so_and_exits() {
     let out = binary().arg("--help").stdin(Stdio::null()).output().unwrap();
     assert!(out.status.success());
     assert!(String::from_utf8_lossy(&out.stdout).contains("usage: kerno-mcp --db <dir>"));
+}
+
+/// Windows, macOS and the rest do not verify `Sync` durability: the server must still start there
+/// (issue #7), say so on stderr, and refuse only when asked to.
+#[test]
+fn unverified_durability_is_a_warning_and_the_environment_can_refuse_to_run() {
+    let verified = cfg!(target_os = "linux");
+    let warning = format!("kerno-mcp: warning: {}", kerno_storage::UNVERIFIED_WARNING);
+    // stdin at its end: the server opens the database, finds no request and exits.
+    let run = |require: Option<&str>| {
+        let dir = TempDir::new();
+        let mut cmd = binary();
+        cmd.arg("--db").arg(dir.db());
+        if let Some(v) = require {
+            cmd.env(kerno_storage::REQUIRE_VERIFIED_ENV, v);
+        }
+        let out = cmd.stdin(Stdio::null()).output().unwrap();
+        assert!(out.stdout.is_empty(), "nothing but protocol may reach stdout");
+        (out.status.success(), String::from_utf8(out.stderr).unwrap())
+    };
+    let (ok, err) = run(None);
+    assert!(ok, "{err}");
+    assert_eq!(err.trim_end(), if verified { "" } else { warning.as_str() });
+    for off in ["0", ""] {
+        let (ok, err) = run(Some(off));
+        assert!(ok, "{off:?}: {err}");
+    }
+    let (ok, err) = run(Some("1"));
+    if verified {
+        assert!((ok, err.as_str()) == (true, ""), "{err}");
+    } else {
+        assert!(!ok && err.contains("durability not verified on this platform") && !err.contains(&warning), "{err}");
+    }
 }

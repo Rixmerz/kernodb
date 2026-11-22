@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use kerno::Config;
 use kerno::storage::KernoDb;
 use kerno::units::assoc_rank::{VectorMetric, VectorSet};
 use kerno::units::{ChangeMeta, ChangeSet, ProvenanceKind, RevNo, UnitUpdate};
@@ -65,10 +66,11 @@ pub struct Service {
 }
 
 impl Service {
-    /// Opens the database in `dir`, creating it when `dir` holds none.
-    /// The keyword index of each type in `fulltext` is turned on (it is off by default, ADR-0023).
-    pub fn open(dir: &Path, fulltext: &[String]) -> Result<Self, String> {
-        let db = Db::open(dir).map_err(|e| format!("cannot open the database in {}: {e}", dir.display()))?;
+    /// Opens the database in `dir` with the engine settings `config`, creating it when `dir` holds
+    /// none. The keyword index of each type in `fulltext` is turned on (it is off by default, ADR-0023).
+    pub fn open(dir: &Path, fulltext: &[String], config: &Config) -> Result<Self, String> {
+        let db = Db::open_with(dir, config.clone())
+            .map_err(|e| format!("cannot open the database in {}: {e}", dir.display()))?;
         for t in fulltext {
             db.set_fulltext(t, true).map_err(|e| format!("cannot keyword-index type {t:?}: {e}"))?;
         }
@@ -584,7 +586,8 @@ mod tests {
     fn a_base_on_demand_ahead_of_the_first_tick_leaves_the_tick_without_one() {
         let dir = std::env::temp_dir().join(format!("kerno-server-service-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let svc = Service::open(&dir, &[]).unwrap().with_backups(Arc::new(MemStore::default()));
+        let config = Config { allow_unverified_platform: true, ..Config::default() };
+        let svc = Service::open(&dir, &[], &config).unwrap().with_backups(Arc::new(MemStore::default()));
         let bases = || svc.backup_stats().unwrap().bases.load(Ordering::Relaxed);
         svc.backup_now().unwrap();
         assert_eq!(bases(), 1);

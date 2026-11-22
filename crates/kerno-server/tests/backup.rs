@@ -158,9 +158,7 @@ fn a_server_that_died_takes_a_new_base_when_it_starts_again() {
     let server = Server::launch(&args, None);
     wait_for(&server, "kerno_backup_bases_total", 1);
     note(&server, &[], "before the crash");
-    let status = std::process::Command::new("kill").args(["-KILL", &server.id().to_string()]).status().unwrap();
-    assert!(status.success());
-    drop(server);
+    assert!(!server.kill().success(), "the server was killed, not stopped");
 
     let again = Server::launch(&args, None);
     // The engine replayed the commit and deleted its log, so only a new base has it.

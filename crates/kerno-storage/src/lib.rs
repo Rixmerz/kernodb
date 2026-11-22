@@ -66,8 +66,8 @@ pub mod format;
 pub mod testing;
 
 pub use config::{
-    AccessMode, CloseBudget, CompactionConfig, Config, FilePicker, GroupCommitConfig, L0Metric, Limits, ReadOnlyReason,
-    SlowdownPolicy,
+    AccessMode, CloseBudget, CompactionConfig, Config, FilePicker, GroupCommitConfig, L0Metric, Limits, PlatformPolicy,
+    REQUIRE_VERIFIED_ENV, ReadOnlyReason, SlowdownPolicy, UNVERIFIED_WARNING,
 };
 #[doc(hidden)]
 pub use config::{Background, TestConfig};

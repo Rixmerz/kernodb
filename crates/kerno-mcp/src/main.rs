@@ -6,7 +6,9 @@ use std::process::ExitCode;
 use kerno_mcp::{Memory, serve};
 
 const USAGE: &str = "usage: kerno-mcp --db <dir>   (or set KERNO_MCP_DB=<dir>)\n\
-    Serves MCP over stdin/stdout; the database in <dir> is created if it does not exist.";
+    Serves MCP over stdin/stdout; the database in <dir> is created if it does not exist.\n\
+    Off Linux, durability is not verified: it opens anyway and warns on stderr; set\n\
+    KERNO_REQUIRE_VERIFIED_DURABILITY=1 to refuse to run there.";
 
 /// The database directory: `--db <dir>` (or `--db=<dir>`), else `KERNO_MCP_DB`.
 /// `Ok(None)` means help was asked for.
