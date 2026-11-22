@@ -269,13 +269,18 @@ Engine failures raise `kerno.KernoError` or one of its subclasses:
 | `BadEndpointError` | a batch `relate` end that is not an earlier `store` or `upsert` op |
 | `PayloadTooLargeError` | a payload over 1 MiB |
 | `ChangeSetTooLargeError` | a batch over 10,000 ops (see `max_batch_ops`) or over the engine's bytes per commit; a `PayloadTooLargeError` |
-| `ReadOnlyError` | a write through a handle opened with `read_only=True` |
+| `ReadOnlyError` | a write through a handle opened with `read_only=True`. An empty `commit([])`, or a `run_retention` that has nothing to prune, writes nothing and does not raise |
 | `DatabaseNotFoundError` | `read_only=True` on a directory with no database |
 | `HasRelationsError` | deleting a unit that still has relations, without `cascade` |
 | `PrunedError` | retention removed the revision asked for |
 | `SchemaError` | the type's schema refused a document, or a typed unit got a payload that is not a document |
 
-A malformed id or direction, or a call on a closed database, raises `ValueError`.
+A malformed id, direction, order, lifecycle, metric, retention rule or batch op (a tuple that names no op or
+has the wrong number of items), a `vector` without `vectors` (or the reverse), or a call on a closed database,
+raises `ValueError`. An argument of the wrong Python type (`None` or an `int` for a `str`, a `list` for a
+payload) raises `TypeError`, and a `str` with a lone surrogate, which has no UTF-8 form, raises
+`UnicodeEncodeError` (or the `TypeError` of the payload): Python rejects those before the engine is reached.
+A payload or document `bytes` value is `bytes` or `bytearray`, never a list of ints.
 
 ## Performance
 
@@ -322,7 +327,7 @@ never sees half of a change set.
 ## Limits
 
 - Payload: 1 MiB. Unit and relation type: 1–64 bytes (no NUL in a relation type).
-- One change set: 10,000 operations by default (`kerno.open(path, max_batch_ops=...)` changes it, up to 2^20); the engine also limits the bytes of one commit.
+- One change set: a unit is written by at most one operation of it (a second `update`, `delete`, `archive`, ... of the same unit is `InvalidArgumentError`; relations to it are not limited). It holds 10,000 operations by default (`kerno.open(path, max_batch_ops=...)` changes it, up to 2^20); the engine also limits the bytes of one commit.
 - `find` and `find_range` return active units only. The Rust API has no index of archived or
   deleted units, so `query(lifecycle=...)` reads every unit's head instead of looking one up.
 - Deleting a unit keeps its revisions' history entries; `compact()` drops the payloads of deleted units
@@ -351,7 +356,7 @@ alpha.2), and define again the schemas and indexes: an export holds neither.
 ```bash
 cd bindings/python
 python3 -m venv .venv && . .venv/bin/activate
-pip install maturin pytest
+pip install maturin pytest hypothesis
 maturin develop --release
 pytest
 ```

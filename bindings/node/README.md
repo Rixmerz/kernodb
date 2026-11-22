@@ -65,6 +65,8 @@ Run it in a directory where `memory-db` does not exist yet, because the query co
 * **Times** (`createdAtUs`, `updatedAtUs`) are microseconds since the Unix epoch. They describe,
   they never order: use `commitSeq` and `revision` for order.
 * An optional result field that has no value is absent (`undefined`), a missing unit is `null`.
+* **Strings** are UTF-8 on the way in. A string with a lone surrogate (which has no UTF-8 form) is stored with
+  U+FFFD in its place, as `Buffer.from` does; sizes are counted in bytes, not characters.
 
 ## API
 
@@ -83,7 +85,7 @@ Run it in a directory where `memory-db` does not exist yet, because the query co
 | `db.read(id)` | the `Unit`, or `null` |
 | `db.update(id, payload, { ifChanged? })` | `true` when a revision was written. With `ifChanged`, a payload equal to the current one writes nothing and returns `false`. The earlier revisions stay in the history. |
 | `db.delete(id, { cascade? })` | nothing. Writes a tombstone revision; the history is kept. Without `cascade` a unit that still has relations throws `HAS_RELATIONS`; with it, the relations are removed first, in the same commit. |
-| `db.relate(from, to, relationType, { unique? })` | the relation's id. Both units must exist and be active; `relationType` is 1 to 256 bytes. With `unique`, an existing relation of that type between the two units is reused. |
+| `db.relate(from, to, relationType, { unique? })` | the relation's id. Both units must exist and be active; `relationType` is 1 to 64 bytes, with no NUL. With `unique`, an existing relation of that type between the two units is reused. |
 | `db.unrelate(relationId)` | nothing |
 | `db.related(id, 'out' \| 'in', relationType?)` | the `Relation[]` that start at (`out`) or end at (`in`) the unit |
 | `db.relations(relationType?)` | every live `Relation[]`, in one scan: much faster than `related` per unit |
@@ -158,7 +160,7 @@ deleted one does not.
 
 | Call | Returns |
 |---|---|
-| `db.history(id, { limit?, withPayload?, fromRevision? })` | the newest `limit` `Revision`s (default 100, at least 1) from `fromRevision` on (default: the oldest kept), newest first; `NOT_FOUND` for an id no unit ever had. `withPayload` reads and verifies each revision's content. A `fromRevision` retention pruned throws `PRUNED`. |
+| `db.history(id, { limit?, withPayload?, fromRevision? })` | the newest `limit` `Revision`s (default 100, a whole number from 1 to 2^32 - 1) from `fromRevision` on (default: the oldest kept), newest first; `NOT_FOUND` for an id no unit ever had. `withPayload` reads and verifies each revision's content. A `fromRevision` retention pruned throws `PRUNED`. |
 | `db.readAsOf(id, commitSeq)` | the `Revision` in force once that commit committed (with its payload), or `null` when the unit did not exist yet. A deleted unit returns its tombstone. A sequence past the last commit reads the current state. Throws `PRUNED` when retention removed the revision. |
 | `db.lastCommitSeq()` | the sequence of the last commit (0 for an empty database) |
 | `db.refresh()` | on a `readOnly: true` database: pick up the commits a writer made since the open; returns the sequence now read |
@@ -226,7 +228,11 @@ hits.
 
 ## Errors
 
-Every failure is a plain `Error` with a stable string `code` (and a message). Match on `code`, not on the message:
+Every failure is a plain `Error` with a stable string `code` (and a message). Match on `code`, not on the message.
+A numeric option that is not a whole number in range (a string, `null`, a fraction, a negative, `NaN`) is `INVALID_ARGUMENT`.
+An argument of the wrong JS type where the types ask for a string, boolean, array or object (`undefined` for a
+`string`, for example) is refused by napi itself before the engine is reached, with its own `code` (`StringExpected`,
+`BooleanExpected`, `ArrayExpected`, `InvalidArg`) or a `TypeError`:
 
 ```js
 try {
@@ -251,7 +257,7 @@ try {
 | `BAD_ENDPOINT` | `BadEndpointError` | a `relate` end that is not an earlier `store` or `upsert` op of the commit |
 | `PAYLOAD_TOO_LARGE` | `PayloadTooLargeError` | the payload is over 1 MiB |
 | `CHANGESET_TOO_LARGE` | `ChangeSetTooLargeError` | a commit over 10,000 ops (see `maxBatchOps`) or over the engine's bytes per commit |
-| `READ_ONLY` | `ReadOnlyError` | a write through a handle opened with `readOnly: true` |
+| `READ_ONLY` | `ReadOnlyError` | a write through a handle opened with `readOnly: true`. An empty `commit([])`, or a `runRetention` with nothing to prune, writes nothing and does not throw. `updateDocument` reads the unit first, so an unknown id is `NOT_FOUND` there |
 | `DATABASE_NOT_FOUND` | `DatabaseNotFoundError` | `readOnly: true` on a directory with no database |
 | `HAS_RELATIONS` | `HasRelationsError` | the unit still has live relations; unrelate them or use `cascade` |
 | `PRUNED` | `PrunedError` | retention removed the revision asked for (`readAsOf`, or `history` from a pruned `fromRevision`) |
@@ -262,10 +268,10 @@ try {
 ## Limits
 
 * **Payload: at most 1 MiB** (1,048,576 bytes) per unit. A larger one throws `PAYLOAD_TOO_LARGE`.
-* **Unit type:** 1 to 64 bytes of UTF-8. **Relation type:** 1 to 256 bytes.
+* **Unit type:** 1 to 64 bytes of UTF-8. **Relation type:** 1 to 64 bytes, with no NUL.
 * **Commit metadata:** `reason` at most 1024 bytes, `actor` and `source` at most 256 bytes each.
 * **Operations per commit:** 10,000 by default; `open(path, { maxBatchOps })` changes it. A unit
-  can appear in one operation of a commit.
+  is written by at most one operation of a commit (a second `update`, `delete`, `archive`, ... of it throws `INVALID_ARGUMENT`; relations to it are not limited).
 * **Keyword search is opt-in per type.** A type is not keyword-indexed until you call
   `setFulltext(type, true)`; until then `hybridSearch`'s keyword leg finds none of its units.
   Turning it on indexes the type's active units in the same commit, and turning it off clears them.

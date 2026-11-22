@@ -293,7 +293,8 @@ impl From<kerno::units::Revision> for Revision {
 #[napi(object)]
 pub struct UnitFilter {
     pub unit_type: Option<String>,
-    pub schema_version: Option<f64>,
+    #[napi(ts_type = "number")]
+    pub schema_version: Option<Num>,
 }
 
 #[napi(object)]
@@ -303,7 +304,8 @@ pub struct OpenOptions {
     /// directory with no database throws `DATABASE_NOT_FOUND`. Default `false`.
     pub read_only: Option<bool>,
     /// The most operations one `commit` may hold. Default 10,000.
-    pub max_batch_ops: Option<f64>,
+    #[napi(ts_type = "number")]
+    pub max_batch_ops: Option<Num>,
 }
 
 #[napi(object)]
@@ -327,11 +329,13 @@ pub struct RelateOptions {
 #[napi(object)]
 pub struct HistoryOptions {
     /// The newest `limit` revisions (at least 1). Default 100.
-    pub limit: Option<f64>,
+    #[napi(ts_type = "number")]
+    pub limit: Option<Num>,
     /// Read and verify each revision's content. Default `false`.
     pub with_payload: Option<bool>,
     /// The oldest revision to list, inclusive. Default: the oldest kept. Below it throws `PRUNED`.
-    pub from_revision: Option<f64>,
+    #[napi(ts_type = "number")]
+    pub from_revision: Option<Num>,
 }
 
 #[napi(object)]
@@ -374,11 +378,12 @@ pub struct CommitOp {
     pub if_changed: Option<bool>,
     pub cascade: Option<bool>,
     /// `restore`: the revision number to copy.
-    pub revision: Option<f64>,
+    #[napi(ts_type = "number")]
+    pub revision: Option<Num>,
     #[napi(ts_type = "string | number")]
-    pub from: Option<Either<String, f64>>,
+    pub from: Option<Either<String, Num>>,
     #[napi(ts_type = "string | number")]
-    pub to: Option<Either<String, f64>>,
+    pub to: Option<Either<String, Num>>,
     pub relation_type: Option<String>,
     pub unique: Option<bool>,
     /// `unrelate`: the relation to remove.
@@ -484,30 +489,77 @@ pub struct RetentionReport {
 impl RetentionRule {
     fn into_rule(self) -> Result<Rule> {
         match (given(self.keep_last), given(self.keep_for), given(self.keep_since)) {
-            (Some(n), None, None) => whole("keepLast", n).map(Rule::KeepLast),
+            (Some(n), None, None) => whole("keepLast", Num(Some(n))).map(Rule::KeepLast),
             (None, Some(secs), None) => std::time::Duration::try_from_secs_f64(secs)
                 .map(Rule::KeepFor)
                 .map_err(|_| invalid("keepFor is a number of seconds, 0 or more")),
-            (None, None, Some(seq)) => whole("keepSince", seq).map(|s| Rule::KeepSince(kerno::units::CommitSeq(s))),
+            (None, None, Some(seq)) => {
+                whole("keepSince", Num(Some(seq))).map(|s| Rule::KeepSince(kerno::units::CommitSeq(s)))
+            }
             _ => Err(invalid("a retention rule has exactly one of keepLast, keepFor, keepSince")),
         }
     }
 }
 
-/// A JS number that must be a whole number in `0..=2^53`: a fraction, a negative, NaN or an
-/// infinity is refused rather than truncated.
-fn whole(what: &str, n: f64) -> Result<u64> {
-    if n.fract() == 0.0 && (0.0..=MAX_SAFE).contains(&n) {
-        // Exact: a whole number in 0..=2^53 converts without loss.
-        Ok(n as u64)
-    } else {
-        Err(invalid(format!("{what} must be a whole number, 0 or more, not {n}")))
+/// A numeric option as JS gave it. Holds `None` when the value was not a number, so that `whole`
+/// refuses it with `INVALID_ARGUMENT` like a fraction or a negative, where napi would throw its own
+/// `NumberExpected` error.
+#[derive(Clone, Copy)]
+pub struct Num(Option<f64>);
+
+impl TypeName for Num {
+    fn type_name() -> &'static str {
+        "number"
+    }
+    fn value_type() -> napi::ValueType {
+        napi::ValueType::Number
+    }
+}
+
+impl ValidateNapiValue for Num {
+    unsafe fn validate(
+        _env: napi::sys::napi_env,
+        _value: napi::sys::napi_value,
+    ) -> napi::Result<napi::sys::napi_value> {
+        Ok(std::ptr::null_mut())
+    }
+}
+
+impl FromNapiValue for Num {
+    unsafe fn from_napi_value(env: napi::sys::napi_env, value: napi::sys::napi_value) -> napi::Result<Self> {
+        // SAFETY: `env` and `value` come straight from napi for this call.
+        let kind = unsafe { Unknown::from_napi_value(env, value)? }.get_type()?;
+        if kind == napi::ValueType::Number {
+            Ok(Num(Some(unsafe { f64::from_napi_value(env, value)? })))
+        } else {
+            Ok(Num(None))
+        }
+    }
+}
+
+impl ToNapiValue for Num {
+    unsafe fn to_napi_value(env: napi::sys::napi_env, val: Self) -> napi::Result<napi::sys::napi_value> {
+        // SAFETY: `env` comes straight from napi for this call.
+        unsafe { f64::to_napi_value(env, val.0.unwrap_or(f64::NAN)) }
+    }
+}
+
+/// A JS number that must be a whole number in `0..=2^53`: a fraction, a negative, NaN, an
+/// infinity or a value that is not a number is refused rather than truncated.
+fn whole(what: &str, n: Num) -> Result<u64> {
+    match n.0 {
+        Some(n) if n.fract() == 0.0 && (0.0..=MAX_SAFE).contains(&n) => {
+            // Exact: a whole number in 0..=2^53 converts without loss.
+            Ok(n as u64)
+        }
+        Some(n) => Err(invalid(format!("{what} must be a whole number, 0 or more, not {n}"))),
+        None => Err(invalid(format!("{what} must be a number"))),
     }
 }
 
 /// Like `whole`, for an optional option that the engine takes as a `u32`.
-fn whole_u32(what: &str, n: Option<f64>) -> Result<Option<u32>> {
-    n.map(|n| whole(what, n).and_then(|w| u32::try_from(w).map_err(|_| invalid(format!("{what} is too large: {n}")))))
+fn whole_u32(what: &str, n: Option<Num>) -> Result<Option<u32>> {
+    n.map(|n| whole(what, n).and_then(|w| u32::try_from(w).map_err(|_| invalid(format!("{what} is too large")))))
         .transpose()
 }
 
@@ -627,17 +679,22 @@ pub struct RelationsInput {
     #[napi(ts_type = "'out' | 'in' | 'both'")]
     pub direction: Option<String>,
     /// Most hops from a seed, 1 to 4. Default 2.
-    pub max_depth: Option<f64>,
+    #[napi(ts_type = "number")]
+    pub max_depth: Option<Num>,
     /// Most relation entries examined, up to 100,000. Default 10,000.
-    pub visit_budget: Option<f64>,
+    #[napi(ts_type = "number")]
+    pub visit_budget: Option<Num>,
 }
 
 /// Leg weights, 0 to 1000; 0 switches a leg off. Default 1 each.
 #[napi(object)]
 pub struct HybridWeightsInput {
-    pub keyword: Option<f64>,
-    pub vector: Option<f64>,
-    pub relations: Option<f64>,
+    #[napi(ts_type = "number")]
+    pub keyword: Option<Num>,
+    #[napi(ts_type = "number")]
+    pub vector: Option<Num>,
+    #[napi(ts_type = "number")]
+    pub relations: Option<Num>,
 }
 
 /// One query over keywords (BM25), vectors and relations, fused by weighted reciprocal rank
@@ -657,18 +714,22 @@ pub struct HybridQueryInput {
     #[napi(ts_type = "'rrf' | 'graph_gated'")]
     pub fusion: Option<String>,
     /// The `k` of the fusion. Default 60.
-    pub rrf_k: Option<f64>,
+    #[napi(ts_type = "number")]
+    pub rrf_k: Option<Num>,
     /// Units each leg contributes, 1 to 1000. Default 100.
-    pub candidates: Option<f64>,
+    #[napi(ts_type = "number")]
+    pub candidates: Option<Num>,
     /// Hits returned, 1 to 1000. Default 10.
-    pub limit: Option<f64>,
+    #[napi(ts_type = "number")]
+    pub limit: Option<Num>,
 }
 
 /// Options of `searchText`.
 #[napi(object)]
 pub struct SearchTextOptions {
     /// Most hits, at least 1. Default 10.
-    pub limit: Option<f64>,
+    #[napi(ts_type = "number")]
+    pub limit: Option<Num>,
     /// Search only these unit types (at least one). Default: every keyword-indexed type.
     pub types: Option<Vec<String>>,
 }
@@ -781,7 +842,7 @@ fn field_type(name: &str) -> Result<FieldType> {
     })
 }
 
-fn endpoint(v: Option<Either<String, f64>>, what: &str) -> Result<Endpoint> {
+fn endpoint(v: Option<Either<String, Num>>, what: &str) -> Result<Endpoint> {
     match v {
         Some(Either::A(hex)) => Ok(Endpoint::Unit(unit_id(&hex)?)),
         Some(Either::B(n)) => Ok(Endpoint::Op(whole(what, n)? as usize)),
@@ -935,7 +996,7 @@ impl Db {
         self.commit_batch(&batch, &CommitMeta::default()).map(|_| ())
     }
 
-    /// Relates `from` to `to` with a relation of type `relationType` (1 to 256 bytes) and
+    /// Relates `from` to `to` with a relation of type `relationType` (1 to 64 bytes, no NUL) and
     /// returns the relation's id. Both units must exist and be active. With `unique`, an
     /// existing relation of that type between the two units is reused.
     #[napi]
@@ -1046,7 +1107,7 @@ impl Db {
     /// sequence after the last commit reads the current state. Throws `PRUNED` when retention
     /// removed that revision.
     #[napi]
-    pub fn read_as_of(&self, id: String, commit_seq: f64) -> Result<Option<Revision>> {
+    pub fn read_as_of(&self, id: String, #[napi(ts_arg_type = "number")] commit_seq: Num) -> Result<Option<Revision>> {
         let id = unit_id(&id)?;
         let seq = whole("commitSeq", commit_seq)?;
         match self.with(|db| db.read_as_of(id, seq))? {

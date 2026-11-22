@@ -475,6 +475,12 @@ impl<E: Engine> UnitSnapshot<E> {
     /// snapshot (I-32). The outcome says which path answered, and whether it
     /// was the reference after the chosen one failed its check.
     pub fn query(&self, filter: &UnitFilter) -> Result<QueryOutcome, UnitError> {
+        // A name no unit can have must not look like "no units yet", whatever path the planner picks.
+        if let Some(t) = &filter.unit_type
+            && (t.is_empty() || t.len() > crate::codec::MAX_UNIT_TYPE_LEN as usize)
+        {
+            return Err(UnitError::InvalidArgument("unit_type is not a valid unit type name".into()));
+        }
         let started = self.observer.begin();
         let outcome = self.answer_units(filter);
         if let Some(started) = started {

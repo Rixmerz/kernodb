@@ -53,14 +53,14 @@ jobs:
         if: matrix.musl
         run: |
           docker run --rm -v "$PWD:/w" -w /w/bindings/python python:3.12-alpine sh -euc '
-            pip install pytest
+            pip install pytest hypothesis
             pip install --no-index --find-links dist kernodb
             python -m pytest tests'
       - name: Install the wheel and run the tests
         if: ${{ !matrix.musl }}
         run: |
           set -euo pipefail
-          python -m pip install pytest
+          python -m pip install pytest hypothesis
           python -m pip install --no-index --find-links bindings/python/dist kernodb
           python -m pytest bindings/python/tests
       - uses: actions/upload-artifact@v4

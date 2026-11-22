@@ -30,6 +30,18 @@ Gaps found by an outside integration test of 1.0.0-alpha.3 from PyPI. There are 
 - **Python and Node raise Kerno errors for values and numbers they cannot take**. A document field of `None`, a list or dict, or an int outside 64 bits is `InvalidArgumentError` (Python) or `INVALID_ARGUMENT` (Node, also for `null`); a limit, revision, sequence, weight or `max_batch_ops` that is negative, over 2**64 - 1, a fraction, a `bool` or not a number is `InvalidArgumentError`, never `OverflowError` or `TypeError`.
 - **Smaller points**: the pruned-read message says which number is a commit sequence and which a revision; the `kerno.open` docstring and the Node option say a read-only open takes no lock and opens beside a writer; the Python README says the install name is `kernodb` and the module is `kerno`; a key repeated in one batch is documented as one unit with one outcome per op.
 
+Found by the pre-release suite (`bindings/python/tests/test_conformance.py`, `bindings/node/__test__/conformance.test.mts`, `crates/kerno/tests/db.rs`):
+
+- **`query` with a unit type name no unit can have is `InvalidArgument`, on every planner path.** The audit above made the type-index scan refuse an empty or over-64-byte name, but the planner picks the full scan on a small store and answered `[]`. The check now sits at the entry of `UnitSnapshot::query`, so Rust, Python, Node and the server agree.
+- **`open` with an empty path is `InvalidArgument` and touches nothing.** `kerno.open("")` (and `Db::open("")`, Node `open('')`) created a `LOCK` and a `MANIFEST` in the working directory and then failed with a bare `KernoError`. The facade refuses it before any file is created.
+- **Python `history(limit=0)` is `InvalidArgumentError`**, like `search_text`, `find_range` and Node; it was a bare `ValueError`.
+- **Python no longer stores a list of ints as bytes.** A document field or a payload (`store`, `update`, a batch op) that is a `list` or `tuple` of small ints was silently accepted as `bytes`. A document field of that shape is `InvalidArgumentError`; a payload is a `TypeError`. `bytes` and `bytearray` are the byte types.
+- **Python `commit([()])`** (an empty op tuple) raised `IndexError`; it is the `ValueError` every other malformed op raises.
+- **Node numeric options that are not numbers throw `INVALID_ARGUMENT`**, not napi's raw `NumberExpected`: `limit`, `fromRevision`, `schemaVersion`, `maxBatchOps`, the `hybridSearch` numbers, a `restore` `revision`, `readAsOf`'s `commitSeq` and a `relate` end given `null`, a string, a boolean or a bigint. Only numbers reached the whole-number check before.
+- **Documentation that did not match the code.** The Node README, the `relate` doc in `index.d.ts` and the Limits list said a relation type is 1 to 256 bytes; it is 1 to 64 bytes with no NUL, as in Python. The Python type stub's `__all__` lacked `BadEndpointError`, `ChangeSetTooLargeError` and `DatabaseNotFoundError`. Both READMEs now say that a unit is written by at most one op of a commit, that an empty commit or a retention with nothing to prune is not a write and does not raise `ReadOnlyError`, that Node's `history` `limit` is at most 2^32 - 1, that a Node string with a lone surrogate is stored as U+FFFD, and which errors the host language raises for an argument of the wrong type (`TypeError`, `UnicodeEncodeError`, napi's `StringExpected` and its kin).
+
+Added: the pre-release suite and [RELEASING.md](RELEASING.md). The Python suite uses `hypothesis` (`pip install pytest hypothesis`); the Node suite uses tables and a seeded generator, with no new dependency.
+
 ## [1.0.0-alpha.3] - 2026-11-22
 
 ### Added

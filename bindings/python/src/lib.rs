@@ -20,6 +20,7 @@ use kerno::{
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyValueError};
 use pyo3::prelude::*;
+use pyo3::pybacked::PyBackedBytes;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString};
 
 create_exception!(_kerno, KernoError, PyException, "Any failure reported by the Kerno engine.");
@@ -198,8 +199,9 @@ fn to_field(v: &Bound<'_, PyAny>) -> PyResult<FieldValue> {
         Ok(FieldValue::Float(v.extract()?))
     } else if v.is_instance_of::<PyString>() {
         Ok(FieldValue::Text(v.extract()?))
-    } else if let Ok(b) = v.extract::<Vec<u8>>() {
-        Ok(FieldValue::Bytes(b))
+    } else if let Ok(b) = v.extract::<PyBackedBytes>() {
+        // Only `bytes` and `bytearray`: a list or tuple of small ints is not bytes.
+        Ok(FieldValue::Bytes(b.to_vec()))
     } else {
         Err(InvalidArgumentError::new_err(format!(
             "unsupported field value {v}: a field is a bool, int, float, str or bytes"
@@ -297,7 +299,7 @@ fn parse_id(hex: &str) -> PyResult<[u8; 16]> {
 #[derive(FromPyObject)]
 enum Payload {
     Text(String),
-    Bytes(Vec<u8>),
+    Bytes(PyBackedBytes),
 }
 
 /// `{"id": hex, "outcome": "created" | "updated" | "unchanged"}`.
@@ -326,7 +328,7 @@ fn lifecycle_name(l: Lifecycle) -> &'static str {
 fn into_bytes(p: Payload) -> Vec<u8> {
     match p {
         Payload::Text(s) => s.into_bytes(),
-        Payload::Bytes(b) => b,
+        Payload::Bytes(b) => b.to_vec(),
     }
 }
 
@@ -1110,6 +1112,9 @@ impl Database {
             Ok(UnitId(parse_id(&op.get_item(i)?.extract::<String>()?)?))
         };
         for op in &ops {
+            if op.is_empty() {
+                return Err(PyValueError::new_err("unknown or malformed batch op: ()"));
+            }
             let name: String = op.get_item(0)?.extract()?;
             match (name.as_str(), op.len()) {
                 ("store", 3) => {
@@ -1201,9 +1206,6 @@ impl Database {
         order: &str,
     ) -> PyResult<Vec<Revision>> {
         let id = UnitId(parse_id(id)?);
-        if limit == 0 {
-            return Err(PyValueError::new_err("limit must be at least 1"));
-        }
         let order = match order {
             "desc" => Order::Desc,
             "asc" => Order::Asc,

@@ -30,7 +30,7 @@ export declare class Db {
    */
   delete(id: string, options?: DeleteOptions | undefined | null): void
   /**
-   * Relates `from` to `to` with a relation of type `relationType` (1 to 256 bytes) and
+   * Relates `from` to `to` with a relation of type `relationType` (1 to 64 bytes, no NUL) and
    * returns the relation's id. Both units must exist and be active. With `unique`, an
    * existing relation of that type between the two units is reused.
    */
