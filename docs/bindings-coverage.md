@@ -31,6 +31,7 @@ exposes only part of it. **Gap** means there is no way to call it from that bind
 | `update(id, payload)` | `db.update(id, payload, if_changed=)` | `db.update(id, payload, { ifChanged })` | Full |
 | `update_document(id, doc)` | `db.update_document(id, dict)` | `db.updateDocument(id, doc)` | Full |
 | `store_document(type, doc)` | `db.store_document(type, dict)` | `db.storeDocument(type, doc)` | Full |
+| `upsert_document(type, field, doc)`, `upsert(type, field, payload)` | `db.upsert(type, field, dict)` | `db.upsert(type, field, doc)` | Full (the bindings take a document; the encoded-payload `upsert` is Rust only) |
 | `delete(id)` | `db.delete(id, cascade=)` | `db.delete(id, { cascade })` | Full |
 | `unrelate(edge)` | `db.unrelate(relation_id)` | `db.unrelate(relationId)` | Full |
 
@@ -96,6 +97,7 @@ name; in Node it is an object with an `op` field.
 | `archive(id)` | `("archive", id)` | `{ op: 'archive', id }` | Full |
 | `unarchive(id)` | `("unarchive", id)` | `{ op: 'unarchive', id }` | Full |
 | `restore(id, revision)` | `("restore", id, revision)` | `{ op: 'restore', id, revision }` | Full |
+| `upsert(type, field, payload)` | `("upsert", type, field, document)` | `{ op: 'upsert', unitType, field, document }` | Full (a document, not encoded bytes) |
 
 ## Not on the facade, but in a binding
 

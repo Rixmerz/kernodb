@@ -242,7 +242,7 @@ try {
 | `INVALID_ARGUMENT` | `InvalidArgumentError` | an argument was refused: a malformed id, a type name, a limit, a batch, a bad op |
 | `PAYLOAD_TOO_LARGE` | `PayloadTooLargeError` | the payload is over 1 MiB |
 | `HAS_RELATIONS` | `HasRelationsError` | the unit still has live relations; unrelate them or use `cascade` |
-| `PRUNED` | `PrunedError` | retention removed the revision asked for (`readAsOf`) |
+| `PRUNED` | `PrunedError` | retention removed the revision asked for (`readAsOf`, or `history` from a pruned `fromRevision`) |
 | `SCHEMA` | `SchemaError` | the type's schema refused the document, or the payload is not a document |
 | `CLOSED` | `ValueError` | the handle is closed |
 | `KERNO` | `KernoError` | any other engine failure |
@@ -262,7 +262,7 @@ try {
 * **One handle per directory**, and one process at a time.
 * **Hybrid search** returns at most 1000 hits; each leg contributes at most 1000 units.
 * **Numbers** that cross as JS numbers (sequences, revisions, sizes) are exact up to 2^53.
-* `readAsOf` and `history` see what retention kept; this binding does not configure retention.
+* `readAsOf` and `history` see what retention kept. Retention is a call, `db.runRetention(...)`, and the policy is not stored: pass it each time you prune.
 
 ## Durability
 

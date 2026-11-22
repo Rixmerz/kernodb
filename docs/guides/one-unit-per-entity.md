@@ -9,26 +9,27 @@ ids are random, so the key must be a field of the unit.
 1. **A schema with a unique field.** `unique` also makes the field indexed, so `find` works on it
    without a separate `create_index`. The unique check refuses a second active unit with the same
    value, so the key cannot be duplicated.
-2. **`find` by the key.** `db.find(type, field, value)` returns the active units whose field equals
-   the value. A deleted unit does not match, and its key is free again.
-3. **An upsert in two steps.** Kerno has no upsert operation in the bindings. Find the unit, then
-   update it or store a new one, under one lock in the process.
+2. **`upsert` by the key.** `db.upsert(type, field, document)` stores the document as a new unit, or
+   revises the active unit that holds the same value of `field`. It is one commit, so there is no
+   find-then-write race, and it returns `{"id", "outcome"}` with `outcome` `"created"`, `"updated"`
+   or `"unchanged"` (an identical document writes no revision).
+3. **`find` by the key** when you only want to read: `db.find(type, field, value)` returns the active
+   units whose field equals the value. A deleted unit does not match, and its key is free again.
 
-## Why a lock, and not a batch
+## In a batch
 
-A raw `commit` op cannot write a unit of a typed type: the schema refuses the payload
-(`SchemaError: not a record`). The bindings have no way to put an encoded document into a batch, so
-the upsert is one `find` followed by one `update_document` or `store_document`. The unique check is
-the safety net: a second store of the same key is refused. Because one process holds a writable
-database at a time, the only race is between threads that share the handle, and a `threading.Lock`
-around find-and-write closes it.
+`("upsert", type, field, document)` is also a batch op, so many entities (and relations to them) go
+in one commit. Its result is in `out["upserts"]` (with `detailed=True`), not in `out["units"]`.
+Several upserts of one key in a batch make one unit, and the last document wins. A raw
+`("store", type, payload)` of a typed type is still refused by the schema
+(`SchemaError: not a record`): use `upsert` or `store_document`.
 
 ## Example
 
 The full script (it creates its own scratch directory, so it runs as is):
 
 ```python
-import os, tempfile, threading
+import os, tempfile
 import kerno
 
 db = kerno.open(os.path.join(tempfile.mkdtemp(), "db"))
@@ -40,26 +41,13 @@ db.define_schema(
         {"name": "name", "type": "text"},
     ],
 )
-lock = threading.Lock()  # find and write are two steps; one thread at a time
 
-
-def upsert_person(email, name):
-    """Insert the person with this email, or update the one that has it."""
-    doc = {"email": email, "name": name}
-    with lock:
-        hits = db.find("person", "email", email)
-        if not hits:
-            return db.store_document("person", doc)
-        if db.read_document(hits[0].id) != doc:  # an identical document writes no revision
-            db.update_document(hits[0].id, doc)
-        return hits[0].id
-
-
-ada = upsert_person("ada@example.com", "Ada")
-print("insert:", ada == upsert_person("ada@example.com", "Ada"))
-upsert_person("ada@example.com", "Ada Lovelace")
+ada = db.upsert("person", "email", {"email": "ada@example.com", "name": "Ada"})
+print("created:", ada["outcome"])
+print("same document:", db.upsert("person", "email", {"email": "ada@example.com", "name": "Ada"})["outcome"])
+print("new name:", db.upsert("person", "email", {"email": "ada@example.com", "name": "Ada Lovelace"})["outcome"])
 print("found:", [db.read_document(u.id)["name"] for u in db.find("person", "email", "ada@example.com")])
-print("revisions:", [r.kind for r in db.history(ada)])
+print("revisions:", [r.kind for r in db.history(ada["id"])])
 
 try:
     db.store_document("person", {"email": "ada@example.com", "name": "Someone else"})
@@ -71,28 +59,35 @@ try:
 except kerno.SchemaError as e:
     print("batch refused:", e)
 
-db.delete(ada)
+db.delete(ada["id"])
 print("after delete, find:", db.find("person", "email", "ada@example.com"))
+print("after delete, upsert:", db.upsert("person", "email", {"email": "ada@example.com", "name": "Ada"})["outcome"])
 db.close()
 ```
 
 Its output, as run against this tree:
 
 ```text
-insert: True
+created: created
+same document: unchanged
+new name: updated
 found: ['Ada Lovelace']
 revisions: ['update', 'create']
-duplicate key refused: refused by the schema: unit 01a20048dae97005a20a3081484eb557: another unit already holds the unique value of "email"
-batch refused: refused by the schema: unit 01a20048dae97006a22879b135458b5b: not a record (unknown version byte)
+duplicate key refused: refused by the schema: unit 01a200ee69727613a8c9c1cd6f30b7ee: another unit already holds the unique value of "email"
+batch refused: refused by the schema: unit 01a200ee69727614be2b858de7f2a2b2: not a record (unknown version byte)
 after delete, find: []
+after delete, upsert: created
 ```
 
 The unit ids in the two refusal lines differ on every run; the messages are otherwise the same.
 
-## Upsert operation
+## Errors
 
-There is no upsert operation on `main` (no `upsert` in the crates or the bindings). When one is added,
-replace the two steps above with it and keep the same schema.
+- A field that is not declared `unique`, or a type with no schema: `InvalidArgumentError`
+  (Node `INVALID_ARGUMENT`).
+- A document with no value in the field, or one the schema refuses: `SchemaError` (Node `SCHEMA`).
+- Only active units hold a key: an archived or deleted unit does not, so upserting its key creates a
+  new unit.
 
 ## Notes
 
@@ -100,3 +95,4 @@ replace the two steps above with it and keep the same schema.
   unit; read the history for that.
 - Two processes cannot both hold a writable database, so a multi-process writer needs one writer
   process and the others reading with `read_only=True`.
+- Node has the same calls: `db.upsert(type, field, document)` and `{ op: 'upsert', ... }` in `commit`.

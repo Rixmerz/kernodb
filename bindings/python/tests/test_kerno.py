@@ -672,3 +672,23 @@ def test_upsert_keeps_one_unit_across_a_reopen(tmp_path):
         assert again == {"id": first["id"], "outcome": "unchanged"}
         assert len(db.find("user", "email", "a@x.io")) == 1
         assert [r.kind for r in db.history(first["id"], order="asc")] == ["create", "update"]
+
+
+GUIDES = Path(__file__).resolve().parents[3] / "docs" / "guides"
+
+
+@pytest.mark.skipif(not GUIDES.is_dir(), reason="the docs are not next to the tests")
+@pytest.mark.parametrize(
+    ("guide", "expected"),
+    [
+        ("history-alongside.md", ["as of rename: b'{\"name\": \"Ada Lovelace\"}'", "reader after refresh: 5", "PrunedError:"]),
+        ("one-unit-per-entity.md", ["same document: unchanged", "new name: updated", "after delete, upsert: created"]),
+    ],
+)
+def test_the_guide_scripts_run_as_written(guide: str, expected: list[str], capfd: pytest.CaptureFixture[str]) -> None:
+    text = (GUIDES / guide).read_text(encoding="utf-8")
+    script = text.split("```python\n", 1)[1].split("```", 1)[0]
+    exec(compile(script, guide, "exec"), {"__name__": "__guide__"})  # noqa: S102 - our own docs
+    out = capfd.readouterr().out
+    for line in expected:
+        assert line in out, f"{guide}: {line!r} missing from the output:\n{out}"
