@@ -18,7 +18,7 @@ the documented examples as written. Nothing was bumped, tagged or published.
 | Bad retention rules | fractions, negatives, NaN, infinities, huge numbers, wrong types, empty rule | Python `ValueError`, Node `INVALID_ARGUMENT` |
 | Typed errors | not found, bad id, locked, payload too large, has relations, schema, closed handle, upsert on a non-unique field | all typed |
 | Rust examples | `cargo run --release -p kernodb --example agent_memory`, `chat_history`, `document_store` | run |
-| Doctests | `cargo test --release -p kernodb --doc` | 7 passed |
+| Doctests | `cargo test --release -p kernodb --doc` | 8 passed |
 | Publish dry run | `cargo publish --dry-run -p kernodb-core -p kernodb-storage -p kernodb-units -p kernodb` | passes |
 | Versions | see below | consistent at alpha.2, ready to bump |
 
@@ -35,8 +35,8 @@ and the real publishes, in order, each crate finds its predecessor.
    `hybridSearch` numbers. They are now validated with the helper the retention rules already used
    (`whole`, `whole_u32` in `bindings/node/src/lib.rs`) and throw `INVALID_ARGUMENT`.
    Regression test: `a numeric option that is a fraction, a negative or NaN is refused, never
-   truncated or wrapped` in `bindings/node/__test__/index.test.mts`. It fails against the addon built
-   before the fix (checked with `NAPI_RS_NATIVE_LIBRARY_PATH`) and passes after.
+   truncated or wrapped` in `bindings/node/__test__/index.test.mts`. It passes after the fix (53 Node tests
+   pass); it was not re-run against a pre-fix addon after the merge.
 2. **Python README and Node README said retention is not configurable** (doc mismatch). Both
    describe `run_retention` / `runRetention` elsewhere. Rewritten. The Node error table now lists
    `history` as a source of `PRUNED`.

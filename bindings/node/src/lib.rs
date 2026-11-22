@@ -770,7 +770,8 @@ pub fn open(path: String, options: Option<OpenOptions>) -> Result<Db> {
     } else {
         Config { allow_unverified_platform: true, ..Config::default() }
     };
-    let max_ops = whole_u32("maxBatchOps", options.max_batch_ops)?.map_or(kerno::units::DEFAULT_MAX_CHANGESET_OPS, |n| n as usize);
+    let max_ops = whole_u32("maxBatchOps", options.max_batch_ops)?
+        .map_or(kerno::units::DEFAULT_MAX_CHANGESET_OPS, |n| n as usize);
     let db = kerno::Db::open_with_limits(path, config, max_ops).map_err(engine_error)?;
     Ok(Db { inner: RwLock::new(Some(db)) })
 }
@@ -878,7 +879,10 @@ impl Db {
     #[napi]
     pub fn query(&self, filter: Option<UnitFilter>) -> Result<Vec<Unit>> {
         let filter = filter.unwrap_or(UnitFilter { unit_type: None, schema_version: None });
-        let filter = kerno::UnitFilter { unit_type: filter.unit_type, schema_version: whole_u32("schemaVersion", filter.schema_version)? };
+        let filter = kerno::UnitFilter {
+            unit_type: filter.unit_type,
+            schema_version: whole_u32("schemaVersion", filter.schema_version)?,
+        };
         let units = self.with(|db| db.query(&filter))?;
         Ok(units.into_iter().map(Unit::from).collect())
     }
@@ -1186,8 +1190,7 @@ impl Db {
             let seeds = r.seeds.iter().map(|s| unit_id(s)).collect::<Result<Vec<_>>>()?;
             // The leg's own limit bounds its walk; `candidates` bounds what it contributes.
             let limit = q.candidates.min(kerno::units::MAX_ASSOC_LIMIT);
-            let mut g =
-                AssocQuery::new(
+            let mut g = AssocQuery::new(
                 seeds,
                 whole_u32("maxDepth", r.max_depth)?.unwrap_or(2),
                 limit,
