@@ -213,9 +213,11 @@ fn schema_every_point<E: Target>(kind: CrashKind) {
             // the step survived the crash: never a second unit.
             ids.start_step(102);
             let mut cs = db.begin_changeset(ChangeMeta::default()).expect("begin");
-            let done = cs.upsert(new_unit(doc("z", 2, "z@x")), "email").unwrap_or_else(|e| panic!("{ctx}: upsert: {e}"));
+            let done =
+                cs.upsert(new_unit(doc("z", 2, "z@x")), "email").unwrap_or_else(|e| panic!("{ctx}: upsert: {e}"));
             cs.commit().unwrap_or_else(|e| panic!("{ctx}: commit: {e}"));
-            let (want_id, want) = if s >= STEPS { (at(8, 1), UpsertOutcome::Updated) } else { (done.id, UpsertOutcome::Created) };
+            let (want_id, want) =
+                if s >= STEPS { (at(8, 1), UpsertOutcome::Updated) } else { (done.id, UpsertOutcome::Created) };
             assert_eq!((done.id, done.outcome), (want_id, want), "{ctx}: the upsert after recovery");
             let held = db.snapshot().expect("snapshot").find_by_field(ACCT, "email", &FieldValue::Text("z@x".into()));
             assert_eq!(held.expect("find").len(), 1, "{ctx}: one unit holds the key");

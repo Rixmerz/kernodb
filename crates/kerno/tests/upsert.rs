@@ -12,7 +12,11 @@ struct TempDir(PathBuf);
 impl TempDir {
     fn new() -> Self {
         static N: AtomicU32 = AtomicU32::new(0);
-        let dir = std::env::temp_dir().join(format!("kerno-upsert-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
+        let dir = std::env::temp_dir().join(format!(
+            "kerno-upsert-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
         std::fs::create_dir_all(&dir).expect("create the test directory");
         TempDir(dir)
     }
@@ -174,7 +178,11 @@ fn an_upsert_of_a_unit_the_batch_already_changed_is_refused() {
     let db = open(&dir);
     let id = db.upsert_document("user", "email", &user("a@x.io", "Ada")).unwrap().id;
     let mut batch = Batch::new();
-    batch.update(id, user("a@x.io", "Ada L.").encode().unwrap()).upsert("user", "email", user("a@x.io", "Other").encode().unwrap());
+    batch.update(id, user("a@x.io", "Ada L.").encode().unwrap()).upsert(
+        "user",
+        "email",
+        user("a@x.io", "Other").encode().unwrap(),
+    );
     assert!(matches!(db.commit(&batch), Err(Error::InvalidArgument(_))));
 }
 

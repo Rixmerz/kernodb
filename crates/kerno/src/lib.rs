@@ -294,7 +294,9 @@ pub use kerno_units::{
     HybridWeights, LegRanks, Lifecycle, NearestUnits, Query, QueryPlan, QueryResult, Relation, RelationId, Schema,
     Unit, UnitError as Error, UnitFilter, UnitId, UnitVerifyReport as VerifyReport, VectorLeg,
 };
-pub use kerno_units::{CompactReport, RetentionPolicy, RetentionReport, RetentionRule, TextHit, UpsertOutcome, Upserted};
+pub use kerno_units::{
+    CompactReport, RetentionPolicy, RetentionReport, RetentionRule, TextHit, UpsertOutcome, Upserted,
+};
 
 /// The result of every [`Db`] method.
 pub type Result<T> = std::result::Result<T, Error>;

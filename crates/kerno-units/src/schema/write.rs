@@ -7,7 +7,8 @@ use std::ops::Bound;
 use kerno_core::contract::{Txn, TxnEngine};
 
 use super::{
-    Document, FieldDef, FieldValue, Schema, decode_entry_key, entry_key, entry_value, field_prefix, prefix_bounds, schema_key,
+    Document, FieldDef, FieldValue, Schema, decode_entry_key, entry_key, entry_value, field_prefix, prefix_bounds,
+    schema_key,
 };
 use crate::codec::{Key, TAG_UNIT_HEAD, UnitHead};
 use crate::db::{
