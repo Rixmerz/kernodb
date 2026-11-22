@@ -268,7 +268,7 @@ fn an_upsert_is_a_relate_end_in_the_same_batch() {
     let db = Db::open(&dir.0).unwrap();
     user_schema(&db);
 
-    // K1: store A, upsert g, store B, relate(0, 1) must link A to the upserted unit, not to B.
+    // store A, upsert g, store B, relate(0, 1) must link A to the upserted unit, not to B.
     let mut b = Batch::new();
     b.store("n", "A").upsert("user", "email", user("g@x.io")).store("n", "B");
     b.relate(Endpoint::Op(0), Endpoint::Op(1), "meant_for_g");
@@ -276,7 +276,7 @@ fn an_upsert_is_a_relate_end_in_the_same_batch() {
     let edge = &db.related(done.units[0], Direction::Out, Some("meant_for_g")).unwrap()[0];
     assert_eq!(edge.to, done.upserts[0].id, "index 1 is the upsert, not the second store");
 
-    // K2: two typed upserts and a relation between them, in one commit.
+    // two typed upserts and a relation between them, in one commit.
     let mut b = Batch::new();
     b.upsert("user", "email", user("a@x.io")).upsert("user", "email", user("b@x.io"));
     b.relate(Endpoint::Op(0), Endpoint::Op(1), "knows");

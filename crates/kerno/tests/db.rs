@@ -662,7 +662,7 @@ fn run_retention_prunes_old_revisions_and_they_answer_pruned() {
     assert!(db.verify().unwrap().is_clean());
 }
 
-// ---- gaps an outside user found in 1.0.0-alpha.3 (K3 to K8) ----
+// ---- gaps an outside user found in 1.0.0-alpha.3 ----
 
 #[test]
 fn compact_reports_the_size_at_call_time_not_the_size_at_the_last_flush() {

@@ -819,12 +819,12 @@ test('upsert keeps one unit across a close and reopen', () => {
   assert.deepEqual(kinds(first.id), ['create', 'update'])
 })
 
-// ---- gaps an outside user found in 1.0.0-alpha.3 (K1 to K10) ----
+// ---- gaps an outside user found in 1.0.0-alpha.3 ----
 
 test('a relate end is the position of an earlier store or upsert op', () => {
   db.defineSchema('file', [{ name: 'path', type: 'text', required: true, unique: true }])
   db.defineSchema('sym', [{ name: 'qn', type: 'text', required: true, unique: true }])
-  // K1: store A, upsert g, store B, relate(0, 1) links A to the upserted unit, not to B.
+  // store A, upsert g, store B, relate(0, 1) links A to the upserted unit, not to B.
   const out = db.commit([
     { op: 'store', unitType: 'free', payload: 'A' },
     { op: 'upsert', unitType: 'file', field: 'path', document: { path: 'g.py' } },
@@ -832,7 +832,7 @@ test('a relate end is the position of an earlier store or upsert op', () => {
     { op: 'relate', from: 0, to: 1, relationType: 'meant_for_g' },
   ])
   assert.deepEqual(db.related(out.units[0], 'out', 'meant_for_g').map((r) => r.to), [out.upserts[0].id])
-  // K2: two typed upserts and a relation between them in one commit.
+  // two typed upserts and a relation between them in one commit.
   const typed = db.commit([
     { op: 'upsert', unitType: 'file', field: 'path', document: { path: 'a.py' } },
     { op: 'upsert', unitType: 'sym', field: 'qn', document: { qn: 'a.f' } },

@@ -695,7 +695,7 @@ def test_the_guide_scripts_run_as_written(guide: str, expected: list[str], capfd
         assert line in out, f"{guide}: {line!r} missing from the output:\n{out}"
 
 
-# ---- gaps an outside user found in 1.0.0a3 (K1 to K10) ----
+# ---- gaps an outside user found in 1.0.0a3 ----
 
 
 def _files(db):
@@ -704,7 +704,7 @@ def _files(db):
 
 
 def test_a_relate_end_is_the_position_of_an_earlier_store_or_upsert(tmp_path):
-    # K1: the op list is the index space, so an upsert in the middle is index 1, not skipped.
+    # the op list is the index space, so an upsert in the middle is index 1, not skipped.
     with kerno.open(tmp_path / "db") as db:
         _files(db)
         out = db.commit(
@@ -719,7 +719,7 @@ def test_a_relate_end_is_the_position_of_an_earlier_store_or_upsert(tmp_path):
         a, _b = out["units"]
         (edge,) = db.related(a, "out", "meant_for_g")
         assert edge.to_id == out["upserts"][0]["id"]
-        # K2: two typed upserts and a relation between them go in one commit.
+        # two typed upserts and a relation between them go in one commit.
         out = db.commit(
             [("upsert", "file", "path", {"path": "a.py"}), ("upsert", "sym", "qn", {"qn": "a.f"}), ("relate", 0, 1, "defines")],
             detailed=True,
