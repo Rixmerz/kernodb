@@ -85,7 +85,7 @@ Run it in a directory where `memory-db` does not exist yet, because the query co
 | `db.delete(id, { cascade? })` | nothing. Writes a tombstone revision; the history is kept. Without `cascade` a unit that still has relations throws `HAS_RELATIONS`; with it, the relations are removed first, in the same commit. |
 | `db.relate(from, to, relationType, { unique? })` | the relation's id. Both units must exist and be active; `relationType` is 1 to 256 bytes. With `unique`, an existing relation of that type between the two units is reused. |
 | `db.unrelate(relationId)` | nothing |
-| `db.related(id, 'out' \| 'in', relationType?)` | the `Relation[]` that start at (`out`) or end at (`in`) the unit |
+| `db.related(id, 'out' \| 'in', relationType?)` | the `Relation[]` that start at (`out`) or end at (`in`) the unit; `NOT_FOUND` for an id no unit ever had, `INVALID_ARGUMENT` for an invalid type name |
 | `db.relations(relationType?)` | every live `Relation[]`, in one scan: much faster than `related` per unit |
 | `db.query({ unitType?, schemaVersion? }?)` | every active `Unit` that matches, in id order. No filter returns every one. |
 

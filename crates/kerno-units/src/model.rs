@@ -430,6 +430,9 @@ impl UnitModel {
             }
             _ => {}
         }
+        if from.zip(to).is_some_and(|(f, t)| f > t) {
+            return Err(UnitError::InvalidArgument("history range is inverted".into()));
+        }
         let oldest = self.oldest(unit);
         if from.is_none() && oldest.0 > 1 && to.is_some_and(|t| t <= oldest) {
             return Err(UnitError::Pruned { unit, oldest });

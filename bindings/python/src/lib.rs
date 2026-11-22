@@ -575,7 +575,8 @@ impl Database {
     }
 
     /// The relations that start at (`direction="out"`) or end at (`"in"`) `id`, optionally of one
-    /// `relation_type`. An invalid type name raises `InvalidArgumentError`.
+    /// `relation_type`. An invalid type name raises `InvalidArgumentError`, and an id no unit ever
+    /// had raises `NotFoundError` (a deleted unit is known and has none).
     #[pyo3(signature = (id, direction="out", relation_type=None))]
     fn related(
         &self,
@@ -1187,7 +1188,8 @@ impl Database {
     /// oldest kept or the newest. To page, pass the last revision returned as the next
     /// `to_revision` (desc) or its successor as the next `from_revision` (asc). A
     /// `from_revision` below `Unit.oldest_revision` raises `PrunedError`, and an id no unit ever had
-    /// raises `NotFoundError` (not `[]`). `with_payload` reads
+    /// raises `NotFoundError` (not `[]`); `from_revision` above `to_revision` raises
+    /// `InvalidArgumentError` (equal bounds are an empty page). `with_payload` reads
     /// and verifies each revision's content.
     #[pyo3(signature = (id, limit=100, with_payload=false, from_revision=None, to_revision=None, order="desc"))]
     #[allow(clippy::too_many_arguments)]

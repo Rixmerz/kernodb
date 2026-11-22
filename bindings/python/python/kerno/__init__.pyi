@@ -163,7 +163,8 @@ class Database:
     ) -> list[Relation]:
         """Relations that start at (`"out"`) or end at (`"in"`) the unit.
 
-        An invalid `relation_type` name (empty, over 64 bytes, with a NUL) raises `InvalidArgumentError`.
+        An invalid `relation_type` name (empty, over 64 bytes, with a NUL) raises `InvalidArgumentError`,
+        and an id no unit ever had raises `NotFoundError` (a deleted unit is known and has none).
         """
     def query(
         self,
@@ -288,7 +289,8 @@ class Database:
     ) -> list[Revision]:
         """Up to `limit` revisions of `id` in `[from_revision, to_revision)`, newest first by default.
 
-        `NotFoundError` for an id no unit ever had.
+        `NotFoundError` for an id no unit ever had; `InvalidArgumentError` when `from_revision` is
+        above `to_revision` (equal bounds are an empty page, the end of a paged read).
         """
     def compare(self, id: str, a: int, b: int) -> Comparison:
         """Revisions `a` and `b` of unit `id`, with payloads, and whether their content is equal."""

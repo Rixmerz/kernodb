@@ -69,7 +69,7 @@ pub struct HistoryQuery {
     /// when retention has pruned something (`oldest > 1`).
     pub from: Option<RevNo>,
     /// End revision, exclusive; `None` (or anything past the head) is "up to
-    /// the head".
+    /// the head". A `to` below `from` is [`UnitError::InvalidArgument`].
     pub to: Option<RevNo>,
     pub order: Order,
     /// At least 1.
@@ -660,6 +660,13 @@ impl<E: Engine> UnitSnapshot<E> {
                 return Err(UnitError::HistoryUnavailable { policy: HistoryPolicy::Audit });
             }
             _ => {}
+        }
+        // An inverted range can never hold a revision: refused, not empty. An equal `from` and
+        // `to` stays an empty page, the end of a paged read.
+        if let (Some(from), Some(to)) = (q.from, q.to)
+            && from > to
+        {
+            return Err(UnitError::InvalidArgument(format!("history range is inverted: from {from} is after to {to}")));
         }
         // A range that ends at or below the oldest retained revision asks
         // only for pruned revisions: `Pruned`, not an empty page (E3-06).

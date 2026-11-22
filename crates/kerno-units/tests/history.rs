@@ -625,6 +625,11 @@ fn history_errors<E: TxnEngine>() {
     assert_eq!(revs(HistoryQuery { from: Some(RevNo(4)), to: Some(RevNo(9)), ..all(10) }), vec![4, 5]);
     assert!(revs(HistoryQuery { from: Some(RevNo(6)), ..all(10) }).is_empty());
     assert!(revs(HistoryQuery { from: Some(RevNo(3)), to: Some(RevNo(3)), ..all(10) }).is_empty());
+    // A range no revision can be in is refused, by `history` and `history_page` alike.
+    let inverted = HistoryQuery { from: Some(RevNo(4)), to: Some(RevNo(2)), ..all(10) };
+    assert!(matches!(db.history(a, inverted), Err(UnitError::InvalidArgument(_))));
+    let inverted = HistoryQuery { with_payload: false, ..inverted };
+    assert!(matches!(db.snapshot().unwrap().history_page(a, inverted), Err(UnitError::InvalidArgument(_))));
     // Metadata-only history reads no payload.
     assert!(db.history(a, HistoryQuery::oldest(10)).unwrap().iter().all(|r| r.payload.is_none()));
     let info = db.change_set(c.commit_seq).unwrap().unwrap();

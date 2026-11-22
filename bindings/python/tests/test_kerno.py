@@ -189,6 +189,11 @@ def test_missing_ids_and_future_sequences_do_not_raise(tmp_path):
         a = db.store("n", "v1")
         with pytest.raises(kerno.NotFoundError):  # an id no unit ever had is not "no revisions"
             db.history("0" * 32)
+        b = db.store("n", "w1")
+        db.update(b, "w2")
+        with pytest.raises(kerno.InvalidArgumentError):  # a range no revision can be in
+            db.history(b, from_revision=2, to_revision=1)
+        assert db.history(b, from_revision=2, to_revision=2) == []  # equal bounds: the end of a page
         assert db.read_as_of("0" * 32, 1) is None
         assert db.read_as_of(a, 10**12).payload == b"v1"
         with pytest.raises(kerno.NotFoundError):
@@ -848,6 +853,12 @@ def test_reads_with_a_name_no_unit_or_relation_can_have_raise(tmp_path):
         assert db.query(unit_type="ghost") == []  # a valid name nothing holds: a real empty answer
         assert db.related(a, relation_type="ghost") == []
         assert db.relations("ghost") == []
+        for direction in ("out", "in"):
+            with pytest.raises(kerno.NotFoundError):  # an id no unit ever had is not "no relations"
+                db.related("0" * 32, direction=direction)
+        c = db.store("note", "c")
+        db.delete(c)
+        assert db.related(c) == []  # a deleted unit is known
         for bad in ("", "x" * 100, "bad\0name"):
             with pytest.raises(kerno.InvalidArgumentError):
                 db.related(a, relation_type=bad)

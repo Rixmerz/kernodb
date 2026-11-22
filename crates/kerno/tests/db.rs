@@ -819,6 +819,14 @@ fn a_range_or_name_nothing_can_match_is_an_error_not_an_empty_answer() {
     assert!(matches!(db.relations(Some("")), Err(Error::InvalidArgument(_))));
     assert!(matches!(db.relations(Some(&long)), Err(Error::InvalidArgument(_))));
     assert!(db.relations(Some("ghost")).unwrap().is_empty(), "a valid name nothing holds");
+    // An id no unit ever had is `NotFound`; a deleted unit is known and has no relations.
+    let never = kerno::UnitId([0xde; 16]);
+    assert!(matches!(db.related(never, Direction::Out, None), Err(Error::NotFound { .. })));
+    assert!(matches!(db.related(never, Direction::In, Some("about")), Err(Error::NotFound { .. })));
+    assert!(db.related(a, Direction::Out, None).unwrap().is_empty());
+    let gone = db.store("a", "y").unwrap();
+    db.delete(gone).unwrap();
+    assert!(db.related(gone, Direction::Out, None).unwrap().is_empty());
     // The type scan: a name no unit can have is refused, a valid one nothing holds answers [].
     assert!(matches!(db.query(&of_type("")), Err(Error::InvalidArgument(_))));
     assert!(matches!(db.query(&of_type(&"t".repeat(65))), Err(Error::InvalidArgument(_))));

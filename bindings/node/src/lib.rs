@@ -965,7 +965,8 @@ impl Db {
     }
 
     /// The relations that start at (`out`) or end at (`in`) the unit `id`, optionally of one
-    /// `relationType`. An invalid type name throws `INVALID_ARGUMENT`.
+    /// `relationType`. An invalid type name throws `INVALID_ARGUMENT`, and an id no unit ever had
+    /// throws `NOT_FOUND` (a deleted unit is known and has none).
     #[napi]
     pub fn related(
         &self,

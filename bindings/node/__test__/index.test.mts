@@ -565,6 +565,11 @@ test('reads with a name no unit or relation can have throw', () => {
   db.relate(a, b, 'about')
   assert.deepEqual(db.query({ unitType: 'ghost' }), []) // a valid name nothing holds: a real empty answer
   assert.deepEqual(db.related(a, 'out', 'ghost'), [])
+  assert.equal(codeOf(() => db.related(MISSING, 'out')), 'NOT_FOUND') // never existed: not "no relations"
+  assert.equal(codeOf(() => db.related(MISSING, 'in', 'about')), 'NOT_FOUND')
+  const gone = db.store('note', 'gone')
+  db.delete(gone)
+  assert.deepEqual(db.related(gone, 'out'), []) // a deleted unit is known
   assert.deepEqual(db.relations('ghost'), [])
   for (const bad of ['', 'x'.repeat(100), 'bad\0name']) {
     assert.equal(codeOf(() => db.related(a, 'out', bad)), 'INVALID_ARGUMENT')

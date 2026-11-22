@@ -991,10 +991,15 @@ impl Db {
     ///
     /// # Errors
     ///
-    /// `InvalidArgument` for an invalid `relation_type` name; the engine fails or the relation
-    /// index disagrees with the relations it indexes.
+    /// `NotFound` when no unit with this id ever existed (a deleted unit is known and has no
+    /// relations); `InvalidArgument` for an invalid `relation_type` name; the engine fails or the
+    /// relation index disagrees with the relations it indexes.
     pub fn related(&self, unit: UnitId, direction: Direction, relation_type: Option<&str>) -> Result<Vec<Relation>> {
-        self.units.snapshot()?.relations_of(unit, direction, relation_type)
+        let snap = self.units.snapshot()?;
+        if snap.get_unit(unit)?.is_none() {
+            return Err(Error::NotFound { unit });
+        }
+        snap.relations_of(unit, direction, relation_type)
     }
 
     /// Every live relation, optionally of one `relation_type`, in one scan of the relation

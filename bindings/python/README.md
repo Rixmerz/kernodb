@@ -216,11 +216,11 @@ never return wrong data.
 | `db.delete(id, cascade=False)` | `None`. Without `cascade`, a unit with relations raises `HasRelationsError` |
 | `db.relate(from, to, type, unique=False)` | the relation id. `unique` reuses an existing one |
 | `db.unrelate(relation_id)` | `None` |
-| `db.related(id, direction="out", relation_type=None)` | `list[Relation]` (`id`, `from_id`, `to_id`, `relation_type`) |
+| `db.related(id, direction="out", relation_type=None)` | `list[Relation]` (`id`, `from_id`, `to_id`, `relation_type`); `NotFoundError` for an id no unit ever had, `InvalidArgumentError` for an invalid type name |
 | `db.relations(relation_type=None)` | every live relation, in one scan. Use it instead of `related` per unit |
 | `db.query(unit_type=None, schema_version=None, lifecycle="active")` | `list[Unit]` that match, in id order. `lifecycle` is `"active"`, `"archived"`, `"deleted"` or `"all"`; the last three read every unit's head, so they cost time linear in the store |
 | `db.commit(ops, reason=None, actor=None, source=None, detailed=False)` | stored ids, or a dict with `detailed=True` |
-| `db.history(id, limit=100, with_payload=False, from_revision=None, to_revision=None, order="desc")` | `list[Revision]` (`revision`, `kind`, `commit_seq`, `created_at`, `lifecycle`, `schema_version`, `content_hash`, `payload`) in `[from_revision, to_revision)`, at most `limit`. A `from_revision` below `oldest_revision` raises `PrunedError`; an id no unit ever had raises `NotFoundError` |
+| `db.history(id, limit=100, with_payload=False, from_revision=None, to_revision=None, order="desc")` | `list[Revision]` (`revision`, `kind`, `commit_seq`, `created_at`, `lifecycle`, `schema_version`, `content_hash`, `payload`) in `[from_revision, to_revision)`, at most `limit`. A `from_revision` below `oldest_revision` raises `PrunedError`; an id no unit ever had raises `NotFoundError`; `from_revision` above `to_revision` raises `InvalidArgumentError` |
 | `db.compare(id, a, b)` | `Comparison` (`a`, `b`: the two `Revision`s with payloads; `same_content`). Takes the unit id, as the Rust call does |
 | `db.read_as_of(id, commit_seq)` | the `Revision` in force then, or `None` before creation. A sequence past the last commit reads now |
 | `db.set_fulltext(type, enabled)` | `None`. Keyword-index a type (off by default); its active units follow in the same commit |
