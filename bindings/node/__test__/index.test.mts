@@ -623,6 +623,11 @@ test('searchText restricted to unit types', () => {
     codeOf(() => db.hybridSearch({ vectors: { query: [1], items: [{ id: note, vector: [1] }] }, textTypes: ['note'] })),
     'INVALID_ARGUMENT', // textTypes without a keyword leg
   )
+  // a types list that is not an array of strings is INVALID_ARGUMENT, not a raw napi error
+  for (const bad of [[1], ['note', null], 'note', 5, {}]) {
+    assert.equal(codeOf(() => db.searchText('shared', { types: bad as never })), 'INVALID_ARGUMENT')
+    assert.equal(codeOf(() => db.hybridSearch({ text: 'shared', textTypes: bad as never })), 'INVALID_ARGUMENT')
+  }
 })
 
 // ---- hybridSearch ----

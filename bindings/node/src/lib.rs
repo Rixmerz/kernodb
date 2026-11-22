@@ -591,6 +591,51 @@ fn cell(name: &str, c: Cell) -> Result<Field> {
     c.0.ok_or_else(|| invalid(format!("field {name:?} is not a boolean, number, bigint, string or Buffer")))
 }
 
+/// A list of unit type names as JS gave it. `None` when it is not an array of strings: [`names`]
+/// then refuses it with `INVALID_ARGUMENT`, where napi alone would throw its own `StringExpected`.
+pub struct Names(Option<Vec<String>>);
+
+impl TypeName for Names {
+    fn type_name() -> &'static str {
+        "Names"
+    }
+
+    fn value_type() -> napi::ValueType {
+        napi::ValueType::Object
+    }
+}
+
+impl ValidateNapiValue for Names {
+    unsafe fn validate(
+        _env: napi::sys::napi_env,
+        _value: napi::sys::napi_value,
+    ) -> napi::Result<napi::sys::napi_value> {
+        Ok(std::ptr::null_mut())
+    }
+}
+
+impl FromNapiValue for Names {
+    unsafe fn from_napi_value(env: napi::sys::napi_env, value: napi::sys::napi_value) -> napi::Result<Self> {
+        // SAFETY: `env` and `value` come from napi for this call, as `from_napi_value` requires.
+        Ok(Names(unsafe { Vec::<String>::from_napi_value(env, value) }.ok()))
+    }
+}
+
+impl ToNapiValue for Names {
+    unsafe fn to_napi_value(env: napi::sys::napi_env, value: Self) -> napi::Result<napi::sys::napi_value> {
+        // SAFETY: as above; `Names` is only ever read from JS, and napi's object derive needs this impl.
+        unsafe { Option::<Vec<String>>::to_napi_value(env, value.0) }
+    }
+}
+
+/// The type names in `types`, or `INVALID_ARGUMENT` when JS gave something other than an array of
+/// strings.
+fn names(what: &str, types: Option<Names>) -> Result<Option<Vec<String>>> {
+    types
+        .map(|n| n.0.ok_or_else(|| invalid(format!("{what} must be an array of unit type names (strings)"))))
+        .transpose()
+}
+
 /// The result of `execute`: one `Unit` per alias in each row.
 #[napi(object)]
 pub struct QueryResult {
@@ -648,7 +693,8 @@ pub struct HybridQueryInput {
     pub text: Option<String>,
     /// Restricts the keyword leg to these unit types, with the errors of `searchText`. Throws
     /// `INVALID_ARGUMENT` without `text`. The other legs are not scoped to a type.
-    pub text_types: Option<Vec<String>>,
+    #[napi(ts_type = "Array<string>")]
+    pub text_types: Option<Names>,
     pub vectors: Option<VectorInput>,
     pub relations: Option<RelationsInput>,
     pub weights: Option<HybridWeightsInput>,
@@ -670,7 +716,8 @@ pub struct SearchTextOptions {
     /// Most hits, at least 1. Default 10.
     pub limit: Option<f64>,
     /// Search only these unit types (at least one). Default: every keyword-indexed type.
-    pub types: Option<Vec<String>>,
+    #[napi(ts_type = "Array<string>")]
+    pub types: Option<Names>,
 }
 
 /// One hit of `searchText`.
@@ -1172,6 +1219,7 @@ impl Db {
     pub fn search_text(&self, query: String, options: Option<SearchTextOptions>) -> Result<Vec<TextHit>> {
         let (limit, types) = options.map_or((None, None), |o| (o.limit, o.types));
         let limit = whole_u32("limit", limit)?.unwrap_or(10) as usize;
+        let types = names("options.types", types)?;
         let names: Option<Vec<&str>> = types.as_ref().map(|t| t.iter().map(String::as_str).collect());
         let hits = self.with(|db| db.search_text(&query, limit, names.as_deref()))?;
         Ok(hits.into_iter().map(|h| TextHit { id: h.unit.to_string(), score: h.score }).collect())
@@ -1308,7 +1356,8 @@ impl Db {
     pub fn hybrid_search(&self, query: HybridQueryInput) -> Result<Vec<HybridHit>> {
         let mut q = HybridQuery::new(whole_u32("limit", query.limit)?.unwrap_or(10) as usize);
         q.text = query.text.as_deref();
-        let text_types: Option<Vec<&str>> = query.text_types.as_ref().map(|t| t.iter().map(String::as_str).collect());
+        let text_types = names("textTypes", query.text_types)?;
+        let text_types: Option<Vec<&str>> = text_types.as_ref().map(|t| t.iter().map(String::as_str).collect());
         q.text_types = text_types.as_deref();
         if let Some(w) = &query.weights {
             q.weights = HybridWeights {
