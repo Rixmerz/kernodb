@@ -965,7 +965,7 @@ impl Db {
     }
 
     /// The relations that start at (`out`) or end at (`in`) the unit `id`, optionally of one
-    /// `relationType`.
+    /// `relationType`. An invalid type name throws `INVALID_ARGUMENT`.
     #[napi]
     pub fn related(
         &self,
@@ -980,14 +980,15 @@ impl Db {
     }
 
     /// Every live relation, optionally of one `relationType`, in one scan: much faster than
-    /// calling `related` for each unit.
+    /// calling `related` for each unit. An invalid type name throws `INVALID_ARGUMENT`.
     #[napi]
     pub fn relations(&self, relation_type: Option<String>) -> Result<Vec<Relation>> {
         let edges = self.with(|db| db.relations(relation_type.as_deref()))?;
         Ok(edges.into_iter().map(Relation::from).collect())
     }
 
-    /// Every active unit that matches `filter` (all of them without one), in id order.
+    /// Every active unit that matches `filter` (all of them without one), in id order. An
+    /// invalid `unitType` (empty or over 64 bytes) throws `INVALID_ARGUMENT`.
     #[napi]
     pub fn query(&self, filter: Option<UnitFilter>) -> Result<Vec<Unit>> {
         let filter = filter.unwrap_or(UnitFilter { unit_type: None, schema_version: None });

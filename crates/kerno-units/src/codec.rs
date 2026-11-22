@@ -151,6 +151,11 @@ pub enum Key {
     },
 }
 
+/// Valid `unit_type`: 1..=64 bytes. No unit of any other type can exist.
+pub fn valid_unit_type(t: &str) -> bool {
+    !t.is_empty() && t.len() <= MAX_UNIT_TYPE_LEN as usize
+}
+
 /// Valid `relation_type`: 1..=64 bytes of UTF-8 without NUL (the NUL ends the
 /// type inside an adjacency key, so a type that is a prefix of another never
 /// matches the other's entries).
@@ -357,7 +362,7 @@ impl Key {
     /// all of them, or only those of `schema_version`. `None` for a type no
     /// entry can have (empty or longer than 64 bytes).
     pub fn type_range(unit_type: &str, schema_version: Option<u32>) -> Option<(Vec<u8>, Vec<u8>)> {
-        if unit_type.is_empty() || unit_type.len() > MAX_UNIT_TYPE_LEN as usize {
+        if !valid_unit_type(unit_type) {
             return None;
         }
         let mut start = vec![TAG_IDX_TYPE, unit_type.len() as u8];

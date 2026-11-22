@@ -559,6 +559,23 @@ test('execute runs the query language and returns rows of units', () => {
   assert.equal(codeOf(() => db.execute('NOT A QUERY')), 'INVALID_ARGUMENT')
 })
 
+test('reads with a name no unit or relation can have throw', () => {
+  const a = db.store('note', 'a')
+  const b = db.store('note', 'b')
+  db.relate(a, b, 'about')
+  assert.deepEqual(db.query({ unitType: 'ghost' }), []) // a valid name nothing holds: a real empty answer
+  assert.deepEqual(db.related(a, 'out', 'ghost'), [])
+  assert.deepEqual(db.relations('ghost'), [])
+  for (const bad of ['', 'x'.repeat(100), 'bad\0name']) {
+    assert.equal(codeOf(() => db.related(a, 'out', bad)), 'INVALID_ARGUMENT')
+    assert.equal(codeOf(() => db.related(a, 'in', bad)), 'INVALID_ARGUMENT')
+    assert.equal(codeOf(() => db.relations(bad)), 'INVALID_ARGUMENT')
+  }
+  for (const bad of ['', 'x'.repeat(100)]) {
+    assert.equal(codeOf(() => db.query({ unitType: bad })), 'INVALID_ARGUMENT')
+  }
+})
+
 // ---- searchText ----
 
 test('searchText throws when it could never match, and answers [] when it merely finds nothing', () => {

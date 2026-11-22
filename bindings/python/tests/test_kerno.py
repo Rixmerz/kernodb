@@ -840,6 +840,26 @@ def test_search_text_restricted_to_types(tmp_path):
             db.hybrid_search(vector=[1.0], vectors={note: [1.0]}, text_types=["note"])
 
 
+def test_reads_with_a_name_no_unit_or_relation_can_have_raise(tmp_path):
+    with kerno.open(tmp_path / "db") as db:
+        a = db.store("note", "a")
+        b = db.store("note", "b")
+        db.relate(a, b, "about")
+        assert db.query(unit_type="ghost") == []  # a valid name nothing holds: a real empty answer
+        assert db.related(a, relation_type="ghost") == []
+        assert db.relations("ghost") == []
+        for bad in ("", "x" * 100, "bad\0name"):
+            with pytest.raises(kerno.InvalidArgumentError):
+                db.related(a, relation_type=bad)
+            with pytest.raises(kerno.InvalidArgumentError):
+                db.related(a, direction="in", relation_type=bad)
+            with pytest.raises(kerno.InvalidArgumentError):
+                db.relations(bad)
+        for bad in ("", "x" * 100):
+            with pytest.raises(kerno.InvalidArgumentError):
+                db.query(unit_type=bad)
+
+
 def test_distinct_cases_raise_distinct_error_classes(tmp_path):
     hierarchy = {
         kerno.UnknownTypeError: kerno.InvalidArgumentError,

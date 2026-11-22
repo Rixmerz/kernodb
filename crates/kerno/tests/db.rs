@@ -815,6 +815,14 @@ fn a_range_or_name_nothing_can_match_is_an_error_not_an_empty_answer() {
     assert!(matches!(db.related(a, Direction::Out, Some("")), Err(Error::InvalidArgument(_))));
     let long = "r".repeat(300);
     assert!(matches!(db.related(a, Direction::Out, Some(&long)), Err(Error::InvalidArgument(_))));
+    assert!(matches!(db.related(a, Direction::In, Some("a\0b")), Err(Error::InvalidArgument(_))));
+    assert!(matches!(db.relations(Some("")), Err(Error::InvalidArgument(_))));
+    assert!(matches!(db.relations(Some(&long)), Err(Error::InvalidArgument(_))));
+    assert!(db.relations(Some("ghost")).unwrap().is_empty(), "a valid name nothing holds");
+    // The type scan: a name no unit can have is refused, a valid one nothing holds answers [].
+    assert!(matches!(db.query(&of_type("")), Err(Error::InvalidArgument(_))));
+    assert!(matches!(db.query(&of_type(&"t".repeat(65))), Err(Error::InvalidArgument(_))));
+    assert!(db.query(&of_type("ghost")).unwrap().is_empty());
 }
 
 #[test]

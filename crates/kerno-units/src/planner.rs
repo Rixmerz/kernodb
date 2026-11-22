@@ -6,7 +6,7 @@
 //!
 //! | Step | Where |
 //! |---|---|
-//! | 1. Analyze and validate the query | Every [`UnitFilter`] and [`RelationQuery`] is valid: a condition no stored value can satisfy (an empty or over-long type) is a legitimate query with an empty answer, which both paths already give. The analysis is the typed shape of [`NormalizedQuery`] (E5-01). |
+//! | 1. Analyze and validate the query | Every [`UnitFilter`] and [`RelationQuery`] is valid: a type name no unit or relation can have (empty or over-long) is `InvalidArgument`, not an empty answer; a valid name nothing holds is a legitimate query with an empty answer. The analysis is the typed shape of [`NormalizedQuery`] (E5-01). |
 //! | 2. Generate the valid candidate plans | [`PlanPath::candidates_of`], each marked usable or not (I-23) |
 //! | 3. Estimate cost with the statistics at hand | [`costs`]: the index state and the entry count of `IDX_META`, and a bounded probe of the range the path would read |
 //! | 4. Choose | [`Decision::new`](crate::plan): the cheapest usable, the first in table order on a tie |
@@ -72,7 +72,7 @@ use std::time::Instant;
 
 use crate::assoc::{AssocError, AssocQuery, AssocResult};
 use crate::cache::{CacheEntry, CacheFallbackCause, CachedQuery, CachedResult, Dependencies, Lookup, Peek};
-use crate::codec::{Adjacency, Key, TAG_REL, TAG_REL_IN, TAG_REL_OUT};
+use crate::codec::{Adjacency, Key, TAG_REL, TAG_REL_IN, TAG_REL_OUT, valid_relation_type, valid_unit_type};
 use crate::db::{Relation, Unit, UnitSnapshot, context, corruption, key};
 use crate::error::UnitError;
 use crate::fingerprint::{FingerprintKey, NormalizedQuery, QueryKind, RelationQuery};
@@ -475,6 +475,10 @@ impl<E: Engine> UnitSnapshot<E> {
     /// snapshot (I-32). The outcome says which path answered, and whether it
     /// was the reference after the chosen one failed its check.
     pub fn query(&self, filter: &UnitFilter) -> Result<QueryOutcome, UnitError> {
+        // A type no unit can have never matches: refuse it instead of answering `[]`.
+        if filter.unit_type.as_deref().is_some_and(|t| !valid_unit_type(t)) {
+            return Err(UnitError::InvalidArgument("unit_type is not a valid unit type name".into()));
+        }
         let started = self.observer.begin();
         let outcome = self.answer_units(filter);
         if let Some(started) = started {
@@ -662,6 +666,9 @@ impl<E: Engine> UnitSnapshot<E> {
     /// [`UnitSnapshot::reference_relations_of`]'s on the same snapshot
     /// (I-32).
     pub fn query_relations(&self, query: &RelationQuery) -> Result<RelationsOutcome, UnitError> {
+        if query.relation_type.as_deref().is_some_and(|t| !valid_relation_type(t)) {
+            return Err(UnitError::InvalidArgument("relation_type is not a valid relation type name".into()));
+        }
         let started = self.observer.begin();
         let outcome = self.answer_relations(query);
         if let Some(started) = started {

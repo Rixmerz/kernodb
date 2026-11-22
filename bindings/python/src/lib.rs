@@ -575,7 +575,7 @@ impl Database {
     }
 
     /// The relations that start at (`direction="out"`) or end at (`"in"`) `id`, optionally of one
-    /// `relation_type`.
+    /// `relation_type`. An invalid type name raises `InvalidArgumentError`.
     #[pyo3(signature = (id, direction="out", relation_type=None))]
     fn related(
         &self,
@@ -623,7 +623,8 @@ impl Database {
         })
     }
 
-    /// The units in id order; `unit_type` and `schema_version` narrow them. `lifecycle` is
+    /// The units in id order; `unit_type` (an invalid name raises `InvalidArgumentError`) and
+    /// `schema_version` narrow them. `lifecycle` is
     /// "active" (the default), "archived", "deleted" or "all". A deleted unit has no payload.
     #[pyo3(signature = (unit_type=None, schema_version=None, lifecycle="active"))]
     fn query(

@@ -991,7 +991,8 @@ impl Db {
     ///
     /// # Errors
     ///
-    /// The engine fails or the relation index disagrees with the relations it indexes.
+    /// `InvalidArgument` for an invalid `relation_type` name; the engine fails or the relation
+    /// index disagrees with the relations it indexes.
     pub fn related(&self, unit: UnitId, direction: Direction, relation_type: Option<&str>) -> Result<Vec<Relation>> {
         self.units.snapshot()?.relations_of(unit, direction, relation_type)
     }
@@ -1002,8 +1003,12 @@ impl Db {
     ///
     /// # Errors
     ///
-    /// The engine fails or finds a relation record corrupt.
+    /// `InvalidArgument` for an invalid `relation_type` name; the engine fails or finds a
+    /// relation record corrupt.
     pub fn relations(&self, relation_type: Option<&str>) -> Result<Vec<Relation>> {
+        if relation_type.is_some_and(|t| !kerno_units::codec::valid_relation_type(t)) {
+            return Err(Error::InvalidArgument("relation_type is not a valid relation type name".into()));
+        }
         self.units.snapshot()?.reference_relations(|r| relation_type.is_none_or(|t| t == r.relation_type))
     }
 
@@ -1052,7 +1057,7 @@ impl Db {
     ///
     /// # Errors
     ///
-    /// The engine fails.
+    /// `InvalidArgument` for an invalid `unit_type` name (empty or over 64 bytes); the engine fails.
     pub fn query(&self, filter: &UnitFilter) -> Result<Vec<Unit>> {
         Ok(self.units.snapshot()?.query(filter)?.units)
     }

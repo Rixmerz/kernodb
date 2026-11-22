@@ -39,15 +39,18 @@ export declare class Db {
   unrelate(relationId: string): void
   /**
    * The relations that start at (`out`) or end at (`in`) the unit `id`, optionally of one
-   * `relationType`.
+   * `relationType`. An invalid type name throws `INVALID_ARGUMENT`.
    */
   related(id: string, direction: 'out' | 'in', relationType?: string | undefined | null): Array<Relation>
   /**
    * Every live relation, optionally of one `relationType`, in one scan: much faster than
-   * calling `related` for each unit.
+   * calling `related` for each unit. An invalid type name throws `INVALID_ARGUMENT`.
    */
   relations(relationType?: string | undefined | null): Array<Relation>
-  /** Every active unit that matches `filter` (all of them without one), in id order. */
+  /**
+   * Every active unit that matches `filter` (all of them without one), in id order. An
+   * invalid `unitType` (empty or over 64 bytes) throws `INVALID_ARGUMENT`.
+   */
   query(filter?: UnitFilter | undefined | null): Array<Unit>
   /**
    * Commits `ops` atomically, as one change set, and returns what it wrote. See `CommitOp`

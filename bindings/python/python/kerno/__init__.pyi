@@ -161,20 +161,29 @@ class Database:
         direction: Literal["out", "in"] = "out",
         relation_type: str | None = None,
     ) -> list[Relation]:
-        """Relations that start at (`"out"`) or end at (`"in"`) the unit."""
+        """Relations that start at (`"out"`) or end at (`"in"`) the unit.
+
+        An invalid `relation_type` name (empty, over 64 bytes, with a NUL) raises `InvalidArgumentError`.
+        """
     def query(
         self,
         unit_type: str | None = None,
         schema_version: int | None = None,
         lifecycle: Literal["active", "archived", "deleted", "all"] = "active",
     ) -> list[Unit]:
-        """Units in id order, narrowed by type, schema version and lifecycle (active by default)."""
+        """Units in id order, narrowed by type, schema version and lifecycle (active by default).
+
+        An invalid `unit_type` name (empty or over 64 bytes) raises `InvalidArgumentError`.
+        """
     def update(self, id: str, payload: str | bytes, if_changed: bool = False) -> bool:
         """Replace the payload of `id`; returns whether a revision was written."""
     def delete(self, id: str, cascade: bool = False) -> None:
         """Delete `id` with a tombstone revision (and its relations with `cascade`)."""
     def relations(self, relation_type: str | None = None) -> list[Relation]:
-        """Every live relation (optionally of one type), in one scan."""
+        """Every live relation (optionally of one type), in one scan.
+
+        An invalid `relation_type` name raises `InvalidArgumentError`.
+        """
     def fulltext(self, unit_type: str) -> bool:
         """Whether the type is keyword-indexed (off by default)."""
     def set_fulltext(self, unit_type: str, enabled: bool) -> None:
