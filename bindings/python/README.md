@@ -227,12 +227,11 @@ Type stubs ship with the package (`py.typed`).
 
 ## Retention and the oldest revision
 
-Retention (dropping old revisions) is not configurable from Python. The Rust `Config` that
-`open` fills has no retention setting: a policy is applied by calling `run_retention` on the
-units layer, and that call has no Python binding. A database pruned by another tool (the Rust
-API) keeps working here. Before reading an old revision, compare it with
-`db.read(id).oldest_revision`, or catch `PrunedError`. A unit that was never pruned has
-`oldest_revision == 1`.
+Retention (dropping old revisions) is a call, not a setting: `db.run_retention(by_type={"note": {"keep_last": 5}})`
+prunes now, and the policy is not stored, so pass it each time you prune. Afterwards
+`read_as_of`, `history(from_revision=)` and `compare` raise `PrunedError` for a pruned revision.
+Before reading an old revision, compare it with `db.read(id).oldest_revision`, or catch
+`PrunedError`. A unit that was never pruned has `oldest_revision == 1`.
 
 ## Errors
 

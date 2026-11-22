@@ -254,7 +254,7 @@ impl From<kerno::units::Revision> for Revision {
 #[napi(object)]
 pub struct UnitFilter {
     pub unit_type: Option<String>,
-    pub schema_version: Option<u32>,
+    pub schema_version: Option<f64>,
 }
 
 #[napi(object)]
@@ -263,7 +263,7 @@ pub struct OpenOptions {
     /// Default `false`.
     pub read_only: Option<bool>,
     /// The most operations one `commit` may hold. Default 10,000.
-    pub max_batch_ops: Option<u32>,
+    pub max_batch_ops: Option<f64>,
 }
 
 #[napi(object)]
@@ -287,7 +287,7 @@ pub struct RelateOptions {
 #[napi(object)]
 pub struct HistoryOptions {
     /// The newest `limit` revisions (at least 1). Default 100.
-    pub limit: Option<u32>,
+    pub limit: Option<f64>,
     /// Read and verify each revision's content. Default `false`.
     pub with_payload: Option<bool>,
     /// The oldest revision to list, inclusive. Default: the oldest kept. Below it throws `PRUNED`.
@@ -332,11 +332,11 @@ pub struct CommitOp {
     pub if_changed: Option<bool>,
     pub cascade: Option<bool>,
     /// `restore`: the revision number to copy.
-    pub revision: Option<i64>,
+    pub revision: Option<f64>,
     #[napi(ts_type = "string | number")]
-    pub from: Option<Either<String, u32>>,
+    pub from: Option<Either<String, f64>>,
     #[napi(ts_type = "string | number")]
-    pub to: Option<Either<String, u32>>,
+    pub to: Option<Either<String, f64>>,
     pub relation_type: Option<String>,
     pub unique: Option<bool>,
     /// `unrelate`: the relation to remove.
@@ -460,6 +460,12 @@ fn whole(what: &str, n: f64) -> Result<u64> {
     }
 }
 
+/// Like `whole`, for an optional option that the engine takes as a `u32`.
+fn whole_u32(what: &str, n: Option<f64>) -> Result<Option<u32>> {
+    n.map(|n| whole(what, n).and_then(|w| u32::try_from(w).map_err(|_| invalid(format!("{what} is too large: {n}")))))
+        .transpose()
+}
+
 /// What `verify` found. A damaged store is reported (`clean: false`), not thrown.
 #[napi(object)]
 pub struct VerifyReport {
@@ -529,17 +535,17 @@ pub struct RelationsInput {
     #[napi(ts_type = "'out' | 'in' | 'both'")]
     pub direction: Option<String>,
     /// Most hops from a seed, 1 to 4. Default 2.
-    pub max_depth: Option<u32>,
+    pub max_depth: Option<f64>,
     /// Most relation entries examined, up to 100,000. Default 10,000.
-    pub visit_budget: Option<u32>,
+    pub visit_budget: Option<f64>,
 }
 
 /// Leg weights, 0 to 1000; 0 switches a leg off. Default 1 each.
 #[napi(object)]
 pub struct HybridWeightsInput {
-    pub keyword: Option<u32>,
-    pub vector: Option<u32>,
-    pub relations: Option<u32>,
+    pub keyword: Option<f64>,
+    pub vector: Option<f64>,
+    pub relations: Option<f64>,
 }
 
 /// One query over keywords (BM25), vectors and relations, fused by weighted reciprocal rank
@@ -556,11 +562,11 @@ pub struct HybridQueryInput {
     #[napi(ts_type = "'rrf' | 'graph_gated'")]
     pub fusion: Option<String>,
     /// The `k` of the fusion. Default 60.
-    pub rrf_k: Option<u32>,
+    pub rrf_k: Option<f64>,
     /// Units each leg contributes, 1 to 1000. Default 100.
-    pub candidates: Option<u32>,
+    pub candidates: Option<f64>,
     /// Hits returned, 1 to 1000. Default 10.
-    pub limit: Option<u32>,
+    pub limit: Option<f64>,
 }
 
 /// The 1-based rank a unit held in each leg that found it.
@@ -663,10 +669,10 @@ fn field_type(name: &str) -> Result<FieldType> {
     })
 }
 
-fn endpoint(v: Option<Either<String, u32>>, what: &str) -> Result<Endpoint> {
+fn endpoint(v: Option<Either<String, f64>>, what: &str) -> Result<Endpoint> {
     match v {
         Some(Either::A(hex)) => Ok(Endpoint::Unit(unit_id(&hex)?)),
-        Some(Either::B(n)) => Ok(Endpoint::Stored(n as usize)),
+        Some(Either::B(n)) => Ok(Endpoint::Stored(whole(what, n)? as usize)),
         None => Err(invalid(format!("relate: `{what}` is missing"))),
     }
 }
@@ -711,8 +717,7 @@ fn add_op(db: &Db, batch: &mut Batch, op: CommitOp) -> Result<()> {
             batch.unarchive(id(&op)?);
         }
         "restore" => {
-            let rev = need(op.revision, name, "revision")?;
-            let rev = u64::try_from(rev).map_err(|_| invalid("op \"restore\": `revision` must not be negative"))?;
+            let rev = whole("revision", need(op.revision, name, "revision")?)?;
             batch.restore(id(&op)?, rev);
         }
         "relate" => {
@@ -765,7 +770,7 @@ pub fn open(path: String, options: Option<OpenOptions>) -> Result<Db> {
     } else {
         Config { allow_unverified_platform: true, ..Config::default() }
     };
-    let max_ops = options.max_batch_ops.map_or(kerno::units::DEFAULT_MAX_CHANGESET_OPS, |n| n as usize);
+    let max_ops = whole_u32("maxBatchOps", options.max_batch_ops)?.map_or(kerno::units::DEFAULT_MAX_CHANGESET_OPS, |n| n as usize);
     let db = kerno::Db::open_with_limits(path, config, max_ops).map_err(engine_error)?;
     Ok(Db { inner: RwLock::new(Some(db)) })
 }
@@ -873,7 +878,7 @@ impl Db {
     #[napi]
     pub fn query(&self, filter: Option<UnitFilter>) -> Result<Vec<Unit>> {
         let filter = filter.unwrap_or(UnitFilter { unit_type: None, schema_version: None });
-        let filter = kerno::UnitFilter { unit_type: filter.unit_type, schema_version: filter.schema_version };
+        let filter = kerno::UnitFilter { unit_type: filter.unit_type, schema_version: whole_u32("schemaVersion", filter.schema_version)? };
         let units = self.with(|db| db.query(&filter))?;
         Ok(units.into_iter().map(Unit::from).collect())
     }
@@ -908,7 +913,7 @@ impl Db {
     pub fn history(&self, id: String, options: Option<HistoryOptions>) -> Result<Vec<Revision>> {
         let id = unit_id(&id)?;
         let options = options.unwrap_or(HistoryOptions { limit: None, with_payload: None, from_revision: None });
-        let limit = options.limit.unwrap_or(100) as usize;
+        let limit = whole_u32("limit", options.limit)?.unwrap_or(100) as usize;
         if limit == 0 {
             return Err(invalid("limit must be at least 1"));
         }
@@ -927,9 +932,9 @@ impl Db {
     /// sequence after the last commit reads the current state. Throws `PRUNED` when retention
     /// removed that revision.
     #[napi]
-    pub fn read_as_of(&self, id: String, commit_seq: i64) -> Result<Option<Revision>> {
+    pub fn read_as_of(&self, id: String, commit_seq: f64) -> Result<Option<Revision>> {
         let id = unit_id(&id)?;
-        let seq = u64::try_from(commit_seq).map_err(|_| invalid("commitSeq must not be negative"))?;
+        let seq = whole("commitSeq", commit_seq)?;
         match self.with(|db| db.read_as_of(id, seq))? {
             UnitAt::Absent => Ok(None),
             UnitAt::Present(r) | UnitAt::DeletedAt(r) => Ok(Some(Revision::from(r))),
@@ -1155,13 +1160,13 @@ impl Db {
     // vector index (HNSW) needs its own handle if a caller has more than ~100k vectors.
     #[napi]
     pub fn hybrid_search(&self, query: HybridQueryInput) -> Result<Vec<HybridHit>> {
-        let mut q = HybridQuery::new(query.limit.unwrap_or(10) as usize);
+        let mut q = HybridQuery::new(whole_u32("limit", query.limit)?.unwrap_or(10) as usize);
         q.text = query.text.as_deref();
         if let Some(w) = &query.weights {
             q.weights = HybridWeights {
-                keyword: w.keyword.unwrap_or(1),
-                vector: w.vector.unwrap_or(1),
-                graph: w.relations.unwrap_or(1),
+                keyword: whole_u32("weights.keyword", w.keyword)?.unwrap_or(1),
+                vector: whole_u32("weights.vector", w.vector)?.unwrap_or(1),
+                graph: whole_u32("weights.relations", w.relations)?.unwrap_or(1),
             };
         }
         match query.fusion.as_deref() {
@@ -1171,10 +1176,10 @@ impl Db {
                 return Err(invalid(format!("invalid fusion {other:?}: expected \"rrf\" or \"graph_gated\"")));
             }
         }
-        if let Some(k) = query.rrf_k {
+        if let Some(k) = whole_u32("rrfK", query.rrf_k)? {
             q.rrf_k = k;
         }
-        if let Some(c) = query.candidates {
+        if let Some(c) = whole_u32("candidates", query.candidates)? {
             q.candidates = c as usize;
         }
         if let Some(r) = &query.relations {
@@ -1182,7 +1187,12 @@ impl Db {
             // The leg's own limit bounds its walk; `candidates` bounds what it contributes.
             let limit = q.candidates.min(kerno::units::MAX_ASSOC_LIMIT);
             let mut g =
-                AssocQuery::new(seeds, r.max_depth.unwrap_or(2), limit, u64::from(r.visit_budget.unwrap_or(10_000)));
+                AssocQuery::new(
+                seeds,
+                whole_u32("maxDepth", r.max_depth)?.unwrap_or(2),
+                limit,
+                u64::from(whole_u32("visitBudget", r.visit_budget)?.unwrap_or(10_000)),
+            );
             g.relation_types = r.types.as_ref().map(|t| t.iter().cloned().collect::<BTreeSet<_>>());
             g.direction = match r.direction.as_deref() {
                 None | Some("both") => AssocDirection::Both,

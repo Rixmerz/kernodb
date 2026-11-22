@@ -67,7 +67,7 @@ Stages follow the [roadmap](docs/roadmap/README.md):
 | [Python bindings](bindings/python/README.md) | Install from PyPI, concepts, API, errors, performance advice and limits for the `kernodb` package |
 | [Bindings coverage](docs/bindings-coverage.md) | Every public call of the `kerno` facade, and whether the Python and Node bindings expose it, under which name |
 | [Kerno as a history next to another database](docs/guides/history-alongside.md) | Keep a main database as the source of truth and mirror it into Kerno: revisions, tombstones, as-of reads, retention, readers with `refresh` |
-| [One unit per entity](docs/guides/one-unit-per-entity.md) | Recipe: a unique field, `find` by a logical key, and the upsert in two steps |
+| [One unit per entity](docs/guides/one-unit-per-entity.md) | Recipe: a unique field, `find` by a logical key, and `upsert` by it |
 | [Kerno vs SQLite from Python](docs/testing/python-vs-sqlite.md) | The same workloads on both engines, the profile of the write path, and the improvement paths |
 | [SAD](docs/architecture/SAD.md) | Reference architecture and implementation plan (version 0.3.0) |
 | [ADR index](docs/adr/README.md) | Architecture decisions and their status |

@@ -698,6 +698,43 @@ test('open with maxBatchOps caps the operations of one commit', () => {
   assert.equal(codeOf(() => db.commit(ops(3))), 'INVALID_ARGUMENT')
 })
 
+test('a numeric option that is a fraction, a negative or NaN is refused, never truncated or wrapped', () => {
+  const a = db.store('note', 'v1')
+  db.update(a, 'v2')
+  const b = db.store('note', 'x')
+  // 2**33 is a whole number: valid for a sequence, too big for a 32-bit option.
+  for (const n of [1.5, -1, NaN, Infinity, 2 ** 33]) {
+    const wide = n === 2 ** 33
+    const why = String(n)
+    assert.equal(codeOf(() => db.history(a, { limit: n })), 'INVALID_ARGUMENT', `history limit ${why}`)
+    if (!wide) assert.equal(codeOf(() => db.readAsOf(a, n)), 'INVALID_ARGUMENT', `readAsOf ${why}`)
+    assert.equal(codeOf(() => db.query({ schemaVersion: n })), 'INVALID_ARGUMENT', `schemaVersion ${why}`)
+    assert.equal(codeOf(() => open(`${dir}-never`, { maxBatchOps: n })), 'INVALID_ARGUMENT', `maxBatchOps ${why}`)
+    if (!wide) assert.equal(codeOf(() => db.commit([{ op: 'restore', id: a, revision: n }])), 'INVALID_ARGUMENT', `restore ${why}`)
+    assert.equal(
+      codeOf(() => db.commit([{ op: 'store', unitType: 'n', payload: 'x' }, { op: 'relate', from: 0, to: n, relationType: 'r' }])),
+      'INVALID_ARGUMENT',
+      `relate end ${why}`,
+    )
+    for (const key of ['limit', 'rrfK', 'candidates'] as const) {
+      assert.equal(codeOf(() => db.hybridSearch({ text: 'x', [key]: n })), 'INVALID_ARGUMENT', `hybrid ${key} ${why}`)
+    }
+    assert.equal(codeOf(() => db.hybridSearch({ text: 'x', weights: { keyword: n } })), 'INVALID_ARGUMENT', `weight ${why}`)
+    assert.equal(
+      codeOf(() => db.hybridSearch({ relations: { seeds: [b], maxDepth: n } })),
+      'INVALID_ARGUMENT',
+      `maxDepth ${why}`,
+    )
+    assert.equal(
+      codeOf(() => db.hybridSearch({ relations: { seeds: [b], visitBudget: n } })),
+      'INVALID_ARGUMENT',
+      `visitBudget ${why}`,
+    )
+  }
+  // A whole number is still accepted, and nothing was written by the refusals.
+  assert.equal(db.history(a, { limit: 1 }).length, 1)
+  assert.equal(db.readAsOf(a, db.lastCommitSeq())?.revision, 2)
+
 function defineUsers(): void {
   db.defineSchema('user', [
     { name: 'email', type: 'text', unique: true },
