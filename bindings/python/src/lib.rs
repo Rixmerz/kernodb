@@ -20,6 +20,7 @@ use kerno::{
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyValueError};
 use pyo3::prelude::*;
+use pyo3::pybacked::PyBackedBytes;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString};
 
 create_exception!(_kerno, KernoError, PyException, "Any failure reported by the Kerno engine.");
@@ -198,7 +199,8 @@ fn to_field(v: &Bound<'_, PyAny>) -> PyResult<FieldValue> {
         Ok(FieldValue::Float(v.extract()?))
     } else if v.is_instance_of::<PyString>() {
         Ok(FieldValue::Text(v.extract()?))
-    } else if let Ok(b) = v.extract::<Vec<u8>>() {
+    } else if let Ok(Payload(b)) = v.extract::<Payload>() {
+        // Only byte buffers: a list or tuple of small ints is not bytes.
         Ok(FieldValue::Bytes(b))
     } else {
         Err(InvalidArgumentError::new_err(format!(
@@ -294,10 +296,27 @@ fn parse_id(hex: &str) -> PyResult<[u8; 16]> {
 }
 
 /// What `store` accepts as content: text is stored as its UTF-8 bytes.
-#[derive(FromPyObject)]
-enum Payload {
-    Text(String),
-    Bytes(Vec<u8>),
+struct Payload(Vec<u8>);
+
+impl<'a, 'py> FromPyObject<'a, 'py> for Payload {
+    type Error = PyErr;
+
+    /// A `str`, or anything that exposes a byte buffer (`bytes`, `bytearray`, `memoryview`).
+    /// A list of ints is not bytes; every other value is an `InvalidArgumentError`, never a `TypeError`.
+    fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+        if obj.is_instance_of::<PyString>() {
+            return Ok(Payload(obj.extract::<String>()?.into_bytes()));
+        }
+        // The buffer API is not in the stable ABI, so a memoryview is copied out with `tobytes()`.
+        let bytes = if obj.get_type().name()?.extract::<String>()? == "memoryview" {
+            obj.call_method0("tobytes")?
+        } else {
+            obj.to_owned().into_any().to_owned()
+        };
+        bytes.extract::<PyBackedBytes>().map(|b| Payload(b.to_vec())).map_err(|_| {
+            InvalidArgumentError::new_err("a payload is a str or a bytes-like object (bytes, bytearray, memoryview)")
+        })
+    }
 }
 
 /// `{"id": hex, "outcome": "created" | "updated" | "unchanged"}`.
@@ -324,10 +343,7 @@ fn lifecycle_name(l: Lifecycle) -> &'static str {
 }
 
 fn into_bytes(p: Payload) -> Vec<u8> {
-    match p {
-        Payload::Text(s) => s.into_bytes(),
-        Payload::Bytes(b) => b,
-    }
+    p.0
 }
 
 /// One revision of a unit, from `history` or `read_as_of`.
@@ -1112,6 +1128,9 @@ impl Database {
             Ok(UnitId(parse_id(&op.get_item(i)?.extract::<String>()?)?))
         };
         for op in &ops {
+            if op.is_empty() {
+                return Err(PyValueError::new_err("unknown or malformed batch op: ()"));
+            }
             let name: String = op.get_item(0)?.extract()?;
             match (name.as_str(), op.len()) {
                 ("store", 3) => {
@@ -1204,9 +1223,6 @@ impl Database {
         order: &str,
     ) -> PyResult<Vec<Revision>> {
         let id = UnitId(parse_id(id)?);
-        if limit == 0 {
-            return Err(PyValueError::new_err("limit must be at least 1"));
-        }
         let order = match order {
             "desc" => Order::Desc,
             "asc" => Order::Asc,

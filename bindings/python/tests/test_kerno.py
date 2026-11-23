@@ -82,7 +82,7 @@ def test_bad_direction_is_value_error(db: kerno.Database) -> None:
 
 
 def test_payload_must_be_str_or_bytes(db: kerno.Database) -> None:
-    with pytest.raises(TypeError):
+    with pytest.raises(kerno.InvalidArgumentError):
         db.store("note", 42)  # type: ignore[arg-type]
 
 

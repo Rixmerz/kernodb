@@ -3,7 +3,10 @@ from types import TracebackType
 from typing import Literal
 
 __all__ = [
+    "BadEndpointError",
+    "ChangeSetTooLargeError",
     "CorruptionError",
+    "DatabaseNotFoundError",
     "Database",
     "DeletedError",
     "HasRelationsError",

@@ -46,7 +46,7 @@ On Windows: `(Get-FileHash kerno-v1.0.0-alpha.1-x86_64-pc-windows-msvc.zip).Hash
 
 ## Libraries: crates.io, PyPI and npm
 
-The libraries are versioned with the binaries: `[workspace.package] version` in `Cargo.toml` (1.0.0-alpha.1), the `version` of the four path entries `kerno-core`, `kerno-storage`, `kerno-units` and `kerno` in `[workspace.dependencies]`, `version` in `bindings/python/Cargo.toml` (the wheel takes it from there) and in `bindings/node/Cargo.toml` and `bindings/node/package.json`. Change them together, then refresh the lock files (`cargo metadata --format-version 1 > /dev/null` at the root, in `bindings/python` and in `bindings/node`) and rebuild the Node module (`pnpm build` in `bindings/node`), whose generated `index.js` carries the version.
+The libraries are versioned with the binaries: `[workspace.package] version` in `Cargo.toml` (1.0.0-alpha.1), the `version` of the four path entries `kerno-core`, `kerno-storage`, `kerno-units` and `kerno` in `[workspace.dependencies]`, `version` in `bindings/python/Cargo.toml` (the wheel takes it from there) and in `bindings/node/Cargo.toml` and `bindings/node/package.json`. Change them together, then refresh the lock files (`cargo metadata --format-version 1 > /dev/null` at the root, in `bindings/python` and in `bindings/node`) and rebuild the Node module (`pnpm build` in `bindings/node`), whose generated `bindings/node/binding.js` carries the version.
 
 **crates.io.** Only `kerno-core`, `kerno-storage`, `kerno-units` and `kerno` set `publish = true`; the workspace default stays `false`. The CI job `publish-dry-run` packages and builds the four on every push:
 

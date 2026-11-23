@@ -522,9 +522,14 @@ impl Db {
     ///
     /// # Errors
     ///
-    /// As [`Db::open_with`]; `InvalidArgument` when `max_changeset_ops` is 0 or above the
-    /// layer's maximum (2^20).
+    /// As [`Db::open_with`]; `InvalidArgument` when `path` is empty, or `max_changeset_ops` is 0 or
+    /// above the layer's maximum (2^20).
     pub fn open_with_limits(path: impl AsRef<Path>, config: Config, max_changeset_ops: usize) -> Result<Self> {
+        // An empty path names the current directory to the file system calls below: refuse it before
+        // they create a database (a LOCK and a MANIFEST) in the working directory.
+        if path.as_ref().as_os_str().is_empty() {
+            return Err(Error::InvalidArgument("the database path is empty".into()));
+        }
         let mut layer = UnitConfig { max_changeset_ops, ..UnitConfig::default() };
         // The layer reports `CommitInfo::durable` from this, so it must match the engine's.
         layer.engine.durability = config.durability;

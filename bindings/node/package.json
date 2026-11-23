@@ -11,7 +11,7 @@
   },
   "main": "index.js",
   "types": "index.d.ts",
-  "files": ["index.js", "index.d.ts", "LICENSE-MIT", "LICENSE-APACHE"],
+  "files": ["index.js", "binding.js", "index.d.ts", "LICENSE-MIT", "LICENSE-APACHE"],
   "publishConfig": { "access": "public" },
   "engines": { "node": ">= 20" },
   "packageManager": "pnpm@10.15.1",
@@ -26,8 +26,8 @@
     ]
   },
   "scripts": {
-    "build": "napi build --platform --release",
-    "build:debug": "napi build --platform",
+    "build": "napi build --platform --release --js binding.js",
+    "build:debug": "napi build --platform --js binding.js",
     "test": "tsc --noEmit && node --test \"__test__/*.test.mts\"",
     "artifacts": "napi artifacts",
     "prepublishOnly": "napi prepublish -t npm --no-gh-release"

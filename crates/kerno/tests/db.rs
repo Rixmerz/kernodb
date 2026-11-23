@@ -750,6 +750,26 @@ fn a_lookup_that_can_never_match_is_an_error_not_an_empty_answer() {
 }
 
 #[test]
+fn query_by_a_type_name_no_unit_can_have_is_invalid_argument_on_every_planner_path() {
+    let dir = TempDir::new();
+    let db = Db::open(dir.db()).unwrap();
+    db.store("note", "x").unwrap();
+    assert_eq!(db.query(&of_type(&"t".repeat(64))).unwrap().len(), 0, "a 64-byte name is valid and has no units");
+    for name in [String::new(), "t".repeat(65)] {
+        assert!(matches!(db.query(&of_type(&name)), Err(Error::InvalidArgument(_))), "{} bytes", name.len());
+    }
+}
+
+#[test]
+fn open_refuses_an_empty_path_and_creates_nothing_in_the_working_directory() {
+    let before: Vec<_> = std::fs::read_dir(".").unwrap().map(|e| e.unwrap().file_name()).collect();
+    assert!(matches!(Db::open(""), Err(Error::InvalidArgument(_))));
+    assert!(matches!(Db::open_with("", Config::default()), Err(Error::InvalidArgument(_))));
+    let after: Vec<_> = std::fs::read_dir(".").unwrap().map(|e| e.unwrap().file_name()).collect();
+    assert_eq!(before.len(), after.len(), "no LOCK or MANIFEST appeared in {:?}", std::env::current_dir());
+}
+
+#[test]
 fn search_text_refuses_a_search_that_could_never_match() {
     let dir = TempDir::new();
     let db = Db::open(dir.db()).unwrap();
