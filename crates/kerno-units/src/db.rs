@@ -583,6 +583,7 @@ impl<E: TxnEngine> UnitDb<E> {
             schema_ops: 0,
             type_option_ops: 0,
             substring_ops: 0,
+            substring_pending: Default::default(),
             members: Vec::new(),
             relation_ops: 0,
             touched: BTreeSet::new(),
@@ -892,10 +893,9 @@ impl<E: Engine> UnitSnapshot<E> {
             Key::RelationOut { unit: record.from, relation_type: record.relation_type.clone(), edge: id },
             Key::RelationIn { unit: record.to, relation_type: record.relation_type.clone(), edge: id },
         );
-        for (side, dir, k, other) in [
-            ("REL_OUT", Direction::Out, out_key, record.to),
-            ("REL_IN", Direction::In, in_key, record.from),
-        ] {
+        for (side, dir, k, other) in
+            [("REL_OUT", Direction::Out, out_key, record.to), ("REL_IN", Direction::In, in_key, record.from)]
+        {
             if scanned == Some(dir) {
                 continue;
             }
@@ -1073,6 +1073,9 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     /// Changes of a type's `SUBSTRING` option so far (ADR-0025): they raise
     /// the mark to layer version 8.
     pub(crate) substring_ops: usize,
+    /// Trigram index changes planned so far, written at commit by
+    /// [`ChangeSet::flush_substring`] (ADR-0025).
+    pub(crate) substring_pending: crate::substring::PendingGrams,
     members: Vec<(RevisionId, RevisionKind)>,
     /// Relations created or deleted so far (E4-02): they are not members, but
     /// they count against `max_changeset_ops` and make the change set non-empty.
@@ -1286,15 +1289,17 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         let text = self.plan_fulltext(plan.rev.unit, &plan.writes)?;
         // So do its trigram entries, when its type is searched by substring.
         let grams = self.plan_substring(plan.rev.unit, &plan.writes)?;
+        let unit = plan.rev.unit;
         // The schema check and the user index entries of the unit follow it
         // too; a unit the schema refuses is refused here, before any write.
         let fields = self.plan_schema(plan.rev.unit, &plan.writes)?;
         if let Some(l) = live {
             self.put_live(l)?;
         }
-        for w in plan.writes.into_iter().chain(derived).chain(text).chain(grams).chain(fields) {
+        for w in plan.writes.into_iter().chain(derived).chain(text).chain(fields) {
             self.write_owned(w)?;
         }
+        self.stage_substring(unit, grams);
         self.touched.insert(plan.rev.unit);
         self.members.push((plan.rev, plan.kind));
         Ok(plan.rev.rev)
@@ -1795,6 +1800,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
     pub fn commit(mut self) -> Result<CommitInfo, UnitError> {
         self.txn()?;
         self.flush_counts()?;
+        self.flush_substring()?;
         let durable = self.db.cfg.engine.durability == Durability::Sync;
         if self.members.is_empty()
             && !self.maintenance

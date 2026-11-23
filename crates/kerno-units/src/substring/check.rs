@@ -1,9 +1,11 @@
 //! The self-check of the trigram index, run by `verify_units` (UNIT-52).
 //!
 //! The verifier walks every key once. It hands each head payload it meets
-//! (`Active` head revision) to [`Check::expect`] and each trigram entry to
-//! [`Check::record`]; after the walk [`Check::findings`] compares, unit by
-//! unit, the entries the payload calls for with the entries the store has.
+//! (`Active` head revision) to [`Check::expect`] and each block of a posting
+//! list to [`Check::record`]; after the walk [`Check::findings`] compares,
+//! unit by unit, the trigrams the payload calls for with those the blocks
+//! hold. The walk is in key order, so `record` also checks that the blocks of
+//! a list hold consecutive ranges, each within its bound.
 //! A unit is compared by the number of its trigrams and an order-free digest
 //! of them, not by the trigrams themselves, so the check keeps a few bytes
 //! per unit whatever the size of its payload.
@@ -13,7 +15,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use super::{Gram, TAG_TRIGRAM, check_value, decode_key, grams};
+use super::{Gram, TAG_TRIGRAM, decode_block, decode_key, grams};
 use crate::error::DecodeError;
 use crate::types::UnitId;
 
@@ -42,6 +44,10 @@ pub(crate) struct Check {
     /// What the head payload of each `Active` unit calls for, whatever its type.
     expected: HashMap<UnitId, Digest>,
     found: BTreeMap<UnitId, Found>,
+    /// The list key and bound of the last block recorded (`None`: the tail).
+    last: Option<(Vec<u8>, Option<UnitId>)>,
+    /// Blocks out of their range: `(key, detail)`.
+    misplaced: Vec<(Vec<u8>, String)>,
     /// A record did not decode: that is a structure finding already, and the
     /// comparison would only repeat it.
     damaged: bool,
@@ -62,19 +68,32 @@ impl Check {
         self.expected.insert(unit, digest);
     }
 
-    /// One trigram entry of the walk.
+    /// One block of the walk, met in key order.
     pub(crate) fn record(&mut self, k: &[u8], v: &[u8]) -> Result<(), DecodeError> {
-        let r = decode_key(k).and_then(|decoded| check_value(v).map(|()| decoded));
+        let r = decode_key(k).and_then(|decoded| decode_block(v).map(|units| (decoded, units)));
         self.damaged |= r.is_err();
-        let (unit_type, gram, unit) = r?;
-        let found = self.found.entry(unit).or_insert_with(|| Found {
-            key: k.to_vec(),
-            unit_type: unit_type.clone(),
-            digest: (0, 0),
-            two_types: false,
-        });
-        found.two_types |= found.unit_type != unit_type;
-        add(&mut found.digest, gram);
+        let ((unit_type, gram, bound), units) = r?;
+        // The list key is the block key without its bound.
+        let list = k[..2 + unit_type.len() + 3].to_vec();
+        let floor = match self.last.take() {
+            Some((l, b)) if l == list => b,
+            _ => None,
+        };
+        let (lowest, highest) = (units[0], units[units.len() - 1]);
+        if floor.is_some_and(|f| lowest <= f) || bound.is_some_and(|b| highest > b) {
+            self.misplaced.push((k.to_vec(), "a trigram block holds a unit outside its range".into()));
+        }
+        self.last = Some((list, bound));
+        for unit in units {
+            let found = self.found.entry(unit).or_insert_with(|| Found {
+                key: k.to_vec(),
+                unit_type: unit_type.clone(),
+                digest: (0, 0),
+                two_types: false,
+            });
+            found.two_types |= found.unit_type != unit_type;
+            add(&mut found.digest, gram);
+        }
         Ok(())
     }
 
@@ -92,7 +111,7 @@ impl Check {
         indexed: &BTreeSet<String>,
         head_key: impl Fn(UnitId) -> Vec<u8>,
     ) -> Vec<(Vec<u8>, String)> {
-        let mut out = Vec::new();
+        let mut out = self.misplaced.clone();
         if self.damaged {
             return out;
         }
@@ -103,9 +122,9 @@ impl Check {
             let (Some(unit_type), Some(want)) = (wanted(*unit), self.expected.get(unit)) else { continue };
             match self.found.get(unit) {
                 None if want.0 == 0 => {}
-                None => out.push((head_key(*unit), format!("unit {unit} has content but no trigram entry"))),
+                None => out.push((head_key(*unit), format!("unit {unit} has content but is in no trigram block"))),
                 Some(f) if f.two_types || f.unit_type != unit_type || f.digest != *want => {
-                    out.push((f.key.clone(), format!("unit {unit}: its trigram entries disagree with its payload")));
+                    out.push((f.key.clone(), format!("unit {unit}: its trigram blocks disagree with its payload")));
                 }
                 Some(_) => {}
             }
@@ -113,7 +132,7 @@ impl Check {
         for (unit, f) in self.found.iter().filter(|(u, _)| wanted(**u).is_none()) {
             out.push((
                 f.key.clone(),
-                format!("trigram entries of unit {unit}, which is not an Active unit of a substring-indexed type"),
+                format!("trigram blocks hold unit {unit}, which is not an Active unit of a substring-indexed type"),
             ));
         }
         out

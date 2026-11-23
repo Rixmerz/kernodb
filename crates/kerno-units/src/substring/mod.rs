@@ -12,11 +12,18 @@
 //!
 //! # Design
 //!
-//! One record per distinct trigram of a unit, written by the same engine
-//! transaction that writes the unit's head, like the keyword index:
+//! A posting list per type and trigram, cut in blocks of at most
+//! [`BLOCK_MAX`] unit ids, one engine record each:
 //!
-//! * `TRIGRAM` `0x7a ‖ type_len: u8 ‖ unit_type ‖ gram[3] ‖ unit[16]` →
-//!   `envelope[2]`.
+//! * `TRIGRAM` `0x7a ‖ type_len: u8 ‖ unit_type ‖ gram[3] ‖ 0x00 ‖ bound[16]`
+//!   or `… ‖ gram[3] ‖ 0x01` (the tail block) →
+//!   `envelope[2] ‖ unit[16] × n`, `1 <= n <= BLOCK_MAX`, ascending.
+//!
+//! The blocks of a list hold consecutive ranges of unit ids: every unit of a
+//! block is above the bound of the block before it and at most its own bound;
+//! the tail block, last, has no bound. So the block of a unit is the first
+//! key at or after `gram ‖ 0x00 ‖ unit`: one forward seek. Unit ids are
+//! UUIDv7, ordered by creation, so new units go to the tail block.
 //!
 //! The grams of a payload are the three bytes that start at each of its
 //! positions, the payload followed by two `0x00`. So every position has a
@@ -25,27 +32,36 @@
 //! payloads.
 //!
 //! The type comes first in the key, so a search of one type reads only that
-//! type's entries, and turning the option off is one range deletion.
+//! type's blocks, and turning the option off is one range deletion.
 //!
-//! A write plans the entries by reads only: the grams of the payload the head
-//! had (read from the transaction) against those of the new one. Only the
-//! difference is written, so an update that changes a few bytes writes a few
-//! entries.
+//! # A write
+//!
+//! An operation plans its index change by reads only, before its first
+//! write: the grams of the payload the head had (read from the transaction)
+//! against those of the new one. The change set keeps the difference, gram by
+//! gram, and writes it at commit ([`ChangeSet::flush_substring`]): each block
+//! it changes is read and written once per change set, whatever the number of
+//! units of the change set in it. A block over [`BLOCK_MAX`] ids is cut, and
+//! an emptied one deleted.
+//!
+//! One record per trigram and unit, the first design, made a batch of 10,000
+//! names write 700,000 records; the per-record cost of the engine (the
+//! transaction's ordered map, the memtable, freeing them) was 70% of a
+//! benchmark run (ADR-0025).
 //!
 //! # A search
 //!
 //! The units that hold every trigram of the needle are found by intersecting
 //! its trigram lists, the shortest first; a list much longer than the
-//! candidates left is probed by point reads instead of being read. A needle
-//! of up to three bytes is answered by the index alone. A longer one is then
+//! candidates left is probed by seeks instead of being read. A needle of up
+//! to three bytes is answered by the index alone. A longer one is then
 //! checked against the payload of each candidate, since a unit can hold every
 //! trigram of a needle without holding the needle.
 //!
-//! `ponytail:` one engine record per trigram and unit. A search reads the
-//! whole list of at least one trigram of the needle, so it is linear in the
-//! units that share the needle's rarest trigram, and a write costs one record
-//! per distinct trigram of the payload. Upgrade path: posting blocks (many
-//! units per record) once the engine has a reverse seek to find a block.
+//! `ponytail:` a block stores whole 16-byte ids and a small commit rewrites
+//! the tail block of each of its grams (up to 2 KiB each). Upgrade path:
+//! dense per-type numbers with delta-coded postings, as SQLite's FTS5 does,
+//! if index size or small-commit cost matters.
 
 mod check;
 
@@ -77,14 +93,22 @@ pub const MAX_INDEXED_BYTES: usize = crate::fulltext::MAX_INDEXED_BYTES;
 /// Longest needle of a search, in bytes.
 pub const MAX_NEEDLE_LEN: usize = 1024;
 
+/// Most unit ids in one block of a posting list.
+pub const BLOCK_MAX: usize = 128;
+
 const RECORD_VERSION: u8 = 1;
 const MAX_TYPE_LEN: usize = 64;
 
-/// Entries read per engine scan call.
-const PAGE: usize = 256;
+/// The byte after the gram of a bounded block's key, and of the tail's.
+const BOUNDED: u8 = 0x00;
+const TAIL: u8 = 0x01;
+
+/// Blocks read per engine scan call (two in the unit tests, so that their
+/// lists of a few hundred units take several pages).
+const PAGE: usize = if cfg!(test) { 2 } else { 256 };
 
 /// With at most this many candidates left, a trigram list that did not fit
-/// one page is probed by point reads instead of being read whole.
+/// one page is probed by seeks instead of being read whole.
 const PROBE_MAX: usize = 64;
 
 type Gram = [u8; 3];
@@ -113,59 +137,101 @@ fn holds(payload: &[u8], needle: &[u8]) -> bool {
 
 // ----------------------------------------------------------------- keys
 
-/// `0x7a ‖ type_len ‖ unit_type`: the prefix of every entry of a type.
+/// `0x7a ‖ type_len ‖ unit_type`: the prefix of every block of a type.
 pub(crate) fn type_prefix(unit_type: &str) -> Vec<u8> {
     let mut k = vec![TAG_TRIGRAM, unit_type.len() as u8];
     k.extend_from_slice(unit_type.as_bytes());
     k
 }
 
-fn entry_key(prefix: &[u8], gram: Gram, unit: UnitId) -> Vec<u8> {
-    let mut k = Vec::with_capacity(prefix.len() + 3 + 16);
+/// `type prefix ‖ gram`: the prefix of the blocks of one posting list.
+fn list_key(prefix: &[u8], gram: Gram) -> Vec<u8> {
+    let mut k = Vec::with_capacity(prefix.len() + 3 + 17);
     k.extend_from_slice(prefix);
     k.extend_from_slice(&gram);
-    k.extend_from_slice(&unit.0);
     k
 }
 
-fn entry_value() -> Vec<u8> {
-    vec![RECORD_VERSION, 0]
+/// The key of the block of a list with the bound `bound` (`None`: the tail).
+pub(crate) fn block_key(list: &[u8], bound: Option<UnitId>) -> Vec<u8> {
+    let mut k = Vec::with_capacity(list.len() + 17);
+    k.extend_from_slice(list);
+    match bound {
+        Some(unit) => {
+            k.push(BOUNDED);
+            k.extend_from_slice(&unit.0);
+        }
+        None => k.push(TAIL),
+    }
+    k
 }
 
-/// The unit of an entry key that is known to be of the right length.
-fn unit_of(k: &[u8]) -> Option<UnitId> {
-    let tail = k.len().checked_sub(16)?;
-    <[u8; 16]>::try_from(&k[tail..]).ok().map(UnitId)
+/// The block value of `units`, ascending.
+pub(crate) fn encode_block(units: &[UnitId]) -> Vec<u8> {
+    let mut v = Vec::with_capacity(2 + 16 * units.len());
+    v.extend_from_slice(&[RECORD_VERSION, 0]);
+    for u in units {
+        v.extend_from_slice(&u.0);
+    }
+    v
 }
 
-/// The type, the trigram and the unit of an entry key.
-pub(crate) fn decode_key(k: &[u8]) -> Result<(String, Gram, UnitId), DecodeError> {
+/// The type, the trigram and the bound (`None`: the tail) of a block key.
+pub(crate) fn decode_key(k: &[u8]) -> Result<(String, Gram, Option<UnitId>), DecodeError> {
     let shape = || DecodeError::new(UnitRule::Unit3, format!("trigram key of {} bytes has no valid shape", k.len()));
     let tlen = usize::from(*k.get(1).ok_or_else(shape)?);
-    if k[0] != TAG_TRIGRAM || tlen == 0 || tlen > MAX_TYPE_LEN || k.len() != 2 + tlen + 3 + 16 {
+    if k[0] != TAG_TRIGRAM || tlen == 0 || tlen > MAX_TYPE_LEN || k.len() < 2 + tlen + 4 {
         return Err(shape());
     }
     let unit_type = std::str::from_utf8(&k[2..2 + tlen])
         .map_err(|_| DecodeError::new(UnitRule::Unit12, "trigram key unit_type is not UTF-8"))?;
     let at = 2 + tlen;
-    let unit = unit_of(k).ok_or_else(shape)?;
-    Ok((unit_type.to_owned(), [k[at], k[at + 1], k[at + 2]], unit))
+    let gram = [k[at], k[at + 1], k[at + 2]];
+    let bound = match (&k[at + 3], k.len() - at - 4) {
+        (&TAIL, 0) => None,
+        (&BOUNDED, 16) => Some(UnitId(k[at + 4..].try_into().map_err(|_| shape())?)),
+        _ => return Err(shape()),
+    };
+    Ok((unit_type.to_owned(), gram, bound))
 }
 
-/// The value of an entry: the envelope alone.
-pub(crate) fn check_value(v: &[u8]) -> Result<(), DecodeError> {
-    let e = |rule, m: &str| DecodeError::new(rule, format!("trigram record: {m}"));
+/// The unit ids of a block value: at least one, at most [`BLOCK_MAX`], strictly ascending.
+pub(crate) fn decode_block(v: &[u8]) -> Result<Vec<UnitId>, DecodeError> {
+    let e = |rule, m: &str| DecodeError::new(rule, format!("trigram block: {m}"));
     match v {
-        [] | [_] => Err(e(UnitRule::Unit9, "fewer bytes than its envelope")),
-        [0, ..] => Err(e(UnitRule::Unit6, "envelope_version 0")),
-        [RECORD_VERSION, 0] => Ok(()),
-        [RECORD_VERSION, _] => Err(e(UnitRule::Unit8, "reserved_flags set")),
-        [RECORD_VERSION, _, ..] => Err(e(UnitRule::Unit10, "trailing bytes")),
-        [_, ..] => Err(e(UnitRule::Unit7, "a newer envelope_version")),
+        [] | [_] => return Err(e(UnitRule::Unit9, "fewer bytes than its envelope")),
+        [0, ..] => return Err(e(UnitRule::Unit6, "envelope_version 0")),
+        [RECORD_VERSION, 0, ..] => {}
+        [RECORD_VERSION, _, ..] => return Err(e(UnitRule::Unit8, "reserved_flags set")),
+        [_, ..] => return Err(e(UnitRule::Unit7, "a newer envelope_version")),
     }
+    let body = &v[2..];
+    if body.is_empty() || body.len() % 16 != 0 {
+        return Err(e(UnitRule::Unit9, "no whole unit id, or a partial one"));
+    }
+    if body.len() / 16 > BLOCK_MAX {
+        return Err(e(UnitRule::Unit11, "more unit ids than a block holds"));
+    }
+    let units: Vec<UnitId> = body.chunks_exact(16).map(|c| UnitId(c.try_into().expect("16 bytes"))).collect();
+    if units.windows(2).any(|w| w[0] >= w[1]) {
+        return Err(e(UnitRule::Unit13, "unit ids not strictly ascending"));
+    }
+    Ok(units)
 }
 
 // --------------------------------------------------------------- writer
+
+/// The index change of one operation: its type prefix, the grams the unit no
+/// longer has and those it gains.
+pub(crate) struct GramChange {
+    prefix: Vec<u8>,
+    gone: Vec<Gram>,
+    added: Vec<Gram>,
+}
+
+/// What a change set will change in the index: per list key, the units to add
+/// (`true`) or remove (`false`), the last operation of a unit winning.
+pub(crate) type PendingGrams = std::collections::BTreeMap<Vec<u8>, std::collections::BTreeMap<UnitId, bool>>;
 
 impl<E: TxnEngine> ChangeSet<'_, E> {
     /// Whether the payloads of `unit_type` go in the trigram index, as this
@@ -187,33 +253,86 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         Ok(txn.get(&key(Key::RevPayload { unit, rev: head.head_rev })?)?.map(|p| grams(&p)).unwrap_or_default())
     }
 
-    /// The index writes that follow the operation `writes` on `unit`, planned
+    /// The index change that follows the operation `writes` on `unit`, planned
     /// by reads only, before the first write of the operation (like
-    /// [`ChangeSet::plan_fulltext`](crate::fulltext)): the entries the unit no
-    /// longer has are deleted and the new ones written. Nothing for a type
-    /// without the option, and nothing for an operation that writes no head.
-    pub(crate) fn plan_substring(&self, unit: UnitId, writes: &[Write]) -> Result<Vec<Write>, UnitError> {
+    /// [`ChangeSet::plan_fulltext`](crate::fulltext)). `None` for a type
+    /// without the option, and for an operation that writes no head. The
+    /// caller hands it to [`stage_substring`](Self::stage_substring) once the
+    /// operation is written.
+    pub(crate) fn plan_substring(&self, unit: UnitId, writes: &[Write]) -> Result<Option<GramChange>, UnitError> {
         let Next::Content(unit_type, payload) = next_of(unit, writes)? else {
-            return Ok(Vec::new());
+            return Ok(None);
         };
         if !self.substring_enabled(&unit_type)? {
-            return Ok(Vec::new());
+            return Ok(None);
         }
         let (old, new) = (self.indexed_grams(unit)?, payload.map(grams).unwrap_or_default());
-        let prefix = type_prefix(&unit_type);
         // Both lists are sorted, so a binary search tells what the other lacks.
-        let gone = old.iter().filter(|g| new.binary_search(g).is_err());
-        let added = new.iter().filter(|g| old.binary_search(g).is_err());
-        Ok(gone
-            .map(|g| Write::Delete(entry_key(&prefix, *g, unit)))
-            .chain(added.map(|g| Write::Put(entry_key(&prefix, *g, unit), entry_value())))
-            .collect())
+        let gone = old.iter().filter(|g| new.binary_search(g).is_err()).copied().collect();
+        let added = new.iter().filter(|g| old.binary_search(g).is_err()).copied().collect();
+        Ok(Some(GramChange { prefix: type_prefix(&unit_type), gone, added }))
+    }
+
+    /// Keeps the index change of an operation on `unit` for
+    /// [`flush_substring`](Self::flush_substring).
+    pub(crate) fn stage_substring(&mut self, unit: UnitId, change: Option<GramChange>) {
+        let Some(c) = change else { return };
+        for (gram, add) in c.gone.iter().map(|g| (g, false)).chain(c.added.iter().map(|g| (g, true))) {
+            self.substring_pending.entry(list_key(&c.prefix, *gram)).or_default().insert(unit, add);
+        }
+    }
+
+    /// Writes the index changes the change set kept, block by block: each
+    /// block one changed unit falls in is read once, changed for every unit of
+    /// the change set in it, then written back (cut when over [`BLOCK_MAX`],
+    /// deleted when emptied). Called by `commit`.
+    pub(crate) fn flush_substring(&mut self) -> Result<(), UnitError> {
+        for (list, ops) in std::mem::take(&mut self.substring_pending) {
+            let (_, end) = prefix_bounds(&list);
+            let mut ops = ops.into_iter().peekable();
+            while let Some((first, _)) = ops.peek() {
+                let from = block_key(&list, Some(*first));
+                let page = self.txn()?.scan(Bound::Included(&from), Bound::Excluded(&end), 1)?;
+                let (block, mut units, bound) = match page.into_iter().next() {
+                    Some((k, v)) => {
+                        let units = decode_block(&v).map_err(|e| context(e, "TRIGRAM"))?;
+                        let bound = decode_key(&k).map_err(|e| context(e, "TRIGRAM"))?.2;
+                        (Some(k), units, bound)
+                    }
+                    None => (None, Vec::new(), None),
+                };
+                while let Some((unit, add)) = ops.next_if(|(u, _)| bound.is_none_or(|b| *u <= b)) {
+                    match (units.binary_search(&unit), add) {
+                        (Err(at), true) => units.insert(at, unit),
+                        (Ok(at), false) => {
+                            units.remove(at);
+                        }
+                        _ => {}
+                    }
+                }
+                let key = block.clone().unwrap_or_else(|| block_key(&list, bound));
+                if units.is_empty() {
+                    if block.is_some() {
+                        self.write_owned(Write::Delete(key))?;
+                    }
+                    continue;
+                }
+                // Full blocks from the low end, each bounded by its last unit; the rest
+                // keeps the key it had, whose bound is still above every unit in it.
+                let mut chunks = units.chunks(BLOCK_MAX).peekable();
+                while let Some(chunk) = chunks.next() {
+                    let k = if chunks.peek().is_some() { block_key(&list, chunk.last().copied()) } else { key.clone() };
+                    self.write_owned(Write::Put(k, encode_block(chunk)))?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Turns the trigram index of `unit_type` on (`enabled = true`) or back
     /// off (the default). The type's `Active` units follow in the same change
     /// set: turning it on indexes each of them, turning it off deletes the
-    /// type's entries, so the index never disagrees with the units. Setting
+    /// type's blocks, so the index never disagrees with the units. Setting
     /// the state the type already has writes nothing.
     ///
     /// # Errors
@@ -227,15 +346,16 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
             };
             cs.substring_ops += 1;
             let prefix = type_prefix(unit_type);
+            let (start, end) = prefix_bounds(&prefix);
             if !enabled {
-                let (start, end) = prefix_bounds(&prefix);
+                // What this change set kept for the type goes with its blocks.
+                cs.substring_pending.retain(|k, _| !k.starts_with(&prefix));
                 return cs.write_owned(Write::DeleteRange(start, end));
             }
             for (unit, payload_key) in units {
                 let Some(payload) = cs.txn()?.get(&payload_key)? else { continue };
-                for gram in grams(&payload) {
-                    cs.write_owned(Write::Put(entry_key(&prefix, gram, unit), entry_value()))?;
-                }
+                let added = grams(&payload);
+                cs.stage_substring(unit, Some(GramChange { prefix: prefix.clone(), gone: Vec::new(), added }));
             }
             Ok(())
         })
@@ -432,10 +552,8 @@ impl<E: Engine> UnitSnapshot<E> {
     }
 
     fn keep_page(&self, list: &mut List, page: Vec<(Vec<u8>, Vec<u8>)>) -> Result<(), UnitError> {
-        for (k, _) in &page {
-            // The type and the gram are the scanned prefix: only the length is left to check.
-            let unit = if k.len() >= list.start.len() + 16 { unit_of(k) } else { None };
-            list.units.push(unit.ok_or_else(|| corruption("a TRIGRAM key has no unit".into()))?);
+        for (_, v) in &page {
+            list.units.extend(decode_block(v).map_err(|e| context(e, "TRIGRAM"))?);
         }
         list.more = if page.len() == PAGE { page.into_iter().last().map(|(k, _)| k) } else { None };
         Ok(())
@@ -477,13 +595,14 @@ impl<E: Engine> UnitSnapshot<E> {
                 break;
             }
             if list.more.is_some() && candidates.len() <= PROBE_MAX {
-                // A long list and few candidates: one point read per candidate.
-                let mut probe = list.start.clone();
+                // A long list and few candidates: one seek per candidate, to its block.
                 let mut kept = Vec::with_capacity(candidates.len());
                 for unit in candidates {
-                    probe.truncate(list.start.len());
-                    probe.extend_from_slice(&unit.0);
-                    if self.snap.get(&probe)?.is_some() {
+                    let from = block_key(&list.start, Some(unit));
+                    let page = self.snap.scan(Bound::Included(&from), Bound::Excluded(&list.end), 1)?;
+                    if let Some((_, v)) = page.first()
+                        && decode_block(v).map_err(|e| context(e, "TRIGRAM"))?.binary_search(&unit).is_ok()
+                    {
                         kept.push(unit);
                     }
                 }

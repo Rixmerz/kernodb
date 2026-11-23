@@ -54,10 +54,40 @@ fn found(db: &UnitDb<E>, needle: &[u8]) -> Vec<UnitId> {
     db.search_substring(needle, None, None).unwrap()
 }
 
-/// Every trigram entry of the store, as `(key, value)`.
+/// Every trigram block of the store, as `(key, value)`.
 fn entries(db: &UnitDb<E>) -> Vec<(Vec<u8>, Vec<u8>)> {
     let snap = db.raw_snapshot().unwrap();
     snap.scan(Bound::Included(&[TAG_TRIGRAM][..]), Bound::Excluded(&[TAG_TRIGRAM + 1][..]), usize::MAX).unwrap()
+}
+
+/// Every trigram block of the store, decoded: `(key, units)`.
+fn blocks(db: &UnitDb<E>) -> Vec<(Vec<u8>, Vec<UnitId>)> {
+    entries(db).into_iter().map(|(k, v)| (k, decode_block(&v).unwrap())).collect()
+}
+
+/// The units the index holds, each once, in id order.
+fn indexed_units(db: &UnitDb<E>) -> Vec<UnitId> {
+    let mut out: Vec<UnitId> = blocks(db).into_iter().flat_map(|(_, u)| u).collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// The raw writes that take `unit` out of every block that holds it.
+fn without(db: &UnitDb<E>, unit: UnitId) -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
+    blocks(db)
+        .into_iter()
+        .filter(|(_, units)| units.contains(&unit))
+        .map(|(k, units)| {
+            let rest: Vec<UnitId> = units.into_iter().filter(|u| *u != unit).collect();
+            (k, (!rest.is_empty()).then(|| encode_block(&rest)))
+        })
+        .collect()
+}
+
+/// The key of the tail block of the list of `gram` in `unit_type`.
+fn tail(unit_type: &str, gram: Gram) -> Vec<u8> {
+    block_key(&list_key(&type_prefix(unit_type), gram), None)
 }
 
 fn rules(db: &UnitDb<E>) -> Vec<String> {
@@ -79,7 +109,10 @@ fn invalid(r: Result<Vec<UnitId>, UnitError>) -> bool {
 fn grams_fold_ascii_pad_the_end_and_are_distinct() {
     assert_eq!(grams(b"AbC"), [*b"abc", [b'b', b'c', 0], [b'c', 0, 0]]);
     // A byte that is not an ASCII letter is kept as it is: É is not folded to é.
-    assert_eq!(grams("É".as_bytes()), [[0xC3, 0x89, 0], [0x89, 0, 0]].map(|g: Gram| g).into_iter().rev().collect::<Vec<_>>());
+    assert_eq!(
+        grams("É".as_bytes()),
+        [[0xC3, 0x89, 0], [0x89, 0, 0]].map(|g: Gram| g).into_iter().rev().collect::<Vec<_>>()
+    );
     assert_eq!(grams(b"aaaa"), [[b'a', 0, 0], [b'a', b'a', 0], *b"aaa"]);
     assert!(grams(b"").is_empty());
 }
@@ -207,7 +240,7 @@ fn types_restrict_the_search_and_the_answers_merge_in_id_order() {
     assert_eq!(db.search_substring(b"shared", None, Some(&["doc"])).unwrap(), [d1]);
     assert_eq!(db.search_substring(b"shared", None, Some(&["doc", "sym"])).unwrap(), [s1, d1, s2]);
     assert_eq!(db.search_substring(b"shared", Some(2), None).unwrap(), [s1, d1]);
-    assert!(!entries(&db).iter().any(|(k, _)| decode_key(k).unwrap().2 == n1));
+    assert!(!indexed_units(&db).contains(&n1));
     assert!(db.snapshot().unwrap().substring_enabled("doc").unwrap());
     assert!(!db.snapshot().unwrap().substring_enabled("note").unwrap());
     assert_clean(&db);
@@ -237,7 +270,7 @@ fn the_index_follows_updates_archives_and_deletes() {
     change(&db, |cs| cs.delete(id, None).unwrap());
     assert!(found(&db, b"version").is_empty());
     assert_eq!(found(&db, b"another"), [other]);
-    assert!(entries(&db).iter().all(|(k, _)| decode_key(k).unwrap().2 == other));
+    assert_eq!(indexed_units(&db), [other]);
     assert_clean(&db);
 }
 
@@ -324,8 +357,8 @@ fn the_first_use_raises_the_layer_mark_to_8_and_it_survives_a_reopen() {
 
 // ------------------------------------------------------------ long lists
 
-/// 300 units hold "common", 100 of them also "middle" (80 of those with "common" too far
-/// to matter: every unit here has "common"), and one holds "rare".
+/// 300 units hold "common", 100 of them also "middle", and one holds "rare": the list of
+/// "com" is three blocks, more than a page in the tests.
 #[test]
 fn lists_longer_than_a_page_are_read_whole_probed_or_merged() {
     let disk = SimVfs::new(14);
@@ -342,7 +375,7 @@ fn lists_longer_than_a_page_are_read_whole_probed_or_merged() {
     }
     let rare = store(&db, b"common rare");
     all.push(rare);
-    assert!(all.len() > PAGE && middle.len() > PROBE_MAX && middle.len() < PAGE);
+    assert!(all.len() > PAGE * BLOCK_MAX && middle.len() > PROBE_MAX && middle.len() <= BLOCK_MAX);
     // One long list, read past its first page: a three-byte needle and a two-byte one.
     assert_eq!(found(&db, b"com"), all);
     assert_eq!(found(&db, b"co"), all);
@@ -350,12 +383,68 @@ fn lists_longer_than_a_page_are_read_whole_probed_or_merged() {
     // Few candidates ("rar" is one unit) against the long lists of "common": probes.
     assert_eq!(found(&db, b"common rare"), [rare]);
     assert_eq!(found(&db, b"mon r"), [rare]);
+    // A probe that finds the block of a candidate without the candidate in it.
+    assert!(found(&db, b"rare 1").is_empty());
     // More candidates than probes are worth ("mid" is 100 units): the long lists are read.
     assert_eq!(found(&db, b"common middle"), middle);
     assert_eq!(found(&db, b"on mid"), middle);
     // A trigram no unit has ends the search.
     assert!(found(&db, b"common zzz").is_empty());
     assert_eq!(db.search_substring(b"common", Some(3), None).unwrap(), all[..3]);
+    assert_clean(&db);
+}
+
+#[test]
+fn blocks_are_cut_at_their_limit_and_deleted_when_emptied() {
+    let disk = SimVfs::new(20);
+    let db = open(&disk);
+    let new =
+        |p: String| NewUnit { unit_type: "sym".into(), schema_version: 1, metadata: vec![], payload: p.into_bytes() };
+    // One change set of 300 units: the tail of each list is cut as it is written.
+    let ids: Vec<UnitId> = change(&db, |cs| {
+        (0..300).map(|i| cs.create(new(if i == 50 { "other".into() } else { format!("word {i}") })).unwrap()).collect()
+    });
+    let list = list_key(&type_prefix("sym"), *b"wor");
+    let wor: Vec<(Vec<u8>, Vec<UnitId>)> = blocks(&db).into_iter().filter(|(k, _)| k.starts_with(&list)).collect();
+    assert_eq!(wor.iter().map(|(_, u)| u.len()).collect::<Vec<_>>(), [BLOCK_MAX, BLOCK_MAX, 299 - 2 * BLOCK_MAX]);
+    assert_eq!(
+        decode_key(&wor[0].0).unwrap().2,
+        Some(wor[0].1[BLOCK_MAX - 1]),
+        "a cut block is bounded by its last unit"
+    );
+    assert_eq!(decode_key(&wor[2].0).unwrap().2, None, "the rest is the tail");
+    assert_clean(&db);
+    // A unit that joins a full bounded block cuts it in two.
+    update(&db, ids[50], b"word 50");
+    assert_eq!(found(&db, b"word"), ids);
+    let sizes: Vec<usize> =
+        blocks(&db).into_iter().filter(|(k, _)| k.starts_with(&list)).map(|(_, u)| u.len()).collect();
+    assert_eq!(sizes, [BLOCK_MAX, 1, BLOCK_MAX, 300 - 2 * BLOCK_MAX - 1]);
+    assert_clean(&db);
+    // Emptying a bounded block deletes it; the others keep their units.
+    change(&db, |cs| {
+        for id in &ids[..BLOCK_MAX] {
+            cs.delete(*id, None).unwrap();
+        }
+    });
+    let sizes: Vec<usize> =
+        blocks(&db).into_iter().filter(|(k, _)| k.starts_with(&list)).map(|(_, u)| u.len()).collect();
+    assert_eq!(sizes, [1, BLOCK_MAX, 300 - 2 * BLOCK_MAX - 1]);
+    assert_eq!(found(&db, b"word"), ids[BLOCK_MAX..]);
+    assert_clean(&db);
+    // Turning the option off and on in one change set drops what it kept, then indexes
+    // every active unit again, the one it created included.
+    let (fresh, moved) = change(&db, |cs| {
+        let fresh = cs.create(new("word fresh".into())).unwrap();
+        let upd = UnitUpdate { payload: b"gone".to_vec(), schema_version: None, metadata: None };
+        cs.update(ids[299], upd, None).unwrap();
+        cs.set_substring("sym", false).unwrap();
+        cs.set_substring("sym", true).unwrap();
+        (fresh, ids[299])
+    });
+    assert_eq!(found(&db, b"word fresh"), [fresh]);
+    assert_eq!(found(&db, b"gone"), [moved]);
+    assert!(!found(&db, b"word").contains(&moved));
     assert_clean(&db);
 }
 
@@ -397,53 +486,69 @@ fn the_index_answers_what_a_scan_of_the_payloads_answers() {
 
 // --------------------------------------------------------------- verify
 
-fn entry_of(db: &UnitDb<E>, unit: UnitId) -> (Vec<u8>, Vec<u8>) {
-    entries(db).into_iter().find(|(k, _)| decode_key(k).unwrap().2 == unit).expect("the unit has entries")
-}
-
 #[test]
 fn verify_reports_a_missing_an_extra_and_a_misplaced_entry() {
     let disk = SimVfs::new(16);
     let db = open(&disk);
     let id = store(&db, b"hello world");
+    let other = store(&db, b"hello there");
     let note = store_as(&db, "note", b"hello world");
     assert_clean(&db);
-    let (k, v) = entry_of(&db, id);
+    let before = entries(&db);
+    let restore = |db: &UnitDb<E>| {
+        let now: Vec<_> = entries(db).into_iter().map(|(k, _)| (k, None)).collect();
+        db.raw_commit(now).unwrap();
+        db.raw_commit(before.iter().map(|(k, v)| (k.clone(), Some(v.clone()))).collect()).unwrap();
+        assert_clean(db);
+    };
 
-    // One entry of an indexed unit is gone.
-    db.raw_commit(vec![(k.clone(), None)]).unwrap();
+    // The unit is gone from one block of a list it is in.
+    let first = without(&db, id).into_iter().next().unwrap();
+    db.raw_commit(vec![first]).unwrap();
     assert_eq!(rules(&db), ["UNIT-52"]);
-    db.raw_commit(vec![(k.clone(), Some(v.clone()))]).unwrap();
-    assert_clean(&db);
+    restore(&db);
 
-    // Every entry of an indexed unit is gone.
-    let mine: Vec<_> = entries(&db).into_iter().filter(|(k, _)| decode_key(k).unwrap().2 == id).collect();
-    db.raw_commit(mine.iter().map(|(k, _)| (k.clone(), None)).collect()).unwrap();
+    // The unit is in no block.
+    db.raw_commit(without(&db, id)).unwrap();
     assert_eq!(rules(&db), ["UNIT-52"]);
-    db.raw_commit(mine.iter().map(|(k, v)| (k.clone(), Some(v.clone()))).collect()).unwrap();
-    assert_clean(&db);
+    restore(&db);
 
-    // An entry the payload does not call for.
-    let extra = entry_key(&type_prefix("sym"), *b"zzz", id);
-    db.raw_commit(vec![(extra.clone(), Some(entry_value()))]).unwrap();
+    // A trigram the payload does not call for.
+    db.raw_commit(vec![(tail("sym", *b"zzz"), Some(encode_block(&[id])))]).unwrap();
     assert_eq!(rules(&db), ["UNIT-52"]);
-    db.raw_commit(vec![(extra, None)]).unwrap();
+    restore(&db);
 
-    // An entry of a unit whose type has no index, and one of a unit that does not exist.
+    // A unit whose type has no index, and one that does not exist.
     for unit in [note, UnitId([0xEE; 16])] {
-        let stray = entry_key(&type_prefix("sym"), *b"hel", unit);
-        db.raw_commit(vec![(stray.clone(), Some(entry_value()))]).unwrap();
+        db.raw_commit(vec![(tail("sym", *b"qqq"), Some(encode_block(&[unit])))]).unwrap();
         assert_eq!(rules(&db), ["UNIT-52"]);
-        db.raw_commit(vec![(stray, None)]).unwrap();
-        assert_clean(&db);
+        restore(&db);
     }
 
-    // The right entries under another type.
-    let moved: Vec<_> = mine.iter().map(|(k, v)| (entry_key(&type_prefix("doc"), decode_key(k).unwrap().1, id), v)).collect();
-    let mut swap: Vec<(Vec<u8>, Option<Vec<u8>>)> = mine.iter().map(|(k, _)| (k.clone(), None)).collect();
-    swap.extend(moved.iter().map(|(k, v)| (k.clone(), Some((*v).clone()))));
+    // The right trigrams under another type.
+    let mut swap = without(&db, id);
+    for (k, _) in blocks(&db).into_iter().filter(|(_, u)| u.contains(&id)) {
+        let gram = decode_key(&k).unwrap().1;
+        swap.push((tail("doc", gram), Some(encode_block(&[id]))));
+    }
     db.raw_commit(swap).unwrap();
     assert_eq!(rules(&db), ["UNIT-52"]);
+    restore(&db);
+
+    // A bounded block with a unit above its bound, and blocks whose ranges overlap.
+    let hel = list_key(&type_prefix("sym"), *b"hel");
+    let (lo, hi) = (id.min(other), id.max(other));
+    let low_bound = vec![(tail("sym", *b"hel"), None), (block_key(&hel, Some(lo)), Some(encode_block(&[lo, hi])))];
+    db.raw_commit(low_bound).unwrap();
+    assert_eq!(rules(&db), ["UNIT-52"]);
+    restore(&db);
+    let overlap = vec![
+        (tail("sym", *b"hel"), Some(encode_block(&[lo, hi]))),
+        (block_key(&hel, Some(hi)), Some(encode_block(&[lo]))),
+    ];
+    db.raw_commit(overlap).unwrap();
+    assert_eq!(rules(&db), ["UNIT-52"]);
+    restore(&db);
 }
 
 #[test]
@@ -451,22 +556,36 @@ fn verify_reports_an_entry_that_does_not_decode() {
     let disk = SimVfs::new(17);
     let db = open(&disk);
     let id = store(&db, b"hello");
-    let (k, v) = entry_of(&db, id);
-    for bad in [vec![], vec![0, 0], vec![1, 1], vec![1, 0, 0], vec![2, 0]] {
+    let (k, v) = entries(&db).into_iter().next().unwrap();
+    let ascending = encode_block(&[UnitId([1; 16]), UnitId([2; 16])]);
+    let descending = encode_block(&[UnitId([2; 16]), UnitId([1; 16])]);
+    let over = encode_block(&vec![id; BLOCK_MAX + 1]);
+    let partial = [&v[..], &[0u8; 5]].concat();
+    for bad in [vec![], vec![0, 0], vec![1, 1], vec![1, 0], vec![2, 0], partial, descending, over] {
         db.raw_commit(vec![(k.clone(), Some(bad.clone()))]).unwrap();
         assert!(!db.verify_units().unwrap().is_clean(), "value {bad:?}");
     }
+    assert!(decode_block(&ascending).is_ok());
     db.raw_commit(vec![(k.clone(), Some(v.clone()))]).unwrap();
     assert_clean(&db);
-    // A key one byte short, and one with an empty type.
-    for bad_key in [k[..k.len() - 1].to_vec(), [&[TAG_TRIGRAM, 0][..], &[b'a'; 19]].concat()] {
+    // A key one byte short, one with an empty type, and one with neither a bound nor the tail mark.
+    let unmarked = [&k[..k.len() - 1], &[7u8][..]].concat();
+    for bad_key in [k[..k.len() - 1].to_vec(), [&[TAG_TRIGRAM, 0][..], &[b'a'; 20]].concat(), unmarked] {
         db.raw_commit(vec![(bad_key.clone(), Some(v.clone()))]).unwrap();
         assert!(!db.verify_units().unwrap().is_clean(), "key {bad_key:?}");
         db.raw_commit(vec![(bad_key, None)]).unwrap();
         assert_clean(&db);
     }
     assert!(decode_key(&[TAG_TRIGRAM]).is_err());
-    assert!(decode_key(&[&[TAG_TRIGRAM, 1, 0xFF][..], &[b'a'; 19]].concat()).is_err(), "a type that is not UTF-8");
+    assert!(decode_key(&[&[TAG_TRIGRAM, 1, 0xFF][..], &[b'a'; 4]].concat()).is_err(), "a type that is not UTF-8");
+    assert!(
+        decode_key(&[&[TAG_TRIGRAM, 1, b's'][..], b"abc", &[BOUNDED], &[1; 15]].concat()).is_err(),
+        "a short bound"
+    );
+    assert_eq!(
+        decode_key(&[&[TAG_TRIGRAM, 1, b's'][..], b"abc", &[TAIL]].concat()).unwrap(),
+        ("s".into(), *b"abc", None)
+    );
 }
 
 #[test]
@@ -491,16 +610,14 @@ fn a_search_refuses_an_entry_of_a_unit_that_does_not_exist() {
     let db = open(&disk);
     store(&db, b"hello world");
     let ghost = UnitId([0xEE; 16]);
-    let stray: Vec<_> =
-        grams(b"ghost").into_iter().map(|g| (entry_key(&type_prefix("sym"), g, ghost), Some(entry_value()))).collect();
+    let stray: Vec<_> = grams(b"ghost").into_iter().map(|g| (tail("sym", g), Some(encode_block(&[ghost])))).collect();
     db.raw_commit(stray).unwrap();
     assert!(matches!(
         db.search_substring(b"ghost", None, None),
         Err(UnitError::Storage(kerno_core::Error::Corruption(m))) if m.contains("no UNIT_HEAD")
     ));
-    // A truncated key in a list a search reads.
-    let short = [&type_prefix("sym")[..], b"hel", &[0u8; 15]].concat();
-    db.raw_commit(vec![(short, Some(entry_value()))]).unwrap();
+    // A block that does not decode in a list a search reads.
+    db.raw_commit(vec![(tail("sym", *b"hel"), Some(vec![1, 0, 1]))]).unwrap();
     assert!(matches!(
         db.search_substring(b"hel", None, None),
         Err(UnitError::Storage(kerno_core::Error::Corruption(_)))
