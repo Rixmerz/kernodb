@@ -226,6 +226,9 @@ never return wrong data.
 | `db.set_fulltext(type, enabled)` | `None`. Keyword-index a type (off by default); its active units follow in the same commit |
 | `db.fulltext(type)` | `bool`: whether the type is keyword-indexed |
 | `db.search_text(query, limit=10, types=None)` | `list[TextHit]` (`id`, `score`), best first, over the keyword-indexed types or only those in `types`. Raises when it could never match (see above) |
+| `db.set_substring(type, enabled)` | `None`. Trigram-index a type for substring search (off by default); its active units follow in the same commit |
+| `db.substring(type)` | `bool`: whether the type is substring-indexed |
+| `db.search_substring(needle, limit=None, types=None)` | `list[str]`: the ids of the units whose payload holds `needle` (`str` or `bytes`), in id order, at most `limit`. ASCII letters match in either case, like SQL's `LIKE '%needle%'`; the first 256 KiB of a payload are searched. Raises like `search_text` when it could never match, and `InvalidArgumentError` for an empty needle or one over 1024 bytes |
 | `db.last_commit_seq()` | the sequence of the last commit |
 | `db.refresh()` | on a `read_only=True` database: pick up the commits a writer made since the open; returns the sequence now read |
 | `db.define_schema(type, fields)` / `db.create_index(type, field)` | `None` |

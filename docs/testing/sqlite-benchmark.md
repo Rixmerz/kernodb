@@ -11,6 +11,10 @@ listed first-class, not buried.
 | Reproduce | `SCALES=tiny REPS=5 spikes/storage/run-sqlite-comparison.sh` ([script](../../spikes/storage/run-sqlite-comparison.sh), [aggregator](../../spikes/storage/aggregate-sqlite.py)) |
 | Earlier, descriptive runs | [`sqlite-report.md`](sqlite-report.md) (E8-S0) and [`sqlite-report-e9.md`](sqlite-report-e9.md) (E9-17), in Spanish, with their own scripts and data; this one replaces their hand-assembled commands with a script |
 
+The database-level comparison from Python (units, relations, substring and keyword search, the
+benchmark of [ADR-0025](../adr/0025-substring-index-and-sqlite-parity.md)) is
+[`python-vs-sqlite.md`](python-vs-sqlite.md); this document compares the storage engines only.
+
 **Read §3 before the numbers.** The machine was heavily shared during the run, so only differences
 larger than the spread between repetitions mean anything.
 

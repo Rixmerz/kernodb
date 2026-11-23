@@ -125,7 +125,7 @@ export declare class Db {
    * match throws instead of returning `[]`, with the errors of `searchText`; `INVALID_ARGUMENT`
    * also for an empty needle or one over 1024 bytes.
    */
-  searchSubstring(needle: string | Buffer, options?: SearchSubstringOptions | undefined | null): Array<string>
+  searchSubstring(needle: Payload, options?: SearchSubstringOptions | undefined | null): Array<string>
   /**
    * Gives `unitType` a schema. Defining the schema the type has already (field order aside) is
    * accepted and writes nothing, so a program can define on every start; a different one throws
@@ -429,19 +429,19 @@ export interface Revision {
   payload?: Buffer
 }
 
-/** Options of `searchText`. */
-export interface SearchTextOptions {
-  /** Most hits, at least 1. Default 10. */
-  limit?: number
-  /** Search only these unit types (at least one). Default: every keyword-indexed type. */
-  types?: Array<string>
-}
-
 /** Options of `searchSubstring`. */
 export interface SearchSubstringOptions {
   /** Most ids, at least 1. Default: every match. */
   limit?: number
   /** Search only these unit types (at least one). Default: every substring-indexed type. */
+  types?: Array<string>
+}
+
+/** Options of `searchText`. */
+export interface SearchTextOptions {
+  /** Most hits, at least 1. Default 10. */
+  limit?: number
+  /** Search only these unit types (at least one). Default: every keyword-indexed type. */
   types?: Array<string>
 }
 

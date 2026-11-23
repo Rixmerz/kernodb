@@ -542,10 +542,9 @@ fn verify_reports_a_missing_an_extra_and_a_misplaced_entry() {
     db.raw_commit(low_bound).unwrap();
     assert_eq!(rules(&db), ["UNIT-52"]);
     restore(&db);
-    let overlap = vec![
-        (tail("sym", *b"hel"), Some(encode_block(&[lo, hi]))),
-        (block_key(&hel, Some(hi)), Some(encode_block(&[lo]))),
-    ];
+    // Each unit once, but the tail holds a unit below the bound of the block before it.
+    let overlap =
+        vec![(tail("sym", *b"hel"), Some(encode_block(&[lo]))), (block_key(&hel, Some(hi)), Some(encode_block(&[hi])))];
     db.raw_commit(overlap).unwrap();
     assert_eq!(rules(&db), ["UNIT-52"]);
     restore(&db);

@@ -206,13 +206,13 @@ pub(crate) fn decode_block(v: &[u8]) -> Result<Vec<UnitId>, DecodeError> {
         [_, ..] => return Err(e(UnitRule::Unit7, "a newer envelope_version")),
     }
     let body = &v[2..];
-    if body.is_empty() || body.len() % 16 != 0 {
+    if body.is_empty() || !body.len().is_multiple_of(16) {
         return Err(e(UnitRule::Unit9, "no whole unit id, or a partial one"));
     }
     if body.len() / 16 > BLOCK_MAX {
         return Err(e(UnitRule::Unit11, "more unit ids than a block holds"));
     }
-    let units: Vec<UnitId> = body.chunks_exact(16).map(|c| UnitId(c.try_into().expect("16 bytes"))).collect();
+    let units: Vec<UnitId> = body.as_chunks::<16>().0.iter().map(|c| UnitId(*c)).collect();
     if units.windows(2).any(|w| w[0] >= w[1]) {
         return Err(e(UnitRule::Unit13, "unit ids not strictly ascending"));
     }
