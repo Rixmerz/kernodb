@@ -1227,3 +1227,26 @@ fn a_scan_by_type_equals_the_reference_with_histories_and_interleaved_types() {
         }
     }
 }
+
+/// A page of the scan stops at its byte budget: units whose payloads are far
+/// bigger than a page's share still come back whole and equal to the reference
+/// path, in order, with small units between them.
+#[test]
+fn a_scan_by_type_reads_payloads_bigger_than_a_page() {
+    let db: UnitDb<EmuLog> = open();
+    let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
+    for i in 0..12u32 {
+        // 600 KiB, 5 B, 5 B, ... so a page's byte budget ends inside the run.
+        let payload = if i % 3 == 0 { vec![i as u8; 600 * 1024] } else { format!("p{i}").into_bytes() };
+        cs.create(new_unit(TYPES[(i % 2) as usize], 1, &payload)).unwrap();
+    }
+    cs.commit().unwrap();
+    db.rebuild_index().unwrap();
+    let snap = db.snapshot().unwrap();
+    for t in &TYPES[..2] {
+        let filter = UnitFilter { unit_type: Some((*t).into()), schema_version: None };
+        let want = snap.reference_filter(&filter).unwrap();
+        assert!(want.iter().any(|u| u.payload.as_ref().is_some_and(|p| p.len() == 600 * 1024)));
+        assert_eq!(snap.indexed_scan_via(IndexPath::ByType, &filter).unwrap(), want, "{t}");
+    }
+}

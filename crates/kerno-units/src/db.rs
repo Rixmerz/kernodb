@@ -467,6 +467,8 @@ struct Page {
 
 const WIDE_PAGE: usize = 256;
 const SEEK_PAGE: usize = 8;
+/// A page ends once its rows hold this many bytes (the first row is always kept).
+const PAGE_BYTES: usize = 1 << 20;
 
 impl<'a, S: Snapshot> PagedGets<'a, S> {
     /// Reads of keys that start with `tag`.
@@ -483,8 +485,24 @@ impl<'a, S: Snapshot> PagedGets<'a, S> {
         if !covered {
             p.limit = if p.served <= 2 && !p.rows.is_empty() { SEEK_PAGE } else { WIDE_PAGE };
             let end = [p.tag + 1];
-            let rows = self.snap.scan(Bound::Included(key), Bound::Excluded(&end), p.limit)?;
-            p.full = rows.len() == p.limit;
+            // The page also stops at PAGE_BYTES: a payload record can be MAX_PAYLOAD_LEN long, and the
+            // rows past the one asked for may be of units the caller never reads.
+            let (mut rows, mut bytes, mut cut) = (Vec::new(), 0usize, false);
+            let mut visit = |k: &[u8], v: &[u8]| {
+                rows.push((k.to_vec(), v.to_vec()));
+                bytes += k.len() + v.len();
+                if bytes >= PAGE_BYTES {
+                    cut = true;
+                    // Stops the scan; the error is swallowed below, `cut` says why it stopped.
+                    return Err(kerno_core::Error::InvalidArgument("page full".into()));
+                }
+                Ok(())
+            };
+            let scanned = self.snap.scan_visit(Bound::Included(key), Bound::Excluded(&end), p.limit, &mut visit);
+            if !cut {
+                scanned?;
+            }
+            p.full = cut || rows.len() == p.limit;
             p.rows = rows;
             p.from = key.to_vec();
             p.served = 0;

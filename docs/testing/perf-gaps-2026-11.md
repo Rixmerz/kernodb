@@ -127,7 +127,7 @@ Method as in ADR-0012: `bindings/python/bench/vs_sqlite.py`, 3 repetitions, fres
 Substring hit counts still match SQLite (18,426 and 186,413). Substring search is unchanged (0.17x / 0.31x of `LIKE`).
 
 - **Rank 2** beat its estimate (about 2.5x): 2.1x and 1.8x. The change is in `substring/mod.rs`: a `HashMap` of per-list vectors with one reused key buffer, sorted once at flush.
-- **Rank 3** changed the read path from three point reads per unit to forward scans (`PagedGets` in `db.rs`; the reference and `IDX_TYPE` paths both use it). At 100k it moved 3.13x to 2.25x, short of the 1.5x to 2x estimate. At 10k there is no measurable gain: a post-change profile (py-spy, 12k units) shows the rest is the engine scan itself (`Version::scan`, merge iterator), `load_unit` and `UnitHead::decode`, and building the Python `Unit` objects. Not established: how much of the remaining gap is the Python object construction, which SQLite's tuples do not pay (§4).
+- **Rank 3** changed the read path from three point reads per unit to forward scans (`PagedGets` in `db.rs`; the reference and `IDX_TYPE` paths both use it; a page ends at 256 rows or 1 MiB, so payloads up to the 64 MiB limit are not read ahead; the benchmark's payloads are far below 1 MiB per page, so the rows above are not affected). At 100k it moved 3.13x to 2.25x, short of the 1.5x to 2x estimate. At 10k there is no measurable gain: a post-change profile (py-spy, 12k units) shows the rest is the engine scan itself (`Version::scan`, merge iterator), `load_unit` and `UnitHead::decode`, and building the Python `Unit` objects. Not established: how much of the remaining gap is the Python object construction, which SQLite's tuples do not pay (§4).
 
 ## 4. Benchmark fairness (not changed; these notes only)
 
