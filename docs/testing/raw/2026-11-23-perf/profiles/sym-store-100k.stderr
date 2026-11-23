@@ -1,0 +1,8 @@
+py-spy> Sampling process 250 times a second. Press Control-C to exit.
+
+sym-store 8.2624
+sym-store 7.2590
+
+py-spy> Stopped sampling because process exited
+py-spy> Wrote raw flamegraph data to '/home/rixmerz/kernodb-perf/prof/sym-store-100k.raw'. Samples: 4375 Errors: 46
+py-spy> You can use the flamegraph.pl script from https://github.com/brendangregg/flamegraph to generate a SVG
