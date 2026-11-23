@@ -7,16 +7,19 @@
 //! touches no shared state, only its overlay: an abort, a drop and a panic in
 //! the caller's code release the slot and leave no trace.
 //!
-//! The overlay is two views of the same writes: the final value of every key
-//! written one by one (`overlay`) and the ranges deleted (`ranges`, which hide
-//! the snapshot's keys, not the overlay's later writes). Together they are
-//! the canonical form of the writes (WAL-C1): the ranges, then the points in
-//! key order, each key once. `commit` hands them to the engine as they are,
-//! so a write is copied once, into the overlay, and never sorted again.
+//! The overlay is two views of the same writes: the keys written one by one
+//! (`overlay`) and the ranges deleted (`ranges`, which hide the snapshot's
+//! keys, not the overlay's later writes). Together they are the canonical
+//! form of the writes (WAL-C1): the ranges, then the points in key order,
+//! each key once. Writes are appended to a buffer in call order; it is sorted
+//! once at commit (last write of a key wins). A read that needs the sorted
+//! view folds the buffer into a map first, so a batch that only writes pays
+//! one sort and no per-record tree insert.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, VecDeque};
 use std::ops::Bound;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use kerno_core::contract::{Snapshot, Txn};
 use kerno_core::{Error, Result};
@@ -28,6 +31,50 @@ use crate::stats::bump;
 /// Largest page read from the snapshot while a scan looks for rows that the
 /// transaction's ranges do not hide.
 const SCAN_PAGE: usize = 1024;
+
+/// Writes a `get` answers by scanning the buffer backwards; past this many
+/// the buffer is folded into the map instead, so that a transaction that
+/// reads between its writes does not scan a long buffer on every read.
+const PENDING_SCAN: usize = 32;
+
+type Entry = (Vec<u8>, Option<Vec<u8>>);
+
+/// The point writes of a transaction (`None` is a deletion).
+#[derive(Default)]
+struct Overlay {
+    /// Final state of the keys already folded in, in key order.
+    map: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
+    /// Writes since the last fold, in call order: a later entry of a key
+    /// replaces an earlier one, and any entry replaces the map's.
+    pending: Vec<Entry>,
+}
+
+impl Overlay {
+    fn fold(&mut self) {
+        for (k, v) in self.pending.drain(..) {
+            self.map.insert(k, v);
+        }
+    }
+
+    /// The points in key order, each key once, the last write of it.
+    fn into_sorted(mut self) -> Vec<Entry> {
+        if self.map.is_empty() {
+            // Stable sort keeps the call order inside a run of one key; the
+            // run's last entry is the write that stands.
+            self.pending.sort_by(|a, b| a.0.cmp(&b.0));
+            let mut out: Vec<Entry> = Vec::with_capacity(self.pending.len());
+            for e in self.pending {
+                match out.last_mut() {
+                    Some(last) if last.0 == e.0 => *last = e,
+                    _ => out.push(e),
+                }
+            }
+            return out;
+        }
+        self.fold();
+        self.map.into_iter().collect()
+    }
+}
 
 /// A write transaction of a [`KernoDb`](crate::KernoDb), from
 /// [`begin_write`](crate::KernoDb::begin_write).
@@ -41,9 +88,9 @@ pub struct WriteTxn<'db> {
     /// version it read alive (and the files compactions replaced meanwhile)
     /// while it waits for room, for its group, or for the `fsync`.
     snapshot: Option<KernoSnapshot>,
-    /// Final state of the keys written one by one (`None` is a deletion). A
-    /// range deletion removes the entries it covers.
-    overlay: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
+    /// The keys written one by one. A range deletion removes the entries it
+    /// covers. A mutex only so that `get` and `scan` (`&self`) can fold.
+    overlay: Mutex<Overlay>,
     /// The non-empty ranges deleted, `[start, end)`: they hide keys of the
     /// snapshot. What the overlay holds was written after them and wins.
     ranges: Vec<(Vec<u8>, Vec<u8>)>,
@@ -62,7 +109,7 @@ impl<'db> WriteTxn<'db> {
         WriteTxn {
             db,
             snapshot: Some(snapshot),
-            overlay: BTreeMap::new(),
+            overlay: Mutex::new(Overlay::default()),
             ranges: Vec::new(),
             ops: 0,
             payload: 0,
@@ -76,6 +123,10 @@ impl<'db> WriteTxn<'db> {
         self.base().seq()
     }
 
+    fn overlay(&self) -> MutexGuard<'_, Overlay> {
+        self.overlay.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     fn base(&self) -> &KernoSnapshot {
         self.snapshot.as_ref().expect("a transaction reads until its commit begins")
     }
@@ -84,8 +135,17 @@ impl<'db> WriteTxn<'db> {
     /// absent if one of its range deletions covers the key, else the
     /// snapshot's.
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        if let Some(written) = self.overlay.get(key) {
-            return Ok(written.clone());
+        {
+            let mut ov = self.overlay();
+            if ov.pending.len() > PENDING_SCAN {
+                ov.fold();
+            }
+            if let Some((_, written)) = ov.pending.iter().rev().find(|(k, _)| k == key) {
+                return Ok(written.clone());
+            }
+            if let Some(written) = ov.map.get(key) {
+                return Ok(written.clone());
+            }
         }
         if covered(&self.ranges, key) {
             return Ok(None);
@@ -100,7 +160,9 @@ impl<'db> WriteTxn<'db> {
         if limit == 0 || empty_bounds(start, end) {
             return Ok(Vec::new());
         }
-        let mut written = self.overlay.range::<[u8], _>((start, end)).peekable();
+        let mut ov = self.overlay();
+        ov.fold();
+        let mut written = ov.map.range::<[u8], _>((start, end)).peekable();
         let mut base = BasePages {
             snapshot: self.base(),
             ranges: &self.ranges,
@@ -148,7 +210,7 @@ impl<'db> WriteTxn<'db> {
     pub fn put_owned(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<()> {
         check_put(&key, &value, self.db.limits())?;
         self.admit(key.len() + value.len())?;
-        self.overlay.insert(key, Some(value));
+        self.overlay.get_mut().unwrap_or_else(PoisonError::into_inner).pending.push((key, Some(value)));
         Ok(())
     }
 
@@ -156,7 +218,7 @@ impl<'db> WriteTxn<'db> {
     pub fn delete(&mut self, key: &[u8]) -> Result<()> {
         check_delete(key, self.db.limits())?;
         self.admit(key.len())?;
-        self.overlay.insert(key.to_vec(), None);
+        self.overlay.get_mut().unwrap_or_else(PoisonError::into_inner).pending.push((key.to_vec(), None));
         Ok(())
     }
 
@@ -167,7 +229,10 @@ impl<'db> WriteTxn<'db> {
         check_range(start, end, self.db.limits())?;
         self.admit(start.len() + end.len())?;
         if start < end {
-            self.overlay.retain(|k, _| !(start <= k.as_slice() && k.as_slice() < end));
+            let ov = self.overlay.get_mut().unwrap_or_else(PoisonError::into_inner);
+            let hit = |k: &[u8]| start <= k && k < end;
+            ov.map.retain(|k, _| !hit(k));
+            ov.pending.retain(|(k, _)| !hit(k));
             self.ranges.push((start.to_vec(), end.to_vec()));
         }
         Ok(())
@@ -196,12 +261,13 @@ impl<'db> WriteTxn<'db> {
 
     /// The writes in canonical form (WAL-C1), taken out of the transaction:
     /// what [`canonicalize`](crate::format::wal::canonicalize) gives for the
-    /// same writes in order, since the overlay already applied each of them.
+    /// same writes in order: range deletions already removed the entries
+    /// written before them, and the last write of a key wins.
     fn take_canonical(&mut self) -> CanonicalCommit<Vec<u8>> {
         let mut ranges = std::mem::take(&mut self.ranges);
         ranges.sort_unstable();
         ranges.dedup();
-        CanonicalCommit { ranges, points: std::mem::take(&mut self.overlay).into_iter().collect() }
+        CanonicalCommit { ranges, points: std::mem::take(self.overlay.get_mut().unwrap_or_else(PoisonError::into_inner)).into_sorted() }
     }
 
     /// Commits the writes as one batch with the next sequence and returns it,
