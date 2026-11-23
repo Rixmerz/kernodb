@@ -78,7 +78,7 @@ use crate::codec::{
     Adjacency, ChangeSetRecord, CsMember, Key, LAYER_MARK_NAME, LAYER_VERSION, LAYER_VERSION_DERIVED,
     LAYER_VERSION_PUBLIC_IDS, LAYER_VERSION_REL_COUNTS, LAYER_VERSION_SCHEMAS, LAYER_VERSION_TYPE_COUNTS, LayerMeta,
     MAX_CHANGESET_FIELD_LEN, MAX_LAYER_VERSION, MAX_MEMBER_COUNT, MAX_METADATA_LEN, MAX_REV_REF_LEN, MAX_UNIT_TYPE_LEN,
-    RelationRecord, RevisionMeta, TAG_REL_IN, TAG_REL_OUT, UnitHead, valid_relation_type,
+    RelationRecord, RevisionMeta, TAG_REL_IN, TAG_REL_OUT, TAG_UNIT_HEAD, UnitHead, valid_relation_type,
 };
 use crate::error::{DecodeError, UnitError};
 use crate::payload::{ContentHash, MAX_PAYLOAD_LEN, PAYLOAD_CODEC_OPAQUE, verify_payload};
@@ -438,6 +438,108 @@ pub(crate) fn load_unit(get: &GetFn<'_>, id: UnitId) -> Result<Option<Loaded>, U
         .map_err(|e| crate::PayloadError { detail: format!("unit {id} rev {rev}: {}", e.detail), ..e })?;
     let payload = verified.bytes().map(<[u8]>::to_vec);
     Ok(Some((head, meta, payload)))
+}
+
+/// Point reads of a snapshot served from forward scans: a read of the unit
+/// scans (`REV_META` and `REV_PAYLOAD` keys are `tag ‖ unit ‖ rev`, so the
+/// records of consecutive units are adjacent) refills a page at the key asked
+/// and answers the next keys from it. A key behind the page, or past it, scans
+/// again, so any order of reads is correct and an ascending one is cheap.
+///
+/// `ponytail:` a unit with a long history has its old revisions between two
+/// heads, so a page holds fewer units; a refill that served at most two reads
+/// shrinks the next page to [`SEEK_PAGE`]. Upgrade path: a `HEAD_REV`-keyed
+/// index of the head revisions if long histories on a scan become common.
+pub(crate) struct PagedGets<'a, S: Snapshot> {
+    snap: &'a S,
+    page: std::cell::RefCell<Page>,
+}
+
+struct Page {
+    tag: u8,
+    from: Vec<u8>,
+    rows: Vec<(Vec<u8>, Vec<u8>)>,
+    /// The page ends before the end of the range: a key past its last row is unknown.
+    full: bool,
+    served: usize,
+    limit: usize,
+}
+
+const WIDE_PAGE: usize = 256;
+const SEEK_PAGE: usize = 8;
+/// A page ends once its rows hold this many bytes (the first row is always kept).
+const PAGE_BYTES: usize = 1 << 20;
+
+impl<'a, S: Snapshot> PagedGets<'a, S> {
+    /// Reads of keys that start with `tag`.
+    pub(crate) fn new(snap: &'a S, tag: u8) -> Self {
+        let page = Page { tag, from: Vec::new(), rows: Vec::new(), full: false, served: 0, limit: WIDE_PAGE };
+        PagedGets { snap, page: std::cell::RefCell::new(page) }
+    }
+
+    pub(crate) fn get(&self, key: &[u8]) -> kerno_core::Result<Option<Vec<u8>>> {
+        let mut p = self.page.borrow_mut();
+        let covered = !p.rows.is_empty()
+            && key >= p.from.as_slice()
+            && (!p.full || p.rows.last().is_some_and(|(last, _)| key <= last.as_slice()));
+        if !covered {
+            p.limit = if p.served <= 2 && !p.rows.is_empty() { SEEK_PAGE } else { WIDE_PAGE };
+            let end = [p.tag + 1];
+            // The page also stops at PAGE_BYTES: a payload record can be MAX_PAYLOAD_LEN long, and the
+            // rows past the one asked for may be of units the caller never reads.
+            let (mut rows, mut bytes, mut cut) = (Vec::new(), 0usize, false);
+            let mut visit = |k: &[u8], v: &[u8]| {
+                rows.push((k.to_vec(), v.to_vec()));
+                bytes += k.len() + v.len();
+                if bytes >= PAGE_BYTES {
+                    cut = true;
+                    // Stops the scan; the error is swallowed below, `cut` says why it stopped.
+                    return Err(kerno_core::Error::InvalidArgument("page full".into()));
+                }
+                Ok(())
+            };
+            let scanned = self.snap.scan_visit(Bound::Included(key), Bound::Excluded(&end), p.limit, &mut visit);
+            if !cut {
+                scanned?;
+            }
+            p.full = cut || rows.len() == p.limit;
+            p.rows = rows;
+            p.from = key.to_vec();
+            p.served = 0;
+        }
+        p.served += 1;
+        Ok(p.rows.binary_search_by(|(k, _)| k.as_slice().cmp(key)).ok().map(|at| p.rows[at].1.clone()))
+    }
+}
+
+/// [`load_unit`] reading the revision records of consecutive units from pages.
+pub(crate) struct UnitPages<'a, S: Snapshot> {
+    heads: PagedGets<'a, S>,
+    metas: PagedGets<'a, S>,
+    payloads: PagedGets<'a, S>,
+}
+
+impl<'a, S: Snapshot> UnitPages<'a, S> {
+    pub(crate) fn new(snap: &'a S) -> Self {
+        UnitPages {
+            heads: PagedGets::new(snap, TAG_UNIT_HEAD),
+            metas: PagedGets::new(snap, crate::codec::TAG_REV_META),
+            payloads: PagedGets::new(snap, crate::codec::TAG_REV_PAYLOAD),
+        }
+    }
+
+    /// [`load_unit`] of `id`; `head` is its already scanned `UNIT_HEAD` pair, when the caller has it.
+    pub(crate) fn load(&self, id: UnitId, head: Option<(&[u8], &[u8])>) -> Result<Option<Loaded>, UnitError> {
+        let get = |k: &[u8]| match k.first() {
+            Some(&crate::codec::TAG_REV_META) => self.metas.get(k),
+            Some(&crate::codec::TAG_REV_PAYLOAD) => self.payloads.get(k),
+            _ => match head {
+                Some((hk, hv)) if hk == k => Ok(Some(hv.to_vec())),
+                _ => self.heads.get(k),
+            },
+        };
+        load_unit(&get, id)
+    }
 }
 
 pub(crate) fn to_unit(id: UnitId, head: UnitHead, payload: Option<Vec<u8>>) -> Unit {

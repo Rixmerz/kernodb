@@ -1185,3 +1185,68 @@ macro_rules! engine_tests {
 
 engine_tests!(emulated_log, EmuLog);
 engine_tests!(kerno, KernoDb);
+
+/// The scan of a type reads head, revision and payload records from pages; the
+/// answer is the reference path's whatever the type's share of the units, the
+/// history of each unit and the versions it holds.
+#[test]
+fn a_scan_by_type_equals_the_reference_with_histories_and_interleaved_types() {
+    let db: UnitDb<EmuLog> = open();
+    let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
+    let mut ids = Vec::new();
+    for i in 0..700u32 {
+        let t = TYPES[(i % 3) as usize];
+        let schema = SCHEMAS[((i / 3) % 2) as usize];
+        ids.push(cs.create(new_unit(t, schema, format!("payload {i}").as_bytes())).unwrap());
+    }
+    cs.commit().unwrap();
+    // Long histories on some units spread their revisions between the heads.
+    for round in 0..4 {
+        let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
+        for id in ids.iter().step_by(5 + round) {
+            let upd =
+                UnitUpdate { payload: format!("round {round}").into_bytes(), schema_version: None, metadata: None };
+            cs.update(*id, upd, None).unwrap();
+        }
+        cs.commit().unwrap();
+    }
+    let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
+    cs.archive(ids[3], None).unwrap();
+    cs.delete(ids[6], None).unwrap();
+    cs.commit().unwrap();
+    db.rebuild_index().unwrap();
+
+    let snap = db.snapshot().unwrap();
+    for t in TYPES {
+        for schema_version in [None, Some(1), Some(2)] {
+            let filter = UnitFilter { unit_type: Some(t.into()), schema_version };
+            let want = snap.reference_filter(&filter).unwrap();
+            assert!(!want.is_empty());
+            assert_eq!(snap.indexed_scan_via(IndexPath::ByType, &filter).unwrap(), want, "{t} {schema_version:?}");
+            assert_eq!(snap.reference_filter(&filter).unwrap(), want);
+        }
+    }
+}
+
+/// A page of the scan stops at its byte budget: units whose payloads are far
+/// bigger than a page's share still come back whole and equal to the reference
+/// path, in order, with small units between them.
+#[test]
+fn a_scan_by_type_reads_payloads_bigger_than_a_page() {
+    let db: UnitDb<EmuLog> = open();
+    let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
+    for i in 0..12u32 {
+        // 600 KiB, 5 B, 5 B, ... so a page's byte budget ends inside the run.
+        let payload = if i % 3 == 0 { vec![i as u8; 600 * 1024] } else { format!("p{i}").into_bytes() };
+        cs.create(new_unit(TYPES[(i % 2) as usize], 1, &payload)).unwrap();
+    }
+    cs.commit().unwrap();
+    db.rebuild_index().unwrap();
+    let snap = db.snapshot().unwrap();
+    for t in &TYPES[..2] {
+        let filter = UnitFilter { unit_type: Some((*t).into()), schema_version: None };
+        let want = snap.reference_filter(&filter).unwrap();
+        assert!(want.iter().any(|u| u.payload.as_ref().is_some_and(|p| p.len() == 600 * 1024)));
+        assert_eq!(snap.indexed_scan_via(IndexPath::ByType, &filter).unwrap(), want, "{t}");
+    }
+}
