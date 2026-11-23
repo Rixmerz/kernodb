@@ -1063,6 +1063,54 @@ impl Db {
         self.units.snapshot()?.fulltext_enabled(unit_type)
     }
 
+    /// Turns the substring (trigram) index of `unit_type` on (`enabled = true`) or back off.
+    ///
+    /// It is off by default: the index costs one record per distinct trigram of a payload, in
+    /// write time and disk. Turning it on indexes the type's active units in the same commit,
+    /// and turning it off removes their entries. The setting is stored in the database (layer
+    /// version 8, ADR-0025), so it holds across opens, and a build that predates it refuses the
+    /// database instead of misreading it.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidArgument` when the type name is invalid; `ChangeSetTooLarge` when the entries of
+    /// the type's units do not fit one commit.
+    pub fn set_substring(&self, unit_type: &str, enabled: bool) -> Result<()> {
+        self.units.set_substring(unit_type, enabled, ChangeMeta::default()).map(|_| ())
+    }
+
+    /// The ids of the units whose payload holds `needle`, in unit id order, at most `limit`
+    /// (`None`: all of them). ASCII letters match in either case and every other byte must be
+    /// equal, as in SQL's `LIKE '%needle%'`. Only the types turned on with
+    /// [`Db::set_substring`] are searched; `types` restricts the search further to those unit
+    /// types (`None`: every substring-indexed type). The first 256 KiB of a payload are searched.
+    ///
+    /// A search that could never match raises instead of answering an empty list.
+    ///
+    /// # Errors
+    ///
+    /// `NotIndexed` when no type is substring-indexed or a type in `types` is not;
+    /// `UnknownType` for a type in `types` that no unit, schema or option ever named;
+    /// `InvalidArgument` for `limit == Some(0)`, an empty needle or one over 1024 bytes, an
+    /// empty `types`, or an invalid type name; the engine fails or finds the index damaged.
+    pub fn search_substring(
+        &self,
+        needle: impl AsRef<[u8]>,
+        limit: Option<usize>,
+        types: Option<&[&str]>,
+    ) -> Result<Vec<UnitId>> {
+        self.units.snapshot()?.search_substring(needle.as_ref(), limit, types)
+    }
+
+    /// Whether `unit_type` is substring-indexed (see [`Db::set_substring`]; off by default).
+    ///
+    /// # Errors
+    ///
+    /// The engine fails.
+    pub fn substring(&self, unit_type: &str) -> Result<bool> {
+        self.units.snapshot()?.substring_enabled(unit_type)
+    }
+
     /// Every active unit that matches `filter`, in unit id order.
     ///
     /// # Errors

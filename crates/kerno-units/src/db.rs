@@ -440,7 +440,7 @@ pub(crate) fn load_unit(get: &GetFn<'_>, id: UnitId) -> Result<Option<Loaded>, U
     Ok(Some((head, meta, payload)))
 }
 
-fn to_unit(id: UnitId, head: UnitHead, payload: Option<Vec<u8>>) -> Unit {
+pub(crate) fn to_unit(id: UnitId, head: UnitHead, payload: Option<Vec<u8>>) -> Unit {
     Unit {
         id,
         unit_type: head.unit_type,
@@ -582,6 +582,8 @@ impl<E: TxnEngine> UnitDb<E> {
             active_known: std::collections::HashSet::new(),
             schema_ops: 0,
             type_option_ops: 0,
+            substring_ops: 0,
+            substring_pending: Default::default(),
             members: Vec::new(),
             relation_ops: 0,
             touched: BTreeSet::new(),
@@ -591,6 +593,8 @@ impl<E: TxnEngine> UnitDb<E> {
             writes: 0,
             bytes: 0,
             deferred: false,
+            options_cache: std::cell::RefCell::default(),
+            no_derived: std::cell::Cell::new(None),
         })
     }
 
@@ -845,6 +849,19 @@ impl<E: Engine> UnitSnapshot<E> {
 
     /// The relation `id` at this snapshot, or `None`.
     pub fn get_relation(&self, id: RelationId) -> Result<Option<Relation>, UnitError> {
+        self.relation_checked(id, &mut std::collections::HashSet::new(), None)
+    }
+
+    /// [`get_relation`](Self::get_relation) for a caller that reads many relations at one
+    /// snapshot: `active` holds the units already found `Active` (each head is read once), and
+    /// `scanned` names the adjacency side the caller read itself and compares with the record,
+    /// so that entry is not read a second time.
+    fn relation_checked(
+        &self,
+        id: RelationId,
+        active: &mut std::collections::HashSet<UnitId>,
+        scanned: Option<Direction>,
+    ) -> Result<Option<Relation>, UnitError> {
         let Some(raw) = self.snap.get(&key(Key::Relation { edge: id })?)? else {
             return Ok(None);
         };
@@ -860,9 +877,14 @@ impl<E: Engine> UnitSnapshot<E> {
             )));
         }
         for unit in [record.from, record.to] {
+            if active.contains(&unit) {
+                continue;
+            }
             let get = |k: &[u8]| self.snap.get(k);
             match crate::history::read_head(&get, unit)? {
-                Some(h) if h.lifecycle == Lifecycle::Active => {}
+                Some(h) if h.lifecycle == Lifecycle::Active => {
+                    active.insert(unit);
+                }
                 Some(h) => return Err(corruption(format!("relation {id}: unit {unit} is {:?}", h.lifecycle))),
                 None => return Err(corruption(format!("relation {id}: unit {unit} does not exist"))),
             }
@@ -871,7 +893,12 @@ impl<E: Engine> UnitSnapshot<E> {
             Key::RelationOut { unit: record.from, relation_type: record.relation_type.clone(), edge: id },
             Key::RelationIn { unit: record.to, relation_type: record.relation_type.clone(), edge: id },
         );
-        for (side, k, other) in [("REL_OUT", out_key, record.to), ("REL_IN", in_key, record.from)] {
+        for (side, dir, k, other) in
+            [("REL_OUT", Direction::Out, out_key, record.to), ("REL_IN", Direction::In, in_key, record.from)]
+        {
+            if scanned == Some(dir) {
+                continue;
+            }
             let ok = match self.snap.get(&key(k)?)? {
                 Some(v) => {
                     Adjacency::decode(&v).map_err(|e| context(e, &format!("{side} entry of {id}")))?.other == other
@@ -916,6 +943,8 @@ impl<E: Engine> UnitSnapshot<E> {
         let expected = crate::adj_count::expected(&self.snap, unit, dir, relation_type)?;
         let mut seen: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
         let mut out = Vec::new();
+        // The heads this read already found `Active`: `unit` is an end of every relation here.
+        let mut active = std::collections::HashSet::new();
         scan_all(&self.snap, start, end, |k, v| {
             let (edge, ty) = match Key::decode(k)? {
                 Key::RelationOut { relation_type, edge, .. } | Key::RelationIn { relation_type, edge, .. } => {
@@ -924,7 +953,9 @@ impl<E: Engine> UnitSnapshot<E> {
                 _ => return Err(corruption("a key in an adjacency range is not an adjacency key".into())),
             };
             let other = Adjacency::decode(v).map_err(|e| context(e, &format!("adjacency entry of {edge}")))?.other;
-            let Some(rel) = self.get_relation(edge)? else {
+            // The entry just scanned is this side's: it is compared with the record below
+            // instead of being read again.
+            let Some(rel) = self.relation_checked(edge, &mut active, Some(dir))? else {
                 return Err(corruption(format!("adjacency entry of relation {edge} has no REL record")));
             };
             let (here, there) = if dir == Direction::Out { (rel.from, rel.to) } else { (rel.to, rel.from) };
@@ -1039,6 +1070,12 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     /// Type-options records written or removed so far (ADR-0022): they make
     /// the change set non-empty and raise the mark to layer version 7.
     pub(crate) type_option_ops: usize,
+    /// Changes of a type's `SUBSTRING` option so far (ADR-0025): they raise
+    /// the mark to layer version 8.
+    pub(crate) substring_ops: usize,
+    /// Trigram index changes planned so far, written at commit by
+    /// [`ChangeSet::flush_substring`] (ADR-0025).
+    pub(crate) substring_pending: crate::substring::PendingGrams,
     members: Vec<(RevisionId, RevisionKind)>,
     /// Relations created or deleted so far (E4-02): they are not members, but
     /// they count against `max_changeset_ops` and make the change set non-empty.
@@ -1056,9 +1093,18 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     /// A retention change set: committed with deferred durability
     /// (decision 12c), see [`UnitDb::run_retention`].
     deferred: bool,
+    /// The options byte of the unit types this change set looked up (`0`: no
+    /// record), so a batch reads a type's options once. [`ChangeSet::write_owned`]
+    /// empties it when a type-options record is written.
+    pub(crate) options_cache: std::cell::RefCell<std::collections::HashMap<String, u8>>,
+    /// Whether the database held no `DERIVED_SRC` record when this change set
+    /// first asked (`None`: not asked yet). Without one, and while the change
+    /// set writes no derived record itself, no unit has derived data to follow.
+    no_derived: std::cell::Cell<Option<bool>>,
 }
 
 /// One engine write of a planned operation.
+#[derive(Clone)]
 pub(crate) enum Write {
     Put(Vec<u8>, Vec<u8>),
     Delete(Vec<u8>),
@@ -1134,21 +1180,36 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
 
     /// Writes one put; on an engine error the change set is broken.
     fn put(&mut self, k: &[u8], v: &[u8]) -> Result<(), UnitError> {
-        self.write(&Write::Put(k.to_vec(), v.to_vec()))
+        self.write_owned(Write::Put(k.to_vec(), v.to_vec()))
     }
 
     /// Writes one engine operation; on an engine error the change set is broken.
     pub(crate) fn write(&mut self, w: &Write) -> Result<(), UnitError> {
+        self.write_owned(w.clone())
+    }
+
+    /// [`write`](Self::write) of an operation the caller no longer needs: the
+    /// engine keeps its buffers instead of copying them (the path of every
+    /// record of a unit or a relation).
+    pub(crate) fn write_owned(&mut self, w: Write) -> Result<(), UnitError> {
         let Some(txn) = self.txn.as_mut() else {
             return Err(UnitError::ChangeSetClosed);
         };
-        let len = match w {
+        let len = match &w {
             Write::Put(k, v) | Write::DeleteRange(k, v) => k.len() + v.len(),
             Write::Delete(k) => k.len(),
         };
         let (writes, bytes) = (self.writes + 1, self.bytes + len);
+        // A type-options record, or a range that may cover some: forget what was read.
+        let options_stale = match &w {
+            Write::Put(k, _) | Write::Delete(k) => k.first() == Some(&crate::type_options::TAG_TYPE_OPTIONS),
+            Write::DeleteRange(..) => true,
+        };
+        if options_stale {
+            self.options_cache.get_mut().clear();
+        }
         if !self.active_known.is_empty() {
-            match w {
+            match &w {
                 Write::Put(k, _) | Write::Delete(k) => {
                     if k.len() == 17 && k[0] == crate::codec::TAG_UNIT_HEAD {
                         let mut id = [0u8; 16];
@@ -1160,9 +1221,9 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
             }
         }
         let r = match w {
-            Write::Put(k, v) => txn.put(k, v),
-            Write::Delete(k) => txn.delete(k),
-            Write::DeleteRange(s, e) => txn.delete_range(s, e),
+            Write::Put(k, v) => txn.put_owned(k, v),
+            Write::Delete(k) => txn.delete(&k),
+            Write::DeleteRange(s, e) => txn.delete_range(&s, &e),
         };
         match r {
             Ok(()) => {
@@ -1201,8 +1262,8 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         if let Some(l) = live {
             self.put_live(l)?;
         }
-        for w in &plan.writes {
-            self.write(w)?;
+        for w in plan.writes {
+            self.write_owned(w)?;
         }
         self.touched.insert(plan.rev.unit);
         self.members.push((plan.rev, plan.kind));
@@ -1226,15 +1287,19 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         // The full-text entries of the unit follow its text in this same
         // transaction, planned by reads like the count above.
         let text = self.plan_fulltext(plan.rev.unit, &plan.writes)?;
+        // So do its trigram entries, when its type is searched by substring.
+        let grams = self.plan_substring(plan.rev.unit, &plan.writes)?;
+        let unit = plan.rev.unit;
         // The schema check and the user index entries of the unit follow it
         // too; a unit the schema refuses is refused here, before any write.
         let fields = self.plan_schema(plan.rev.unit, &plan.writes)?;
         if let Some(l) = live {
             self.put_live(l)?;
         }
-        for w in plan.writes.iter().chain(&derived).chain(&text).chain(&fields) {
-            self.write(w)?;
+        for w in plan.writes.into_iter().chain(derived).chain(text).chain(fields) {
+            self.write_owned(w)?;
         }
+        self.stage_substring(unit, grams);
         self.touched.insert(plan.rev.unit);
         self.members.push((plan.rev, plan.kind));
         Ok(plan.rev.rev)
@@ -1248,6 +1313,27 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
             return Ok(Vec::new());
         }
         let txn = self.txn()?;
+        // A unit being created has no derived data yet, and neither has any unit of a database
+        // without a single `DERIVED_SRC` record: one probe per change set instead of a scan
+        // per operation. A derived write of this change set makes the probe stale, so it
+        // then counts for nothing.
+        if kind == RevisionKind::Create {
+            return Ok(Vec::new());
+        }
+        if self.derived_ops == 0 {
+            let none = match self.no_derived.get() {
+                Some(none) => none,
+                None => {
+                    let (start, end) = Key::tag_range(crate::codec::TAG_DERIVED_SRC);
+                    let none = txn.scan(Bound::Included(&start), Bound::Excluded(&end), 1)?.is_empty();
+                    self.no_derived.set(Some(none));
+                    none
+                }
+            };
+            if none {
+                return Ok(Vec::new());
+            }
+        }
         let event = if kind == RevisionKind::Delete {
             crate::vector_store::SourceEvent::Deleted
         } else {
@@ -1658,7 +1744,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         // Counts before the entries: a missing record is built from the
         // entries that exist, and the new ones are not written yet.
         self.adjust_counts(from, to, relation_type, 1)?;
-        self.apply_relation_writes(&writes)?;
+        self.apply_relation_writes(writes)?;
         Ok(edge)
     }
 
@@ -1683,7 +1769,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
             Write::Delete(key(Key::RelationIn { unit: r.to, relation_type: t(), edge })?),
         ];
         self.adjust_counts(r.from, r.to, &r.relation_type, -1)?;
-        self.apply_relation_writes(&writes)
+        self.apply_relation_writes(writes)
     }
 
     fn admit_relation(&self) -> Result<(), UnitError> {
@@ -1695,9 +1781,9 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         Ok(())
     }
 
-    fn apply_relation_writes(&mut self, writes: &[Write]) -> Result<(), UnitError> {
+    fn apply_relation_writes(&mut self, writes: [Write; 3]) -> Result<(), UnitError> {
         for w in writes {
-            self.write(w)?;
+            self.write_owned(w)?;
         }
         self.relation_ops += 1;
         Ok(())
@@ -1714,6 +1800,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
     pub fn commit(mut self) -> Result<CommitInfo, UnitError> {
         self.txn()?;
         self.flush_counts()?;
+        self.flush_substring()?;
         let durable = self.db.cfg.engine.durability == Durability::Sync;
         if self.members.is_empty()
             && !self.maintenance
@@ -1752,7 +1839,9 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         // includes everything below it (`schema_ops` counts definitions only).
         // A new database starts at the cut version (ADR-0023), whatever its
         // first change set writes.
-        let wants = if self.need_mark || self.type_option_ops > 0 {
+        let wants = if self.substring_ops > 0 {
+            crate::codec::LAYER_VERSION_SUBSTRING
+        } else if self.need_mark || self.type_option_ops > 0 {
             crate::codec::LAYER_VERSION_TYPE_OPTIONS
         } else if self.schema_ops > 0 {
             LAYER_VERSION_SCHEMAS

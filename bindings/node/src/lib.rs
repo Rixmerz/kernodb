@@ -781,6 +781,16 @@ pub struct SearchTextOptions {
     pub types: Option<Names>,
 }
 
+/// Options of `searchSubstring`.
+#[napi(object)]
+pub struct SearchSubstringOptions {
+    /// Most ids, at least 1. Default: every match.
+    #[napi(ts_type = "number")]
+    pub limit: Option<Num>,
+    /// Search only these unit types (at least one). Default: every substring-indexed type.
+    pub types: Option<Vec<String>>,
+}
+
 /// One hit of `searchText`.
 #[napi(object)]
 pub struct TextHit {
@@ -1290,6 +1300,36 @@ impl Db {
     #[napi]
     pub fn fulltext(&self, unit_type: String) -> Result<bool> {
         self.with(|db| db.fulltext(&unit_type))
+    }
+
+    /// Turns the substring (trigram) index of `unitType` on or off. It is off by default
+    /// (ADR-0025); the setting is stored in the database, and the type's active units are
+    /// indexed (or cleared) in the same commit.
+    #[napi]
+    pub fn set_substring(&self, unit_type: String, enabled: bool) -> Result<()> {
+        self.with(|db| db.set_substring(&unit_type, enabled))
+    }
+
+    /// Whether `unitType` is substring-indexed (off by default).
+    #[napi]
+    pub fn substring(&self, unit_type: String) -> Result<bool> {
+        self.with(|db| db.substring(&unit_type))
+    }
+
+    /// The ids of the units whose payload holds `needle`, in id order, at most `options.limit`
+    /// (default: all of them). ASCII letters match in either case, every other byte must be
+    /// equal, like SQL's `LIKE '%needle%'`. Only types turned on with `setSubstring` are
+    /// searched; `options.types` restricts the search to those types. A search that could never
+    /// match throws instead of returning `[]`, with the errors of `searchText`; `INVALID_ARGUMENT`
+    /// also for an empty needle or one over 1024 bytes.
+    #[napi]
+    pub fn search_substring(&self, needle: Payload, options: Option<SearchSubstringOptions>) -> Result<Vec<String>> {
+        let (limit, types) = options.map_or((None, None), |o| (o.limit, o.types));
+        let limit = whole_u32("limit", limit)?.map(|n| n as usize);
+        let needle = into_bytes(needle);
+        let names: Option<Vec<&str>> = types.as_ref().map(|t| t.iter().map(String::as_str).collect());
+        let found = self.with(|db| db.search_substring(&needle, limit, names.as_deref()))?;
+        Ok(found.iter().map(ToString::to_string).collect())
     }
 
     /// Gives `unitType` a schema. Defining the schema the type has already (field order aside) is

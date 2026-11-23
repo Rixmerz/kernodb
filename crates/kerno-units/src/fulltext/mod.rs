@@ -50,8 +50,10 @@
 //! (6 is taken by schemas, `docs/file-format/units-v6.md`; 7 by type options, ADR-0022) written with the first `STATS`, like the count records of layer 5.
 //!
 //! `ponytail:` a query reads the whole posting list of each of its terms and
-//! scores every unit in it (no top-k pruning); fine up to ~10^5 postings per
-//! term. A rebuild of legacy units is not provided.
+//! scores every unit in it (no top-k pruning of the lists); fine up to ~10^5
+//! postings per term. Only the `limit` best are sorted and, in a search
+//! restricted to some types, have their head read. A rebuild of legacy units
+//! is not provided.
 
 mod check;
 mod tokenize;
@@ -59,7 +61,7 @@ mod tokenize;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeSet, HashMap};
 use std::ops::Bound;
 
 use kerno_core::contract::{Engine, Snapshot, Txn, TxnEngine};
@@ -286,33 +288,34 @@ pub(crate) fn decode_stats(v: &[u8]) -> Result<Stats, DecodeError> {
 
 // -------------------------------------------------------------- writer
 
-/// What an operation does to the text of a unit.
-enum Next {
-    /// The writes do not change the unit's text (retention drops history).
+/// What an operation does to the content of a unit, for the indexes of its
+/// payload (this one and [`crate::substring`]).
+pub(crate) enum Next<'a> {
+    /// The writes do not change the unit's content (retention drops history).
     Unchanged,
-    /// The unit's indexed document afterwards; `None` when it has none
-    /// (not `Active`, not text, or without a term), and its type.
-    Doc(Option<Doc>, String),
+    /// The unit's type and its indexed payload afterwards; `None` when it has
+    /// none (the unit is not `Active`).
+    Content(String, Option<&'a [u8]>),
 }
 
 /// Reads the unit's new head and payload off the writes of its operation.
-fn next_of(unit: UnitId, writes: &[Write]) -> Result<Next, UnitError> {
+pub(crate) fn next_of(unit: UnitId, writes: &[Write]) -> Result<Next<'_>, UnitError> {
     let head_key = Key::UnitHead { unit }.encode()?;
     let Some(Write::Put(_, raw)) = writes.iter().find(|w| matches!(w, Write::Put(k, _) if *k == head_key)) else {
         return Ok(Next::Unchanged);
     };
     let head = UnitHead::decode(raw).map_err(|e| context(e, &format!("UNIT_HEAD of unit {unit}")))?;
     if head.lifecycle != Lifecycle::Active {
-        return Ok(Next::Doc(None, head.unit_type));
+        return Ok(Next::Content(head.unit_type, None));
     }
     let payload_key = Key::RevPayload { unit, rev: head.head_rev }.encode()?;
     Ok(writes
         .iter()
         .find_map(|w| match w {
-            Write::Put(k, p) if *k == payload_key => Some(Next::Doc(analyze(p), head.unit_type.clone())),
+            Write::Put(k, p) if *k == payload_key => Some(p.as_slice()),
             _ => None,
         })
-        .unwrap_or(Next::Unchanged))
+        .map_or(Next::Unchanged, |p| Next::Content(head.unit_type, Some(p))))
 }
 
 impl<E: TxnEngine> ChangeSet<'_, E> {
@@ -322,14 +325,25 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
     /// no index entry without its head. A change set sees its own earlier
     /// writes, so the statistics of several units add up.
     pub(crate) fn plan_fulltext(&self, unit: UnitId, writes: &[Write]) -> Result<Vec<Write>, UnitError> {
-        let Next::Doc(mut new, unit_type) = next_of(unit, writes)? else {
+        let Next::Content(unit_type, payload) = next_of(unit, writes)? else {
             return Ok(Vec::new());
         };
-        // A type that opted out (ADR-0022) keeps no document: an old one, if
-        // any, is still removed below.
-        if new.is_some() && !self.fulltext_enabled(&unit_type)? {
-            new = None;
+        // The index is opt-in per type (ADR-0023), and turning it off removes the
+        // entries of the type's units in that same change set: a unit of a type
+        // that is not indexed has no document to add or to remove. Decided
+        // before the payload is cut into terms, which most writes never need.
+        if !self.fulltext_enabled(&unit_type)? {
+            return Ok(Vec::new());
         }
+        self.plan_document(unit, payload)
+    }
+
+    /// The index writes that make the text of `payload` the document of
+    /// `unit` (`None`: the unit has no document), whatever its type's option:
+    /// what [`ChangeSet::set_fulltext`](crate::type_options) needs to index or
+    /// clear the units a type already has.
+    pub(crate) fn plan_document(&self, unit: UnitId, payload: Option<&[u8]>) -> Result<Vec<Write>, UnitError> {
+        let new = payload.and_then(analyze);
         let txn = self.txn()?;
         let old = match txn.get(&doc_key(unit))? {
             Some(raw) => Some(decode_doc(&raw).map_err(|e| context(e, &format!("DOC of unit {unit}")))?),
@@ -385,7 +399,7 @@ impl<E: Engine> UnitSnapshot<E> {
 
     /// Whether `unit_type` has ever been used: a unit, a schema or a type option names it.
     /// Types are implicit, so this is the only meaning "the type exists" can have.
-    fn type_known(&self, unit_type: &str) -> Result<bool, UnitError> {
+    pub(crate) fn type_known(&self, unit_type: &str) -> Result<bool, UnitError> {
         Ok(crate::type_count::expected_one(&self.snap, unit_type)?.is_some()
             || self.snap.get(&crate::type_options::options_key(unit_type))?.is_some()
             || self.schema(unit_type)?.is_some())
@@ -399,7 +413,8 @@ impl<E: Engine> UnitSnapshot<E> {
     /// documentation](self)); a unit with none of them is not a hit. The statistics behind the
     /// score (`N`, average length) are those of the whole index, so a unit scores the same with
     /// or without `types`. Ties are in unit id order. Reads only the posting ranges of the query
-    /// terms, the statistics record and, with `types`, the head of each scored unit.
+    /// terms, the statistics record and, with `types`, the heads of the best-scored units until
+    /// `limit` of them are of a wanted type.
     ///
     /// A search that could never match is an error, not an empty answer: see below. A database
     /// where the query simply finds nothing answers an empty list.
@@ -453,12 +468,18 @@ impl<E: Engine> UnitSnapshot<E> {
         }
         let n_docs = stats.docs as f64;
         let avg_len = (stats.total_len as f64 / n_docs).max(1.0);
-        let mut scores: BTreeMap<UnitId, f64> = BTreeMap::new();
+        let mut scores: HashMap<UnitId, f64> = HashMap::new();
         for term in &terms {
             let (start, end) = posting_range(term);
+            // A key of the range is `start ‖ unit[16]`: the unit is its tail, and only a key of
+            // another length needs the full decoder (for its error).
+            let unit_at = start.len();
             let mut postings = Vec::new();
             scan_all(&self.snap, start, end, |k, v| {
-                let (_, unit) = decode_posting_key(k).map_err(|e| context(e, "POSTING"))?;
+                let unit = match k.get(unit_at..).and_then(|b| <[u8; 16]>::try_from(b).ok()) {
+                    Some(unit) => UnitId(unit),
+                    None => decode_posting_key(k).map_err(|e| context(e, "POSTING"))?.1,
+                };
                 postings.push((unit, decode_posting(v).map_err(|e| context(e, "POSTING"))?));
                 Ok(())
             })?;
@@ -469,25 +490,36 @@ impl<E: Engine> UnitSnapshot<E> {
                 *scores.entry(unit).or_insert(0.0) += idf * tf * (K1 + 1.0) / (tf + K1 * (1.0 - B + B * dl / avg_len));
             }
         }
-        let mut hits = Vec::with_capacity(scores.len());
-        for (unit, score) in scores {
-            // ponytail: one head read per scored unit when `types` is set, fine up to ~10^5 scored
-            // units; keep the type in the posting value if a restricted search is hot.
-            if let Some(types) = types {
-                let Some(u) = self.get_unit(unit)? else {
-                    return Err(UnitError::Storage(kerno_core::Error::Corruption(format!(
-                        "a POSTING of unit {unit} has no UNIT_HEAD"
-                    ))));
-                };
-                if !types.contains(&u.unit_type.as_str()) {
-                    continue;
-                }
+        let mut hits: Vec<TextHit> = scores.into_iter().map(|(unit, score)| TextHit { unit, score }).collect();
+        let best_first = |a: &TextHit, b: &TextHit| b.score.total_cmp(&a.score).then(a.unit.cmp(&b.unit));
+        // The best hits are taken off the front a slice at a time, so a search sorts (and, with
+        // `types`, reads the head of) about `limit` units, not every unit that holds a term.
+        let mut out = Vec::with_capacity(limit.min(hits.len()));
+        let mut from = 0;
+        while out.len() < limit && from < hits.len() {
+            let rest = &mut hits[from..];
+            let n = (limit - out.len()).min(rest.len());
+            if n < rest.len() {
+                rest.select_nth_unstable_by(n - 1, best_first);
             }
-            hits.push(TextHit { unit, score });
+            rest[..n].sort_unstable_by(best_first);
+            for hit in &rest[..n] {
+                if let Some(types) = types {
+                    let Some(head) = crate::history::read_head(&|k| self.snap.get(k), hit.unit)? else {
+                        return Err(UnitError::Storage(kerno_core::Error::Corruption(format!(
+                            "a POSTING of unit {} has no UNIT_HEAD",
+                            hit.unit
+                        ))));
+                    };
+                    if !types.contains(&head.unit_type.as_str()) {
+                        continue;
+                    }
+                }
+                out.push(*hit);
+            }
+            from += n;
         }
-        hits.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.unit.cmp(&b.unit)));
-        hits.truncate(limit);
-        Ok(hits)
+        Ok(out)
     }
 }
 

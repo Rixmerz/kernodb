@@ -170,6 +170,9 @@ deleted one does not.
 | `db.setFulltext(unitType, enabled)` | nothing. Turns keyword (BM25) indexing of a type on or off (off by default); its active units are indexed or cleared in the same commit. |
 | `db.fulltext(unitType)` | `boolean`: whether the type is keyword-indexed. |
 | `db.searchText(query, { limit?, types? })` | `{ id, score }[]`, best first (`limit` default 10, at least 1), over the keyword-indexed types or only the unit types in `types`. A unit scores the same either way. It throws instead of returning `[]` when it could never match: `NOT_INDEXED` (no type, or a requested type, is indexed), `UNKNOWN_TYPE` (a type nothing ever used), `INVALID_ARGUMENT` (`limit` below 1, a query with no word, an empty `types`). |
+| `db.setSubstring(unitType, enabled)` | nothing. Turns the substring (trigram) index of a type on or off (off by default); its active units are indexed or cleared in the same commit. |
+| `db.substring(unitType)` | `boolean`: whether the type is substring-indexed. |
+| `db.searchSubstring(needle, { limit?, types? })` | `string[]`: the ids of the units whose payload holds `needle` (`string` or `Buffer`), in id order (`limit` default: all). ASCII letters match in either case, like SQL's `LIKE '%needle%'`; the first 256 KiB of a payload are searched. It throws like `searchText` when it could never match, and `INVALID_ARGUMENT` for an empty needle or one over 1024 bytes. |
 
 ### Schemas, indexes and documents
 

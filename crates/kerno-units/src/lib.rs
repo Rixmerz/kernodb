@@ -62,6 +62,7 @@ pub mod reclaim;
 pub mod reference;
 pub mod retention;
 pub mod schema;
+pub mod substring;
 pub mod suppression;
 pub mod type_count;
 pub mod type_options;

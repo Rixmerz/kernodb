@@ -247,7 +247,9 @@ fn record_layout_is_pinned() {
     let (t, o) = kerno::units::type_options::check_shape(b"\x77\x04note", &[1, 0, 1]).unwrap();
     assert_eq!((t.as_str(), o), ("note", kerno::units::type_options::FULLTEXT));
     assert!(kerno::units::type_options::check_shape(b"\x77\x04note", &[1, 0, 0]).is_err(), "no empty options");
-    assert!(kerno::units::type_options::check_shape(b"\x77\x04note", &[1, 0, 2]).is_err(), "unknown bit");
+    let (_, o) = kerno::units::type_options::check_shape(b"\x77\x04note", &[1, 0, 3]).unwrap();
+    assert_eq!(o, kerno::units::type_options::FULLTEXT | kerno::units::type_options::SUBSTRING);
+    assert!(kerno::units::type_options::check_shape(b"\x77\x04note", &[1, 0, 4]).is_err(), "unknown bit");
     assert!(kerno::units::type_options::check_shape(b"\x77\x04note", &[2, 0, 1]).is_err(), "newer envelope");
     assert!(kerno::units::type_options::check_shape(b"\x77\x05note", &[1, 0, 1]).is_err(), "bad length");
 }

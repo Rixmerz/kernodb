@@ -465,6 +465,65 @@ test('setFulltext switches keyword search on and off per type', () => {
   assert.equal(codeOf(keywords), 'NOT_INDEXED') // nothing is keyword-indexed again
 })
 
+// ---- searchSubstring ----
+
+test('searchSubstring matches like LIKE and follows every write', () => {
+  const a = db.store('sym', 'pkg.mod.ParseHeader(self) -> Header')
+  const b = db.store('sym', 'abc bcd') // every trigram of "abcd", but not "abcd"
+  const c = db.store('sym', Buffer.from([0xff, 0x00, 0x72, 0x61, 0x77])) // \xff \0 "raw"
+  assert.equal(db.substring('sym'), false)
+  assert.equal(codeOf(() => db.searchSubstring('parse')), 'NOT_INDEXED') // off by default
+  db.setSubstring('sym', true) // indexes the units the type already has
+  db.setSubstring('sym', true) // same state: nothing written
+  assert.equal(db.substring('sym'), true)
+  assert.deepEqual(db.searchSubstring('parseheader'), [a]) // ASCII letters in either case
+  assert.deepEqual(db.searchSubstring('abcd'), []) // the payload is checked, not only the trigrams
+  assert.deepEqual(db.searchSubstring('bc'), [b])
+  assert.deepEqual(db.searchSubstring('a'), [a, b, c].sort()) // a one-byte needle
+  assert.deepEqual(db.searchSubstring(Buffer.from([0xff, 0x00, 0x72])), [c]) // bytes, 0x00 included
+  assert.deepEqual(db.searchSubstring('-> '), [a])
+  assert.equal(db.searchSubstring('a', { limit: 2 }).length, 2)
+  db.update(a, 'renamed')
+  assert.deepEqual(db.searchSubstring('parse'), [])
+  assert.deepEqual(db.searchSubstring('renamed'), [a])
+  db.commit([{ op: 'archive', id: b }])
+  assert.deepEqual(db.searchSubstring('bcd'), [])
+  db.commit([{ op: 'unarchive', id: b }])
+  assert.deepEqual(db.searchSubstring('bcd'), [b])
+  db.delete(c)
+  assert.deepEqual(db.searchSubstring('raw'), [])
+  assert.equal(db.verify().clean, true)
+  db.close()
+  db = open(dir) // the option and the entries hold across opens
+  assert.deepEqual(db.searchSubstring('renamed'), [a])
+  db.setSubstring('sym', false)
+  assert.equal(codeOf(() => db.searchSubstring('renamed')), 'NOT_INDEXED')
+  assert.equal(db.verify().clean, true)
+})
+
+test('searchSubstring throws when it could never match, and answers [] when it merely finds nothing', () => {
+  const note = db.store('note', 'shared words')
+  const memo = db.store('memo', 'shared words')
+  db.store('plain', 'shared words') // not indexed
+  db.setSubstring('note', true)
+  db.setSubstring('memo', true)
+  assert.deepEqual(db.searchSubstring('shared'), [note, memo].sort())
+  assert.deepEqual(db.searchSubstring('shared', { types: ['memo'] }), [memo])
+  assert.deepEqual(db.searchSubstring('absent'), []) // indexed, nothing matches: a real empty answer
+  assert.equal(codeOf(() => db.searchSubstring('shared', { types: ['plain'] })), 'NOT_INDEXED')
+  assert.equal(codeOf(() => db.searchSubstring('shared', { types: ['ghost'] })), 'UNKNOWN_TYPE')
+  for (const call of [
+    () => db.searchSubstring('shared', { limit: 0 }),
+    () => db.searchSubstring('shared', { limit: -1 }),
+    () => db.searchSubstring('shared', { limit: 1.5 }),
+    () => db.searchSubstring(''),
+    () => db.searchSubstring('x'.repeat(1025)),
+    () => db.searchSubstring('shared', { types: [] }),
+  ]) {
+    assert.equal(codeOf(call), 'INVALID_ARGUMENT')
+  }
+})
+
 // ---- schemas, indexes, documents ----
 
 test('storeDocument and readDocument round-trip every value type', () => {

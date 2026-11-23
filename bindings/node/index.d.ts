@@ -114,6 +114,23 @@ export declare class Db {
   /** Whether `unitType` is keyword-indexed (off by default). */
   fulltext(unitType: string): boolean
   /**
+   * Turns the substring (trigram) index of `unitType` on or off. It is off by default
+   * (ADR-0025); the setting is stored in the database, and the type's active units are
+   * indexed (or cleared) in the same commit.
+   */
+  setSubstring(unitType: string, enabled: boolean): void
+  /** Whether `unitType` is substring-indexed (off by default). */
+  substring(unitType: string): boolean
+  /**
+   * The ids of the units whose payload holds `needle`, in id order, at most `options.limit`
+   * (default: all of them). ASCII letters match in either case, every other byte must be
+   * equal, like SQL's `LIKE '%needle%'`. Only types turned on with `setSubstring` are
+   * searched; `options.types` restricts the search to those types. A search that could never
+   * match throws instead of returning `[]`, with the errors of `searchText`; `INVALID_ARGUMENT`
+   * also for an empty needle or one over 1024 bytes.
+   */
+  searchSubstring(needle: Payload, options?: SearchSubstringOptions | undefined | null): Array<string>
+  /**
    * Gives `unitType` a schema. Defining the schema the type has already (field order aside) is
    * accepted and writes nothing, so a program can define on every start; a different one throws
    * `SCHEMA_EXISTS`. A field indexed later with `createIndex` makes the first field list a
@@ -414,6 +431,14 @@ export interface Revision {
    * revision has one.
    */
   payload?: Buffer
+}
+
+/** Options of `searchSubstring`. */
+export interface SearchSubstringOptions {
+  /** Most ids, at least 1. Default: every match. */
+  limit?: number
+  /** Search only these unit types (at least one). Default: every substring-indexed type. */
+  types?: Array<string>
 }
 
 /** Options of `searchText`. */

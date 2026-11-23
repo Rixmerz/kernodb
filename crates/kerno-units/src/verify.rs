@@ -175,6 +175,9 @@ pub enum CrossRule {
     /// A unit that is not deleted does not satisfy the schema of its type, or
     /// two active units hold the same value of a unique field.
     Unit51,
+    /// The trigram index (`0x7a`, [`crate::substring`]) disagrees with the
+    /// head payloads it indexes, or the database uses it below layer version 8.
+    Unit52,
 }
 
 impl CrossRule {
@@ -510,6 +513,11 @@ struct State {
     /// Types with `FULLTEXT` (`0x77` records, ADR-0022/0023).
     fulltext_types: BTreeSet<String>,
     first_type_options_key: Option<Vec<u8>>,
+    /// The trigram index and the entries the payloads call for (UNIT-52).
+    substring: crate::substring::Check,
+    /// Types with `SUBSTRING`, and the key of the first record that says so.
+    substring_types: BTreeSet<String>,
+    first_substring_option_key: Option<Vec<u8>>,
 }
 
 fn key_of(k: Key) -> Vec<u8> {
@@ -655,11 +663,21 @@ impl State {
             self.first_type_options_key.get_or_insert_with(|| k.clone());
             match crate::type_options::check_shape(&k, &v) {
                 Ok((unit_type, options)) => {
+                    if options & crate::type_options::SUBSTRING != 0 {
+                        self.first_substring_option_key.get_or_insert_with(|| k.clone());
+                        self.substring_types.insert(unit_type.clone());
+                    }
                     if options & crate::type_options::FULLTEXT != 0 {
                         self.fulltext_types.insert(unit_type);
                     }
                 }
                 Err(e) => self.decode_error(k, e),
+            }
+            return;
+        }
+        if crate::substring::Check::owns(k.first()) {
+            if let Err(e) = self.substring.record(&k, &v) {
+                self.decode_error(k, e);
             }
             return;
         }
@@ -683,6 +701,7 @@ impl State {
             // Heads sort before payloads, so the head of `unit` is known here.
             if let Some(h) = self.heads.get(&unit).filter(|h| h.head_rev == rev && h.lifecycle == Lifecycle::Active) {
                 self.fulltext.expect(unit, h.updated_seq.0, &v);
+                self.substring.expect(unit, &v);
             }
             self.check_payload(k, unit, rev, &v);
             return;
@@ -830,6 +849,7 @@ impl State {
         self.check_rel_counts();
         self.check_type_counts();
         self.check_fulltext();
+        self.check_substring();
         self.check_index();
         self.check_type_index();
         self.check_public_ids();
@@ -1178,6 +1198,33 @@ impl State {
         self.fulltext.exclude(not_indexed);
         for (key, detail) in self.fulltext.findings() {
             self.cross(CrossRule::Unit49, key, detail);
+        }
+    }
+
+    /// UNIT-52: the trigram index holds exactly the trigrams of the head payloads of the
+    /// `Active` units of the types with `SUBSTRING`, and a database that uses it says so in
+    /// its mark. Skipped when a head does not decode (its type is unknown), like UNIT-49.
+    fn check_substring(&mut self) {
+        let first = self.first_substring_option_key.clone().or_else(|| self.substring.first_key().map(<[u8]>::to_vec));
+        if let (Some(first), Some(mark)) = (first, &self.mark)
+            && mark.layer_version < crate::codec::LAYER_VERSION_SUBSTRING
+        {
+            self.cross(
+                CrossRule::Unit52,
+                first,
+                "trigram index records in a database whose layer mark is below 8".into(),
+            );
+        }
+        if !self.bad_heads.is_empty() {
+            return;
+        }
+        let found = self.substring.findings(
+            |unit| self.heads.get(&unit).filter(|h| h.lifecycle == Lifecycle::Active).map(|h| h.unit_type.as_str()),
+            &self.substring_types,
+            |unit| key_of(Key::UnitHead { unit }),
+        );
+        for (key, detail) in found {
+            self.cross(CrossRule::Unit52, key, detail);
         }
     }
 

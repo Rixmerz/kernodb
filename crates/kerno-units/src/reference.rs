@@ -13,7 +13,9 @@
 //!   it).
 //! * Results are in unit id order.
 //! * Every payload returned was verified (the same read as `get_unit`); a
-//!   corrupt unit fails the whole query instead of being skipped.
+//!   corrupt unit the query would return fails the whole query instead of
+//!   being skipped. A filter by type or schema version is decided on the head
+//!   alone, so the rest of a unit it excludes is not read.
 //!
 //! Relations (E4-02, ADR-0014): [`UnitSnapshot::reference_relations`] reads
 //! every `REL` record and never an adjacency entry, so it is the definition
@@ -26,8 +28,8 @@ use std::ops::Bound;
 
 use kerno_core::contract::{Engine, Snapshot};
 
-use crate::codec::{Key, RelationRecord, TAG_REL, TAG_UNIT_HEAD};
-use crate::db::{Relation, Unit, UnitSnapshot, corruption, scan_all};
+use crate::codec::{Key, RelationRecord, TAG_REL, TAG_UNIT_HEAD, UnitHead};
+use crate::db::{Relation, Unit, UnitSnapshot, context, corruption, load_unit, scan_all, to_unit};
 use crate::error::UnitError;
 use crate::index::UnitFilter;
 use crate::types::{Direction, Lifecycle, UnitId};
@@ -45,6 +47,13 @@ impl<E: Engine> UnitSnapshot<E> {
     /// Every active unit at this snapshot for which `pred` holds, in unit id
     /// order. Reads every unit head: linear in the number of units.
     pub fn reference_scan(&self, mut pred: impl FnMut(&Unit) -> bool) -> Result<Vec<Unit>, UnitError> {
+        Ok(self.scan_units(|_| true)?.into_iter().filter(|u| pred(u)).collect())
+    }
+
+    /// Every active unit whose head `want`s, in unit id order, each read and verified like
+    /// [`get_unit`](Self::get_unit). The head comes from the scan, so a unit costs two more
+    /// reads (its `REV_META` and its payload), and a unit `want` refuses costs none.
+    fn scan_units(&self, mut want: impl FnMut(&UnitHead) -> bool) -> Result<Vec<Unit>, UnitError> {
         let (_, end) = Key::tag_range(TAG_UNIT_HEAD);
         let mut cursor = vec![TAG_UNIT_HEAD];
         let mut inclusive = true;
@@ -53,17 +62,20 @@ impl<E: Engine> UnitSnapshot<E> {
             let start = if inclusive { Bound::Included(cursor.as_slice()) } else { Bound::Excluded(cursor.as_slice()) };
             let page = self.snap.scan(start, Bound::Excluded(&end), PAGE)?;
             let n = page.len();
-            for (k, _) in &page {
+            for (k, v) in &page {
                 let Key::UnitHead { unit } = Key::decode(k)? else {
                     return Err(corruption("a key in the UNIT_HEAD range is not a UNIT_HEAD".into()));
                 };
-                // The head may not vanish inside one snapshot.
-                let Some(u) = self.get_unit(unit)? else {
+                let head = UnitHead::decode(v).map_err(|e| context(e, &format!("UNIT_HEAD of unit {unit}")))?;
+                if head.lifecycle != Lifecycle::Active || !want(&head) {
+                    continue;
+                }
+                // The scanned head stands for the read of its key.
+                let get = |key: &[u8]| if key == k.as_slice() { Ok(Some(v.clone())) } else { self.snap.get(key) };
+                let Some((head, _, payload)) = load_unit(&get, unit)? else {
                     return Err(corruption(format!("unit {unit}: UNIT_HEAD vanished inside a snapshot")));
                 };
-                if u.lifecycle == Lifecycle::Active && pred(&u) {
-                    out.push(u);
-                }
+                out.push(to_unit(unit, head, payload));
             }
             match page.into_iter().last() {
                 Some((k, _)) if n == PAGE => {
@@ -84,7 +96,7 @@ impl<E: Engine> UnitSnapshot<E> {
     /// of what [`UnitSnapshot::indexed_scan`] (the index path) must return on
     /// the same snapshot (E4-03, I-32).
     pub fn reference_filter(&self, filter: &UnitFilter) -> Result<Vec<Unit>, UnitError> {
-        self.reference_scan(|u| filter.matches(&u.unit_type, u.schema_version))
+        self.scan_units(|h| filter.matches(&h.unit_type, h.schema_version))
     }
 }
 

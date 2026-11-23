@@ -199,6 +199,21 @@ class Database:
         (no type, or a type in `types`, is keyword-indexed), `UnknownTypeError` (a type nothing ever
         used), `InvalidArgumentError` (`limit < 1`, a query without a word, an empty `types`).
         """
+    def substring(self, unit_type: str) -> bool:
+        """Whether the type is substring-indexed (off by default)."""
+    def set_substring(self, unit_type: str, enabled: bool) -> None:
+        """Trigram-index a type for substring search or not (off by default); its units follow in the same commit."""
+    def search_substring(
+        self, needle: str | bytes, limit: int | None = None, types: list[str] | None = None
+    ) -> list[str]:
+        """The ids of the units whose payload holds `needle`, in id order, at most `limit` (`None`: all).
+
+        ASCII letters match in either case and every other byte must be equal, like SQL's
+        `LIKE '%needle%'`; only the first 256 KiB of a payload are searched. Raises instead of
+        returning `[]` for a search that could never match: `NotIndexedError` (no type, or a type
+        in `types`, is substring-indexed), `UnknownTypeError` (a type nothing ever used),
+        `InvalidArgumentError` (`limit < 1`, an empty needle or one over 1024 bytes, an empty `types`).
+        """
     def last_commit_seq(self) -> int: ...
     def refresh(self) -> int:
         """Move a `read_only=True` database to the writer's newest commits; returns the sequence it now reads.
