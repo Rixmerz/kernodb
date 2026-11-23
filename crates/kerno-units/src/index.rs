@@ -90,7 +90,7 @@ use crate::codec::{
     IndexMeta, Key, PrimaryEntry, TAG_IDX_PRIMARY, TAG_IDX_TYPE, TAG_UNIT_HEAD, UnitHead, decode_type_entry,
     encode_type_entry,
 };
-use crate::db::{ChangeSet, Unit, UnitDb, UnitSnapshot, Write, context, corruption, key, scan_all};
+use crate::db::{ChangeSet, Unit, UnitDb, UnitSnapshot, Write, context, corruption, key, scan_all, to_unit};
 use crate::error::UnitError;
 use crate::types::{BuildOutcome, CommitSeq, Lifecycle, UnitId};
 
@@ -380,6 +380,7 @@ impl<E: Engine> UnitSnapshot<E> {
         };
         let mut out = Vec::new();
         let mut seen = 0u64;
+        let pages = crate::db::UnitPages::new(&self.snap);
         scan_all(&self.snap, start, end, |k, v| {
             let Key::IndexType { unit_type: t, schema_version: sv, unit } = Key::decode(k)? else {
                 return Err(corruption("a key in the IDX_TYPE range is not an IDX_TYPE".into()));
@@ -389,9 +390,10 @@ impl<E: Engine> UnitSnapshot<E> {
             if schema_version.is_some_and(|f| f != sv) {
                 return Ok(());
             }
-            let Some(u) = self.get_unit(unit)? else {
+            let Some((head, _, payload)) = pages.load(unit, None)? else {
                 return Err(corruption(format!("IDX_TYPE entry of unit {unit} has no UNIT_HEAD")));
             };
+            let u = to_unit(unit, head, payload);
             if u.lifecycle != Lifecycle::Active || u.unit_type != t || u.schema_version != sv {
                 return Err(corruption(format!("IDX_TYPE entry of unit {unit} disagrees with its UNIT_HEAD")));
             }

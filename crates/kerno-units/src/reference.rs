@@ -29,7 +29,7 @@ use std::ops::Bound;
 use kerno_core::contract::{Engine, Snapshot};
 
 use crate::codec::{Key, RelationRecord, TAG_REL, TAG_UNIT_HEAD, UnitHead};
-use crate::db::{Relation, Unit, UnitSnapshot, context, corruption, load_unit, scan_all, to_unit};
+use crate::db::{Relation, Unit, UnitPages, UnitSnapshot, context, corruption, scan_all, to_unit};
 use crate::error::UnitError;
 use crate::index::UnitFilter;
 use crate::types::{Direction, Lifecycle, UnitId};
@@ -58,6 +58,7 @@ impl<E: Engine> UnitSnapshot<E> {
         let mut cursor = vec![TAG_UNIT_HEAD];
         let mut inclusive = true;
         let mut out = Vec::new();
+        let pages = UnitPages::new(&self.snap);
         loop {
             let start = if inclusive { Bound::Included(cursor.as_slice()) } else { Bound::Excluded(cursor.as_slice()) };
             let page = self.snap.scan(start, Bound::Excluded(&end), PAGE)?;
@@ -71,8 +72,7 @@ impl<E: Engine> UnitSnapshot<E> {
                     continue;
                 }
                 // The scanned head stands for the read of its key.
-                let get = |key: &[u8]| if key == k.as_slice() { Ok(Some(v.clone())) } else { self.snap.get(key) };
-                let Some((head, _, payload)) = load_unit(&get, unit)? else {
+                let Some((head, _, payload)) = pages.load(unit, Some((k, v)))? else {
                     return Err(corruption(format!("unit {unit}: UNIT_HEAD vanished inside a snapshot")));
                 };
                 out.push(to_unit(unit, head, payload));

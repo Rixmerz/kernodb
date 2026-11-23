@@ -622,3 +622,21 @@ fn a_search_refuses_an_entry_of_a_unit_that_does_not_exist() {
         Err(UnitError::Storage(kerno_core::Error::Corruption(_)))
     ));
 }
+
+#[test]
+fn a_batch_of_units_writes_the_same_blocks_as_one_commit_each() {
+    let payloads: Vec<Vec<u8>> = (0..300).map(|i| format!("symbol_{i}_{}", i % 7).into_bytes()).collect();
+    let (batch, single) = (SimVfs::new(22), SimVfs::new(23));
+    let (one, many) = (open(&batch), open(&single));
+    change(&one, |cs| {
+        for p in &payloads {
+            let new = NewUnit { unit_type: "sym".into(), schema_version: 1, metadata: vec![], payload: p.clone() };
+            cs.create(new).unwrap();
+        }
+    });
+    for p in &payloads {
+        store(&many, p);
+    }
+    assert_eq!(blocks(&one), blocks(&many));
+    assert_clean(&one);
+}

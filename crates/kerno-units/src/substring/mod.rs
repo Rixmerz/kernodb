@@ -145,6 +145,7 @@ pub(crate) fn type_prefix(unit_type: &str) -> Vec<u8> {
 }
 
 /// `type prefix ‖ gram`: the prefix of the blocks of one posting list.
+#[cfg(test)]
 fn list_key(prefix: &[u8], gram: Gram) -> Vec<u8> {
     let mut k = Vec::with_capacity(prefix.len() + 3 + 17);
     k.extend_from_slice(prefix);
@@ -229,9 +230,12 @@ pub(crate) struct GramChange {
     added: Vec<Gram>,
 }
 
-/// What a change set will change in the index: per list key, the units to add
-/// (`true`) or remove (`false`), the last operation of a unit winning.
-pub(crate) type PendingGrams = std::collections::BTreeMap<Vec<u8>, std::collections::BTreeMap<UnitId, bool>>;
+/// What a change set will change in the index: per list key, the operations
+/// in the order they came, each a unit to add (`true`) or remove (`false`).
+/// [`ChangeSet::flush_substring`] keeps the last operation of a unit. A hash
+/// map and a plain vector per list: a batch stages one entry per trigram of
+/// every unit, so the lookup must not allocate a key or order a tree.
+pub(crate) type PendingGrams = std::collections::HashMap<Vec<u8>, Vec<(UnitId, bool)>>;
 
 impl<E: TxnEngine> ChangeSet<'_, E> {
     /// Whether the payloads of `unit_type` go in the trigram index, as this
@@ -277,8 +281,18 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
     /// [`flush_substring`](Self::flush_substring).
     pub(crate) fn stage_substring(&mut self, unit: UnitId, change: Option<GramChange>) {
         let Some(c) = change else { return };
+        // One key buffer for every gram: a list that already exists is found without allocating.
+        let mut k = c.prefix.clone();
+        k.extend_from_slice(&[0; 3]);
+        let at = c.prefix.len();
         for (gram, add) in c.gone.iter().map(|g| (g, false)).chain(c.added.iter().map(|g| (g, true))) {
-            self.substring_pending.entry(list_key(&c.prefix, *gram)).or_default().insert(unit, add);
+            k[at..].copy_from_slice(gram);
+            match self.substring_pending.get_mut(k.as_slice()) {
+                Some(ops) => ops.push((unit, add)),
+                None => {
+                    self.substring_pending.insert(k.clone(), vec![(unit, add)]);
+                }
+            }
         }
     }
 
@@ -287,8 +301,14 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
     /// the change set in it, then written back (cut when over [`BLOCK_MAX`],
     /// deleted when emptied). Called by `commit`.
     pub(crate) fn flush_substring(&mut self) -> Result<(), UnitError> {
-        for (list, ops) in std::mem::take(&mut self.substring_pending) {
+        let mut lists: Vec<_> = std::mem::take(&mut self.substring_pending).into_iter().collect();
+        lists.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        for (list, mut ops) in lists {
             let (_, end) = prefix_bounds(&list);
+            // Ascending by unit; of several operations on a unit the last wins.
+            ops.reverse();
+            ops.sort_by_key(|(u, _)| *u);
+            ops.dedup_by_key(|(u, _)| *u);
             let mut ops = ops.into_iter().peekable();
             while let Some((first, _)) = ops.peek() {
                 let from = block_key(&list, Some(*first));

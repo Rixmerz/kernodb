@@ -113,6 +113,22 @@ Gains are estimates from the profile shares above, not measurements. Each fix ne
 
 **Rank 9. Storage-level recovery (Rust harness, 16x to 73x).** Recovery replays the WAL (`recovery_ms`). Faster recovery needs more frequent checkpoints, which costs on the write path (Rank 5 trade-off). Not profiled in this run.
 
+### 3a. Rank 2 and Rank 3 applied (before and after)
+
+Method as in ADR-0012: `bindings/python/bench/vs_sqlite.py`, 3 repetitions, fresh process and directories, data on `/home`, same interpreter (3.14.9) as the "before" run. Before = §1a (commit `f7a5004`); after = this change. Raw: [`raw/2026-11-23-perf-rank23/`](raw/2026-11-23-perf-rank23/). Times in seconds, median; ratio = kerno / SQLite in the same run.
+
+| Workload | Scale | Kerno before | Kerno after | SQLite before / after | Ratio before | Ratio after |
+|---|---|---|---|---|---|---|
+| store, substring-indexed, batches | 10k | 0.475 | 0.244 | 0.122 / 0.118 | 3.89 | 2.08 |
+| store, substring-indexed, batches | 100k | 6.3 | 3.05 | 1.79 / 1.73 | 3.51 | 1.76 |
+| scan all units of a type | 10k | 0.023 | 0.022 | 0.0105 / 0.0103 | 2.18 | 2.13 |
+| scan all units of a type | 100k | 0.28 | 0.205 | 0.0896 / 0.0912 | 3.13 | 2.25 |
+
+Substring hit counts still match SQLite (18,426 and 186,413). Substring search is unchanged (0.17x / 0.31x of `LIKE`).
+
+- **Rank 2** beat its estimate (about 2.5x): 2.1x and 1.8x. The change is in `substring/mod.rs`: a `HashMap` of per-list vectors with one reused key buffer, sorted once at flush.
+- **Rank 3** changed the read path from three point reads per unit to forward scans (`PagedGets` in `db.rs`; the reference and `IDX_TYPE` paths both use it). At 100k it moved 3.13x to 2.25x, short of the 1.5x to 2x estimate. At 10k there is no measurable gain: a post-change profile (py-spy, 12k units) shows the rest is the engine scan itself (`Version::scan`, merge iterator), `load_unit` and `UnitHead::decode`, and building the Python `Unit` objects. Not established: how much of the remaining gap is the Python object construction, which SQLite's tuples do not pay (§4).
+
 ## 4. Benchmark fairness (not changed; these notes only)
 
 - **Reopen is not like-for-like (unfair to both sides).** `vs_sqlite.py:247` times `kerno.open(kdir).close()`, which fsyncs the manifest. `vs_sqlite.py:248` times `sqlite3.connect(sfile).execute("select count(*) ...")` and never closes that connection. The kerno side includes a close and the SQLite side includes a count. Fix: Rank 1.
