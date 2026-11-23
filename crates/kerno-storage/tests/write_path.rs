@@ -8,7 +8,6 @@ use std::path::Path;
 
 use kerno_core::contract::{Engine, Options, Snapshot};
 use kerno_storage::{Config, KernoDb};
-use kerno_core::vfs::Vfs;
 use kerno_testkit::vfs::SimVfs;
 
 fn open() -> KernoDb {
