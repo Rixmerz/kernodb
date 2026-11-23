@@ -991,3 +991,65 @@ def test_the_open_docstring_says_a_reader_opens_beside_a_writer():
     doc = kerno.open.__doc__
     assert "still holds" not in doc and "one handle at a time" not in doc
     assert "takes no lock" in doc and "refresh" in doc
+
+
+def test_search_substring_matches_like_and_follows_every_write(tmp_path):
+    # The trigram index (ADR-0025): off by default, turned on per type, exact like LIKE '%x%'.
+    with kerno.open(tmp_path / "db") as db:
+        a = db.store("sym", "pkg.mod.ParseHeader(self) -> Header")
+        b = db.store("sym", "abc bcd")  # every trigram of "abcd", but not "abcd"
+        c = db.store("sym", b"\xff\x00raw bytes")
+        assert db.substring("sym") is False
+        with pytest.raises(kerno.NotIndexedError):  # off by default: no type is searchable
+            db.search_substring("parse")
+        db.set_substring("sym", True)  # indexes the units the type already has
+        db.set_substring("sym", True)  # same state: nothing written
+        assert db.substring("sym") is True
+        assert db.search_substring("parseheader") == [a]  # ASCII letters in either case
+        assert db.search_substring("abcd") == []  # the payload is checked, not only the trigrams
+        assert db.search_substring("bc") == [b]
+        assert db.search_substring("a") == sorted([a, b, c])  # a one-byte needle
+        assert db.search_substring(b"\xff\x00r") == [c]  # bytes, a 0x00 included
+        assert db.search_substring("-> ") == [a]
+        assert len(db.search_substring("a", limit=2)) == 2
+        db.update(a, "renamed")
+        assert db.search_substring("parse") == []
+        assert db.search_substring("renamed") == [a]
+        db.commit([("archive", b)])
+        assert db.search_substring("bcd") == []
+        db.commit([("unarchive", b)])
+        assert db.search_substring("bcd") == [b]
+        db.delete(c)
+        assert db.search_substring("raw") == []
+        assert db.verify()["clean"] is True
+    with kerno.open(tmp_path / "db") as db:  # the option and the entries hold across opens
+        assert db.search_substring("renamed") == [a]
+        db.set_substring("sym", False)
+        with pytest.raises(kerno.NotIndexedError):
+            db.search_substring("renamed")
+        assert db.verify()["clean"] is True
+
+
+def test_search_substring_raises_when_it_could_never_match(tmp_path):
+    with kerno.open(tmp_path / "db") as db:
+        note = db.store("note", "shared words")
+        memo = db.store("memo", "shared words")
+        db.store("plain", "shared words")  # not indexed
+        db.set_substring("note", True)
+        db.set_substring("memo", True)
+        assert db.search_substring("shared") == sorted([note, memo])
+        assert db.search_substring("shared", types=["memo"]) == [memo]
+        assert db.search_substring("absent") == []  # indexed, nothing matches: a real empty answer
+        with pytest.raises(kerno.NotIndexedError):
+            db.search_substring("shared", types=["plain"])
+        with pytest.raises(kerno.UnknownTypeError):
+            db.search_substring("shared", types=["ghost"])
+        for call in (
+            lambda: db.search_substring("shared", limit=0),
+            lambda: db.search_substring(""),
+            lambda: db.search_substring("x" * 1025),
+            lambda: db.search_substring("shared", types=[]),
+            lambda: db.search_substring("shared", limit=-1),
+        ):
+            with pytest.raises(kerno.InvalidArgumentError):
+                call()

@@ -1,0 +1,309 @@
+{
+ "env": {
+  "n": 10000,
+  "reps": 3,
+  "commit": "df7db94",
+  "kerno": "",
+  "sqlite": "3.53.1",
+  "python": "3.12.14",
+  "loadavg_1m_at_each_start": [
+   21.603515625,
+   17.86962890625,
+   20.4931640625
+  ],
+  "unit": "seconds, except the rows named hits and MiB"
+ },
+ "runs": [
+  {
+   "store x2000, one commit each": {
+    "kerno": 2.460677680996014,
+    "sqlite": 3.1449150539992843,
+    "note": ""
+   },
+   "store x10000, batches of 10000": {
+    "kerno": 0.12024530200869776,
+    "sqlite": 0.07046943399473093,
+    "note": ""
+   },
+   "point read x2000": {
+    "kerno": 0.016353593993699178,
+    "sqlite": 0.012428740010363981,
+    "note": ""
+   },
+   "scan all 12000 units of a type": {
+    "kerno": 0.03452306101098657,
+    "sqlite": 0.016737595986342058,
+    "note": ""
+   },
+   "update x10000 keeping history, batches": {
+    "kerno": 0.2954070470004808,
+    "sqlite": 0.28903491600067355,
+    "note": ""
+   },
+   "relate x10000, batches": {
+    "kerno": 0.20353990298463032,
+    "sqlite": 0.023691581009188667,
+    "note": ""
+   },
+   "related() x1000": {
+    "kerno": 0.01123461700626649,
+    "sqlite": 0.004252529994118959,
+    "note": ""
+   },
+   "two-hop traversal x200": {
+    "kerno": 0.005465838999953121,
+    "sqlite": 0.0012961149914190173,
+    "note": ""
+   },
+   "all relations of a type": {
+    "kerno": 0.00901962598436512,
+    "sqlite": 0.006744061014614999,
+    "note": ""
+   },
+   "history x1000": {
+    "kerno": 0.010885591997066513,
+    "sqlite": 0.00657283901819028,
+    "note": ""
+   },
+   "store x10000 substring-indexed, batches": {
+    "kerno": 2.6700540549936704,
+    "sqlite": 0.25598760301363654,
+    "note": "kerno trigram index"
+   },
+   "substring search x20 vs LIKE scan": {
+    "kerno": 0.029402049985947087,
+    "sqlite": 0.034823836002033204,
+    "note": "kerno index"
+   },
+   "substring search x20 vs FTS5 trigram": {
+    "kerno": 0.029402049985947087,
+    "sqlite": 0.021300679014530033,
+    "note": "kerno index"
+   },
+   "substring hits": {
+    "kerno": 18426,
+    "sqlite": 18426,
+    "note": "matches over all needles"
+   },
+   "store x10000 keyword-indexed, batches": {
+    "kerno": 1.5367989640217274,
+    "sqlite": 0.11192210801527835,
+    "note": ""
+   },
+   "keyword search x100, top 10": {
+    "kerno": 0.016631617007078603,
+    "sqlite": 0.030726899014553055,
+    "note": ""
+   },
+   "close": {
+    "kerno": 0.2582013539795298,
+    "sqlite": 0.008287681004730985,
+    "note": ""
+   },
+   "disk MiB": {
+    "kerno": 35.92711925506592,
+    "sqlite": 16.96484375,
+    "note": "after close"
+   },
+   "reopen": {
+    "kerno": 0.013101955992169678,
+    "sqlite": 0.0009227130212821066,
+    "note": ""
+   }
+  },
+  {
+   "store x2000, one commit each": {
+    "kerno": 7.371427017991664,
+    "sqlite": 8.820106420025695,
+    "note": ""
+   },
+   "store x10000, batches of 10000": {
+    "kerno": 0.3748705009929836,
+    "sqlite": 0.19638858799589798,
+    "note": ""
+   },
+   "point read x2000": {
+    "kerno": 0.046915167971746996,
+    "sqlite": 0.02655337000032887,
+    "note": ""
+   },
+   "scan all 12000 units of a type": {
+    "kerno": 0.10024840399273671,
+    "sqlite": 0.03321199998026714,
+    "note": ""
+   },
+   "update x10000 keeping history, batches": {
+    "kerno": 0.365963438001927,
+    "sqlite": 0.175220678007463,
+    "note": ""
+   },
+   "relate x10000, batches": {
+    "kerno": 0.3132954710163176,
+    "sqlite": 0.033532333007315174,
+    "note": ""
+   },
+   "related() x1000": {
+    "kerno": 0.02158730902010575,
+    "sqlite": 0.006985926011111587,
+    "note": ""
+   },
+   "two-hop traversal x200": {
+    "kerno": 0.01016569000785239,
+    "sqlite": 0.0016719010018277913,
+    "note": ""
+   },
+   "all relations of a type": {
+    "kerno": 0.01851336401887238,
+    "sqlite": 0.00820725000812672,
+    "note": ""
+   },
+   "history x1000": {
+    "kerno": 0.012684112007264048,
+    "sqlite": 0.010573114996077493,
+    "note": ""
+   },
+   "store x10000 substring-indexed, batches": {
+    "kerno": 2.5539313609770034,
+    "sqlite": 0.11346262399456464,
+    "note": "kerno trigram index"
+   },
+   "substring search x20 vs LIKE scan": {
+    "kerno": 0.0177538380085025,
+    "sqlite": 0.03011949101346545,
+    "note": "kerno index"
+   },
+   "substring search x20 vs FTS5 trigram": {
+    "kerno": 0.0177538380085025,
+    "sqlite": 0.017766391014447436,
+    "note": "kerno index"
+   },
+   "substring hits": {
+    "kerno": 18426,
+    "sqlite": 18426,
+    "note": "matches over all needles"
+   },
+   "store x10000 keyword-indexed, batches": {
+    "kerno": 0.8812945039826445,
+    "sqlite": 0.11801610898692161,
+    "note": ""
+   },
+   "keyword search x100, top 10": {
+    "kerno": 0.010716143995523453,
+    "sqlite": 0.030571359995519742,
+    "note": ""
+   },
+   "close": {
+    "kerno": 0.27266443698317744,
+    "sqlite": 0.010906802985118702,
+    "note": ""
+   },
+   "disk MiB": {
+    "kerno": 35.906832695007324,
+    "sqlite": 16.96484375,
+    "note": "after close"
+   },
+   "reopen": {
+    "kerno": 0.009357260976685211,
+    "sqlite": 0.0007682639989070594,
+    "note": ""
+   }
+  },
+  {
+   "store x2000, one commit each": {
+    "kerno": 2.6799273380020168,
+    "sqlite": 2.642012614000123,
+    "note": ""
+   },
+   "store x10000, batches of 10000": {
+    "kerno": 0.10747294299653731,
+    "sqlite": 0.05464373101131059,
+    "note": ""
+   },
+   "point read x2000": {
+    "kerno": 0.009627377992728725,
+    "sqlite": 0.008918206993257627,
+    "note": ""
+   },
+   "scan all 12000 units of a type": {
+    "kerno": 0.02337807501317002,
+    "sqlite": 0.011146934004500508,
+    "note": ""
+   },
+   "update x10000 keeping history, batches": {
+    "kerno": 0.1498489450023044,
+    "sqlite": 0.08267374799470417,
+    "note": ""
+   },
+   "relate x10000, batches": {
+    "kerno": 0.1479654549912084,
+    "sqlite": 0.019448272010777146,
+    "note": ""
+   },
+   "related() x1000": {
+    "kerno": 0.0087075509945862,
+    "sqlite": 0.004038518003653735,
+    "note": ""
+   },
+   "two-hop traversal x200": {
+    "kerno": 0.0040634850156493485,
+    "sqlite": 0.0010817119909916073,
+    "note": ""
+   },
+   "all relations of a type": {
+    "kerno": 0.006998389988439158,
+    "sqlite": 0.005383876006817445,
+    "note": ""
+   },
+   "history x1000": {
+    "kerno": 0.007390226004645228,
+    "sqlite": 0.0051876170036848634,
+    "note": ""
+   },
+   "store x10000 substring-indexed, batches": {
+    "kerno": 1.4522050860105082,
+    "sqlite": 0.12100960899260826,
+    "note": "kerno trigram index"
+   },
+   "substring search x20 vs LIKE scan": {
+    "kerno": 0.018050836981274188,
+    "sqlite": 0.02938547299709171,
+    "note": "kerno index"
+   },
+   "substring search x20 vs FTS5 trigram": {
+    "kerno": 0.018050836981274188,
+    "sqlite": 0.019866207003360614,
+    "note": "kerno index"
+   },
+   "substring hits": {
+    "kerno": 18426,
+    "sqlite": 18426,
+    "note": "matches over all needles"
+   },
+   "store x10000 keyword-indexed, batches": {
+    "kerno": 1.106208251992939,
+    "sqlite": 0.10648586100433022,
+    "note": ""
+   },
+   "keyword search x100, top 10": {
+    "kerno": 0.016400544991483912,
+    "sqlite": 0.04274299100507051,
+    "note": ""
+   },
+   "close": {
+    "kerno": 0.18232833297224715,
+    "sqlite": 0.008158429991453886,
+    "note": ""
+   },
+   "disk MiB": {
+    "kerno": 35.747337341308594,
+    "sqlite": 16.96484375,
+    "note": "after close"
+   },
+   "reopen": {
+    "kerno": 0.010297868982888758,
+    "sqlite": 0.0004794409906025976,
+    "note": ""
+   }
+  }
+ ]
+}
