@@ -136,14 +136,23 @@ pub fn encode(rec: &Rec) -> (Vec<u8>, Vec<u8>) {
             v.extend_from_slice(&confidence.to_be_bytes());
             (key, v)
         }
-        Rec::RelAdj(RelAdj { tag, unit_id, relation_type, edge_id, other }) => {
+        Rec::RelAdj(RelAdj { tag, unit_id, relation_type, bound, entries }) => {
             let mut key = vec![*tag];
             key.extend_from_slice(unit_id);
             key.extend_from_slice(relation_type);
             key.push(0);
-            key.extend_from_slice(edge_id);
+            match bound {
+                Some(edge) => {
+                    key.push(0);
+                    key.extend_from_slice(edge);
+                }
+                None => key.push(1),
+            }
             let mut v = envelope();
-            v.extend_from_slice(other);
+            for (edge, other) in entries {
+                v.extend_from_slice(edge);
+                v.extend_from_slice(other);
+            }
             (key, v)
         }
     }

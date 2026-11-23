@@ -337,16 +337,16 @@ fn a_change_set_indexes_under_the_option_it_set_itself() {
 }
 
 #[test]
-fn the_first_use_raises_the_layer_mark_to_8_and_it_survives_a_reopen() {
+fn the_option_does_not_move_the_layer_mark_and_survives_a_reopen() {
     let disk = SimVfs::new(13);
     {
         let db = open_plain(&disk);
         store(&db, b"plain");
-        assert_eq!(db.snapshot().unwrap().layer_version().unwrap(), Some(crate::codec::MIN_LAYER_VERSION));
+        let mark = |db: &UnitDb<E>| db.snapshot().unwrap().layer_version().unwrap();
+        assert_eq!(mark(&db), Some(crate::codec::LAYER_VERSION_BLOCKS), "a database starts at the cut version");
         db.set_substring("sym", true, ChangeMeta::default()).unwrap();
-        assert_eq!(db.snapshot().unwrap().layer_version().unwrap(), Some(crate::codec::LAYER_VERSION_SUBSTRING));
         db.set_substring("sym", false, ChangeMeta::default()).unwrap();
-        assert_eq!(db.snapshot().unwrap().layer_version().unwrap(), Some(8), "the mark is never lowered");
+        assert_eq!(mark(&db), Some(crate::codec::LAYER_VERSION_BLOCKS));
         db.set_substring("sym", true, ChangeMeta::default()).unwrap();
         db.close().unwrap();
     }

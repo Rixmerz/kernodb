@@ -338,8 +338,12 @@ fn a_definition_backfills_or_refuses<E: Target>() {
     assert!(stored(&db, 0x78).is_empty());
     // It fits now.
     define(&db);
-    assert_eq!(layer_version(&db), 7, "the first schema raises the layer mark to 6");
-    assert_eq!(layer, 7);
+    assert_eq!(
+        layer_version(&db),
+        kerno_units::codec::MIN_LAYER_VERSION,
+        "the first schema raises the layer mark to 6"
+    );
+    assert_eq!(layer, kerno_units::codec::MIN_LAYER_VERSION);
     assert_eq!(found(&db, "age", &FieldValue::Int(1)), vec![a]);
     assert!(found(&db, "age", &FieldValue::Int(2)).is_empty(), "the archived unit has no entry");
     clean(&db, "backfilled");
@@ -395,16 +399,16 @@ fn without_a_schema_nothing_changes<E: Target>() {
     one(&db, |cs| cs.create(new_unit("blob", vec![1, 2, 3]))).unwrap();
     let layer = layer_version(&db);
     assert!(stored(&db, 0x78).is_empty() && stored(&db, 0x79).is_empty());
-    assert_eq!(layer, 7);
+    assert_eq!(layer, kerno_units::codec::MIN_LAYER_VERSION);
     clean(&db, "no schema");
     let before = raw(&db);
     let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
     cs.define_schema(ACCT, acct_fields()).unwrap();
     drop(cs);
     assert_eq!(raw(&db), before, "an aborted definition leaves the database as it was");
-    assert_eq!(layer_version(&db), 7);
+    assert_eq!(layer_version(&db), kerno_units::codec::MIN_LAYER_VERSION);
     define(&db);
-    assert_eq!(layer_version(&db), 7);
+    assert_eq!(layer_version(&db), kerno_units::codec::MIN_LAYER_VERSION);
     clean(&db, "layer 6");
     // A schema change set with no unit is an `Index` change set.
     let cs = db.snapshot().unwrap().change_set(db.snapshot().unwrap().seq()).unwrap();

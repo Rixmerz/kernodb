@@ -155,7 +155,18 @@ fn rel() -> Rel {
 }
 
 fn rel_out() -> RelAdj {
-    RelAdj { tag: 0x41, unit_id: UNIT, relation_type: b"cites".to_vec(), edge_id: EDGE, other: OTHER }
+    RelAdj {
+        tag: 0x41,
+        unit_id: UNIT,
+        relation_type: b"cites".to_vec(),
+        bound: Some(EDGE),
+        entries: vec![(EDGE, OTHER)],
+    }
+}
+
+/// `n` entries with ascending relation ids.
+fn adj_entries(n: u8) -> Vec<([u8; 16], [u8; 16])> {
+    (1..=n).map(|i| ([i; 16], [0x80 | i; 16])).collect()
 }
 
 fn pos(name: &str, rec: Rec) -> Vector {
@@ -274,7 +285,9 @@ fn vectors() -> Vec<Vector> {
             }),
         ),
         pos("rel_out_one", Rec::RelAdj(rel_out())),
-        pos("rel_in_one", Rec::RelAdj(RelAdj { tag: 0x42, unit_id: OTHER, other: UNIT, ..rel_out() })),
+        pos("rel_in_one", Rec::RelAdj(RelAdj { tag: 0x42, unit_id: OTHER, entries: vec![(EDGE, UNIT)], ..rel_out() })),
+        pos("rel_out_tail_two", Rec::RelAdj(RelAdj { bound: None, entries: adj_entries(2), ..rel_out() })),
+        pos("rel_out_block_64", Rec::RelAdj(RelAdj { bound: None, entries: adj_entries(64), ..rel_out() })),
         pos("rel_out_type_min", Rec::RelAdj(RelAdj { relation_type: b"c".to_vec(), ..rel_out() })),
         pos("rel_in_type_limits", Rec::RelAdj(RelAdj { tag: 0x42, relation_type: vec![b'x'; 64], ..rel_out() })),
     ];
@@ -326,32 +339,66 @@ fn vectors() -> Vec<Vector> {
     let (ok, ov) = encode(&Rec::RelAdj(rel_out()));
     v.push(neg_bytes("rel_key_short", 3, C, ek[..16].to_vec(), ev.clone()));
     v.push(neg_bytes("rel_key_long", 3, C, [ek.clone(), vec![0]].concat(), ev.clone()));
-    v.push(neg_bytes("rel_out_key_34", 3, C, [vec![0x41], vec![0; 33]].concat(), ov.clone()));
+    v.push(neg_bytes("rel_out_key_19", 3, C, [vec![0x41], vec![0; 18]].concat(), ov.clone()));
     v.push(neg_bytes(
-        "rel_in_type_65",
+        "rel_in_type_65_bounded",
         3,
         C,
         encode(&Rec::RelAdj(RelAdj { tag: 0x42, relation_type: vec![b'x'; 65], ..rel_out() })).0,
         ov.clone(),
     ));
-    let mut no_nul = ok.clone();
-    let sep = no_nul.len() - 17;
-    no_nul[sep] = b'x';
-    v.push(neg_bytes("rel_out_key_without_nul", 3, C, no_nul, ov.clone()));
+    v.push(neg_rec(
+        "rel_in_type_65_tail",
+        12,
+        C,
+        Rec::RelAdj(RelAdj { tag: 0x42, relation_type: vec![b'x'; 65], bound: None, ..rel_out() }),
+    ));
+    v.push(neg_bytes(
+        "rel_out_key_without_nul",
+        3,
+        C,
+        [vec![0x41], UNIT.to_vec(), b"cites".to_vec()].concat(),
+        ov.clone(),
+    ));
+    let mut bad_marker = ok.clone();
+    let marker = bad_marker.len() - 17;
+    bad_marker[marker] = 7;
+    v.push(neg_bytes("rel_out_key_bad_marker", 3, C, bad_marker, ov.clone()));
+    v.push(neg_bytes("rel_out_key_bound_15", 3, C, ok[..ok.len() - 1].to_vec(), ov.clone()));
     v.push(neg_rec(
         "rel_out_key_type_not_utf8",
         12,
         C,
         Rec::RelAdj(RelAdj { relation_type: vec![0xFF, 0xFE], ..rel_out() }),
     ));
+    // A NUL ends the type, so a type with one has a key that does not have the shape.
     v.push(neg_rec(
         "rel_in_key_type_with_nul",
-        12,
+        3,
         C,
         Rec::RelAdj(RelAdj { tag: 0x42, relation_type: b"a\0b".to_vec(), ..rel_out() }),
     ));
     v.push(neg_bytes("rel_out_cut", 9, C, ok.clone(), ov[..ov.len() - 1].to_vec()));
-    v.push(neg_bytes("rel_out_trailing", 10, C, ok.clone(), [ov.clone(), vec![0]].concat()));
+    v.push(neg_bytes("rel_out_trailing", 9, C, ok.clone(), [ov.clone(), vec![0]].concat()));
+    v.push(neg_bytes("rel_out_no_entry", 9, C, ok.clone(), ov[..2].to_vec()));
+    v.push(neg_rec(
+        "rel_out_65_entries",
+        11,
+        C,
+        Rec::RelAdj(RelAdj { bound: None, entries: adj_entries(65), ..rel_out() }),
+    ));
+    v.push(neg_rec(
+        "rel_out_not_ascending",
+        13,
+        C,
+        Rec::RelAdj(RelAdj { entries: vec![([2; 16], OTHER), ([1; 16], OTHER)], ..rel_out() }),
+    ));
+    v.push(neg_rec(
+        "rel_out_repeats_a_relation",
+        13,
+        C,
+        Rec::RelAdj(RelAdj { entries: vec![([1; 16], OTHER), ([1; 16], OTHER)], ..rel_out() }),
+    ));
     v.push(neg_bytes("rel_in_version_0", 6, C, [vec![0x42], ok[1..].to_vec()].concat(), {
         let mut b = ov.clone();
         b[0] = 0;
@@ -556,6 +603,10 @@ fn every_truncation_of_a_positive_value_is_unit_9() {
             continue;
         }
         for cut in 0..v.value.len() {
+            // A block cut where an entry ends is a shorter block: valid.
+            if matches!(rec, Rec::RelAdj(_)) && cut > 2 && (cut - 2) % 32 == 0 {
+                continue;
+            }
             let got = spec_decoder::decode(&v.key, &v.value[..cut]);
             assert_eq!(got, Err(Reject { rule: 9, class: C }), "{} cut at {cut}", v.name);
         }
@@ -681,19 +732,19 @@ fn production_decode(key: &[u8], value: &[u8]) -> Result<Rec, Reject> {
                 confidence,
             })
         }
-        Record::RelationOut { unit, relation_type, edge, adjacency } => Rec::RelAdj(RelAdj {
+        Record::RelationOut { unit, relation_type, bound, block } => Rec::RelAdj(RelAdj {
             tag: 0x41,
             unit_id: unit.0,
             relation_type: relation_type.into_bytes(),
-            edge_id: edge.0,
-            other: adjacency.other.0,
+            bound: bound.map(|b| b.0),
+            entries: block.entries.into_iter().map(|(e, o)| (e.0, o.0)).collect(),
         }),
-        Record::RelationIn { unit, relation_type, edge, adjacency } => Rec::RelAdj(RelAdj {
+        Record::RelationIn { unit, relation_type, bound, block } => Rec::RelAdj(RelAdj {
             tag: 0x42,
             unit_id: unit.0,
             relation_type: relation_type.into_bytes(),
-            edge_id: edge.0,
-            other: adjacency.other.0,
+            bound: bound.map(|b| b.0),
+            entries: block.entries.into_iter().map(|(e, o)| (e.0, o.0)).collect(),
         }),
     })
 }
@@ -730,6 +781,10 @@ fn production_truncations_are_unit_9() {
             continue;
         }
         for cut in 0..v.value.len() {
+            // A block cut where an entry ends is a shorter block: valid.
+            if matches!(rec, Rec::RelAdj(_)) && cut > 2 && (cut - 2) % 32 == 0 {
+                continue;
+            }
             assert_eq!(
                 production_decode(&v.key, &v.value[..cut]),
                 Err(Reject { rule: 9, class: C }),

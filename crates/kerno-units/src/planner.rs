@@ -72,8 +72,8 @@ use std::time::Instant;
 
 use crate::assoc::{AssocError, AssocQuery, AssocResult};
 use crate::cache::{CacheEntry, CacheFallbackCause, CachedQuery, CachedResult, Dependencies, Lookup, Peek};
-use crate::codec::{Adjacency, Key, TAG_REL, TAG_REL_IN, TAG_REL_OUT, valid_relation_type, valid_unit_type};
-use crate::db::{Relation, Unit, UnitSnapshot, context, corruption, key};
+use crate::codec::{Key, TAG_REL, TAG_REL_IN, TAG_REL_OUT, valid_relation_type, valid_unit_type};
+use crate::db::{Relation, Unit, UnitSnapshot, corruption};
 use crate::error::UnitError;
 use crate::fingerprint::{FingerprintKey, NormalizedQuery, QueryKind, RelationQuery};
 use crate::index::{IndexPath, IndexState, IndexStatus, QueryOutcome, QuerySource, UnitFilter};
@@ -339,6 +339,17 @@ impl<E: Engine> UnitSnapshot<E> {
         Ok(Probe { found: n as u64, complete: n < PROBE })
     }
 
+    /// Adjacency entries in `[start, end)`, counting at most [`PROBE`]: the
+    /// entries of the blocks of the range, not the blocks (ADR-0026). Each
+    /// block holds at least one entry, so `PROBE` blocks hold at least `PROBE`.
+    /// A block is counted by its length, not decoded: a damaged one is for the
+    /// read of the adjacency to find (and the planner to fall back from).
+    fn probe_adjacency(&self, start: &[u8], end: &[u8]) -> Result<Probe, UnitError> {
+        let page = self.snap.scan(Bound::Included(start), Bound::Excluded(end), PROBE)?;
+        let n: usize = page.iter().map(|(_, v)| v.len().saturating_sub(2) / 32).sum();
+        Ok(Probe { found: n.min(PROBE) as u64, complete: n < PROBE })
+    }
+
     /// Steps 1 to 4 for a unit filter, over the status and entry count of an
     /// `IDX_META` read the caller already made: the status the decision saw
     /// and the decision.
@@ -370,7 +381,7 @@ impl<E: Engine> UnitSnapshot<E> {
             Direction::In => TAG_REL_IN,
         };
         let adjacent = match Key::adjacency_range(tag, query.unit, query.relation_type.as_deref()) {
-            Some((start, end)) => self.probe(&start, &end)?,
+            Some((start, end)) => self.probe_adjacency(&start, &end)?,
             None => Probe { found: 0, complete: true },
         };
         Decision::new(QueryKind::Relations, None, relation_candidates(all, adjacent)).map_err(internal)
@@ -380,18 +391,18 @@ impl<E: Engine> UnitSnapshot<E> {
     /// `decide_relations` plus the two whole adjacency ranges, and the first
     /// hop of every seed.
     fn decide_assoc(&self, q: &AssocQuery, seeds: &BTreeSet<UnitId>) -> Result<Decision, UnitError> {
-        let whole = |tag| {
+        let whole = |tag, adjacency: bool| {
             let (start, end) = Key::tag_range(tag);
-            self.probe(&start, &end)
+            if adjacency { self.probe_adjacency(&start, &end) } else { self.probe(&start, &end) }
         };
-        let (all, out, inn) = (whole(TAG_REL)?, whole(TAG_REL_OUT)?, whole(TAG_REL_IN)?);
+        let (all, out, inn) = (whole(TAG_REL, false)?, whole(TAG_REL_OUT, true)?, whole(TAG_REL_IN, true)?);
         let (mut expansions, mut adjacent) = (0u64, 0u64);
         for &seed in seeds {
             for dir in q.direction.directions() {
                 let tag = if *dir == Direction::Out { TAG_REL_OUT } else { TAG_REL_IN };
                 expansions += 1;
                 if let Some((start, end)) = Key::adjacency_range(tag, seed, None) {
-                    adjacent = adjacent.saturating_add(self.probe(&start, &end)?.found);
+                    adjacent = adjacent.saturating_add(self.probe_adjacency(&start, &end)?.found);
                 }
             }
         }
@@ -852,17 +863,11 @@ impl<E: Engine> UnitSnapshot<E> {
     /// Whether the entry of `r` on the other end from `dir` exists and names
     /// this end.
     fn is_mirrored(&self, dir: Direction, r: &Relation) -> Result<bool, UnitError> {
-        let (mirror, names) = match dir {
-            Direction::Out => {
-                (Key::RelationIn { unit: r.to, relation_type: r.relation_type.clone(), edge: r.id }, r.from)
-            }
-            Direction::In => {
-                (Key::RelationOut { unit: r.from, relation_type: r.relation_type.clone(), edge: r.id }, r.to)
-            }
+        let (mirror_dir, unit, names) = match dir {
+            Direction::Out => (Direction::In, r.to, r.from),
+            Direction::In => (Direction::Out, r.from, r.to),
         };
-        let Some(raw) = self.snap.get(&key(mirror)?)? else { return Ok(false) };
-        let entry = Adjacency::decode(&raw).map_err(|e| context(e, &format!("mirror adjacency entry of {}", r.id)))?;
-        Ok(entry.other == names)
+        Ok(self.adjacency_entry(mirror_dir, unit, &r.relation_type, r.id)? == Some(names))
     }
 
     /// Steps 5 to 7 for relations; `adjacency` runs the index path.

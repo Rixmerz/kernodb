@@ -31,17 +31,17 @@
 //! turns that into a `Fallback` to the reference path, as for any damaged
 //! adjacency answer, and the answer is then complete.
 //!
-//! The writer cost is one read-modify-write of one record per adjacency
-//! entry written or removed, in the transaction the relation is already in.
+//! The writer keeps the count in the change set and writes the record once, at
+//! commit, whatever the number of entries the change set adds to the list.
 //!
 //! # What it does not see
 //!
-//! * A unit whose relations were written before layer 4 has no count record
-//!   until a relation of that `(direction, type)` is next created or deleted
-//!   (the writer then counts the entries once and records the total, so the
-//!   record is as good as the store was at that moment). Until then the read
-//!   has nothing to compare with and behaves as before. An absent record is
-//!   never a finding: it is indistinguishable from a legacy unit.
+//! * A list with no count record has none to compare with, so a read of it
+//!   behaves as if the count were not there. Since the format cut of ADR-0026
+//!   no store lacks its counts (layer 9 starts every database with them), so
+//!   the writer no longer rebuilds a missing record from the entries: it counts
+//!   from zero, and a record lost with entries left behind is a disagreement
+//!   the next read of that list reports.
 //! * A count record lost **together with** its entries, or rewritten to
 //!   agree with a lost entry: two damages at once. `verify_units` reports a
 //!   count that disagrees with the entries (UNIT-45), but it cannot report
@@ -54,11 +54,10 @@
 //! a scan of every type of the unit to check one.
 
 use std::collections::BTreeMap;
-use std::ops::Bound;
 
 use kerno_core::contract::{Snapshot, Txn, TxnEngine};
 
-use crate::codec::{ENVELOPE_VERSION, Key, MAX_RELATION_TYPE_LEN, TAG_REL_IN, TAG_REL_OUT, valid_relation_type};
+use crate::codec::{ENVELOPE_VERSION, MAX_RELATION_TYPE_LEN, valid_relation_type};
 use crate::db::{ChangeSet, Write, scan_all};
 use crate::error::{DecodeError, UnitError, UnitRule};
 use crate::types::{Direction, UnitId};
@@ -82,13 +81,6 @@ pub(crate) fn dir_byte(dir: Direction) -> u8 {
 
 pub(crate) fn dir_of(byte: u8) -> Direction {
     if byte == 0 { Direction::Out } else { Direction::In }
-}
-
-fn adjacency_tag(dir: Direction) -> u8 {
-    match dir {
-        Direction::Out => TAG_REL_OUT,
-        Direction::In => TAG_REL_IN,
-    }
 }
 
 /// The key of the count record of `(unit, dir, relation_type)`.
@@ -249,39 +241,33 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         dir: Direction,
         relation_type: &str,
         delta: i64,
-    ) -> Result<CountStep, UnitError> {
+    ) -> Result<(CountStep, u64), UnitError> {
         let k = count_key(unit, dir, relation_type);
-        if let Some(&cached) = self.count_cache.get(&k) {
-            let next = if delta >= 0 {
-                cached.saturating_add(delta as u64)
-            } else {
-                cached.saturating_sub(delta.unsigned_abs())
-            };
-            return Ok(if next > 0 {
-                CountStep::Put(k, next)
-            } else if cached > 0 {
-                CountStep::Delete(k)
-            } else {
-                CountStep::Nothing
-            });
-        }
-        let txn = self.txn()?;
-        let (existing, base) = match txn.get(&k)? {
-            Some(raw) => {
-                let n = decode_value(&raw).map_err(|e| crate::db::context(e, &format!("REL_COUNT of unit {unit}")))?;
-                (true, n)
+        let (existing, base) = if let Some(&cached) = self.count_cache.get(&k) {
+            (cached > 0, cached)
+        } else {
+            match self.txn()?.get(&k)? {
+                Some(raw) => {
+                    let n =
+                        decode_value(&raw).map_err(|e| crate::db::context(e, &format!("REL_COUNT of unit {unit}")))?;
+                    (true, n)
+                }
+                // The format cut (ADR-0026) leaves no store without its counts: a list with
+                // no record has no entry. A record lost with its entries is damage the
+                // verifier reports (UNIT-45), not one the writer repairs.
+                None => (false, 0),
             }
-            None => (false, count_entries(txn, unit, dir, relation_type)?),
         };
         let next =
             if delta >= 0 { base.saturating_add(delta as u64) } else { base.saturating_sub(delta.unsigned_abs()) };
-        Ok(if next > 0 {
+        let step = if next > 0 {
             CountStep::Put(k, next)
         } else if existing {
             CountStep::Delete(k)
         } else {
             CountStep::Nothing
-        })
+        };
+        Ok((step, base))
     }
 
     fn apply_count(&mut self, step: CountStep) -> Result<(), UnitError> {
@@ -293,12 +279,10 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
             CountStep::Put(k, n) => {
                 self.count_cache.insert(k.clone(), n);
                 self.count_dirty.insert(k.clone());
-                self.count_live.insert(k);
             }
             CountStep::Delete(k) => {
                 self.count_cache.insert(k.clone(), 0);
                 self.count_dirty.insert(k.clone());
-                self.count_live.remove(&k);
             }
             CountStep::Nothing => {}
         }
@@ -317,45 +301,22 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         Ok(())
     }
 
-    /// Adds `delta` to the count of `(from, Out)` and of `(to, In)`. Both
-    /// next counts are read before either is written, so a read that fails
-    /// (a damaged record, an engine error) leaves the change set untouched.
-    /// A record written and removed again in one change set does not raise
-    /// the layer mark at commit.
+    /// Adds `delta` to the count of `(from, Out)` and of `(to, In)` and returns
+    /// the two counts as they were before. Both next counts are read before
+    /// either is written, so a read that fails (a damaged record, an engine
+    /// error) leaves the change set untouched.
     pub(crate) fn adjust_counts(
         &mut self,
         from: UnitId,
         to: UnitId,
         relation_type: &str,
         delta: i64,
-    ) -> Result<(), UnitError> {
-        let out = self.plan_count(from, Direction::Out, relation_type, delta)?;
-        let inn = self.plan_count(to, Direction::In, relation_type, delta)?;
+    ) -> Result<(u64, u64), UnitError> {
+        let (out, before_out) = self.plan_count(from, Direction::Out, relation_type, delta)?;
+        let (inn, before_in) = self.plan_count(to, Direction::In, relation_type, delta)?;
         self.apply_count(out)?;
-        self.apply_count(inn)
-    }
-}
-
-/// The adjacency entries of `(unit, dir, relation_type)` in `txn`'s view.
-fn count_entries<T: Txn>(txn: &T, unit: UnitId, dir: Direction, relation_type: &str) -> Result<u64, UnitError> {
-    let Some((start, end)) = Key::adjacency_range(adjacency_tag(dir), unit, Some(relation_type)) else {
-        return Ok(0);
-    };
-    let mut cursor = start;
-    let mut inclusive = true;
-    let mut total = 0u64;
-    loop {
-        let lo = if inclusive { Bound::Included(cursor.as_slice()) } else { Bound::Excluded(cursor.as_slice()) };
-        let page = txn.scan(lo, Bound::Excluded(&end), 256)?;
-        let full = page.len() == 256;
-        total += page.len() as u64;
-        match page.into_iter().last() {
-            Some((k, _)) if full => {
-                cursor = k;
-                inclusive = false;
-            }
-            _ => return Ok(total),
-        }
+        self.apply_count(inn)?;
+        Ok((before_out, before_in))
     }
 }
 

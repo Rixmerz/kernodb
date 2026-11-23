@@ -71,11 +71,18 @@ pub const LAYER_VERSION_TYPE_OPTIONS: u32 = 7;
 /// ADR-0025, `docs/file-format/units-v8.md`). It is written by the transaction
 /// that turns the option on for the first time, never before and never lowered.
 pub const LAYER_VERSION_SUBSTRING: u32 = 8;
+/// `layer_version` of the format cut of ADR-0026
+/// (`docs/file-format/units-v9.md`): the keyword postings (`0x74`) and the
+/// adjacency entries (`0x41`, `0x42`) are posting blocks. A database created
+/// by this build starts here, and a build that reads up to 8 refuses it.
+pub const LAYER_VERSION_BLOCKS: u32 = 9;
 /// The newest `layer_version` this build reads and writes.
-pub const MAX_LAYER_VERSION: u32 = LAYER_VERSION_SUBSTRING;
-/// The lowest `layer_version` this build opens: the format cut of
-/// 1.0.0-alpha.2 (ADR-0023). Every database it creates starts here.
-pub const MIN_LAYER_VERSION: u32 = LAYER_VERSION_TYPE_OPTIONS;
+pub const MAX_LAYER_VERSION: u32 = LAYER_VERSION_BLOCKS;
+/// The lowest `layer_version` this build opens: the format cut of ADR-0026,
+/// which supersedes the cut of 1.0.0-alpha.2 (ADR-0023). Every database it
+/// creates starts here. A database below it is exported with the build that
+/// wrote it and imported.
+pub const MIN_LAYER_VERSION: u32 = LAYER_VERSION_BLOCKS;
 /// The `LAYER_META` name of the layer mark (design §2.6).
 pub const LAYER_MARK_NAME: &str = "layer";
 /// Length limits of §1.2.
@@ -129,17 +136,19 @@ pub enum Key {
     Relation {
         edge: RelationId,
     },
-    /// Adjacency entry of a relation, from the side of its `from` unit.
+    /// A posting block of the adjacency list of `unit` and `relation_type`,
+    /// from the side of the `from` unit: the entries of the relations up to
+    /// `bound` (`None`: the tail block, the last one). ADR-0026.
     RelationOut {
         unit: UnitId,
         relation_type: String,
-        edge: RelationId,
+        bound: Option<RelationId>,
     },
-    /// Adjacency entry of a relation, from the side of its `to` unit.
+    /// The same, from the side of the `to` unit.
     RelationIn {
         unit: UnitId,
         relation_type: String,
-        edge: RelationId,
+        bound: Option<RelationId>,
     },
     /// How the last build of the primary index ended and what it reflects.
     IndexMeta,
@@ -243,11 +252,17 @@ impl Key {
                 out.extend_from_slice(&schema_version.to_be_bytes());
                 out.extend_from_slice(&unit.0);
             }
-            Key::RelationOut { unit, relation_type, edge } | Key::RelationIn { unit, relation_type, edge } => {
+            Key::RelationOut { unit, relation_type, bound } | Key::RelationIn { unit, relation_type, bound } => {
                 out.extend_from_slice(&unit.0);
                 out.extend_from_slice(relation_type.as_bytes());
                 out.push(0);
-                out.extend_from_slice(&edge.0);
+                match bound {
+                    Some(edge) => {
+                        out.push(0);
+                        out.extend_from_slice(&edge.0);
+                    }
+                    None => out.push(1),
+                }
             }
         }
         out
@@ -278,8 +293,8 @@ impl Key {
                 tail.first().is_some_and(|&n| (1..=MAX_UNIT_TYPE_LEN as usize).contains(&(n as usize)))
                     && key.len() == 22 + tail[0] as usize
             }
-            // tag ‖ unit[16] ‖ type (1..=64) ‖ NUL ‖ edge[16]
-            None => (35..=2 + 16 + 16 + MAX_RELATION_TYPE_LEN as usize).contains(&key.len()),
+            // tag ‖ unit[16] ‖ type (1..=64) ‖ NUL ‖ (0x01 | 0x00 ‖ bound[16])
+            None => (20..=1 + 16 + MAX_RELATION_TYPE_LEN as usize + 1 + 17).contains(&key.len()),
         };
         if !len_ok {
             return reject(UnitRule::Unit3, format!("key with tag 0x{tag:02x} has length {}", key.len()));
@@ -306,11 +321,13 @@ impl Key {
             }
             TAG_REL => Ok(Key::Relation { edge: RelationId(arr::<16>(tail)) }),
             TAG_REL_OUT | TAG_REL_IN => {
-                let n = tail.len();
-                if tail[n - 17] != 0 {
-                    return reject(UnitRule::Unit3, format!("key with tag 0x{tag:02x} has no NUL before its edge id"));
-                }
-                let relation_type = match std::str::from_utf8(&tail[16..n - 17]) {
+                let Some(nul) = tail[16..].iter().position(|b| *b == 0) else {
+                    return reject(
+                        UnitRule::Unit3,
+                        format!("key with tag 0x{tag:02x} has no NUL after its relation type"),
+                    );
+                };
+                let relation_type = match std::str::from_utf8(&tail[16..16 + nul]) {
                     Ok(t) if valid_relation_type(t) => t.to_owned(),
                     _ => {
                         return reject(
@@ -319,11 +336,20 @@ impl Key {
                         );
                     }
                 };
-                let edge = RelationId(arr::<16>(&tail[n - 16..]));
+                let bound = match &tail[16 + nul + 1..] {
+                    [1] => None,
+                    [0, edge @ ..] if edge.len() == 16 => Some(RelationId(arr::<16>(edge))),
+                    _ => {
+                        return reject(
+                            UnitRule::Unit3,
+                            format!("key with tag 0x{tag:02x} has no valid block marker after its relation type"),
+                        );
+                    }
+                };
                 Ok(if tag == TAG_REL_OUT {
-                    Key::RelationOut { unit: unit(), relation_type, edge }
+                    Key::RelationOut { unit: unit(), relation_type, bound }
                 } else {
-                    Key::RelationIn { unit: unit(), relation_type, edge }
+                    Key::RelationIn { unit: unit(), relation_type, bound }
                 })
             }
             TAG_REV_META | TAG_REV_PAYLOAD => {
@@ -1134,26 +1160,50 @@ impl RelationRecord {
     }
 }
 
-/// `REL_OUT` / `REL_IN` value: the unit at the other end of the relation, so
-/// that a neighbour is read from the index alone.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Adjacency {
-    pub other: UnitId,
+/// Most entries in one adjacency block (ADR-0026): 64 × 32 bytes, about 2 KiB.
+pub const ADJ_BLOCK_MAX: usize = 64;
+
+/// `REL_OUT` / `REL_IN` value: a posting block of adjacency entries, each the
+/// relation id and the unit at the other end of the relation, so that a
+/// neighbour is read from the index alone. `1 <= n <= ADJ_BLOCK_MAX`,
+/// strictly ascending by relation id.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdjBlock {
+    pub entries: Vec<(RelationId, UnitId)>,
 }
 
-impl Adjacency {
+impl AdjBlock {
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer::envelope();
-        w.0.extend_from_slice(&self.other.0);
+        for (edge, other) in &self.entries {
+            w.0.extend_from_slice(&edge.0);
+            w.0.extend_from_slice(&other.0);
+        }
         w.0
     }
 
     pub fn decode(value: &[u8]) -> Res<Self> {
         let mut r = Reader::new(value, "REL_ADJ");
         r.envelope()?;
-        let other = UnitId(arr(r.take(16, "other")?));
-        r.finish()?;
-        Ok(Adjacency { other })
+        let body = &value[r.pos..];
+        if body.is_empty() || !body.len().is_multiple_of(32) {
+            return reject(
+                UnitRule::Unit9,
+                format!("REL_ADJ has {} bytes after its envelope: no whole entry, or a partial one", body.len()),
+            );
+        }
+        if body.len() / 32 > ADJ_BLOCK_MAX {
+            return reject(
+                UnitRule::Unit11,
+                format!("REL_ADJ holds {} entries, over {ADJ_BLOCK_MAX}", body.len() / 32),
+            );
+        }
+        let entries: Vec<(RelationId, UnitId)> =
+            body.chunks_exact(32).map(|c| (RelationId(arr(&c[..16])), UnitId(arr(&c[16..])))).collect();
+        if entries.windows(2).any(|w| w[0].0 >= w[1].0) {
+            return reject(UnitRule::Unit13, "REL_ADJ entries are not strictly ascending by relation id");
+        }
+        Ok(AdjBlock { entries })
     }
 }
 
@@ -1279,14 +1329,14 @@ pub enum Record {
     RelationOut {
         unit: UnitId,
         relation_type: String,
-        edge: RelationId,
-        adjacency: Adjacency,
+        bound: Option<RelationId>,
+        block: AdjBlock,
     },
     RelationIn {
         unit: UnitId,
         relation_type: String,
-        edge: RelationId,
-        adjacency: Adjacency,
+        bound: Option<RelationId>,
+        block: AdjBlock,
     },
     IndexMeta {
         meta: IndexMeta,
@@ -1312,11 +1362,11 @@ impl Record {
             Record::ChangeSet { seq, .. } => Key::ChangeSet { seq: *seq },
             Record::CsMember { seq, ordinal, .. } => Key::CsMember { seq: *seq, ordinal: *ordinal },
             Record::Relation { edge, .. } => Key::Relation { edge: *edge },
-            Record::RelationOut { unit, relation_type, edge, .. } => {
-                Key::RelationOut { unit: *unit, relation_type: relation_type.clone(), edge: *edge }
+            Record::RelationOut { unit, relation_type, bound, .. } => {
+                Key::RelationOut { unit: *unit, relation_type: relation_type.clone(), bound: *bound }
             }
-            Record::RelationIn { unit, relation_type, edge, .. } => {
-                Key::RelationIn { unit: *unit, relation_type: relation_type.clone(), edge: *edge }
+            Record::RelationIn { unit, relation_type, bound, .. } => {
+                Key::RelationIn { unit: *unit, relation_type: relation_type.clone(), bound: *bound }
             }
             Record::IndexMeta { .. } => Key::IndexMeta,
             Record::IndexPrimary { unit, .. } => Key::IndexPrimary { unit: *unit },
@@ -1337,7 +1387,7 @@ impl Record {
             Record::ChangeSet { record, .. } => record.encode()?,
             Record::CsMember { member, .. } => member.encode()?,
             Record::Relation { record, .. } => record.encode()?,
-            Record::RelationOut { adjacency, .. } | Record::RelationIn { adjacency, .. } => adjacency.encode(),
+            Record::RelationOut { block, .. } | Record::RelationIn { block, .. } => block.encode(),
             Record::IndexMeta { meta } => meta.encode()?,
             Record::IndexPrimary { entry, .. } => entry.encode()?,
             Record::IndexType { .. } => encode_type_entry(),
@@ -1363,11 +1413,11 @@ impl Record {
             Key::ChangeSet { seq } => Record::ChangeSet { seq, record: ChangeSetRecord::decode_upto(value, max)? },
             Key::CsMember { seq, ordinal } => Record::CsMember { seq, ordinal, member: CsMember::decode(value)? },
             Key::Relation { edge } => Record::Relation { edge, record: RelationRecord::decode(value)? },
-            Key::RelationOut { unit, relation_type, edge } => {
-                Record::RelationOut { unit, relation_type, edge, adjacency: Adjacency::decode(value)? }
+            Key::RelationOut { unit, relation_type, bound } => {
+                Record::RelationOut { unit, relation_type, bound, block: AdjBlock::decode(value)? }
             }
-            Key::RelationIn { unit, relation_type, edge } => {
-                Record::RelationIn { unit, relation_type, edge, adjacency: Adjacency::decode(value)? }
+            Key::RelationIn { unit, relation_type, bound } => {
+                Record::RelationIn { unit, relation_type, bound, block: AdjBlock::decode(value)? }
             }
             Key::IndexMeta => Record::IndexMeta { meta: IndexMeta::decode(value)? },
             Key::IndexPrimary { unit } => Record::IndexPrimary { unit, entry: PrimaryEntry::decode(value)? },

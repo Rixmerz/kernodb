@@ -36,5 +36,6 @@ Rules:
 | [0023](0023-format-v2-cut-for-alpha2.md) | The format cut for 1.0.0-alpha.2: no legacy readers, keyword index opt-in | **Accepted in direction** (2026-11-20, owner); freeze after the measured steps |
 | [0024](0024-concurrent-read-only-opens.md) | Concurrent read-only opens: no lock, one consistent read, `refresh()` | **Proposed** (2026-11-21, GitHub issue #2 §3), implemented; waits for the owner; no format change |
 | [0025](0025-substring-index-and-sqlite-parity.md) | A trigram index of posting blocks for substring search, and the profiled gaps to SQLite | **Proposed** (2026-11-23), implemented; layer 8; waits for the owner |
+| [0026](0026-posting-blocks-for-adjacency-and-keyword-postings.md) | Posting blocks for graph adjacency and keyword postings | **Proposed** (2026-11-23), implemented; layer 9, a format cut; waits for the owner |
 
 ADRs 0014–0018 come from the list in the [specification v0.2.0](../spec/architecture-specification-v0.2.0.md) §17; the full correspondence is in [`docs/spec/`](../spec/README.md).

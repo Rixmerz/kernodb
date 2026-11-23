@@ -574,11 +574,12 @@ fn verify_reports_a_removed_adjacency_entry() {
     let db = Db::open(dir.db()).unwrap();
     let a = db.store("note", "a").unwrap();
     let b = db.store("note", "b").unwrap();
-    let edge = db.relate(a, b, "cites").unwrap();
+    db.relate(a, b, "cites").unwrap();
     assert!(db.verify().unwrap().is_clean());
 
-    // Remove the incoming entry below the layer, as a lost write would.
-    let key = Key::RelationIn { unit: b, relation_type: "cites".into(), edge }.encode().unwrap();
+    // Remove the incoming entry (the one block of its list: the tail) below the layer, as a lost
+    // write would.
+    let key = Key::RelationIn { unit: b, relation_type: "cites".into(), bound: None }.encode().unwrap();
     db.unit_db().raw_commit(vec![(key, None)]).unwrap();
 
     let report = db.verify().unwrap();

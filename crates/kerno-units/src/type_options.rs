@@ -174,9 +174,11 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         // Index each active unit, or clear its entries.
         for (unit, payload_key) in units {
             let payload = if enabled { self.txn()?.get(&payload_key)? } else { None };
-            for w in self.plan_document(unit, payload.as_deref())? {
+            let plan = self.plan_document(unit, payload.as_deref())?;
+            for w in plan.writes {
                 self.write_owned(w)?;
             }
+            self.stage_fulltext(plan.change);
         }
         Ok(())
     }

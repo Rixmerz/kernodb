@@ -144,7 +144,7 @@ fn record_layout_is_pinned<E: Target>() {
             (long_key, value(1)),
         ])
     );
-    assert_eq!(layer_version(&db), 7);
+    assert_eq!(layer_version(&db), kerno_units::codec::MIN_LAYER_VERSION);
     clean(&db, "layout");
 }
 
@@ -193,7 +193,7 @@ fn counts_follow_every_lifecycle_change<E: Target>() {
         cs.delete(u[0], None).unwrap();
     });
     assert_eq!(counts(&db), want(&[("a", 0), ("b", 1)]), "zero is stored, not removed");
-    assert_eq!(layer_version(&db), 7);
+    assert_eq!(layer_version(&db), kerno_units::codec::MIN_LAYER_VERSION);
     clean(&db, "all of a gone");
     // A type back from zero keeps counting from the record, with no scan to rebuild it.
     create_units(&db, &[("a", 1)]);
@@ -280,7 +280,7 @@ fn export_import_keeps_the_counts<E: Target>() {
     kerno_units::import::import(&target, &bytes).unwrap();
     // `c` has no active unit to import, so the target never counts it: no record, not a zero.
     assert_eq!(counts(&target), want(&[("a", 1), ("b", 1)]));
-    assert_eq!(layer_version(&target), 7);
+    assert_eq!(layer_version(&target), kerno_units::codec::MIN_LAYER_VERSION);
     clean(&target, "imported");
     assert_eq!(kerno_units::export::export(&target).unwrap(), bytes);
 }

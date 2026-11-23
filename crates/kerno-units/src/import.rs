@@ -28,7 +28,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use kerno_core::contract::TxnEngine;
 
-use crate::codec::{Adjacency, Key, RelationRecord, RevisionMeta, UnitHead, valid_relation_type};
+use crate::codec::{Key, RelationRecord, RevisionMeta, UnitHead, valid_relation_type};
 use crate::db::{ChangeMeta, ChangeSet, UnitDb, Write, corruption, key};
 use crate::error::UnitError;
 use crate::export::{
@@ -214,17 +214,10 @@ fn write_revision<E: TxnEngine>(cs: &mut ChangeSet<'_, E>, u: &UnitData, ri: usi
 fn write_relation<E: TxnEngine>(cs: &mut ChangeSet<'_, E>, r: &Rel) -> Result<(), UnitError> {
     let (edge, ty) = (r.id, &r.record.relation_type);
     // Everything that can refuse the relation runs before a count is touched.
-    let out = Key::RelationOut { unit: r.from, relation_type: ty.clone(), edge };
-    let inn = Key::RelationIn { unit: r.to, relation_type: ty.clone(), edge };
-    let writes = [
-        Write::Put(key(Key::Relation { edge })?, r.record.encode()?),
-        Write::Put(key(out)?, Adjacency { other: r.to }.encode()),
-        Write::Put(key(inn)?, Adjacency { other: r.from }.encode()),
-    ];
-    cs.adjust_counts(r.from, r.to, ty, 1)?;
-    for w in &writes {
-        cs.write(w)?;
-    }
+    let write = Write::Put(key(Key::Relation { edge })?, r.record.encode()?);
+    let before = cs.adjust_counts(r.from, r.to, ty, 1)?;
+    cs.write_owned(write)?;
+    cs.stage_adjacency(edge, (r.from, r.to), ty, true, before);
     Ok(())
 }
 

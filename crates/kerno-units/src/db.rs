@@ -75,10 +75,9 @@ use kerno_core::{Durability, MAX_VALUE_LEN};
 
 use crate::clock::{Clock, SystemClock, UnitIdSource, UuidV7Source};
 use crate::codec::{
-    Adjacency, ChangeSetRecord, CsMember, Key, LAYER_MARK_NAME, LAYER_VERSION, LAYER_VERSION_DERIVED,
-    LAYER_VERSION_PUBLIC_IDS, LAYER_VERSION_REL_COUNTS, LAYER_VERSION_SCHEMAS, LAYER_VERSION_TYPE_COUNTS, LayerMeta,
+    AdjBlock, ChangeSetRecord, CsMember, Key, LAYER_MARK_NAME, LAYER_VERSION_DERIVED, LayerMeta,
     MAX_CHANGESET_FIELD_LEN, MAX_LAYER_VERSION, MAX_MEMBER_COUNT, MAX_METADATA_LEN, MAX_REV_REF_LEN, MAX_UNIT_TYPE_LEN,
-    RelationRecord, RevisionMeta, TAG_REL_IN, TAG_REL_OUT, UnitHead, valid_relation_type,
+    RelationRecord, RevisionMeta, UnitHead, valid_relation_type,
 };
 use crate::error::{DecodeError, UnitError};
 use crate::payload::{ContentHash, MAX_PAYLOAD_LEN, PAYLOAD_CODEC_OPAQUE, verify_payload};
@@ -576,14 +575,15 @@ impl<E: TxnEngine> UnitDb<E> {
             layer_version,
             derived_ops: 0,
             token_ops: 0,
-            count_live: BTreeSet::new(),
             count_cache: std::collections::HashMap::new(),
             count_dirty: BTreeSet::new(),
             active_known: std::collections::HashSet::new(),
             schema_ops: 0,
             type_option_ops: 0,
-            substring_ops: 0,
             substring_pending: Default::default(),
+            adj_pending: Default::default(),
+            text_pending: Default::default(),
+            text_stats: None,
             members: Vec::new(),
             relation_ops: 0,
             touched: BTreeSet::new(),
@@ -847,6 +847,12 @@ impl<E: Engine> UnitSnapshot<E> {
         Ok(load_unit(&|k| self.snap.get(k), id)?.map(|(head, _, payload)| to_unit(id, head, payload)))
     }
 
+    /// Whether a unit with this id ever existed at this snapshot (a deleted one did): one read of
+    /// its head, without loading or checking its payload.
+    pub fn unit_exists(&self, id: UnitId) -> Result<bool, UnitError> {
+        Ok(crate::history::read_head(&|k| self.snap.get(k), id)?.is_some())
+    }
+
     /// The relation `id` at this snapshot, or `None`.
     pub fn get_relation(&self, id: RelationId) -> Result<Option<Relation>, UnitError> {
         self.relation_checked(id, &mut std::collections::HashSet::new(), None)
@@ -889,23 +895,13 @@ impl<E: Engine> UnitSnapshot<E> {
                 None => return Err(corruption(format!("relation {id}: unit {unit} does not exist"))),
             }
         }
-        let (out_key, in_key) = (
-            Key::RelationOut { unit: record.from, relation_type: record.relation_type.clone(), edge: id },
-            Key::RelationIn { unit: record.to, relation_type: record.relation_type.clone(), edge: id },
-        );
-        for (side, dir, k, other) in
-            [("REL_OUT", Direction::Out, out_key, record.to), ("REL_IN", Direction::In, in_key, record.from)]
+        for (side, dir, unit, other) in
+            [("REL_OUT", Direction::Out, record.from, record.to), ("REL_IN", Direction::In, record.to, record.from)]
         {
             if scanned == Some(dir) {
                 continue;
             }
-            let ok = match self.snap.get(&key(k)?)? {
-                Some(v) => {
-                    Adjacency::decode(&v).map_err(|e| context(e, &format!("{side} entry of {id}")))?.other == other
-                }
-                None => false,
-            };
-            if !ok {
+            if self.adjacency_entry(dir, unit, &record.relation_type, id)? != Some(other) {
                 return Err(corruption(format!("relation {id}: {side} entry missing or wrong")));
             }
         }
@@ -932,10 +928,7 @@ impl<E: Engine> UnitSnapshot<E> {
         dir: Direction,
         relation_type: Option<&str>,
     ) -> Result<Vec<Relation>, UnitError> {
-        let tag = match dir {
-            Direction::Out => TAG_REL_OUT,
-            Direction::In => TAG_REL_IN,
-        };
+        let tag = crate::adjacency::tag_of(dir);
         let Some((start, end)) = Key::adjacency_range(tag, unit, relation_type) else {
             return Err(UnitError::InvalidArgument("relation_type is not a valid relation type name".into()));
         };
@@ -946,24 +939,26 @@ impl<E: Engine> UnitSnapshot<E> {
         // The heads this read already found `Active`: `unit` is an end of every relation here.
         let mut active = std::collections::HashSet::new();
         scan_all(&self.snap, start, end, |k, v| {
-            let (edge, ty) = match Key::decode(k)? {
-                Key::RelationOut { relation_type, edge, .. } | Key::RelationIn { relation_type, edge, .. } => {
-                    (edge, relation_type)
-                }
+            let ty = match Key::decode(k)? {
+                Key::RelationOut { relation_type, .. } | Key::RelationIn { relation_type, .. } => relation_type,
                 _ => return Err(corruption("a key in an adjacency range is not an adjacency key".into())),
             };
-            let other = Adjacency::decode(v).map_err(|e| context(e, &format!("adjacency entry of {edge}")))?.other;
-            // The entry just scanned is this side's: it is compared with the record below
-            // instead of being read again.
-            let Some(rel) = self.relation_checked(edge, &mut active, Some(dir))? else {
-                return Err(corruption(format!("adjacency entry of relation {edge} has no REL record")));
-            };
-            let (here, there) = if dir == Direction::Out { (rel.from, rel.to) } else { (rel.to, rel.from) };
-            if here != unit || there != other || rel.relation_type != ty {
-                return Err(corruption(format!("adjacency entry of relation {edge} disagrees with its REL record")));
+            let block = AdjBlock::decode(v).map_err(|e| context(e, "adjacency block"))?;
+            for (edge, other) in block.entries {
+                // The entry just scanned is this side's: it is compared with the record below
+                // instead of being read again.
+                let Some(rel) = self.relation_checked(edge, &mut active, Some(dir))? else {
+                    return Err(corruption(format!("adjacency entry of relation {edge} has no REL record")));
+                };
+                let (here, there) = if dir == Direction::Out { (rel.from, rel.to) } else { (rel.to, rel.from) };
+                if here != unit || there != other || rel.relation_type != ty {
+                    return Err(corruption(format!(
+                        "adjacency entry of relation {edge} disagrees with its REL record"
+                    )));
+                }
+                *seen.entry(ty.clone()).or_insert(0) += 1;
+                out.push(rel);
             }
-            *seen.entry(ty).or_insert(0) += 1;
-            out.push(rel);
             Ok(())
         })?;
         crate::adj_count::compare(unit, &expected, &seen)?;
@@ -1046,11 +1041,6 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     /// Public id records written so far (ADR-0005): they raise the mark to
     /// layer version 3 and always travel with a member.
     pub(crate) token_ops: usize,
-    /// Keys of the count records this change set leaves written: an
-    /// adjacency count (P1, `0x72`) raises the mark to layer version 4, a
-    /// live-unit count (P5, `0x73`) to 5; a record removed again does not
-    /// count.
-    pub(crate) count_live: BTreeSet<Vec<u8>>,
     /// Adjacency counts as this change set left them (`0`: no record), so a
     /// second relation of the same `(unit, direction, type)` in one change
     /// set reads its count here instead of from the transaction (and never
@@ -1070,12 +1060,16 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     /// Type-options records written or removed so far (ADR-0022): they make
     /// the change set non-empty and raise the mark to layer version 7.
     pub(crate) type_option_ops: usize,
-    /// Changes of a type's `SUBSTRING` option so far (ADR-0025): they raise
-    /// the mark to layer version 8.
-    pub(crate) substring_ops: usize,
     /// Trigram index changes planned so far, written at commit by
     /// [`ChangeSet::flush_substring`] (ADR-0025).
     pub(crate) substring_pending: crate::substring::PendingGrams,
+    /// Adjacency changes planned so far, written at commit by
+    /// [`ChangeSet::flush_adjacency`] (ADR-0026).
+    pub(crate) adj_pending: crate::adjacency::PendingAdjacency,
+    /// Posting changes and the statistics delta planned so far, written at
+    /// commit by [`ChangeSet::flush_fulltext`] (ADR-0026).
+    pub(crate) text_pending: crate::fulltext::PendingPostings,
+    pub(crate) text_stats: Option<(i64, i64)>,
     members: Vec<(RevisionId, RevisionKind)>,
     /// Relations created or deleted so far (E4-02): they are not members, but
     /// they count against `max_changeset_ops` and make the change set non-empty.
@@ -1296,9 +1290,10 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         if let Some(l) = live {
             self.put_live(l)?;
         }
-        for w in plan.writes.into_iter().chain(derived).chain(text).chain(fields) {
+        for w in plan.writes.into_iter().chain(derived).chain(text.writes).chain(fields) {
             self.write_owned(w)?;
         }
+        self.stage_fulltext(text.change);
         self.stage_substring(unit, grams);
         self.touched.insert(plan.rev.unit);
         self.members.push((plan.rev, plan.kind));
@@ -1641,23 +1636,13 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
 
     /// Refuses with [`UnitError::UnitHasRelations`] when a relation, in
     /// either direction, touches `unit` as this change set sees it (ADR-0014,
-    /// criterion 4). Two single-entry scans of the adjacency indexes.
+    /// criterion 4): the blocks of the transaction and the adjacency changes
+    /// the change set keeps ([`ChangeSet::relation_of_unit`]).
     fn ensure_no_relations(&self, unit: UnitId) -> Result<(), UnitError> {
-        let txn = self.txn()?;
-        for tag in [TAG_REL_OUT, TAG_REL_IN] {
-            let Some((start, end)) = Key::adjacency_range(tag, unit, None) else {
-                continue;
-            };
-            if let Some((k, _)) = txn.scan(Bound::Included(&start), Bound::Excluded(&end), 1)?.into_iter().next() {
-                return match Key::decode(&k)? {
-                    Key::RelationOut { edge, .. } | Key::RelationIn { edge, .. } => {
-                        Err(UnitError::UnitHasRelations { unit, relation: edge })
-                    }
-                    _ => Err(corruption("a key in an adjacency range is not an adjacency key".into())),
-                };
-            }
+        match self.relation_of_unit(unit)? {
+            Some(relation) => Err(UnitError::UnitHasRelations { unit, relation }),
+            None => Ok(()),
         }
-        Ok(())
     }
 
     /// The lifecycle of `unit` as this change set sees it, reading only its
@@ -1726,25 +1711,13 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         }
         let record =
             RelationRecord { from, to, relation_type: relation_type.to_owned(), created_seq: self.seq, provenance };
-        let t = || relation_type.to_owned();
         // Everything that can refuse the relation (the record's encode, the
-        // keys) runs before a count is touched: an error after the counts
+        // key) runs before a count is touched: an error after the counts
         // would leave them in the open change set without their entries.
-        let writes = [
-            Write::Put(key(Key::Relation { edge })?, record.encode()?),
-            Write::Put(
-                key(Key::RelationOut { unit: from, relation_type: t(), edge })?,
-                Adjacency { other: to }.encode(),
-            ),
-            Write::Put(
-                key(Key::RelationIn { unit: to, relation_type: t(), edge })?,
-                Adjacency { other: from }.encode(),
-            ),
-        ];
-        // Counts before the entries: a missing record is built from the
-        // entries that exist, and the new ones are not written yet.
-        self.adjust_counts(from, to, relation_type, 1)?;
-        self.apply_relation_writes(writes)?;
+        let write = Write::Put(key(Key::Relation { edge })?, record.encode()?);
+        // Counts before the entries: the count tells whether the lists have a block.
+        let before = self.adjust_counts(from, to, relation_type, 1)?;
+        self.apply_relation(write, edge, (from, to), relation_type, true, before)?;
         Ok(edge)
     }
 
@@ -1762,14 +1735,9 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
             return Err(UnitError::RelationNotFound { relation: edge });
         };
         let r = RelationRecord::decode(&raw).map_err(|e| context(e, &format!("REL {edge}")))?;
-        let t = || r.relation_type.clone();
-        let writes = [
-            Write::Delete(key(Key::Relation { edge })?),
-            Write::Delete(key(Key::RelationOut { unit: r.from, relation_type: t(), edge })?),
-            Write::Delete(key(Key::RelationIn { unit: r.to, relation_type: t(), edge })?),
-        ];
-        self.adjust_counts(r.from, r.to, &r.relation_type, -1)?;
-        self.apply_relation_writes(writes)
+        let write = Write::Delete(key(Key::Relation { edge })?);
+        let before = self.adjust_counts(r.from, r.to, &r.relation_type, -1)?;
+        self.apply_relation(write, edge, (r.from, r.to), &r.relation_type, false, before)
     }
 
     fn admit_relation(&self) -> Result<(), UnitError> {
@@ -1781,10 +1749,19 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         Ok(())
     }
 
-    fn apply_relation_writes(&mut self, writes: [Write; 3]) -> Result<(), UnitError> {
-        for w in writes {
-            self.write_owned(w)?;
-        }
+    /// Writes the `REL` record of a relation and keeps its adjacency entries
+    /// (`add`: they are put, else removed) for commit.
+    pub(crate) fn apply_relation(
+        &mut self,
+        write: Write,
+        edge: RelationId,
+        ends: (UnitId, UnitId),
+        relation_type: &str,
+        add: bool,
+        before: (u64, u64),
+    ) -> Result<(), UnitError> {
+        self.write_owned(write)?;
+        self.stage_adjacency(edge, ends, relation_type, add, before);
         self.relation_ops += 1;
         Ok(())
     }
@@ -1800,7 +1777,9 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
     pub fn commit(mut self) -> Result<CommitInfo, UnitError> {
         self.txn()?;
         self.flush_counts()?;
+        self.flush_adjacency()?;
         self.flush_substring()?;
+        self.flush_fulltext()?;
         let durable = self.db.cfg.engine.durability == Durability::Sync;
         if self.members.is_empty()
             && !self.maintenance
@@ -1833,42 +1812,15 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
             db.policy_epoch.fetch_add(1, Ordering::SeqCst);
             EpochBump(&db.policy_epoch)
         });
-        // The mark goes to version 2 in the transaction of the first derived
-        // record, and no writer lowers it (ADR-0020 §S3.4, §S3.5).
-        // A schema definition writes the first `0x78` record: layer 6, which
-        // includes everything below it (`schema_ops` counts definitions only).
-        // A new database starts at the cut version (ADR-0023), whatever its
-        // first change set writes.
-        let wants = if self.substring_ops > 0 {
-            crate::codec::LAYER_VERSION_SUBSTRING
-        } else if self.need_mark || self.type_option_ops > 0 {
-            crate::codec::LAYER_VERSION_TYPE_OPTIONS
-        } else if self.schema_ops > 0 {
-            LAYER_VERSION_SCHEMAS
-        } else if self.count_live.iter().any(|k| k.first() == Some(&crate::type_count::TAG_TYPE_COUNT)) {
-            LAYER_VERSION_TYPE_COUNTS
-        } else if !self.count_live.is_empty() {
-            LAYER_VERSION_REL_COUNTS
-        } else if self.token_ops > 0 {
-            LAYER_VERSION_PUBLIC_IDS
-        } else if self.derived_ops > 0 {
-            LAYER_VERSION_DERIVED
-        } else {
-            LAYER_VERSION
-        };
+        // A new database starts at the cut version (ADR-0026), whatever its first
+        // change set writes; an older one is refused at open, so a mark that
+        // exists is already the one every writer uses.
         if self.need_mark {
-            let mark = LayerMeta { layer_version: wants, history_policy: self.db.cfg.default_policy };
-            let v = mark.encode()?;
-            self.put(&layer_mark_key(), &v)?;
-        } else if self.layer_version < wants {
-            let txn = self.txn()?;
-            let current = match txn.get(&layer_mark_key())? {
-                Some(raw) => {
-                    LayerMeta::decode_upto(&raw, MAX_LAYER_VERSION).map_err(|e| context(e, "LAYER_META \"layer\""))?
-                }
-                None => return Err(UnitError::NotAUnitDatabase),
+            let mark = LayerMeta {
+                layer_version: crate::codec::LAYER_VERSION_BLOCKS,
+                history_policy: self.db.cfg.default_policy,
             };
-            let v = LayerMeta { layer_version: wants, history_policy: current.history_policy }.encode()?;
+            let v = mark.encode()?;
             self.put(&layer_mark_key(), &v)?;
         }
         let record = ChangeSetRecord {
@@ -1970,8 +1922,9 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         let live = live.map(|(t, d)| self.plan_live(t, d)).transpose()?;
         // An import writes the head of a unit here: its text is indexed too.
         let text = self.plan_fulltext(unit, &writes)?;
-        writes.extend(text);
+        writes.extend(text.writes);
         self.apply_planned_only(Planned { writes, rev: RevisionId { unit, rev }, kind, live: None }, live)?;
+        self.stage_fulltext(text.change);
         Ok(())
     }
 

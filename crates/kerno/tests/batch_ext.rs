@@ -195,7 +195,11 @@ fn keyword_index_is_off_by_default_and_on_per_type() {
     db.update(a, "delta").unwrap();
     assert!(db.verify().unwrap().is_clean(), "{:?}", db.verify().unwrap().findings);
     db.close().unwrap();
-    assert_eq!(layer_version(&dir.0), 7, "a new database starts at the cut version");
+    assert_eq!(
+        layer_version(&dir.0),
+        kerno::units::codec::MIN_LAYER_VERSION,
+        "a new database starts at the cut version"
+    );
     let db = Db::open(&dir.0).unwrap(); // the setting survives a reopen
     let m = db.store("note", "epsilon").unwrap();
     assert_eq!(search(&db, "epsilon"), vec![m]);
@@ -227,18 +231,21 @@ fn switching_a_type_with_units_reindexes_them_in_one_commit() {
 
 #[test]
 fn a_database_from_before_the_cut_is_refused() {
-    let dir = TempDir::new();
-    let db = Db::open(&dir.0).unwrap();
-    db.store("n", "a").unwrap();
-    // Rewrite the mark to layer 6, as a 1.0.0-alpha.1 build left it.
-    let mut mark = db.unit_db().raw_get(b"\x01layer").unwrap().unwrap();
-    mark[5] = 6;
-    db.unit_db().raw_commit(vec![(b"\x01layer".to_vec(), Some(mark))]).unwrap();
-    db.close().unwrap();
-    match Db::open(&dir.0) {
-        Err(kerno::Error::LayerTooOld { found: 6, minimum: 7 }) => {}
-        Err(e) => panic!("wrong error: {e}"),
-        Ok(_) => panic!("an alpha.1 database must be refused"),
+    // The marks of 1.0.0-alpha.1 (6), of the alpha.2 cut (7) and of the trigram index (8): their
+    // adjacency and keyword postings are one record per entry, which this build does not read.
+    for old in [6u8, 7, 8] {
+        let dir = TempDir::new();
+        let db = Db::open(&dir.0).unwrap();
+        db.store("n", "a").unwrap();
+        let mut mark = db.unit_db().raw_get(b"\x01layer").unwrap().unwrap();
+        mark[5] = old;
+        db.unit_db().raw_commit(vec![(b"\x01layer".to_vec(), Some(mark))]).unwrap();
+        db.close().unwrap();
+        match Db::open(&dir.0) {
+            Err(kerno::Error::LayerTooOld { found, minimum: 9 }) if found == u32::from(old) => {}
+            Err(e) => panic!("layer {old}: wrong error: {e}"),
+            Ok(_) => panic!("a database of layer {old} must be refused"),
+        }
     }
 }
 
