@@ -398,10 +398,22 @@ impl From<kerno::units::Revision> for Revision {
             created_at: r.created_at.0,
             lifecycle: lifecycle_name(r.lifecycle),
             schema_version: r.schema_version,
-            content_hash: r.content_hash.digest.iter().map(|b| format!("{b:02x}")).collect(),
+            content_hash: encode_hex(&r.content_hash.digest),
             payload: r.payload,
         }
     }
+}
+
+/// Lowercase hex of `bytes`, byte-identical to `format!("{b:02x}")` per byte, built in one
+/// allocation instead of one `String` per byte.
+fn encode_hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(DIGITS[usize::from(b >> 4)] as char);
+        out.push(DIGITS[usize::from(b & 0x0f)] as char);
+    }
+    out
 }
 
 /// A stored unit, as of its latest revision.
@@ -1415,4 +1427,36 @@ fn _kerno(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("PrunedError", m.py().get_type::<PrunedError>())?;
     m.add("SchemaError", m.py().get_type::<SchemaError>())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod hex_tests {
+    use super::encode_hex;
+
+    fn old_encoding(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn empty_input_encodes_to_an_empty_string() {
+        assert_eq!(encode_hex(&[]), "");
+    }
+
+    #[test]
+    fn every_byte_value_matches_the_old_format_output() {
+        for b in 0..=255u8 {
+            assert_eq!(encode_hex(&[b]), format!("{b:02x}"), "byte {b}");
+        }
+        let all: Vec<u8> = (0..=255u8).collect();
+        let hex = encode_hex(&all);
+        assert_eq!(hex.len(), 512);
+        assert_eq!(hex, old_encoding(&all));
+    }
+
+    #[test]
+    fn a_32_byte_digest_matches_the_old_format_output() {
+        let digest: [u8; 32] = std::array::from_fn(|i| (i as u8).wrapping_mul(37).wrapping_add(11));
+        assert_eq!(encode_hex(&digest), old_encoding(&digest));
+        assert_eq!(encode_hex(&[0x00, 0x0a, 0xf0, 0xff]), "000af0ff");
+    }
 }
