@@ -285,6 +285,49 @@ fn the_verifier_sees_a_block_out_of_its_range_or_undecodable<E: Target>() {
     clean(&db, "restored again");
 }
 
+fn one_change_set_removes_below_the_tail_and_adds_above_it<E: Target>() {
+    // The tail is the block of the ids above the last bound: one change set whose lowest id sits
+    // in a bounded block still finds the tail for the ids that follow.
+    let db = open::<E>();
+    let u = units(&db, 1 + 70 + 2);
+    let edges = fan_out(&db, u[0], &u[1..71], "cites");
+    let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
+    cs.delete_relation(edges[3]).unwrap();
+    cs.delete_relation(edges[66]).unwrap();
+    let added: Vec<RelationId> =
+        u[71..].iter().map(|t| cs.create_relation(u[0], *t, "cites", RelationProvenance::Declared).unwrap()).collect();
+    cs.commit().unwrap();
+    let out = blocks(&db, Direction::Out, u[0], "cites");
+    let kept: Vec<RelationId> = edges.iter().copied().filter(|e| *e != edges[3] && *e != edges[66]).collect();
+    let listed: Vec<Vec<RelationId>> = out.iter().map(|b| b.1.iter().map(|e| e.0).collect()).collect();
+    assert_eq!(listed[0], edges[..64].iter().copied().filter(|e| *e != edges[3]).collect::<Vec<_>>());
+    assert_eq!(listed[1], [&kept[63..], &added[..]].concat());
+    assert_eq!(out.len(), 2);
+    assert_eq!(assert_reads_agree(&db, u[0], Direction::Out, Some("cites")).len(), 70);
+    clean(&db, "removed below the tail, added above it");
+}
+
+fn a_damaged_tail_stops_only_the_changes_that_need_it<E: Target>() {
+    let db = open::<E>();
+    let u = units(&db, 1 + 70 + 1);
+    let edges = fan_out(&db, u[0], &u[1..71], "cites");
+    let out = blocks(&db, Direction::Out, u[0], "cites");
+    assert_eq!(out.len(), 2);
+    let (first, tail) = (out[0].0.clone(), out[1].0.clone());
+    db.raw_commit(vec![(tail, Some(vec![1, 0]))]).unwrap();
+    // A removal in the bounded block does not read the tail, and is written.
+    let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
+    cs.delete_relation(edges[3]).unwrap();
+    cs.commit().unwrap();
+    let stored = AdjBlock::decode(&db.raw_get(&first).unwrap().unwrap()).unwrap();
+    assert_eq!(stored.entries.len(), 63);
+    assert!(stored.entries.iter().all(|e| e.0 != edges[3]));
+    // A relation above the bounded block is the tail's, which cannot be read: the commit is refused.
+    let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
+    cs.create_relation(u[0], u[71], "cites", RelationProvenance::Declared).unwrap();
+    assert!(matches!(cs.commit(), Err(UnitError::Storage(kerno_core::Error::Corruption(_)))));
+}
+
 macro_rules! engines {
     ($($m:ident: $E:ty),*) => {$(
         mod $m {
@@ -325,6 +368,14 @@ macro_rules! engines {
             #[test]
             fn the_verifier_sees_a_block_out_of_its_range_or_undecodable() {
                 super::the_verifier_sees_a_block_out_of_its_range_or_undecodable::<E>();
+            }
+            #[test]
+            fn one_change_set_removes_below_the_tail_and_adds_above_it() {
+                super::one_change_set_removes_below_the_tail_and_adds_above_it::<E>();
+            }
+            #[test]
+            fn a_damaged_tail_stops_only_the_changes_that_need_it() {
+                super::a_damaged_tail_stops_only_the_changes_that_need_it::<E>();
             }
         }
     )*};

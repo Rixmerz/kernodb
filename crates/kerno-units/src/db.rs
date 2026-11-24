@@ -575,8 +575,6 @@ impl<E: TxnEngine> UnitDb<E> {
             layer_version,
             derived_ops: 0,
             token_ops: 0,
-            count_cache: std::collections::HashMap::new(),
-            count_dirty: BTreeSet::new(),
             active_known: std::collections::HashSet::new(),
             schema_ops: 0,
             type_option_ops: 0,
@@ -1041,14 +1039,6 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     /// Public id records written so far (ADR-0005): they raise the mark to
     /// layer version 3 and always travel with a member.
     pub(crate) token_ops: usize,
-    /// Adjacency counts as this change set left them (`0`: no record), so a
-    /// second relation of the same `(unit, direction, type)` in one change
-    /// set reads its count here instead of from the transaction (and never
-    /// counts the entries again). Only `plan_count` / `apply_count` write
-    /// these records, so the cache cannot go stale within the change set.
-    pub(crate) count_cache: std::collections::HashMap<Vec<u8>, u64>,
-    /// Count keys changed and not written yet: `flush_counts` writes them at commit.
-    pub(crate) count_dirty: BTreeSet<Vec<u8>>,
     /// Units `require_active` found `Active` in this change set. Every write
     /// goes through [`ChangeSet::write`], which drops a unit from here when
     /// it writes or deletes its `UNIT_HEAD` (and clears it on a range
@@ -1063,8 +1053,10 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     /// Trigram index changes planned so far, written at commit by
     /// [`ChangeSet::flush_substring`] (ADR-0025).
     pub(crate) substring_pending: crate::substring::PendingGrams,
-    /// Adjacency changes planned so far, written at commit by
-    /// [`ChangeSet::flush_adjacency`] (ADR-0026).
+    /// Adjacency changes and counts planned so far, written at commit by
+    /// [`ChangeSet::flush_adjacency`] (ADR-0026). A second relation of the same
+    /// `(unit, direction, type)` in one change set reads its count here instead of from the
+    /// transaction (and never counts the entries again).
     pub(crate) adj_pending: crate::adjacency::PendingAdjacency,
     /// Posting changes and the statistics delta planned so far, written at
     /// commit by [`ChangeSet::flush_fulltext`] (ADR-0026).
@@ -1716,8 +1708,8 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         // would leave them in the open change set without their entries.
         let write = Write::Put(key(Key::Relation { edge })?, record.encode()?);
         // Counts before the entries: the count tells whether the lists have a block.
-        let before = self.adjust_counts(from, to, relation_type, 1)?;
-        self.apply_relation(write, edge, (from, to), relation_type, true, before)?;
+        let plans = self.plan_relation(from, to, relation_type, 1)?;
+        self.apply_relation(write, edge, (from, to), plans, true)?;
         Ok(edge)
     }
 
@@ -1736,8 +1728,8 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         };
         let r = RelationRecord::decode(&raw).map_err(|e| context(e, &format!("REL {edge}")))?;
         let write = Write::Delete(key(Key::Relation { edge })?);
-        let before = self.adjust_counts(r.from, r.to, &r.relation_type, -1)?;
-        self.apply_relation(write, edge, (r.from, r.to), &r.relation_type, false, before)
+        let plans = self.plan_relation(r.from, r.to, &r.relation_type, -1)?;
+        self.apply_relation(write, edge, (r.from, r.to), plans, false)
     }
 
     fn admit_relation(&self) -> Result<(), UnitError> {
@@ -1756,12 +1748,11 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         write: Write,
         edge: RelationId,
         ends: (UnitId, UnitId),
-        relation_type: &str,
+        plans: [crate::adj_count::ListPlan; 2],
         add: bool,
-        before: (u64, u64),
     ) -> Result<(), UnitError> {
         self.write_owned(write)?;
-        self.stage_adjacency(edge, ends, relation_type, add, before);
+        self.stage_adjacency(edge, ends, plans, add);
         self.relation_ops += 1;
         Ok(())
     }
@@ -1776,7 +1767,6 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
     /// without operations writes nothing and returns the current sequence.
     pub fn commit(mut self) -> Result<CommitInfo, UnitError> {
         self.txn()?;
-        self.flush_counts()?;
         self.flush_adjacency()?;
         self.flush_substring()?;
         self.flush_fulltext()?;

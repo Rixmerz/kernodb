@@ -23,10 +23,13 @@
 //! # A write
 //!
 //! Creating or deleting a relation writes its `REL` record and keeps the two
-//! adjacency changes in the change set. [`ChangeSet::flush_adjacency`] writes
-//! them at commit: each block a list changes is read once and written once
-//! (cut when over the limit, deleted when emptied). A list the change set
-//! knows to be empty has no block to read: its blocks are written directly.
+//! adjacency changes, with the counts of the two lists, in the change set (one
+//! map by list: a second relation of a list reads its count there).
+//! [`ChangeSet::flush_adjacency`] writes them at commit: the count record of
+//! each list once, and each block a list changes read once and written once
+//! (cut when over the limit, deleted when emptied; the tail by a point read,
+//! see `blocks::flush`). A list the change set knows to be empty has
+//! no block to read: its blocks are written directly.
 //! The change set knows it from the count record of the list, and when that
 //! record is missing from the blocks themselves: the writer counts them with
 //! one seek (`adj_count::count_entries`), so a list whose record was lost is
@@ -41,22 +44,32 @@ use std::ops::Bound;
 
 use kerno_core::contract::{Snapshot, Txn, TxnEngine};
 
+use crate::adj_count::{ListPlan, count_key_of_list, encode_value};
 use crate::blocks::{self, Block, Id};
 use crate::codec::{ADJ_BLOCK_MAX, AdjBlock, Key, TAG_REL_IN, TAG_REL_OUT};
-use crate::db::{ChangeSet, UnitSnapshot, context};
+use crate::db::{ChangeSet, UnitSnapshot, Write, context};
 use crate::error::{DecodeError, UnitError};
 use crate::types::{Direction, RelationId, UnitId};
 
 /// Blocks read per scan call when looking for a surviving entry.
 const PAGE: usize = 16;
 
-/// What a change set will change in one adjacency list.
+/// What a change set will change in one adjacency list: its entries and its count record.
 pub(crate) struct AdjList {
     /// The list has no block in the transaction: nothing to read before writing it.
     fresh: bool,
-    /// Per relation, the unit at the other end (`Some`: the entry is put) or
-    /// `None` (the entry is removed); the last operation of a relation wins.
-    ops: BTreeMap<Id, Option<UnitId>>,
+    /// The count of the list as the change set leaves it (`0`: no record).
+    pub(crate) count: u64,
+    /// The count record is written (or, at `0`, removed) at commit.
+    dirty: bool,
+    /// Per relation, ascending by relation id: the unit at the other end
+    /// (`Some`: the entry is put) or `None` (the entry is removed); the last
+    /// operation of a relation wins.
+    ///
+    /// ponytail: a sorted `Vec`, not a map: most lists get one or two operations per change
+    /// set and ids are minted ascending, so an insert is an append. A change set that removes
+    /// many relations of one list pays a shift per removal, bounded by `max_changeset_ops`.
+    ops: Vec<(Id, Option<UnitId>)>,
 }
 
 /// The adjacency changes of a change set, by list key.
@@ -97,32 +110,44 @@ pub(crate) fn list_key(tag: u8, unit: UnitId, relation_type: &str) -> Vec<u8> {
 }
 
 impl<E: TxnEngine> ChangeSet<'_, E> {
-    /// Keeps the adjacency entries of the relation `edge` from `from` to `to`
-    /// of type `relation_type` (`add`: they are put, else removed) for
-    /// [`flush_adjacency`](Self::flush_adjacency). `before` are the counts of
-    /// the `(from, Out)` and `(to, In)` lists as they were before the
-    /// operation (what [`adjust_counts`](Self::adjust_counts) returns): a
-    /// list that was empty has no block to read.
+    /// Keeps the adjacency entries and the counts of the relation `edge` from `from` to `to`
+    /// (`add`: the entries are put, else removed) for [`flush_adjacency`](Self::flush_adjacency).
+    /// `plans` are the `(from, Out)` and `(to, In)` lists as
+    /// [`plan_relation`](Self::plan_relation) planned them: a list that was empty has no block to
+    /// read.
     pub(crate) fn stage_adjacency(
         &mut self,
         edge: RelationId,
         (from, to): (UnitId, UnitId),
-        relation_type: &str,
+        plans: [ListPlan; 2],
         add: bool,
-        before: (u64, u64),
     ) {
-        for (tag, unit, other, count) in [(TAG_REL_OUT, from, to, before.0), (TAG_REL_IN, to, from, before.1)] {
-            let list = self
-                .adj_pending
-                .entry(list_key(tag, unit, relation_type))
-                .or_insert_with(|| AdjList { fresh: add && count == 0, ops: BTreeMap::new() });
-            list.ops.insert(edge.0, add.then_some(other));
+        let [out, inn] = plans;
+        for (plan, other) in [(out, to), (inn, from)] {
+            let list = self.adj_pending.entry(plan.key).or_insert_with(|| AdjList {
+                fresh: add && plan.before == 0,
+                count: plan.before,
+                dirty: false,
+                ops: Vec::with_capacity(1),
+            });
+            list.count = plan.next;
+            list.dirty |= plan.dirty;
+            let op = (edge.0, add.then_some(other));
+            match list.ops.binary_search_by_key(&edge.0, |o| o.0) {
+                Ok(at) => list.ops[at] = op,
+                Err(at) => list.ops.insert(at, op),
+            }
         }
     }
 
-    /// Writes the adjacency changes the change set kept. Called by `commit`.
+    /// Writes the adjacency changes and the counts the change set kept, once per list. Called by
+    /// `commit`.
     pub(crate) fn flush_adjacency(&mut self) -> Result<(), UnitError> {
         for (list, l) in std::mem::take(&mut self.adj_pending) {
+            if l.dirty {
+                let k = count_key_of_list(&list);
+                self.write_owned(if l.count == 0 { Write::Delete(k) } else { Write::Put(k, encode_value(l.count)) })?;
+            }
             blocks::flush::<Adjacency, E>(self, &list, l.ops, l.fresh)?;
         }
         Ok(())
@@ -162,8 +187,10 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
                     };
                     let removed = self.adj_pending.get(&list_key(tag, unit, &relation_type));
                     let block = AdjBlock::decode(v).map_err(|e| context(e, "REL_ADJ"))?;
-                    if let Some((edge, _)) =
-                        block.entries.iter().find(|(e, _)| removed.is_none_or(|l| !l.ops.contains_key(&e.0)))
+                    if let Some((edge, _)) = block
+                        .entries
+                        .iter()
+                        .find(|(e, _)| removed.is_none_or(|l| l.ops.binary_search_by_key(&e.0, |o| o.0).is_err()))
                     {
                         return Ok(Some(*edge));
                     }

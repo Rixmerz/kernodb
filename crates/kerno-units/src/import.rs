@@ -215,9 +215,9 @@ fn write_relation<E: TxnEngine>(cs: &mut ChangeSet<'_, E>, r: &Rel) -> Result<()
     let (edge, ty) = (r.id, &r.record.relation_type);
     // Everything that can refuse the relation runs before a count is touched.
     let write = Write::Put(key(Key::Relation { edge })?, r.record.encode()?);
-    let before = cs.adjust_counts(r.from, r.to, ty, 1)?;
+    let plans = cs.plan_relation(r.from, r.to, ty, 1)?;
     cs.write_owned(write)?;
-    cs.stage_adjacency(edge, (r.from, r.to), ty, true, before);
+    cs.stage_adjacency(edge, (r.from, r.to), plans, true);
     Ok(())
 }
 

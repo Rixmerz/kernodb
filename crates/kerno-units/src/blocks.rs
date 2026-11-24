@@ -11,14 +11,15 @@
 //! * the tail block: `list ‖ 0x01`, the last one, with no bound.
 //!
 //! The block of an id is therefore the first key at or after
-//! `list ‖ 0x00 ‖ id`: one forward seek. The list key must end where no byte
-//! of the list's own name can be mistaken for the marker (a fixed length, or
-//! a name with no NUL followed by a NUL).
+//! `list ‖ 0x00 ‖ id`: one forward seek. The tail holds every id above the last
+//! bound, so when its first entry is at or below an id the tail is the block of
+//! that id, and a point read of the tail key finds it without the seek. The list
+//! key must end where no byte of the list's own name can be mistaken for the
+//! marker (a fixed length, or a name with no NUL followed by a NUL).
 //!
 //! A change set keeps what it changes per list ([`flush`]) and writes each
 //! block it touches once, at commit.
 
-use std::collections::BTreeMap;
 use std::ops::Bound;
 
 use kerno_core::contract::{Txn, TxnEngine};
@@ -103,11 +104,12 @@ pub(crate) fn ascending<T>(entries: &[(Id, T)], what: &str) -> Result<(), Decode
 /// back, cut when over [`Block::MAX`] entries (from the low end, each bounded
 /// by its last id; the rest keeps the key it had) and deleted when emptied.
 ///
-/// `fresh`: the caller knows the list has no block, so none is read.
+/// `ops` are ascending by id, one per id. `fresh`: the caller knows the list
+/// has no block, so none is read.
 pub(crate) fn flush<B: Block, E: TxnEngine>(
     cs: &mut ChangeSet<'_, E>,
     list: &[u8],
-    ops: BTreeMap<Id, Option<B::Val>>,
+    ops: impl IntoIterator<Item = (Id, Option<B::Val>)>,
     fresh: bool,
 ) -> Result<(), UnitError> {
     if fresh {
@@ -115,17 +117,33 @@ pub(crate) fn flush<B: Block, E: TxnEngine>(
         return write_chunks::<B, E>(cs, list, units, block_key(list, None));
     }
     let (_, end) = prefix_bounds(list);
+    let tail_key = block_key(list, None);
     let mut ops = ops.into_iter().peekable();
+    // The tail holds every id above the last bound, so when its first entry is at or below the
+    // lowest id to change, it is the block of all of them: one point read finds it where the seek
+    // below walks the engine's levels. Ids are minted in ascending order, so the entries a change
+    // set adds are almost always in the tail.
+    // A tail that does not decode is not used here: the seek reads it if the change needs it, and
+    // reports it then.
+    let mut tail = match ops.peek() {
+        Some(_) => cs.txn()?.get(&tail_key)?.and_then(|v| B::decode(&v).ok()),
+        None => None,
+    };
     while let Some((first, _)) = ops.peek() {
-        let from = block_key(list, Some(first));
-        let page = cs.txn()?.scan(Bound::Included(&from), Bound::Excluded(&end), 1)?;
-        let (block, mut units, bound) = match page.into_iter().next() {
-            Some((k, v)) => {
-                let units = B::decode(&v).map_err(|e| context(e, B::WHAT))?;
-                let bound = bound_of(list, &k).map_err(|e| context(e, B::WHAT))?;
-                (Some(k), units, bound)
+        let (block, mut units, bound) = match tail.take_if(|u| u.first().is_some_and(|e| e.0 <= *first)) {
+            Some(units) => (Some(tail_key.clone()), units, None),
+            None => {
+                let from = block_key(list, Some(first));
+                let page = cs.txn()?.scan(Bound::Included(&from), Bound::Excluded(&end), 1)?;
+                match page.into_iter().next() {
+                    Some((k, v)) => {
+                        let units = B::decode(&v).map_err(|e| context(e, B::WHAT))?;
+                        let bound = bound_of(list, &k).map_err(|e| context(e, B::WHAT))?;
+                        (Some(k), units, bound)
+                    }
+                    None => (None, Vec::new(), None),
+                }
             }
-            None => (None, Vec::new(), None),
         };
         while let Some((id, op)) = ops.next_if(|(u, _)| bound.is_none_or(|b| *u <= b)) {
             match (units.binary_search_by_key(&id, |e| e.0), op) {
@@ -155,11 +173,15 @@ fn write_chunks<B: Block, E: TxnEngine>(
     cs: &mut ChangeSet<'_, E>,
     list: &[u8],
     units: Vec<(Id, B::Val)>,
-    last_key: Vec<u8>,
+    mut last_key: Vec<u8>,
 ) -> Result<(), UnitError> {
     let mut chunks = units.chunks(B::MAX).peekable();
     while let Some(chunk) = chunks.next() {
-        let k = if chunks.peek().is_some() { block_key(list, chunk.last().map(|e| &e.0)) } else { last_key.clone() };
+        let k = if chunks.peek().is_some() {
+            block_key(list, chunk.last().map(|e| &e.0))
+        } else {
+            std::mem::take(&mut last_key)
+        };
         cs.write_owned(Write::Put(k, B::encode(chunk)))?;
     }
     Ok(())

@@ -71,6 +71,20 @@ compatibility code). [units-v9](../file-format/units-v9.md) is the specification
   tail block of that list would be written over unread. So a missing record is still rebuilt by
   counting the entries of the blocks (`adj_count::count_entries`, one seek for a new list), as the
   writer did before this change, and only a count the blocks confirm is taken for an empty list.
+- **A list that has entries is read with a point read of its tail, not a seek.** The tail holds
+  every id above the last bound, so when its first entry is at or below the lowest id the change
+  set changes in the list, the tail is the block of all of them (`blocks::flush`). Ids are minted
+  in ascending order, so the entries a change set adds almost always fall in the tail; a removal
+  below it, or a list whose tail is gone, takes the seek as before. A tail that does not decode is
+  left to the seek, which reports it only if the change needs that block.
+- **The counts and the adjacency changes of a change set are one map by list** (`AdjList`: the
+  count as the change set leaves it, whether its record is written, the entries to put or remove,
+  sorted by relation id). A relation plans the counts of its two lists by reads alone
+  (`plan_relation`), then applies them with the entries once its `REL` record is written, so a
+  read that fails still leaves the change set usable. Commit writes the count record and the
+  blocks of each list together (`flush_adjacency`). The counts used to live in a hash map and a set
+  of their own, and each relation paid a count key built, cloned twice and inserted in both, on top
+  of the entry keys.
 - **`UnitHasRelations` sees the change set's own relations** by merging the blocks of the
   transaction with the entries the change set keeps (`ChangeSet::relation_of_unit`), without
   flushing, so a refused operation leaves the change set usable.
@@ -89,36 +103,52 @@ compatibility code). [units-v9](../file-format/units-v9.md) is the specification
 Same script, same method as ADR-0025 and ADR-0012: `bindings/python/bench/vs_sqlite.py`, a fresh
 process and directory per repetition, both engines alternating in it, median of 3 with the range,
 data on `/home`, an `fsync` per commit, Python 3.14.9 and SQLite 3.54.0. "Before" is the wheel built
-from `f7a5004`, "after" the wheel of this change, run in the same sitting. The load average
-at each start, the raw output and the tables are in
-[`docs/testing/raw/2026-11-23-blocks/`](../testing/raw/2026-11-23-blocks/); the rows next to
+from `ea8b610` (the parent of this change), "after" the wheel of this change, run back to back in the
+same sitting. The load average at each start (3.59 to 4.74), the raw output and the tables are in
+[`docs/testing/raw/2026-11-24-blocks/`](../testing/raw/2026-11-24-blocks/); the rows next to
 SQLite are in the [report](../testing/perf-gaps-2026-11.md) §5. Kerno / SQLite ratio, lower is
 better.
 
 | Row (Python, units level) | 10k before | 10k after | 100k before | 100k after |
 |---|---|---|---|---|
-| store x N keyword-indexed, batches | 6.71 | **3.62** | 6.50 | **3.54** |
-| keyword search x100, top 10 | 0.37 | **0.14** | 0.40 | **0.11** |
-| relate x N, batches | 6.73 | **5.71** | 10.24 | 10.74 |
-| `related()` x1000 | 2.63 | **2.15** | 5.63 | **4.84** |
-| two-hop traversal x200 | 5.05 | **3.68** | 11.10 | **8.14** |
-| all relations of a type | 1.21 | 1.16 | 0.98 | 0.98 |
-| close | 123 | 64 | 50 | 62 |
+| store x N keyword-indexed, batches | 7.27 | **3.74** | 6.68 | **3.52** |
+| keyword search x100, top 10 | 0.37 | **0.15** | 0.41 | **0.11** |
+| relate x N, batches | 7.08 | **4.98** | 10.07 | 9.64 |
+| `related()` x1000 | 2.85 | **2.17** | 5.83 | **5.00** |
+| two-hop traversal x200 | 4.80 | **3.49** | 11.41 | **8.69** |
+| all relations of a type | 1.11 | 1.10 | 0.96 | 0.95 |
+| close | 103 | 57 | 42 | 67 |
 | disk (size) | 1.83 | 1.72 | 1.84 | 1.76 |
 
-The load average at the start of the four runs was 2.99 to 6.54. Relate at 100k is the one row
-that got worse (2.90 s to 3.18 s, ranges 2.85 to 2.90 against 2.98 to 3.71), so the criterion "no
-worse than before" is not met there: the benchmark relates random pairs, lists hold one or two
-entries, a block saves no record on them, and the seek that counts a list with no count record is
-paid for each new list (see the decision above). A first build that skipped that seek measured
-relate at 4.94x (10k) but could overwrite a list whose count record was lost, so it was not kept.
-Rows that are not part of this change moved within the range of their repetitions.
+The `close` ratio at 100k rose because SQLite's close took 0.0041 s before and 0.0019 s after;
+Kerno's went from 0.172 s to 0.124 s. Rows that are not part of this change moved within the range
+of their repetitions.
 
-Two criteria are met only in part. "No worse than before" fails for relate at 100k (above). "Reads
-no more than it did" holds for a list with no entries, which costs the one seek it always cost and
-no block read; for a list that already has entries the writer now reads and rewrites a block per
-commit where the old one made a blind put per entry. That second gap is read from the code, not
-measured on its own: the relate row is where it would show.
+**Relate.** A first build of this change (the staging of entries in a map per list, a seek to read
+each list that has entries, a count cache and a staging map of their own) was slower than the build
+before it at 100k, 2.43 s against 2.91 s for 100k random-pair relates at 1000 per commit, and the
+benchmark relates random pairs, so most lists hold one or two entries and a block saves no record.
+Temporary timers on the commit path (not kept) located the cost: the seek that counts a list with no
+count record, which the old writer paid too (126,607 seeks, 0.67 s of about 2.9 s), then the
+staging (0.14 s) and the flush of the blocks (0.29 s) against 0.08 s for the old writer's three blind
+puts. The decisions above (the tail point read, the sorted `Vec` of operations, one map for the
+counts and the entries) bring the writer to the old build's time without a format change. Five
+alternated runs of the old build and this one (100k random-pair relates through `UnitDb`, seconds,
+[`relate-alternated.txt`](../testing/raw/2026-11-24-blocks/relate-alternated.txt)): at 1000 per
+commit 2.436 (2.429 to 2.513) against 2.387 (2.329 to 2.476), and at 10,000 per commit 2.597 (2.484
+to 2.733) against 2.295 (2.224 to 2.343). In the Python run relate at 100k went 2.98 s to 2.85 s
+(ranges 2.95 to 3.04 and 2.71 to 2.95), which is within the range of the repetitions. A build that
+skipped the seek for a list with no count record measured cheaper, but could overwrite a list whose
+count record was lost, so it was not kept; a cheaper proof of emptiness (a point read of the tail)
+needs every non-empty list to have a tail, which costs a promotion of the last bounded block
+whenever a tail is emptied, and was not taken either.
+
+All the criteria are met, the last one with a stated reading. "The writer reads no more than it did"
+holds as the criterion defines it, for a list known to be empty: it costs the one seek it always
+cost and no block read. A list that already has entries is not covered by it: the writer now makes
+a point read of its tail and rewrites the block where the old writer made a blind put per entry.
+That extra read is paid back inside the same change (the relate rows above, 2% and 12% less time
+than the old writer), not removed.
 
 ## Consequences
 

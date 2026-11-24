@@ -41,7 +41,10 @@ index), in ascending id order, kept under one key prefix, the *list key*. It is 
   read and written once. A block over `max` entries is cut from its low end into blocks of `max`,
   each bounded by its last id; the rest keeps the key it had. An emptied block is deleted. A list
   the writer knows to be empty (its count record, §4, is absent or says zero) is written without
-  being read.
+  being read. For any other list the writer reads the tail block with a point read: when its first
+  id is at or below the lowest id to change, the tail is the block of all of them (it holds every
+  id above the last bound), and no seek is made. Ids are minted in ascending order, so this is the
+  block a change set that adds entries finds almost always.
 - Errors common to both families: `envelope_version` 0 is UNIT-6, above 1 is UNIT-7;
   `reserved_flags` other than 0 is UNIT-8; a value with no whole entry or a partial one is UNIT-9;
   more than `max` entries is UNIT-11; ids not strictly ascending is UNIT-13.

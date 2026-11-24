@@ -1,0 +1,22 @@
+# 100k random-pair relates, one type, alternated base (ea8b610) / head, seconds. Rust-level scratch driver (UnitDb<KernoDb>, StdVfs, default options).
+# load at start: 3.12 7.18 11.20 2/2121 3830654
+batch=1000 base 2.451
+batch=1000 head 2.387
+batch=1000 base 2.513
+batch=1000 head 2.370
+batch=1000 base 2.431
+batch=1000 head 2.329
+batch=1000 base 2.429
+batch=1000 head 2.476
+batch=1000 base 2.436
+batch=1000 head 2.401
+batch=10000 base 2.597
+batch=10000 head 2.268
+batch=10000 base 2.550
+batch=10000 head 2.321
+batch=10000 base 2.484
+batch=10000 head 2.343
+batch=10000 base 2.733
+batch=10000 head 2.224
+batch=10000 base 2.603
+batch=10000 head 2.295

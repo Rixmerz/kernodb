@@ -61,7 +61,7 @@ use kerno_core::contract::{Snapshot, Txn, TxnEngine};
 
 use crate::adjacency::{list_key, tag_of};
 use crate::codec::{AdjBlock, ENVELOPE_VERSION, MAX_RELATION_TYPE_LEN, valid_relation_type};
-use crate::db::{ChangeSet, Write, scan_all};
+use crate::db::{ChangeSet, scan_all};
 use crate::error::{DecodeError, UnitError, UnitRule};
 use crate::types::{Direction, UnitId};
 
@@ -225,34 +225,46 @@ pub(crate) fn decode_record(key: &[u8], value: &[u8]) -> Result<CountRecord, Dec
     Ok(CountRecord { unit, dir, relation_type, count })
 }
 
-/// The write one count change comes to, computed by reads alone.
-pub(crate) enum CountStep {
-    Put(Vec<u8>, u64),
-    Delete(Vec<u8>),
-    Nothing,
+/// One adjacency list a relation change touches, planned by reads alone: what
+/// [`ChangeSet::stage_adjacency`] applies once the change cannot fail.
+pub(crate) struct ListPlan {
+    /// The key of the list ([`list_key`]), under which the change set keeps its changes.
+    pub(crate) key: Vec<u8>,
+    /// The count of the list before the change.
+    pub(crate) before: u64,
+    /// The count after it.
+    pub(crate) next: u64,
+    /// The count record has to be written (or removed) at commit.
+    pub(crate) dirty: bool,
+}
+
+/// The count record key of the list `list` (`tag ‖ unit ‖ type ‖ 0x00`): the same unit, direction
+/// and type, which is what the record is keyed by.
+pub(crate) fn count_key_of_list(list: &[u8]) -> Vec<u8> {
+    let dir = if list[0] == crate::codec::TAG_REL_OUT { Direction::Out } else { Direction::In };
+    let mut k = Vec::with_capacity(list.len() + 1);
+    k.push(TAG_REL_COUNT);
+    k.extend_from_slice(&list[1..17]);
+    k.push(dir_byte(dir));
+    k.extend_from_slice(&list[17..]);
+    k
 }
 
 impl<E: TxnEngine> ChangeSet<'_, E> {
-    /// Reads the count of the adjacency entries of `(unit, dir,
-    /// relation_type)` as this change set sees them and returns the write
-    /// that adds `delta` (`+1` or `-1`) to it, without writing. Call it
-    /// **before** the entry is written or removed: a missing record is first
-    /// built by counting the entries that exist (a new list, or a record that
-    /// was lost), and that count must not include the entry being changed. A
-    /// count that reaches zero removes its record. The second value is the
-    /// count before the change.
-    fn plan_count(
-        &self,
-        unit: UnitId,
-        dir: Direction,
-        relation_type: &str,
-        delta: i64,
-    ) -> Result<(CountStep, u64), UnitError> {
-        let k = count_key(unit, dir, relation_type);
-        let (existing, base) = if let Some(&cached) = self.count_cache.get(&k) {
-            (cached > 0, cached)
+    /// Plans the change of `delta` (`+1` or `-1`) to the count of the list `(unit, dir,
+    /// relation_type)` as this change set sees it, without writing. Call it **before** the entry
+    /// is written or removed: a missing record is first built by counting the entries that exist
+    /// (a new list, or a record that was lost), and that count must not include the entry being
+    /// changed. A count that reaches zero removes its record.
+    fn plan_list(&self, unit: UnitId, dir: Direction, relation_type: &str, delta: i64) -> Result<ListPlan, UnitError> {
+        let key = list_key(tag_of(dir), unit, relation_type);
+        // The change set keeps the count of a list it changed: within it that is the count. Its
+        // record is marked for writing by the first change (`existing` there), so a later one only
+        // adds to the mark.
+        let (existing, before) = if let Some(l) = self.adj_pending.get(&key) {
+            (false, l.count)
         } else {
-            match self.txn()?.get(&k)? {
+            match self.txn()?.get(&count_key(unit, dir, relation_type))? {
                 Some(raw) => {
                     let n =
                         decode_value(&raw).map_err(|e| crate::db::context(e, &format!("REL_COUNT of unit {unit}")))?;
@@ -266,64 +278,24 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
             }
         };
         let next =
-            if delta >= 0 { base.saturating_add(delta as u64) } else { base.saturating_sub(delta.unsigned_abs()) };
-        let step = if next > 0 {
-            CountStep::Put(k, next)
-        } else if existing {
-            CountStep::Delete(k)
-        } else {
-            CountStep::Nothing
-        };
-        Ok((step, base))
+            if delta >= 0 { before.saturating_add(delta as u64) } else { before.saturating_sub(delta.unsigned_abs()) };
+        Ok(ListPlan { key, before, next, dirty: next > 0 || existing })
     }
 
-    fn apply_count(&mut self, step: CountStep) -> Result<(), UnitError> {
-        match step {
-            // The record is written once, at commit (`flush_counts`): a change set
-            // that adds many relations of one unit writes its count once, not once
-            // per relation (ADR-0023, step 3.2). Within the change set the cache is
-            // the count, and only `plan_count` reads it.
-            CountStep::Put(k, n) => {
-                self.count_cache.insert(k.clone(), n);
-                self.count_dirty.insert(k.clone());
-            }
-            CountStep::Delete(k) => {
-                self.count_cache.insert(k.clone(), 0);
-                self.count_dirty.insert(k.clone());
-            }
-            CountStep::Nothing => {}
-        }
-        Ok(())
-    }
-
-    /// Writes every count this change set changed, once each: a count of 0 deletes
-    /// the record. Called by `commit` before anything else is decided.
-    pub(crate) fn flush_counts(&mut self) -> Result<(), UnitError> {
-        for k in std::mem::take(&mut self.count_dirty) {
-            match self.count_cache.get(&k).copied().unwrap_or(0) {
-                0 => self.write(&Write::Delete(k))?,
-                n => self.write(&Write::Put(k, encode_value(n)))?,
-            }
-        }
-        Ok(())
-    }
-
-    /// Adds `delta` to the count of `(from, Out)` and of `(to, In)` and returns
-    /// the two counts as they were before. Both next counts are read before
-    /// either is written, so a read that fails (a damaged record, an engine
+    /// Plans the counts of `(from, Out)` and of `(to, In)` after `delta` (`+1` or `-1`).
+    /// Both are read before either is applied, so a read that fails (a damaged record, an engine
     /// error) leaves the change set untouched.
-    pub(crate) fn adjust_counts(
-        &mut self,
+    pub(crate) fn plan_relation(
+        &self,
         from: UnitId,
         to: UnitId,
         relation_type: &str,
         delta: i64,
-    ) -> Result<(u64, u64), UnitError> {
-        let (out, before_out) = self.plan_count(from, Direction::Out, relation_type, delta)?;
-        let (inn, before_in) = self.plan_count(to, Direction::In, relation_type, delta)?;
-        self.apply_count(out)?;
-        self.apply_count(inn)?;
-        Ok((before_out, before_in))
+    ) -> Result<[ListPlan; 2], UnitError> {
+        Ok([
+            self.plan_list(from, Direction::Out, relation_type, delta)?,
+            self.plan_list(to, Direction::In, relation_type, delta)?,
+        ])
     }
 }
 
