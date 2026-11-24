@@ -28,7 +28,7 @@ use kerno_testkit::assoc_eval::{self, Direction as EvalDirection, Kind as EvalKi
 use kerno_testkit::emulated::Emulated;
 use kerno_testkit::reference::LogEngine;
 use kerno_testkit::vfs::SimVfs;
-use kerno_units::codec::{Adjacency, Key, RelationRecord};
+use kerno_units::codec::{Key, RelationRecord};
 use kerno_units::*;
 
 type EmuLog = Emulated<LogEngine>;
@@ -855,7 +855,7 @@ fn ends_that_are_not_active_are_absent<E: TxnEngine>() {
 
     // The layer refuses to write a relation to these; forge the records, as
     // damage would leave them (the verifier reports it as UNIT-36).
-    let forge = |edge: u8, from: UnitId, to: UnitId| -> Patch {
+    let forge = |edge: u8, from: UnitId, to: UnitId| {
         let edge = RelationId([edge; 16]);
         let record = RelationRecord {
             from,
@@ -864,22 +864,18 @@ fn ends_that_are_not_active_are_absent<E: TxnEngine>() {
             created_seq: CommitSeq(1),
             provenance: RelationProvenance::Declared,
         };
-        vec![
-            (Key::Relation { edge }.encode().unwrap(), Some(record.encode().unwrap())),
-            (
-                Key::RelationOut { unit: from, relation_type: "t".into(), edge }.encode().unwrap(),
-                Some(Adjacency { other: to }.encode()),
-            ),
-            (
-                Key::RelationIn { unit: to, relation_type: "t".into(), edge }.encode().unwrap(),
-                Some(Adjacency { other: from }.encode()),
-            ),
-        ]
+        (Key::Relation { edge }.encode().unwrap(), Some(record.encode().unwrap()))
     };
-    let mut patch = Vec::new();
-    for (edge, from, to) in [(0xA1, x, z), (0xA2, x, d), (0xA3, x, missing), (0xA4, z, w), (0xA5, d, w)] {
-        patch.extend(forge(edge, from, to));
+    let forged = [(0xA1, x, z), (0xA2, x, d), (0xA3, x, missing), (0xA4, z, w), (0xA5, d, w)];
+    let mut patch: Patch = forged.iter().map(|(edge, from, to)| forge(*edge, *from, *to)).collect();
+    // Both adjacency entries of each, in the blocks they fall in (x holds several in one).
+    let mut entries = Vec::new();
+    for (edge, from, to) in forged {
+        let edge = RelationId([edge; 16]);
+        entries.push((Direction::Out, from, "t", edge, Some(to)));
+        entries.push((Direction::In, to, "t", edge, Some(from)));
     }
+    patch.extend(db.adjacency_patch(&entries).unwrap());
     put_all(&db, patch);
     let snap = db.snapshot().unwrap();
 
@@ -919,15 +915,13 @@ fn the_reference_path_never_reads_the_adjacency_index<E: TxnEngine>() {
     assert_eq!(before.hits.len(), 5);
 
     // Remove every adjacency entry: the index path now sees nothing.
-    let mut patch = Vec::new();
+    let mut edits = Vec::new();
     for rel in snap.reference_relations(|_| true).unwrap() {
-        let t = rel.relation_type.clone();
-        patch.push((
-            Key::RelationOut { unit: rel.from, relation_type: t.clone(), edge: rel.id }.encode().unwrap(),
-            None,
-        ));
-        patch.push((Key::RelationIn { unit: rel.to, relation_type: t, edge: rel.id }.encode().unwrap(), None));
+        edits.push((Direction::Out, rel.from, rel.relation_type.clone(), rel.id, None));
+        edits.push((Direction::In, rel.to, rel.relation_type, rel.id, None));
     }
+    let edits: Vec<_> = edits.iter().map(|(d, u, t, e, o)| (*d, *u, t.as_str(), *e, *o)).collect();
+    let patch = g.db.adjacency_patch(&edits).unwrap();
     put_all(&g.db, patch);
     let damaged = g.db.snapshot().unwrap();
     // P1: the count records still say there are entries, so the index read refuses.

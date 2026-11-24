@@ -153,13 +153,9 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         Ok((k, next))
     }
 
-    /// Writes a planned count. The record raises the mark to layer 5 at
-    /// commit; nothing ever removes one, so a record written here is one the
-    /// commit leaves.
+    /// Writes a planned count.
     pub(crate) fn put_live(&mut self, (k, n): (Vec<u8>, u64)) -> Result<(), UnitError> {
-        self.write(&Write::Put(k.clone(), encode_value(n)))?;
-        self.count_live.insert(k);
-        Ok(())
+        self.write(&Write::Put(k, encode_value(n)))
     }
 }
 

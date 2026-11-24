@@ -428,13 +428,13 @@ fn verify_of_a_sound_database_is_exit_0_and_says_which_checks_ran() {
 fn verify_reports_a_lost_adjacency_entry_of_the_units_layer_and_exits_1() {
     let t = TempDir::new();
     let fx = build(&t.db(), true);
-    // Lose the outgoing adjacency entry of A -cites-> B, below the layer, through the engine's public API.
+    // Lose the outgoing adjacency block of A -cites-> B (the tail block of its list, holding the
+    // entry), below the layer, through the engine's public API.
     {
         let engine = open_engine(&t.db(), &Config::default());
         let mut batch = WriteBatch::new();
-        batch.delete(
-            Key::RelationOut { unit: fx.note_a, relation_type: "cites".into(), edge: fx.cites }.encode().unwrap(),
-        );
+        batch
+            .delete(Key::RelationOut { unit: fx.note_a, relation_type: "cites".into(), bound: None }.encode().unwrap());
         engine.commit(&batch).unwrap();
         Engine::close(engine).unwrap();
     }

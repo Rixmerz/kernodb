@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Status | **Proposed** (2026-11-23), implemented; waits for the owner |
-| Date | 2026-11-23 |
+| Date | 2026-11-23 (the layer cut that followed is in [ADR-0026](0026-posting-blocks-for-adjacency-and-keyword-postings.md): databases start at layer 9) |
 | Deciders | Project owner (pending) |
 | Related to | ADR-0012 (benchmark methodology), ADR-0022/0023 (per-type options, opt-in keyword index), [units-v8](../file-format/units-v8.md), [`docs/testing/python-vs-sqlite.md`](../testing/python-vs-sqlite.md) §2026-11-23 |
 

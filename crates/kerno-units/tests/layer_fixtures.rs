@@ -50,5 +50,5 @@ fn v1_struct_vectors_are_read_by_the_production_decoder() {
         }
     }
     // The counts are those of the committed directory: a vector added or lost shows up.
-    assert_eq!((positive, negative), (33, 100));
+    assert_eq!((positive, negative), (35, 107));
 }

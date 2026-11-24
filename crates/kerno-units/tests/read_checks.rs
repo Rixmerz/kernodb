@@ -17,7 +17,7 @@ use harness::units::{Target, open_units};
 use kerno_core::contract::Options;
 use kerno_storage::KernoDb;
 use kerno_testkit::vfs::SimVfs;
-use kerno_units::codec::{Adjacency, CsMember, Key, RelationRecord};
+use kerno_units::codec::{CsMember, Key, RelationRecord};
 use kerno_units::*;
 
 type EmuLog = kerno_testkit::emulated::Emulated<kerno_testkit::reference::LogEngine>;
@@ -105,16 +105,20 @@ fn get_relation_checks_created_seq_and_both_ends<E: Target>() {
     let rel_key = Key::Relation { edge: r }.encode().unwrap();
     let record = RelationRecord::decode(&db.raw_get(&rel_key).unwrap().unwrap()).unwrap();
     let future = RelationRecord { created_seq: CommitSeq(10_000), ..record }.encode().unwrap();
-    let out = Key::RelationOut { unit: a, relation_type: "cites".into(), edge: r }.encode().unwrap();
-    let inn = Key::RelationIn { unit: b, relation_type: "cites".into(), edge: r }.encode().unwrap();
-    let wrong_end = Adjacency { other: a }.encode();
+    // The one entry of each list is the whole block: the write that edits it is the damage.
+    let entry = |dir, unit, other| db.adjacency_patch(&[(dir, unit, "cites", r, other)]).unwrap().remove(0);
+    let (out, out_lost) = entry(Direction::Out, a, None);
+    let (inn, in_lost) = entry(Direction::In, b, None);
+    let (_, out_wrong) = entry(Direction::Out, a, Some(a));
+    let (_, in_wrong) = entry(Direction::In, b, Some(b));
+    assert!(out_lost.is_none() && in_lost.is_none());
     let read = || db.snapshot()?.get_relation(r);
     let cases = [
         ("created_seq after the snapshot", rel_key, Some(future)),
         ("REL_OUT missing", out.clone(), None),
         ("REL_IN missing", inn.clone(), None),
-        ("REL_OUT names another unit", out, Some(wrong_end.clone())),
-        ("REL_IN names another unit", inn, Some(Adjacency { other: b }.encode())),
+        ("REL_OUT names another unit", out, out_wrong),
+        ("REL_IN names another unit", inn, in_wrong),
         ("source unit missing", Key::UnitHead { unit: a }.encode().unwrap(), None),
         ("target unit missing", Key::UnitHead { unit: b }.encode().unwrap(), None),
     ];

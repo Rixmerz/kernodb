@@ -1001,7 +1001,7 @@ impl Db {
     /// relation index disagrees with the relations it indexes.
     pub fn related(&self, unit: UnitId, direction: Direction, relation_type: Option<&str>) -> Result<Vec<Relation>> {
         let snap = self.units.snapshot()?;
-        if snap.get_unit(unit)?.is_none() {
+        if !snap.unit_exists(unit)? {
             return Err(Error::NotFound { unit });
         }
         snap.relations_of(unit, direction, relation_type)
@@ -1027,7 +1027,7 @@ impl Db {
     /// Keyword indexing is off by default: the index costs write time and disk for data nobody
     /// searches by keyword. Turning it on indexes the type's active units in the same commit, and
     /// turning it off removes their entries, so the index never disagrees with the units. The
-    /// setting is stored in the database (layer version 7, ADR-0022), so it holds across opens,
+    /// setting is stored in the database (ADR-0022), so it holds across opens,
     /// and a build that predates it refuses the database instead of misreading it.
     ///
     /// # Errors

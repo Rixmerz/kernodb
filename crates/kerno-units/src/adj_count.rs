@@ -31,17 +31,18 @@
 //! turns that into a `Fallback` to the reference path, as for any damaged
 //! adjacency answer, and the answer is then complete.
 //!
-//! The writer cost is one read-modify-write of one record per adjacency
-//! entry written or removed, in the transaction the relation is already in.
+//! The writer keeps the count in the change set and writes the record once, at
+//! commit, whatever the number of entries the change set adds to the list.
 //!
 //! # What it does not see
 //!
-//! * A unit whose relations were written before layer 4 has no count record
-//!   until a relation of that `(direction, type)` is next created or deleted
-//!   (the writer then counts the entries once and records the total, so the
-//!   record is as good as the store was at that moment). Until then the read
-//!   has nothing to compare with and behaves as before. An absent record is
-//!   never a finding: it is indistinguishable from a legacy unit.
+//! * A list with no count record has none to compare with, so a read of it
+//!   behaves as if the count were not there: a record lost with the entries
+//!   left behind is not a finding. The writer does not trust the absence
+//!   either: it counts the entries of the blocks before the first change it
+//!   makes to such a list and records the total, so the record is as good as
+//!   the list was at that moment and a block is never written over without
+//!   being read (a new list costs one empty seek).
 //! * A count record lost **together with** its entries, or rewritten to
 //!   agree with a lost entry: two damages at once. `verify_units` reports a
 //!   count that disagrees with the entries (UNIT-45), but it cannot report
@@ -58,8 +59,9 @@ use std::ops::Bound;
 
 use kerno_core::contract::{Snapshot, Txn, TxnEngine};
 
-use crate::codec::{ENVELOPE_VERSION, Key, MAX_RELATION_TYPE_LEN, TAG_REL_IN, TAG_REL_OUT, valid_relation_type};
-use crate::db::{ChangeSet, Write, scan_all};
+use crate::adjacency::{list_key, tag_of};
+use crate::codec::{AdjBlock, ENVELOPE_VERSION, MAX_RELATION_TYPE_LEN, valid_relation_type};
+use crate::db::{ChangeSet, scan_all};
 use crate::error::{DecodeError, UnitError, UnitRule};
 use crate::types::{Direction, UnitId};
 
@@ -69,6 +71,8 @@ pub const TAG_REL_COUNT: u8 = 0x72;
 pub const REL_COUNT_RECORD_VERSION: u8 = ENVELOPE_VERSION;
 /// Length of a count value: envelope and a `u64`.
 const VALUE_LEN: usize = 10;
+/// Blocks read per scan call when a missing record is rebuilt from the blocks.
+const PAGE: usize = 64;
 /// `tag ‖ unit ‖ direction ‖ type (1..=64) ‖ NUL`.
 const KEY_MIN: usize = 1 + 16 + 1 + 1 + 1;
 const KEY_MAX: usize = 1 + 16 + 1 + MAX_RELATION_TYPE_LEN as usize + 1;
@@ -82,13 +86,6 @@ pub(crate) fn dir_byte(dir: Direction) -> u8 {
 
 pub(crate) fn dir_of(byte: u8) -> Direction {
     if byte == 0 { Direction::Out } else { Direction::In }
-}
-
-fn adjacency_tag(dir: Direction) -> u8 {
-    match dir {
-        Direction::Out => TAG_REL_OUT,
-        Direction::In => TAG_REL_IN,
-    }
 }
 
 /// The key of the count record of `(unit, dir, relation_type)`.
@@ -228,130 +225,100 @@ pub(crate) fn decode_record(key: &[u8], value: &[u8]) -> Result<CountRecord, Dec
     Ok(CountRecord { unit, dir, relation_type, count })
 }
 
-/// The write one count change comes to, computed by reads alone.
-pub(crate) enum CountStep {
-    Put(Vec<u8>, u64),
-    Delete(Vec<u8>),
-    Nothing,
+/// One adjacency list a relation change touches, planned by reads alone: what
+/// [`ChangeSet::stage_adjacency`] applies once the change cannot fail.
+pub(crate) struct ListPlan {
+    /// The key of the list ([`list_key`]), under which the change set keeps its changes.
+    pub(crate) key: Vec<u8>,
+    /// The count of the list before the change.
+    pub(crate) before: u64,
+    /// The count after it.
+    pub(crate) next: u64,
+    /// The count record has to be written (or removed) at commit.
+    pub(crate) dirty: bool,
+}
+
+/// The count record key of the list `list` (`tag ‖ unit ‖ type ‖ 0x00`): the same unit, direction
+/// and type, which is what the record is keyed by.
+pub(crate) fn count_key_of_list(list: &[u8]) -> Vec<u8> {
+    let dir = if list[0] == crate::codec::TAG_REL_OUT { Direction::Out } else { Direction::In };
+    let mut k = Vec::with_capacity(list.len() + 1);
+    k.push(TAG_REL_COUNT);
+    k.extend_from_slice(&list[1..17]);
+    k.push(dir_byte(dir));
+    k.extend_from_slice(&list[17..]);
+    k
 }
 
 impl<E: TxnEngine> ChangeSet<'_, E> {
-    /// Reads the count of the adjacency entries of `(unit, dir,
-    /// relation_type)` as this change set sees them and returns the write
-    /// that adds `delta` (`+1` or `-1`) to it, without writing. Call it
-    /// **before** the entry is written or removed: a missing record is first
-    /// built by counting the entries that exist (a database written before
-    /// layer 4), and that count must not include the entry being changed. A
-    /// count that reaches zero removes its record.
-    fn plan_count(
-        &self,
-        unit: UnitId,
-        dir: Direction,
-        relation_type: &str,
-        delta: i64,
-    ) -> Result<CountStep, UnitError> {
-        let k = count_key(unit, dir, relation_type);
-        if let Some(&cached) = self.count_cache.get(&k) {
-            let next = if delta >= 0 {
-                cached.saturating_add(delta as u64)
-            } else {
-                cached.saturating_sub(delta.unsigned_abs())
-            };
-            return Ok(if next > 0 {
-                CountStep::Put(k, next)
-            } else if cached > 0 {
-                CountStep::Delete(k)
-            } else {
-                CountStep::Nothing
-            });
-        }
-        let txn = self.txn()?;
-        let (existing, base) = match txn.get(&k)? {
-            Some(raw) => {
-                let n = decode_value(&raw).map_err(|e| crate::db::context(e, &format!("REL_COUNT of unit {unit}")))?;
-                (true, n)
+    /// Plans the change of `delta` (`+1` or `-1`) to the count of the list `(unit, dir,
+    /// relation_type)` as this change set sees it, without writing. Call it **before** the entry
+    /// is written or removed: a missing record is first built by counting the entries that exist
+    /// (a new list, or a record that was lost), and that count must not include the entry being
+    /// changed. A count that reaches zero removes its record.
+    fn plan_list(&self, unit: UnitId, dir: Direction, relation_type: &str, delta: i64) -> Result<ListPlan, UnitError> {
+        let key = list_key(tag_of(dir), unit, relation_type);
+        // The change set keeps the count of a list it changed: within it that is the count. Its
+        // record is marked for writing by the first change (`existing` there), so a later one only
+        // adds to the mark.
+        let (existing, before) = if let Some(l) = self.adj_pending.get(&key) {
+            (false, l.count)
+        } else {
+            match self.txn()?.get(&count_key(unit, dir, relation_type))? {
+                Some(raw) => {
+                    let n =
+                        decode_value(&raw).map_err(|e| crate::db::context(e, &format!("REL_COUNT of unit {unit}")))?;
+                    (true, n)
+                }
+                // No record: the list is new, or its record was lost. Only the blocks tell which,
+                // and the writer must not take a list with entries for an empty one (it would
+                // overwrite its tail block), so it counts them, as it always did (one seek for
+                // a new list) and records the total with this change.
+                None => (false, count_entries(self.txn()?, unit, dir, relation_type)?),
             }
-            None => (false, count_entries(txn, unit, dir, relation_type)?),
         };
         let next =
-            if delta >= 0 { base.saturating_add(delta as u64) } else { base.saturating_sub(delta.unsigned_abs()) };
-        Ok(if next > 0 {
-            CountStep::Put(k, next)
-        } else if existing {
-            CountStep::Delete(k)
-        } else {
-            CountStep::Nothing
-        })
+            if delta >= 0 { before.saturating_add(delta as u64) } else { before.saturating_sub(delta.unsigned_abs()) };
+        Ok(ListPlan { key, before, next, dirty: next > 0 || existing })
     }
 
-    fn apply_count(&mut self, step: CountStep) -> Result<(), UnitError> {
-        match step {
-            // The record is written once, at commit (`flush_counts`): a change set
-            // that adds many relations of one unit writes its count once, not once
-            // per relation (ADR-0023, step 3.2). Within the change set the cache is
-            // the count, and only `plan_count` reads it.
-            CountStep::Put(k, n) => {
-                self.count_cache.insert(k.clone(), n);
-                self.count_dirty.insert(k.clone());
-                self.count_live.insert(k);
-            }
-            CountStep::Delete(k) => {
-                self.count_cache.insert(k.clone(), 0);
-                self.count_dirty.insert(k.clone());
-                self.count_live.remove(&k);
-            }
-            CountStep::Nothing => {}
-        }
-        Ok(())
-    }
-
-    /// Writes every count this change set changed, once each: a count of 0 deletes
-    /// the record. Called by `commit` before anything else is decided.
-    pub(crate) fn flush_counts(&mut self) -> Result<(), UnitError> {
-        for k in std::mem::take(&mut self.count_dirty) {
-            match self.count_cache.get(&k).copied().unwrap_or(0) {
-                0 => self.write(&Write::Delete(k))?,
-                n => self.write(&Write::Put(k, encode_value(n)))?,
-            }
-        }
-        Ok(())
-    }
-
-    /// Adds `delta` to the count of `(from, Out)` and of `(to, In)`. Both
-    /// next counts are read before either is written, so a read that fails
-    /// (a damaged record, an engine error) leaves the change set untouched.
-    /// A record written and removed again in one change set does not raise
-    /// the layer mark at commit.
-    pub(crate) fn adjust_counts(
-        &mut self,
+    /// Plans the counts of `(from, Out)` and of `(to, In)` after `delta` (`+1` or `-1`).
+    /// Both are read before either is applied, so a read that fails (a damaged record, an engine
+    /// error) leaves the change set untouched.
+    pub(crate) fn plan_relation(
+        &self,
         from: UnitId,
         to: UnitId,
         relation_type: &str,
         delta: i64,
-    ) -> Result<(), UnitError> {
-        let out = self.plan_count(from, Direction::Out, relation_type, delta)?;
-        let inn = self.plan_count(to, Direction::In, relation_type, delta)?;
-        self.apply_count(out)?;
-        self.apply_count(inn)
+    ) -> Result<[ListPlan; 2], UnitError> {
+        Ok([
+            self.plan_list(from, Direction::Out, relation_type, delta)?,
+            self.plan_list(to, Direction::In, relation_type, delta)?,
+        ])
     }
 }
 
-/// The adjacency entries of `(unit, dir, relation_type)` in `txn`'s view.
+/// The adjacency entries of `(unit, dir, relation_type)` in `txn`'s view: the entries of the
+/// blocks of that list. A block that does not decode is an error, as it is for the write that
+/// would have to read it.
 fn count_entries<T: Txn>(txn: &T, unit: UnitId, dir: Direction, relation_type: &str) -> Result<u64, UnitError> {
-    let Some((start, end)) = Key::adjacency_range(adjacency_tag(dir), unit, Some(relation_type)) else {
+    if !valid_relation_type(relation_type) {
         return Ok(0);
-    };
+    }
+    let (start, end) = crate::schema::prefix_bounds(&list_key(tag_of(dir), unit, relation_type));
     let mut cursor = start;
     let mut inclusive = true;
     let mut total = 0u64;
     loop {
         let lo = if inclusive { Bound::Included(cursor.as_slice()) } else { Bound::Excluded(cursor.as_slice()) };
-        let page = txn.scan(lo, Bound::Excluded(&end), 256)?;
-        let full = page.len() == 256;
-        total += page.len() as u64;
-        match page.into_iter().last() {
-            Some((k, _)) if full => {
-                cursor = k;
+        let page = txn.scan(lo, Bound::Excluded(&end), PAGE)?;
+        for (_, v) in &page {
+            total += AdjBlock::decode(v).map_err(|e| crate::db::context(e, "REL_ADJ"))?.entries.len() as u64;
+        }
+        match page.last() {
+            Some((k, _)) if page.len() == PAGE => {
+                cursor = k.clone();
                 inclusive = false;
             }
             _ => return Ok(total),

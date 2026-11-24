@@ -7,12 +7,10 @@
 //! damage the adjacency at each end, with one or more relations, typed and
 //! untyped, and require the answer to be the reference's or an explicit
 //! `Corruption` / `Fallback`, never short; they pin the record layout, the
-//! writer's upkeep, the verifier rules, the legacy path (a directory written
-//! before layer 4 opens and works) and the limits that remain.
+//! writer's upkeep, the verifier rules, the missing-record rule of the format cut
+//! (ADR-0026) and the limits that remain.
 //!
-//! Every database test runs on `emulated_log` and on `kerno_db`; the
-//! committed legacy directory exists only for `kerno_db` (the other builds the
-//! same content in memory).
+//! Every database test runs on `emulated_log` and on `kerno_db`.
 
 #![cfg(feature = "test-support")]
 
@@ -27,7 +25,7 @@ use kerno_core::contract::Options;
 use kerno_storage::KernoDb;
 use kerno_testkit::vfs::SimVfs;
 use kerno_units::adj_count::{check_shape, record};
-use kerno_units::codec::{Adjacency, Key, LayerMeta, MAX_LAYER_VERSION, RelationRecord};
+use kerno_units::codec::{Key, LayerMeta, MAX_LAYER_VERSION};
 use kerno_units::*;
 
 type EmuLog = kerno_testkit::emulated::Emulated<kerno_testkit::reference::LogEngine>;
@@ -106,12 +104,17 @@ fn is_corruption(e: &UnitError) -> bool {
     matches!(e, UnitError::Storage(kerno_core::Error::Corruption(_)))
 }
 
-fn adj_key(out: bool, unit: UnitId, ty: &str, edge: RelationId) -> Vec<u8> {
-    if out {
-        Key::RelationOut { unit, relation_type: ty.into(), edge }.encode().unwrap()
-    } else {
-        Key::RelationIn { unit, relation_type: ty.into(), edge }.encode().unwrap()
-    }
+/// The raw write that removes the entry of `edge` from the adjacency list of `(unit, dir, ty)`:
+/// the key of the block that holds it and its new value (`None`: the block is gone).
+fn adj_lost<E: Target>(
+    db: &UnitDb<E>,
+    out: bool,
+    unit: UnitId,
+    ty: &str,
+    edge: RelationId,
+) -> (Vec<u8>, Option<Vec<u8>>) {
+    let dir = if out { Direction::Out } else { Direction::In };
+    db.adjacency_patch(&[(dir, unit, ty, edge, None)]).unwrap().remove(0)
 }
 
 // ---------------------------------------------------------------- layout
@@ -131,7 +134,7 @@ fn record_layout_is_pinned<E: Target>() {
     in_key.extend_from_slice(&[1, b'c', b'i', b't', b'e', b's', 0]);
     let value = vec![1, 0, 0, 0, 0, 0, 0, 0, 0, 2];
     assert_eq!(got, BTreeMap::from([(out_key, value.clone()), (in_key, value)]));
-    assert_eq!(layer_version(&db), 7);
+    assert_eq!(layer_version(&db), kerno_units::codec::MIN_LAYER_VERSION);
     clean(&db, "two relations");
 }
 
@@ -141,7 +144,7 @@ fn record_layout_is_pinned<E: Target>() {
 fn counts_follow_create_and_delete<E: Target>() {
     let db = open::<E>();
     let u = units(&db, 3);
-    assert_eq!(layer_version(&db), 7);
+    assert_eq!(layer_version(&db), kerno_units::codec::MIN_LAYER_VERSION);
     assert!(count_records(&db).is_empty());
     let a = relate(&db, u[0], u[1], "cites");
     let b = relate(&db, u[0], u[2], "cites");
@@ -165,7 +168,7 @@ fn counts_follow_create_and_delete<E: Target>() {
         clean(&db, "after a delete");
     }
     assert_eq!(count_records(&db).len(), 2, "only the one left in the last change set");
-    assert_eq!(layer_version(&db), 7, "nothing lowers the mark");
+    assert_eq!(layer_version(&db), kerno_units::codec::MIN_LAYER_VERSION, "nothing lowers the mark");
 }
 
 /// An aborted change set leaves no count record behind and no mark change.
@@ -176,7 +179,7 @@ fn an_aborted_change_set_leaves_no_count<E: Target>() {
     cs.create_relation(u[0], u[1], "cites", RelationProvenance::Declared).unwrap();
     drop(cs);
     assert!(count_records(&db).is_empty());
-    assert_eq!(layer_version(&db), 7);
+    assert_eq!(layer_version(&db), kerno_units::codec::MIN_LAYER_VERSION);
     clean(&db, "after abort");
 }
 
@@ -274,7 +277,7 @@ fn a_refused_delete_leaves_the_other_end_alone<E: Target>() {
 }
 
 /// F1, single-relation case of the delete: the record of `from` must not be
-/// removed (u0 would read as a legacy unit).
+/// removed (u0 would read as a unit with no count).
 fn a_refused_delete_keeps_the_only_count<E: Target>() {
     let db = open::<E>();
     let u = units(&db, 3);
@@ -293,15 +296,15 @@ fn a_refused_delete_keeps_the_only_count<E: Target>() {
 fn the_mark_rises_only_for_a_record_that_stays<E: Target>() {
     let db = open::<E>();
     let u = units(&db, 2);
-    assert_eq!(layer_version(&db), 7);
+    assert_eq!(layer_version(&db), kerno_units::codec::MIN_LAYER_VERSION);
     let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
     let edge = cs.create_relation(u[0], u[1], "cites", RelationProvenance::Declared).unwrap();
     cs.delete_relation(edge).unwrap();
     cs.commit().unwrap();
     assert!(count_records(&db).is_empty());
-    assert_eq!(layer_version(&db), 7, "no 0x72 record committed, mark unchanged");
+    assert_eq!(layer_version(&db), kerno_units::codec::MIN_LAYER_VERSION, "no 0x72 record committed, mark unchanged");
     relate(&db, u[0], u[1], "cites");
-    assert_eq!(layer_version(&db), 7);
+    assert_eq!(layer_version(&db), kerno_units::codec::MIN_LAYER_VERSION);
 }
 
 // ---------------------------------------------------------------- K1
@@ -342,12 +345,12 @@ fn one_entry_lost<E: Target>(filler: usize) {
         relate(&db, u[2], u[3], "other");
     }
     let cases = [
-        ("REL_IN lost", adj_key(false, u[1], "cites", lost_edge), (u[0], Direction::Out), (u[1], Direction::In)),
-        ("REL_OUT lost", adj_key(true, u[0], "cites", lost_edge), (u[1], Direction::In), (u[0], Direction::Out)),
+        ("REL_IN lost", adj_lost(&db, false, u[1], "cites", lost_edge), (u[0], Direction::Out), (u[1], Direction::In)),
+        ("REL_OUT lost", adj_lost(&db, true, u[0], "cites", lost_edge), (u[1], Direction::In), (u[0], Direction::Out)),
     ];
     for (name, lost, kept, gone) in cases {
-        let undo = vec![(lost.clone(), db.raw_get(&lost).unwrap())];
-        put_all(&db, vec![(lost, None)]);
+        let undo = vec![(lost.0.clone(), db.raw_get(&lost.0).unwrap())];
+        put_all(&db, vec![lost]);
         assert!(rules(&db).contains("UNIT-36"), "{name}: verify_units reports it");
         assert!(rules(&db).contains("UNIT-45"), "{name}: and the count record that disagrees");
 
@@ -385,8 +388,7 @@ fn one_of_several_entries_lost<E: Target>() {
     let u = units(&db, 3);
     let first = relate(&db, u[0], u[1], "cites");
     relate(&db, u[2], u[1], "cites");
-    let lost = adj_key(false, u[1], "cites", first);
-    put_all(&db, vec![(lost, None)]);
+    put_all(&db, vec![adj_lost(&db, false, u[1], "cites", first)]);
     assert_eq!(never_short(&db, u[1], Direction::In, &["cites"], "one of two"), 2);
     clean_except(&db, &["UNIT-36", "UNIT-45"]);
 }
@@ -431,7 +433,7 @@ fn a_count_lost_with_its_entry_is_the_known_limit<E: Target>() {
     let u = units(&db, 2);
     let edge = relate(&db, u[0], u[1], "cites");
     let count = record(u[1], Direction::In, "cites", 0).0;
-    put_all(&db, vec![(adj_key(false, u[1], "cites", edge), None), (count, None)]);
+    put_all(&db, vec![adj_lost(&db, false, u[1], "cites", edge), (count, None)]);
     let snap = db.snapshot().unwrap();
     assert!(snap.relations_of(u[1], Direction::In, None).unwrap().is_empty(), "known limit: a double damage");
     assert_eq!(snap.reference_relations_of(u[1], Direction::In, None).unwrap().len(), 1);
@@ -467,78 +469,71 @@ fn verifier_rules_of_the_count_records<E: Target>() {
     clean(&db, "restored");
 }
 
-// ---------------------------------------------------------------- legacy
+// ---------------------------------------------------------------- missing record
 
-/// What the writer before layer 4 left for a relation, byte for byte: `REL`
-/// and its two adjacency entries, no count record.
-fn legacy_relation<E: Target>(db: &UnitDb<E>, edge: u8, from: UnitId, to: UnitId, ty: &str) -> RelationId {
-    let id = RelationId([edge; 16]);
-    let rec = RelationRecord {
-        from,
-        to,
-        relation_type: ty.into(),
-        created_seq: CommitSeq(1),
-        provenance: RelationProvenance::Declared,
-    };
-    put_all(
-        db,
-        vec![
-            (Key::Relation { edge: id }.encode().unwrap(), Some(rec.encode().unwrap())),
-            (adj_key(true, from, ty, id), Some(Adjacency { other: to }.encode())),
-            (adj_key(false, to, ty, id), Some(Adjacency { other: from }.encode())),
-        ],
-    );
-    id
-}
-
-fn build_legacy<E: Target>(db: &UnitDb<E>) -> Vec<UnitId> {
-    let u = units(db, 3);
-    legacy_relation(db, 0xA1, u[0], u[1], "cites");
-    legacy_relation(db, 0xA2, u[0], u[2], "cites");
-    legacy_relation(db, 0xA3, u[1], u[2], "refines");
-    u
-}
-
-/// A store with relations and no count records serves every read as before
-/// (nothing to compare with), verifies clean, and the first change to a
-/// `(unit, direction, type)` records the count of what exists plus the change.
-fn legacy_relations_work_and_get_a_count_when_next_changed<E: Target>() {
+/// A count record lost with its list's entries still there is not an empty list: the next
+/// relation of that list counts the entries of the blocks, records the total and writes its
+/// entry beside them, as the writer did before posting blocks. Nothing is overwritten: a list of
+/// one block and of several, at either end, keeps every entry and verifies clean afterwards.
+fn a_count_record_lost_with_entries_left_is_rebuilt_from_them<E: Target>() {
     let db = open::<E>();
-    let u = build_legacy(&db);
-    assert_eq!(layer_version(&db), 7);
-    assert!(count_records(&db).is_empty());
-    clean(&db, "legacy");
-    assert_eq!(never_short(&db, u[0], Direction::Out, &["cites", "refines"], "legacy"), 0);
-    assert_eq!(db.snapshot().unwrap().relations_of(u[0], Direction::Out, None).unwrap().len(), 2);
-
-    let third = relate(&db, u[0], u[1], "cites");
-    assert_eq!(layer_version(&db), 7);
+    let u = units(&db, 3);
+    let first = relate(&db, u[0], u[1], "cites");
+    let again = relate(&db, u[0], u[1], "cites");
+    let out = record(u[0], Direction::Out, "cites", 0).0;
+    let inn = record(u[1], Direction::In, "cites", 0).0;
+    put_all(&db, vec![(out.clone(), None), (inn.clone(), None)]);
+    // Nothing to compare with: the read behaves as if the record were not there.
+    let snap = db.snapshot().unwrap();
+    assert_eq!(snap.relations_of(u[0], Direction::Out, None).unwrap().len(), 2);
+    drop(snap);
+    clean(&db, "records lost");
+    let third = relate(&db, u[0], u[2], "cites");
+    let mut want = vec![first, again, third];
+    want.sort();
+    let mut listed: Vec<_> =
+        db.snapshot().unwrap().relations_of(u[0], Direction::Out, None).unwrap().iter().map(|r| r.id).collect();
+    listed.sort();
+    assert_eq!(listed, want, "no entry lost");
+    // The out record counts the three entries; the in record of u1 was lost too and u1 was not
+    // touched by the third relation, so it is still missing (the limit of an absent record).
     let counts = count_records(&db);
-    assert_eq!(counts[&record(u[0], Direction::Out, "cites", 0).0], record(u[0], Direction::Out, "cites", 3).1);
-    assert_eq!(counts[&record(u[1], Direction::In, "cites", 0).0], record(u[1], Direction::In, "cites", 2).1);
-    assert_eq!(counts.len(), 2, "(u2, in, cites) and the others are not touched");
-    clean(&db, "after the first new relation");
-    // The (unit, direction, type)s that have a record are now covered.
-    let lost = adj_key(true, u[0], "cites", third);
-    put_all(&db, vec![(lost, None)]);
-    assert_eq!(never_short(&db, u[0], Direction::Out, &["cites"], "legacy then counted"), 2);
-    // The ones that have none are not (the documented limit).
-    let refines = adj_key(false, u[2], "refines", RelationId([0xA3; 16]));
-    put_all(&db, vec![(refines, None)]);
-    assert!(db.snapshot().unwrap().relations_of(u[2], Direction::In, Some("refines")).unwrap().is_empty());
+    assert_eq!(counts[&out], record(u[0], Direction::Out, "cites", 3).1);
+    assert!(!counts.contains_key(&inn));
+    // A change to the in list counts its entries before adding its own.
+    let fourth = relate(&db, u[2], u[1], "cites");
+    let mut in_ids: Vec<_> =
+        db.snapshot().unwrap().relations_of(u[1], Direction::In, None).unwrap().iter().map(|r| r.id).collect();
+    in_ids.sort();
+    let mut want_in = vec![first, again, fourth];
+    want_in.sort();
+    assert_eq!(in_ids, want_in);
+    assert_eq!(count_records(&db)[&inn], record(u[1], Direction::In, "cites", 3).1);
+    clean(&db, "rebuilt");
+    // Deleting a relation of a rebuilt list counts it down from what was there.
+    unrelate(&db, fourth);
+    assert_eq!(count_records(&db)[&inn], record(u[1], Direction::In, "cites", 2).1);
+    clean(&db, "deleted");
 }
 
-fn deleting_a_legacy_relation_counts_what_is_left<E: Target>() {
+/// The same with a list of several blocks (more than the 64 entries of one block), and a
+/// removal as the first change of a list whose record was lost.
+fn a_lost_count_of_a_list_of_several_blocks_is_rebuilt<E: Target>() {
     let db = open::<E>();
-    let u = build_legacy(&db);
-    unrelate(&db, RelationId([0xA1; 16]));
-    assert_eq!(layer_version(&db), 7);
-    assert_eq!(
-        count_records(&db)[&record(u[0], Direction::Out, "cites", 0).0],
-        record(u[0], Direction::Out, "cites", 1).1
-    );
-    assert!(!count_records(&db).contains_key(&record(u[1], Direction::In, "cites", 0).0), "that count reached zero");
-    clean(&db, "after the delete");
+    let u = units(&db, 71);
+    let mut edges: Vec<RelationId> = (1..=70).map(|i| relate(&db, u[0], u[i], "cites")).collect();
+    let out = record(u[0], Direction::Out, "cites", 0).0;
+    put_all(&db, vec![(out.clone(), None)]);
+    edges.push(relate(&db, u[0], u[1], "cites"));
+    assert_eq!(count_records(&db)[&out], record(u[0], Direction::Out, "cites", 71).1);
+    let listed = db.snapshot().unwrap().relations_of(u[0], Direction::Out, None).unwrap();
+    assert_eq!(listed.len(), 71);
+    clean(&db, "several blocks");
+    put_all(&db, vec![(out.clone(), None)]);
+    unrelate(&db, edges[0]);
+    assert_eq!(count_records(&db)[&out], record(u[0], Direction::Out, "cites", 70).1);
+    assert_eq!(db.snapshot().unwrap().relations_of(u[0], Direction::Out, None).unwrap().len(), 70);
+    clean(&db, "removal");
 }
 
 // ---------------------------------------------------------------- export
@@ -556,7 +551,7 @@ fn export_import_keeps_the_counts<E: Target>() {
     kerno_units::import::import(&target, &bytes).unwrap();
     assert_eq!(count_records(&target), count_records(&src));
     // The import writes the live counts of its units too: layer 5, where the source stayed at 4.
-    assert_eq!(layer_version(&target), 7);
+    assert_eq!(layer_version(&target), kerno_units::codec::MIN_LAYER_VERSION);
     clean(&target, "imported");
     assert_eq!(kerno_units::export::export(&target).unwrap(), bytes);
 }
@@ -664,12 +659,12 @@ macro_rules! engines {
                 super::verifier_rules_of_the_count_records::<E>();
             }
             #[test]
-            fn legacy_relations_work_and_get_a_count_when_next_changed() {
-                super::legacy_relations_work_and_get_a_count_when_next_changed::<E>();
+            fn a_count_record_lost_with_entries_left_is_rebuilt_from_them() {
+                super::a_count_record_lost_with_entries_left_is_rebuilt_from_them::<E>();
             }
             #[test]
-            fn deleting_a_legacy_relation_counts_what_is_left() {
-                super::deleting_a_legacy_relation_counts_what_is_left::<E>();
+            fn a_lost_count_of_a_list_of_several_blocks_is_rebuilt() {
+                super::a_lost_count_of_a_list_of_several_blocks_is_rebuilt::<E>();
             }
             #[test]
             fn a_refused_create_leaves_no_count() {

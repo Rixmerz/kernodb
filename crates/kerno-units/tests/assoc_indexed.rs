@@ -33,7 +33,7 @@ use kerno_testkit::emulated::Emulated;
 use kerno_testkit::reference::LogEngine;
 use kerno_testkit::rng::Rng;
 use kerno_testkit::vfs::SimVfs;
-use kerno_units::codec::{Adjacency, Key, RelationRecord, TAG_REL_OUT};
+use kerno_units::codec::{Key, RelationRecord, TAG_REL_OUT};
 use kerno_units::*;
 
 type EmuLog = Emulated<LogEngine>;
@@ -396,20 +396,14 @@ fn ring_query(fx: &Fixture<impl TxnEngine>) -> AssocQuery {
     AssocQuery::new(vec![fx.u[0]], 4, 1000, 100_000)
 }
 
-fn out_key(unit: UnitId, ty: &str, edge: RelationId) -> Vec<u8> {
-    Key::RelationOut { unit, relation_type: ty.into(), edge }.encode().unwrap()
-}
-
-fn in_key(unit: UnitId, ty: &str, edge: RelationId) -> Vec<u8> {
-    Key::RelationIn { unit, relation_type: ty.into(), edge }.encode().unwrap()
+/// The raw writes that make `edits` (direction, unit, type, relation, the unit at the other
+/// end or `None` to remove the entry) to the adjacency blocks of the fixture's store.
+fn adj<E: TxnEngine>(fx: &Fixture<E>, edits: &[(Direction, UnitId, &str, RelationId, Option<UnitId>)]) -> Patch {
+    fx.db.adjacency_patch(edits).unwrap()
 }
 
 fn rel_key(edge: RelationId) -> Vec<u8> {
     Key::Relation { edge }.encode().unwrap()
-}
-
-fn entry(other: UnitId) -> Option<Vec<u8>> {
-    Some(Adjacency { other }.encode())
 }
 
 fn record(from: UnitId, to: UnitId, ty: &str, created_seq: CommitSeq) -> Option<Vec<u8>> {
@@ -441,7 +435,7 @@ struct Damage<E: TxnEngine> {
 }
 
 fn wrong_value<E: TxnEngine>(fx: &Fixture<E>) -> Patch {
-    vec![(out_key(fx.u[0], "t", fx.r[0]), entry(fx.u[3]))]
+    adj(fx, &[(Direction::Out, fx.u[0], "t", fx.r[0], Some(fx.u[3]))])
 }
 
 fn damages<E: TxnEngine>() -> Vec<Damage<E>> {
@@ -450,7 +444,7 @@ fn damages<E: TxnEngine>() -> Vec<Damage<E>> {
     vec![
         Damage {
             name: "missing entry: the mirror of a relation the traversal follows out",
-            patch: |fx| vec![(in_key(fx.u[1], "t", fx.r[0]), None)],
+            patch: |fx| adj(fx, &[(Direction::In, fx.u[1], "t", fx.r[0], None)]),
             changes_data: false,
             small: inconsistent,
             // K5: `get_relation` now checks both adjacency entries of the
@@ -459,7 +453,7 @@ fn damages<E: TxnEngine>() -> Vec<Damage<E>> {
         },
         Damage {
             name: "missing entry: the followed side, seen from the other end",
-            patch: |fx| vec![(out_key(fx.u[0], "t", fx.r[1]), None)],
+            patch: |fx| adj(fx, &[(Direction::Out, fx.u[0], "t", fx.r[1], None)]),
             changes_data: false,
             small: inconsistent,
             // P1: the end that lost the entry now refuses its own read (count
@@ -468,7 +462,7 @@ fn damages<E: TxnEngine>() -> Vec<Damage<E>> {
         },
         Damage {
             name: "missing entry: a mirror that names another unit",
-            patch: |fx| vec![(in_key(fx.u[1], "t", fx.r[0]), entry(fx.u[4]))],
+            patch: |fx| adj(fx, &[(Direction::In, fx.u[1], "t", fx.r[0], Some(fx.u[4]))]),
             changes_data: false,
             // K5: `get_relation` catches a wrong entry before the mirror check.
             small: corrupt,
@@ -476,7 +470,7 @@ fn damages<E: TxnEngine>() -> Vec<Damage<E>> {
         },
         Damage {
             name: "extra entry without a record",
-            patch: |fx| vec![(out_key(fx.u[0], "t", FORGED), entry(fx.u[2]))],
+            patch: |fx| adj(fx, &[(Direction::Out, fx.u[0], "t", FORGED, Some(fx.u[2]))]),
             changes_data: false,
             small: inconsistent,
             large: corrupt,
@@ -485,7 +479,9 @@ fn damages<E: TxnEngine>() -> Vec<Damage<E>> {
             name: "extra entry with a record and no mirror",
             patch: |fx| {
                 let (a, e) = (fx.u[0], fx.u[4]);
-                vec![(rel_key(FORGED), record(a, e, "t", CommitSeq(2))), (out_key(a, "t", FORGED), entry(e))]
+                let mut patch = vec![(rel_key(FORGED), record(a, e, "t", CommitSeq(2)))];
+                patch.extend(adj(fx, &[(Direction::Out, a, "t", FORGED, Some(e))]));
+                patch
             },
             changes_data: true,
             small: inconsistent,
@@ -517,7 +513,13 @@ fn damages<E: TxnEngine>() -> Vec<Damage<E>> {
                 let mut cs = fx.db.begin_changeset(ChangeMeta::default()).unwrap();
                 cs.delete_relation(fx.r[3]).unwrap();
                 cs.commit().unwrap();
-                vec![(out_key(fx.u[2], "u", fx.r[3]), entry(fx.u[3])), (in_key(fx.u[3], "u", fx.r[3]), entry(fx.u[2]))]
+                adj(
+                    fx,
+                    &[
+                        (Direction::Out, fx.u[2], "u", fx.r[3], Some(fx.u[3])),
+                        (Direction::In, fx.u[3], "u", fx.r[3], Some(fx.u[2])),
+                    ],
+                )
             },
             changes_data: false,
             small: inconsistent,
@@ -529,7 +531,7 @@ fn damages<E: TxnEngine>() -> Vec<Damage<E>> {
                 let mut cs = fx.db.begin_changeset(ChangeMeta::default()).unwrap();
                 let id = cs.create_relation(fx.u[0], fx.u[5], "t", RelationProvenance::Declared).unwrap();
                 cs.commit().unwrap();
-                vec![(out_key(fx.u[0], "t", id), None), (in_key(fx.u[5], "t", id), None)]
+                adj(fx, &[(Direction::Out, fx.u[0], "t", id, None), (Direction::In, fx.u[5], "t", id, None)])
             },
             changes_data: false,
             small: inconsistent,

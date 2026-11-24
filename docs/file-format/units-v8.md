@@ -6,6 +6,10 @@
 | Layer version | `layer_version = 8`, `envelope_version = 1` |
 | Related to | [units-v7](units-v7.md) (the precedent, not edited), [engine v1 format](v1.md) (frozen, no changes) |
 
+> **Since ADR-0026 the layer is cut at 9** ([units-v9](units-v9.md)): a database starts at 9 and the
+> mark is not raised by `set_substring`. §1 describes the mark of the build that introduced the
+> trigram index; the record format of §2 to §5 is unchanged.
+
 "Must" and "must not" are normative. As in the earlier versions, the records are ordinary keys
 and values of the engine: no byte of the engine's v1 format changes.
 
