@@ -52,13 +52,11 @@ fn fan_out<E: Target>(db: &UnitDb<E>, from: UnitId, to: &[UnitId], ty: &str) -> 
     ids
 }
 
-/// The adjacency blocks of `(unit, dir, type)` as stored: key and entries.
-fn blocks<E: Target>(
-    db: &UnitDb<E>,
-    dir: Direction,
-    unit: UnitId,
-    ty: &str,
-) -> Vec<(Vec<u8>, Vec<(RelationId, UnitId)>)> {
+/// A stored adjacency block: its key and its entries.
+type StoredBlock = (Vec<u8>, Vec<(RelationId, UnitId)>);
+
+/// The adjacency blocks of `(unit, dir, type)` as stored.
+fn blocks<E: Target>(db: &UnitDb<E>, dir: Direction, unit: UnitId, ty: &str) -> Vec<StoredBlock> {
     let tag = if dir == Direction::Out { 0x41 } else { 0x42 };
     let (start, end) = Key::adjacency_range(tag, unit, Some(ty)).unwrap();
     raw(db)

@@ -241,7 +241,7 @@ impl crate::blocks::Block for Postings {
             return Err(e(UnitRule::Unit11, "more postings than a block holds"));
         }
         let mut out = Vec::with_capacity(body.len() / ENTRY_LEN);
-        for c in body.chunks_exact(ENTRY_LEN) {
+        for c in body.as_chunks::<ENTRY_LEN>().0 {
             let mut unit = [0u8; 16];
             unit.copy_from_slice(&c[..16]);
             let p = Posting { tf: be32(&c[16..20]), dl: be32(&c[20..]) };

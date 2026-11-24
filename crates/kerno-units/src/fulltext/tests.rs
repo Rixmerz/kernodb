@@ -575,8 +575,11 @@ fn a_unit_older_than_the_index_is_not_a_finding() {
 
 // ---------------------------------------------------------- posting blocks
 
-/// Every raw `POSTING` record of the store: key and decoded entries.
-fn posting_blocks(db: &UnitDb<E>) -> Vec<(Vec<u8>, Vec<(UnitId, Posting)>)> {
+/// A raw `POSTING` record: its key and its decoded entries.
+type PostingBlock = (Vec<u8>, Vec<(UnitId, Posting)>);
+
+/// Every raw `POSTING` record of the store.
+fn posting_blocks(db: &UnitDb<E>) -> Vec<PostingBlock> {
     use kerno_core::contract::Snapshot;
     let snap = db.raw_snapshot().unwrap();
     let all = snap.scan(Bound::Included(&[TAG_POSTING][..]), Bound::Excluded(&[TAG_DOC][..]), 100_000).unwrap();
@@ -584,7 +587,7 @@ fn posting_blocks(db: &UnitDb<E>) -> Vec<(Vec<u8>, Vec<(UnitId, Posting)>)> {
 }
 
 /// The blocks of one term, in key order.
-fn blocks_of(db: &UnitDb<E>, term: &str) -> Vec<(Vec<u8>, Vec<(UnitId, Posting)>)> {
+fn blocks_of(db: &UnitDb<E>, term: &str) -> Vec<PostingBlock> {
     let list = list_key(term);
     posting_blocks(db).into_iter().filter(|(k, _)| k.starts_with(&list)).collect()
 }

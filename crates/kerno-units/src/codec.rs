@@ -1199,7 +1199,7 @@ impl AdjBlock {
             );
         }
         let entries: Vec<(RelationId, UnitId)> =
-            body.chunks_exact(32).map(|c| (RelationId(arr(&c[..16])), UnitId(arr(&c[16..])))).collect();
+            body.as_chunks::<32>().0.iter().map(|c| (RelationId(arr(&c[..16])), UnitId(arr(&c[16..])))).collect();
         if entries.windows(2).any(|w| w[0].0 >= w[1].0) {
             return reject(UnitRule::Unit13, "REL_ADJ entries are not strictly ascending by relation id");
         }

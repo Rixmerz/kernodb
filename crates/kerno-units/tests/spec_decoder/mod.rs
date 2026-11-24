@@ -193,14 +193,16 @@ pub fn decode(key: &[u8], value: &[u8]) -> Res<Rec> {
         let mut r = Reader { buf: value, pos: 0 };
         header(&mut r)?;
         let body = &value[r.pos..];
-        if body.is_empty() || body.len() % 32 != 0 {
+        if body.is_empty() || !body.len().is_multiple_of(32) {
             return Err(rule(9));
         }
         if body.len() / 32 > 64 {
             return Err(rule(11));
         }
         let entries: Vec<([u8; 16], [u8; 16])> = body
-            .chunks_exact(32)
+            .as_chunks::<32>()
+            .0
+            .iter()
             .map(|c| (c[..16].try_into().expect("16 bytes"), c[16..].try_into().expect("16 bytes")))
             .collect();
         if entries.windows(2).any(|w| w[0].0 >= w[1].0) {

@@ -219,6 +219,10 @@ impl<E: kerno_core::contract::Engine> UnitSnapshot<E> {
 #[cfg(any(test, feature = "test-support"))]
 pub type AdjEdit<'a> = (Direction, UnitId, &'a str, RelationId, Option<UnitId>);
 
+/// One raw write of [`UnitDb::adjacency_patch`]: a key and its new value (`None`: delete).
+#[cfg(any(test, feature = "test-support"))]
+pub type RawWrite = (Vec<u8>, Option<Vec<u8>>);
+
 #[cfg(any(test, feature = "test-support"))]
 impl<E: TxnEngine> crate::db::UnitDb<E> {
     /// The raw writes that make `edits` to the adjacency lists, as the blocks they fall in
@@ -226,7 +230,7 @@ impl<E: TxnEngine> crate::db::UnitDb<E> {
     /// Edits of one block are combined into one write; each must keep its block within
     /// [`ADJ_BLOCK_MAX`] entries, and a removal that empties a block deletes it.
     #[doc(hidden)]
-    pub fn adjacency_patch(&self, edits: &[AdjEdit<'_>]) -> Result<Vec<(Vec<u8>, Option<Vec<u8>>)>, UnitError> {
+    pub fn adjacency_patch(&self, edits: &[AdjEdit<'_>]) -> Result<Vec<RawWrite>, UnitError> {
         let snap = self.raw_snapshot()?;
         let mut blocks_by_key: BTreeMap<Vec<u8>, Vec<(RelationId, UnitId)>> = BTreeMap::new();
         for (dir, unit, relation_type, edge, other) in edits {

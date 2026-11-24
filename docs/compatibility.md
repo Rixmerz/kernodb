@@ -52,7 +52,7 @@ has the first two; an export file has the third.
 | Axis | Today | Spec | Where the version lives |
 |---|---|---|---|
 | Engine (physical) format | `format_version = 1`, **frozen** since 2026-10-31 ([ADR-0013](adr/0013-format-v1-and-engine-protocol.md)) | [file-format/v1.md](file-format/v1.md) | header of every file, plus feature bits |
-| Units layer (logical) | `layer_version = 7`, the cut version of alpha.2; 1 to 6 are refused | [units-v1](file-format/units-v1.md) to [units-v7](file-format/units-v7.md) | `LAYER_META` record `layer` |
+| Units layer (logical) | `layer_version = 9`, the cut version of [ADR-0026](adr/0026-posting-blocks-for-adjacency-and-keyword-postings.md); 1 to 8 are refused | [units-v1](file-format/units-v1.md) to [units-v9](file-format/units-v9.md) | `LAYER_META` record `layer` |
 | Export | `format_version = 1`, **frozen** | [file-format/export-v1.md](file-format/export-v1.md) | export header |
 
 Derived data (vectors, summaries, indexes) has no promise of its own: it is
@@ -91,8 +91,9 @@ for byte, so a changed byte fails CI.
 
 `layer_version` is written into the database mark:
 
-- **Every database is created at the cut version, 7** (alpha.2, ADR-0023), and a mark below 7 is
-  refused (`LayerTooOld`). Opening and reading never write.
+- **Every database is created at the cut version, 9** (ADR-0026; the cut of alpha.2 was 7,
+  ADR-0023), and a mark below 9 is refused (`LayerTooOld`). The mark does not rise with the first
+  use of a feature. Opening and reading never write.
 - **A build refuses a layer newer than it knows** (rule UNIT-16, `IncompatibleLayer`) and
   modifies nothing.
 - From 1.0, a minor release may add a layer version, raised only by the write that needs it
