@@ -37,11 +37,12 @@
 //! # What it does not see
 //!
 //! * A list with no count record has none to compare with, so a read of it
-//!   behaves as if the count were not there. Since the format cut of ADR-0026
-//!   no store lacks its counts (layer 9 starts every database with them), so
-//!   the writer no longer rebuilds a missing record from the entries: it counts
-//!   from zero, and a record lost with entries left behind is a disagreement
-//!   the next read of that list reports.
+//!   behaves as if the count were not there: a record lost with the entries
+//!   left behind is not a finding. The writer does not trust the absence
+//!   either: it counts the entries of the blocks before the first change it
+//!   makes to such a list and records the total, so the record is as good as
+//!   the list was at that moment and a block is never written over without
+//!   being read (a new list costs one empty seek).
 //! * A count record lost **together with** its entries, or rewritten to
 //!   agree with a lost entry: two damages at once. `verify_units` reports a
 //!   count that disagrees with the entries (UNIT-45), but it cannot report
@@ -54,10 +55,12 @@
 //! a scan of every type of the unit to check one.
 
 use std::collections::BTreeMap;
+use std::ops::Bound;
 
 use kerno_core::contract::{Snapshot, Txn, TxnEngine};
 
-use crate::codec::{ENVELOPE_VERSION, MAX_RELATION_TYPE_LEN, valid_relation_type};
+use crate::adjacency::{list_key, tag_of};
+use crate::codec::{AdjBlock, ENVELOPE_VERSION, MAX_RELATION_TYPE_LEN, valid_relation_type};
 use crate::db::{ChangeSet, Write, scan_all};
 use crate::error::{DecodeError, UnitError, UnitRule};
 use crate::types::{Direction, UnitId};
@@ -68,6 +71,8 @@ pub const TAG_REL_COUNT: u8 = 0x72;
 pub const REL_COUNT_RECORD_VERSION: u8 = ENVELOPE_VERSION;
 /// Length of a count value: envelope and a `u64`.
 const VALUE_LEN: usize = 10;
+/// Blocks read per scan call when a missing record is rebuilt from the blocks.
+const PAGE: usize = 64;
 /// `tag ‖ unit ‖ direction ‖ type (1..=64) ‖ NUL`.
 const KEY_MIN: usize = 1 + 16 + 1 + 1 + 1;
 const KEY_MAX: usize = 1 + 16 + 1 + MAX_RELATION_TYPE_LEN as usize + 1;
@@ -232,9 +237,10 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
     /// relation_type)` as this change set sees them and returns the write
     /// that adds `delta` (`+1` or `-1`) to it, without writing. Call it
     /// **before** the entry is written or removed: a missing record is first
-    /// built by counting the entries that exist (a database written before
-    /// layer 4), and that count must not include the entry being changed. A
-    /// count that reaches zero removes its record.
+    /// built by counting the entries that exist (a new list, or a record that
+    /// was lost), and that count must not include the entry being changed. A
+    /// count that reaches zero removes its record. The second value is the
+    /// count before the change.
     fn plan_count(
         &self,
         unit: UnitId,
@@ -252,10 +258,11 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
                         decode_value(&raw).map_err(|e| crate::db::context(e, &format!("REL_COUNT of unit {unit}")))?;
                     (true, n)
                 }
-                // The format cut (ADR-0026) leaves no store without its counts: a list with
-                // no record has no entry. A record lost with its entries is damage the
-                // verifier reports (UNIT-45), not one the writer repairs.
-                None => (false, 0),
+                // No record: the list is new, or its record was lost. Only the blocks tell which,
+                // and the writer must not take a list with entries for an empty one (it would
+                // overwrite its tail block), so it counts them, as it always did (one seek for
+                // a new list) and records the total with this change.
+                None => (false, count_entries(self.txn()?, unit, dir, relation_type)?),
             }
         };
         let next =
@@ -317,6 +324,33 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         self.apply_count(out)?;
         self.apply_count(inn)?;
         Ok((before_out, before_in))
+    }
+}
+
+/// The adjacency entries of `(unit, dir, relation_type)` in `txn`'s view: the entries of the
+/// blocks of that list. A block that does not decode is an error, as it is for the write that
+/// would have to read it.
+fn count_entries<T: Txn>(txn: &T, unit: UnitId, dir: Direction, relation_type: &str) -> Result<u64, UnitError> {
+    if !valid_relation_type(relation_type) {
+        return Ok(0);
+    }
+    let (start, end) = crate::schema::prefix_bounds(&list_key(tag_of(dir), unit, relation_type));
+    let mut cursor = start;
+    let mut inclusive = true;
+    let mut total = 0u64;
+    loop {
+        let lo = if inclusive { Bound::Included(cursor.as_slice()) } else { Bound::Excluded(cursor.as_slice()) };
+        let page = txn.scan(lo, Bound::Excluded(&end), PAGE)?;
+        for (_, v) in &page {
+            total += AdjBlock::decode(v).map_err(|e| crate::db::context(e, "REL_ADJ"))?.entries.len() as u64;
+        }
+        match page.last() {
+            Some((k, _)) if page.len() == PAGE => {
+                cursor = k.clone();
+                inclusive = false;
+            }
+            _ => return Ok(total),
+        }
     }
 }
 

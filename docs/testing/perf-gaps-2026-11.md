@@ -125,25 +125,29 @@ Gains are estimates from the profile shares above, not measurements. Each fix ne
 
 ## 5. Ranks 6 and 7 applied: posting blocks for adjacency and keyword postings
 
-Change: [ADR-0026](../adr/0026-posting-blocks-for-adjacency-and-keyword-postings.md), layer version 9 ([units-v9](../file-format/units-v9.md)). Method: [ADR-0012](../adr/0012-benchmark-methodology-and-exit-thresholds.md), the same script as §1 (`bindings/python/bench/vs_sqlite.py`, 3 repetitions, a fresh process per repetition, data on `/home`, Python 3.14.9, SQLite 3.54.0). "Before" is a wheel built from `f7a5004`, "after" a wheel of this change, both run in the same sitting. Raw data and the load average at each start: [`raw/2026-11-23-blocks/`](raw/2026-11-23-blocks/). Kerno / SQLite ratio (median of 3), lower is better; seconds are Kerno's.
+Change: [ADR-0026](../adr/0026-posting-blocks-for-adjacency-and-keyword-postings.md), layer version 9 ([units-v9](../file-format/units-v9.md)). Method: [ADR-0012](../adr/0012-benchmark-methodology-and-exit-thresholds.md), the same script as §1 (`bindings/python/bench/vs_sqlite.py`, 3 repetitions, a fresh process per repetition, data on `/home`, Python 3.14.9, SQLite 3.54.0). "Before" is a wheel built from `f7a5004`, "after" a wheel of this change, both run back to back in one sitting (before, then after, at 10k and then at 100k). Raw data and the load average at each start: [`raw/2026-11-23-blocks/`](raw/2026-11-23-blocks/); the `commit` field of those JSON files is the checkout the script was run from, the same for both sides, not the wheel. Kerno / SQLite ratio (median of 3), lower is better; seconds are Kerno's.
 
-| Row | 10k before | 10k after | 10k seconds, before to after | 100k before | 100k after |
-|---|---|---|---|---|---|
-| store keyword-indexed, batches (Rank 7) | 7.04 | **3.66** | 0.607 to 0.310 | 6.51 | 5.32 |
-| keyword search x100, top 10 (Rank 7) | 0.36 | **0.15** | 0.00851 to 0.00355 | 0.73 | 0.19 |
-| relate, batches (Rank 6) | 7.19 | **4.94** | 0.148 to 0.101 | 22.97 | 10.08 |
-| `related()` x1000 (Rank 6) | 2.56 | 2.41 | 0.0102 to 0.00969 | 6.19 | 5.98 |
-| two-hop traversal x200 (Rank 6) | 4.94 | **3.83** | 0.00511 to 0.00403 | 14.74 | 11.01 |
-| all relations of a type | 1.13 | 1.28 | 0.00607 to 0.0071 | 1.04 | 1.53 |
-| close | 103 | 63 | 0.141 to 0.0884 | 46 | 68 |
-| reopen | 15.0 | 12.8 | 0.00653 to 0.00662 | 6.6 | 0.78 |
-| disk size | 1.83 | 1.72 | 31 to 29.2 MiB | 1.85 | 1.79 |
+| Row | 10k before | 10k after | 10k seconds, before to after | 100k before | 100k after | 100k seconds, before to after |
+|---|---|---|---|---|---|---|
+| store keyword-indexed, batches (Rank 7) | 6.71 | **3.62** | 0.627 to 0.294 | 6.50 | **3.54** | 6.55 to 3.64 |
+| keyword search x100, top 10 (Rank 7) | 0.37 | **0.14** | 0.00879 to 0.00325 | 0.40 | **0.11** | 0.0923 to 0.0254 |
+| relate, batches (Rank 6) | 6.73 | **5.71** | 0.135 to 0.116 | 10.24 | 10.74 | 2.90 to 3.18 |
+| `related()` x1000 (Rank 6) | 2.63 | **2.15** | 0.0107 to 0.00866 | 5.63 | **4.84** | 0.0258 to 0.0220 |
+| two-hop traversal x200 (Rank 6) | 5.05 | **3.68** | 0.00532 to 0.00383 | 11.10 | **8.14** | 0.0152 to 0.0111 |
+| all relations of a type | 1.21 | 1.16 | 0.00665 to 0.00643 | 0.98 | 0.98 | 0.0715 to 0.0710 |
+| close | 123 | 64 | 0.150 to 0.0858 | 50 | 62 | 0.164 to 0.113 |
+| reopen | 15.3 | 14.3 | 0.00709 to 0.00635 | 21.2 | 17.4 | 0.0186 to 0.0152 |
+| disk size | 1.83 | 1.72 | 31 to 29.2 MiB | 1.84 | 1.76 | 298 to 286 MiB |
 
-- **Rank 7 reached about what the trigram precedent promised at 10k** (keyword store 7.04x to 3.66x; expected 2x to 3x), and keyword search got faster again (0.36x to 0.15x of SQLite).
-- **Rank 6 helped the writes and traversals only part way.** Relate went 7.19x to 4.94x and two-hop 4.94x to 3.83x, but `related()` is flat (2.56x to 2.41x). The expected 2x to 3x was not reached: each neighbour still costs a `REL` read, a head read of the other end and a mirror-entry seek (ADR-0026 option 4 would remove those and was not taken).
-- **`all relations of a type` is worse at 10k** (0.00607 s to 0.0071 s, ranges 0.00602 to 0.00624 against 0.00666 to 0.00758, so a real ~17%). Not profiled.
-- **The 100k columns are indicative only.** The load average at the start of the 100k "after" run was 28.9 (14.0 for the 100k "before" run, 4.5 to 5.6 for both 10k runs) and both engines, SQLite included, ran several times slower than at 10k. The 100k reopen and close values are within that noise (SQLite's reopen range spans 0.034 to 0.266 s). Read the 10k columns as the result and the 100k ones as the direction.
-- **Rows this change does not touch** (plain batch store, point read, scan, update, history, substring) moved by at most 0.1x between the two 10k runs; that is the noise of the method.
+Load average (1 minute) at the start of each run: 6.54 (10k before), 5.60 (10k after), 5.16 (100k before), 2.99 (100k after). The earlier measurement of this change, taken before the fix described below, is superseded and not kept.
+
+- **Rank 7 reached about what the trigram precedent promised** (keyword store 6.71x to 3.62x at 10k and 6.50x to 3.54x at 100k; expected 2x to 3x), and keyword search got faster again (0.37x to 0.14x, and 0.40x to 0.11x).
+- **Rank 6 helped the traversals and, at 10k, the writes, only part way.** Two-hop went 5.05x to 3.68x (10k) and 11.10x to 8.14x (100k); `related()` 2.63x to 2.15x and 5.63x to 4.84x. The expected 2x to 3x was not reached: each neighbour still costs a `REL` read, a head read of the other end and a mirror-entry seek (ADR-0026 option 4 would remove those and was not taken).
+- **Relate is not faster at 100k, and the decision criterion "no worse than before" is not met there.** 10k: 6.73x to 5.71x (0.135 s to 0.116 s, ranges 0.133 to 0.140 against 0.114 to 0.116). 100k: 10.24x to 10.74x (2.90 s to 3.18 s, ranges 2.85 to 2.90 against 2.98 to 3.71). The benchmark relates random pairs, so most lists hold one or two entries: a block saves no record there, it writes the same number as before (the `REL` record, one block per list, one count per list). What is new against the build before the change is the read and rewrite of a block for each list that already has entries (the old writer made one blind put per entry) and the staging of the entries in the change set. The seek that counts the entries of a list with no count record was paid by the old writer too. None of this was profiled (a guess from the record counts).
+- **Why the seek per new list is kept.** A first build of this change took a missing count record for an empty list and wrote its blocks without reading, which made relate cheaper (4.94x at 10k in that build). A review of that build found that a count record lost with its entries left behind then made the next relation overwrite the tail block and lose the entries the list held, where the build before the change rebuilt the count from them. The seek came back (`adj_count::count_entries`, ADR-0026), as `rel_counts.rs` pins.
+- **A second run of "after" at 10k** (`after-10000-rerun.json`, load 3.31 at its start): relate 6.27x (0.125 s, range 0.115 to 0.136, which overlaps the first run's 0.114 to 0.116 only at its edge), related() 2.16x, two-hop 3.63x, keyword store 3.77x, keyword search 0.14x. The first "after" run has one repetition of `store x2000, one commit each` at 6.75 s (median 3.77 s, ratio 1.69); the rerun gave 1.98 s (0.91x), so that row of the first run is an fsync outlier, not an effect of this change.
+- **`all relations of a type` did not move** (1.21x to 1.16x at 10k, 0.98x both at 100k). An earlier run of this change suggested a regression of about 17% at 10k; this one does not show it, so that run was noise.
+- **Rows this change does not touch** (plain batch store, point read, scan, update, history, substring): read the 10k and 100k `.md` files in the raw directory; they moved within the range of the repetitions, apart from the outlier above.
 - **Other gains in the same rows:** `Db::related` reads the head of the unit instead of loading and hashing its payload (`UnitSnapshot::unit_exists`); the keyword statistics record is written once per change set instead of once per unit.
 
 ## NOT ESTABLISHED
@@ -152,7 +156,7 @@ Change: [ADR-0026](../adr/0026-posting-blocks-for-adjacency-and-keyword-postings
 - **Line-level causes:** the `stage_substring` self-cost (22.3%) and the update's read-before-write are attributed by symbol and code reading (inferred). Line-level confirmation would need a debug-info build, which the disk did not allow.
 - **Expected gains (all ranks):** estimates from profile shares; none is measured.
 - **Rust storage numbers on a quiet machine:** the Rust run overlapped other load (load 5.14 in the first run's `env.json`). Ratios are within-repetition; absolute times are not comparable across the two scales.
-- **The 100k rows of §5:** the "after" run overlapped heavy machine load (28.9 at its start), so only the 10k columns are a fair before/after.
+- **The 100k rows of §5:** one sitting, load 5.16 and 2.99 at the start of the two runs; the machine was shared with other work, so the 100k relate difference (about 10%) is close to what the load can move. The 10k rows were run at 6.54 and 5.60.
 - **Whether note #1736 holds for plain batch stores:** the profile supports the per-record cost for keyword and substring stores, but the batch-store profile spreads the cost over more frames. It is not proven for the plain store.
 
 ## Reproduce

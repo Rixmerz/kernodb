@@ -91,9 +91,10 @@ Vectors (pinned by `verify_sees_block_values_that_do_not_decode` and
   the entry's list type is the relation's type (UNIT-36). A block that holds a relation outside its
   range is UNIT-36.
 - The count records (`0x72`, [units-v4](units-v4.md)) are unchanged: one per `(unit, direction,
-  type)` with at least one entry, equal to the number of entries of that list (UNIT-45). Since
-  every database starts at 9, a list with no record is a list the writer counted from zero: the
-  writer no longer rebuilds a missing record from the entries it finds.
+  type)` with at least one entry, equal to the number of entries of that list (UNIT-45). A list
+  with no record is an empty list, or one whose record was lost: before it changes such a list
+  the writer counts the entries of its blocks and records the total with the change, so it never
+  writes a block over entries it did not read.
 
 Vectors (pinned by `crates/kerno-units/tests/vectors/v1/structs`, `rel_out_*`, `rel_in_*` and
 `neg_unit*_rel_*`):

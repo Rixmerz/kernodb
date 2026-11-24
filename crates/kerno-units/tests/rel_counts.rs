@@ -471,31 +471,69 @@ fn verifier_rules_of_the_count_records<E: Target>() {
 
 // ---------------------------------------------------------------- missing record
 
-/// The format cut (ADR-0026) leaves no store without its counts, so the writer no longer
-/// rebuilds a missing record from the entries: it counts from zero and takes the list for empty
-/// (no block is read). A record lost with its list's entries still there is a second damage the
-/// writer does not repair: the next relation of that list overwrites the block, and the verifier
-/// reports the relation whose entry went (UNIT-36).
-fn a_count_record_lost_with_entries_left_is_not_rebuilt<E: Target>() {
+/// A count record lost with its list's entries still there is not an empty list: the next
+/// relation of that list counts the entries of the blocks, records the total and writes its
+/// entry beside them, as the writer did before posting blocks. Nothing is overwritten: a list of
+/// one block and of several, at either end, keeps every entry and verifies clean afterwards.
+fn a_count_record_lost_with_entries_left_is_rebuilt_from_them<E: Target>() {
     let db = open::<E>();
     let u = units(&db, 3);
-    relate(&db, u[0], u[1], "cites");
-    put_all(&db, vec![(record(u[0], Direction::Out, "cites", 0).0, None)]);
+    let first = relate(&db, u[0], u[1], "cites");
+    let again = relate(&db, u[0], u[1], "cites");
+    let out = record(u[0], Direction::Out, "cites", 0).0;
+    let inn = record(u[1], Direction::In, "cites", 0).0;
+    put_all(&db, vec![(out.clone(), None), (inn.clone(), None)]);
     // Nothing to compare with: the read behaves as if the record were not there.
-    assert_eq!(db.snapshot().unwrap().relations_of(u[0], Direction::Out, None).unwrap().len(), 1);
-    let second = relate(&db, u[0], u[2], "cites");
-    // The writer counted from zero and took the list for empty, so it wrote its block without
-    // reading the one that was there: the record says 1, the list holds the new entry only, and
-    // the first relation has lost its entry. The verifier sees it (UNIT-36); this is the price
-    // of not reading a list whose count is zero (ADR-0026), paid only after a second damage.
+    let snap = db.snapshot().unwrap();
+    assert_eq!(snap.relations_of(u[0], Direction::Out, None).unwrap().len(), 2);
+    drop(snap);
+    clean(&db, "records lost");
+    let third = relate(&db, u[0], u[2], "cites");
+    let mut want = vec![first, again, third];
+    want.sort();
+    let mut listed: Vec<_> =
+        db.snapshot().unwrap().relations_of(u[0], Direction::Out, None).unwrap().iter().map(|r| r.id).collect();
+    listed.sort();
+    assert_eq!(listed, want, "no entry lost");
+    // The out record counts the three entries; the in record of u1 was lost too and u1 was not
+    // touched by the third relation, so it is still missing (the limit of an absent record).
     let counts = count_records(&db);
-    assert_eq!(counts[&record(u[0], Direction::Out, "cites", 0).0], record(u[0], Direction::Out, "cites", 1).1);
+    assert_eq!(counts[&out], record(u[0], Direction::Out, "cites", 3).1);
+    assert!(!counts.contains_key(&inn));
+    // A change to the in list counts its entries before adding its own.
+    let fourth = relate(&db, u[2], u[1], "cites");
+    let mut in_ids: Vec<_> =
+        db.snapshot().unwrap().relations_of(u[1], Direction::In, None).unwrap().iter().map(|r| r.id).collect();
+    in_ids.sort();
+    let mut want_in = vec![first, again, fourth];
+    want_in.sort();
+    assert_eq!(in_ids, want_in);
+    assert_eq!(count_records(&db)[&inn], record(u[1], Direction::In, "cites", 3).1);
+    clean(&db, "rebuilt");
+    // Deleting a relation of a rebuilt list counts it down from what was there.
+    unrelate(&db, fourth);
+    assert_eq!(count_records(&db)[&inn], record(u[1], Direction::In, "cites", 2).1);
+    clean(&db, "deleted");
+}
+
+/// The same with a list of several blocks (more than the 64 entries of one block), and a
+/// removal as the first change of a list whose record was lost.
+fn a_lost_count_of_a_list_of_several_blocks_is_rebuilt<E: Target>() {
+    let db = open::<E>();
+    let u = units(&db, 71);
+    let mut edges: Vec<RelationId> = (1..=70).map(|i| relate(&db, u[0], u[i], "cites")).collect();
+    let out = record(u[0], Direction::Out, "cites", 0).0;
+    put_all(&db, vec![(out.clone(), None)]);
+    edges.push(relate(&db, u[0], u[1], "cites"));
+    assert_eq!(count_records(&db)[&out], record(u[0], Direction::Out, "cites", 71).1);
     let listed = db.snapshot().unwrap().relations_of(u[0], Direction::Out, None).unwrap();
-    assert_eq!(listed.iter().map(|r| r.id).collect::<Vec<_>>(), [second]);
-    assert!(rules(&db).contains("UNIT-36"));
-    // Deleting a relation does not repair it either: the count reaches zero, the record goes.
-    unrelate(&db, second);
-    assert!(!count_records(&db).contains_key(&record(u[0], Direction::Out, "cites", 0).0));
+    assert_eq!(listed.len(), 71);
+    clean(&db, "several blocks");
+    put_all(&db, vec![(out.clone(), None)]);
+    unrelate(&db, edges[0]);
+    assert_eq!(count_records(&db)[&out], record(u[0], Direction::Out, "cites", 70).1);
+    assert_eq!(db.snapshot().unwrap().relations_of(u[0], Direction::Out, None).unwrap().len(), 70);
+    clean(&db, "removal");
 }
 
 // ---------------------------------------------------------------- export
@@ -621,8 +659,12 @@ macro_rules! engines {
                 super::verifier_rules_of_the_count_records::<E>();
             }
             #[test]
-            fn a_count_record_lost_with_entries_left_is_not_rebuilt() {
-                super::a_count_record_lost_with_entries_left_is_not_rebuilt::<E>();
+            fn a_count_record_lost_with_entries_left_is_rebuilt_from_them() {
+                super::a_count_record_lost_with_entries_left_is_rebuilt_from_them::<E>();
+            }
+            #[test]
+            fn a_lost_count_of_a_list_of_several_blocks_is_rebuilt() {
+                super::a_lost_count_of_a_list_of_several_blocks_is_rebuilt::<E>();
             }
             #[test]
             fn a_refused_create_leaves_no_count() {

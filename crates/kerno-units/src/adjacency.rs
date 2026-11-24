@@ -26,10 +26,12 @@
 //! adjacency changes in the change set. [`ChangeSet::flush_adjacency`] writes
 //! them at commit: each block a list changes is read once and written once
 //! (cut when over the limit, deleted when emptied). A list the change set
-//! knows to be empty (its count was zero before the first entry of this
-//! change set) has no block to read: its blocks are written directly, so a
-//! batch of relations between units with few relations each costs no more
-//! reads than the one record per entry it replaces.
+//! knows to be empty has no block to read: its blocks are written directly.
+//! The change set knows it from the count record of the list, and when that
+//! record is missing from the blocks themselves: the writer counts them with
+//! one seek (`adj_count::count_entries`), so a list whose record was lost is
+//! never taken for an empty one and its tail block is never written over
+//! unread.
 //!
 //! A read inside the change set ([`ChangeSet::relation_of_unit`]) sees both:
 //! the blocks of the transaction and what the change set keeps.

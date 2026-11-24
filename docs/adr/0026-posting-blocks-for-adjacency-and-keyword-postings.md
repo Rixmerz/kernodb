@@ -40,9 +40,10 @@ written once per change set. Two stores still wrote one record per entry:
 Set before measuring: the answers of every read stay equal to the reference path's (I-32); a lost
 block is still found by the count records (K1); `verify_units` proves both indexes exact;
 `UnitHasRelations` is still raised for a unit with a relation the change set itself created; the
-writer reads no more than it did (no read of a list known to be empty); and the benchmark rows
-(`relate`, `related()`, two-hop, keyword store, keyword search) are no worse than before and
-reported next to SQLite whatever they show.
+writer reads no more than it did (no read of a list known to be empty); a count record lost with
+its entries left behind never makes the writer overwrite them (added after a review found the
+first build did); and the benchmark rows (`relate`, `related()`, two-hop, keyword store, keyword
+search) are no worse than before and reported next to SQLite whatever they show.
 
 ## Decision
 
@@ -65,9 +66,11 @@ compatibility code). [units-v9](../file-format/units-v9.md) is the specification
 - **A list known to be empty is not read.** The writer reads the count record of each list it
   changes anyway; a count of zero before the change set's first entry means the list has no block,
   so its blocks are written directly. With random endpoints most lists hold one or two entries, and
-  a read per list would have made `relate` slower than the blind puts it replaces. For the same
-  reason the count record that is missing is no longer rebuilt by counting the entries (that path
-  existed for databases written before layer 4, which the cut removed).
+  a read per list would have made `relate` slower than the blind puts it replaces. A missing count
+  record does not mean zero: the record may have been lost with the entries left behind, and the
+  tail block of that list would be written over unread. So a missing record is still rebuilt by
+  counting the entries of the blocks (`adj_count::count_entries`, one seek for a new list), as the
+  writer did before this change, and only a count the blocks confirm is taken for an empty list.
 - **`UnitHasRelations` sees the change set's own relations** by merging the blocks of the
   transaction with the entries the change set keeps (`ChangeSet::relation_of_unit`), without
   flushing, so a refused operation leaves the change set usable.
@@ -94,24 +97,28 @@ better.
 
 | Row (Python, units level) | 10k before | 10k after | 100k before | 100k after |
 |---|---|---|---|---|
-| store x N keyword-indexed, batches | 7.04 | **3.66** | 6.51 | 5.32 |
-| keyword search x100, top 10 | 0.36 | **0.15** | 0.73 | 0.19 |
-| relate x N, batches | 7.19 | **4.94** | 22.97 | 10.08 |
-| `related()` x1000 | 2.56 | 2.41 | 6.19 | 5.98 |
-| two-hop traversal x200 | 4.94 | **3.83** | 14.74 | 11.01 |
-| all relations of a type | 1.13 | 1.28 | 1.04 | 1.53 |
-| close | 103 | 63 | 46 | 68 |
-| disk (size) | 1.83 | 1.72 | 1.85 | 1.79 |
+| store x N keyword-indexed, batches | 6.71 | **3.62** | 6.50 | **3.54** |
+| keyword search x100, top 10 | 0.37 | **0.14** | 0.40 | **0.11** |
+| relate x N, batches | 6.73 | **5.71** | 10.24 | 10.74 |
+| `related()` x1000 | 2.63 | **2.15** | 5.63 | **4.84** |
+| two-hop traversal x200 | 5.05 | **3.68** | 11.10 | **8.14** |
+| all relations of a type | 1.21 | 1.16 | 0.98 | 0.98 |
+| close | 123 | 64 | 50 | 62 |
+| disk (size) | 1.83 | 1.72 | 1.84 | 1.76 |
 
-The 100k columns are indicative only: the load average at the start of the 100k "after" run was
-28.9 (the 100k "before" run 14.0, both 10k runs 4.5 to 5.6), and both engines were several times
-slower than in the 10k runs, SQLite included. Rows that are not part of this change (plain batch
-store, point read, scan, update, history, substring) moved by 0.0x to 0.1x between the two 10k
-runs, which is the noise of the method. `all relations of a type` is the one row that got worse: 0.00607 s to 0.0071 s at 10k, and the
-before and after ranges do not overlap, so it is a real regression of about 17% there. It was not
-profiled; the likely cause is that a scan of the whole type now decodes a block per 64 entries and
-checks each entry against its `REL` record exactly as before, so it gains nothing from the blocks
-(a guess, not a measurement).
+The load average at the start of the four runs was 2.99 to 6.54. Relate at 100k is the one row
+that got worse (2.90 s to 3.18 s, ranges 2.85 to 2.90 against 2.98 to 3.71), so the criterion "no
+worse than before" is not met there: the benchmark relates random pairs, lists hold one or two
+entries, a block saves no record on them, and the seek that counts a list with no count record is
+paid for each new list (see the decision above). A first build that skipped that seek measured
+relate at 4.94x (10k) but could overwrite a list whose count record was lost, so it was not kept.
+Rows that are not part of this change moved within the range of their repetitions.
+
+Two criteria are met only in part. "No worse than before" fails for relate at 100k (above). "Reads
+no more than it did" holds for a list with no entries, which costs the one seek it always cost and
+no block read; for a list that already has entries the writer now reads and rewrites a block per
+commit where the old one made a blind put per entry. That second gap is read from the code, not
+measured on its own: the relate row is where it would show.
 
 ## Consequences
 
