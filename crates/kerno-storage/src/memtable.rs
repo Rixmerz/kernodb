@@ -157,6 +157,9 @@ pub struct Memtable {
     max_seq: AtomicU64,
     /// The WAL file that holds this memtable's commits.
     wal_number: u64,
+    /// Replayed by a recovery whose flush was deferred: its table records
+    /// `REASON_RECOVERY`.
+    recovered: bool,
     /// Bytes written to that file when this memtable stopped being the
     /// active one (0: not known, or still active).
     wal_len: AtomicU64,
@@ -189,9 +192,21 @@ impl Memtable {
             bytes: AtomicUsize::new(0),
             max_seq: AtomicU64::new(0),
             wal_number,
+            recovered: false,
             wal_len: AtomicU64::new(0),
             retired: OnceLock::new(),
         }
+    }
+
+    /// A memtable that recovery replays into (see `recovery::apply`).
+    pub fn recovered(wal_number: u64) -> Self {
+        let mut m = Memtable::new(wal_number);
+        m.recovered = true;
+        m
+    }
+
+    pub fn is_recovered(&self) -> bool {
+        self.recovered
     }
 
     /// Called when the memtable leaves the current version after its flush:

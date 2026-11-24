@@ -425,6 +425,12 @@ pub struct Recovered {
     pub next_file: u64,
     pub wal: WalWriter,
     pub manifest: ManifestWriter,
+    /// Replayed commits not yet in a table, oldest first: they become the
+    /// immutable memtables of the handle and the flusher writes them out.
+    pub deferred: Vec<Memtable>,
+    /// The sequence the MANIFEST says the tables hold (`last_seq` unless the
+    /// flush was deferred).
+    pub flushed_seq: u64,
 }
 
 /// Writes the replayed commits as L0 tables, one set each time the memtable
@@ -446,7 +452,8 @@ impl ChunkWriter<'_> {
             self.next_file += 1;
             self.next_file - 1
         };
-        let written = flush::write_memtable(self.ctx, mem, REASON_RECOVERY, &[], &mut number)?;
+        let written =
+            flush::write_memtable(self.ctx, mem, REASON_RECOVERY, &[], self.ctx.block_compression, &mut number)?;
         bump(&self.ctx.stats.flushes, 1);
         bump(&self.ctx.stats.flush_bytes_written, written.iter().map(|t| t.size).sum());
         self.tables.splice(0..0, written.into_iter().map(Arc::new));
@@ -461,12 +468,23 @@ impl ChunkWriter<'_> {
 /// checkpoint if the MANIFEST ended in a torn tail or is over its size
 /// trigger) makes the new log live and durable (W-8), and then the files
 /// nothing needs are deleted.
+///
+/// The flush of the replayed commits is deferred when it is safe: they stay in
+/// memory as `Recovered::deferred`, `SESSION_OPEN` keeps the old `log_number`
+/// and `last_seq` (so a crash before they are flushed replays the same logs,
+/// then the new one) and the live WALs stay until the flusher (or close)
+/// writes the memtables out. It is not safe, and the flush is eager as before,
+/// when a replayed log has a torn tail or a broken header (REC-10a would
+/// refuse that log once a newer one holds commits), and the deferred
+/// memtables are bounded to `max_deferred` of `write_buffer` bytes each (S-2:
+/// the recovery memory is what a running handle holds).
 pub fn apply(
     ctx: &Arc<TableCtx>,
     plan: &Plan,
     loaded: &manifest::Loaded,
     mut levels: Levels,
     write_buffer: usize,
+    max_deferred: usize,
     checkpoint_floor: u64,
     wal_prealloc: u64,
 ) -> Result<Recovered> {
@@ -477,19 +495,76 @@ pub fn apply(
 
     // S-2.
     let mut chunks = ChunkWriter { ctx, next_file: plan.next_file, write_buffer, tables: Vec::new() };
-    let mut mem = Memtable::new(0);
+    // The last one is the one being filled; in eager mode it is the only one.
+    let first_live = plan.live_wals.first().copied().unwrap_or(0);
+    let mut deferred = vec![Memtable::recovered(first_live)];
+    let mut eager = false;
+    // Bytes of each live WAL that hold frames (what a recycled log zeroes).
+    let mut wal_lens: Vec<(u64, u64)> = Vec::new();
     let mut expected = state.last_seq + 1;
-    for &n in &plan.live_wals {
+    for (i, &n) in plan.live_wals.iter().enumerate() {
         let scan = wal::replay(vfs, dir, n, db_id, expected, |seq, commit| {
-            mem.apply_commit(seq, commit);
-            if mem.is_full(chunks.write_buffer) { chunks.flush(&mut mem) } else { Ok(()) }
+            let cur = deferred.last_mut().expect("never empty");
+            cur.apply_commit(seq, commit);
+            if eager {
+                if cur.is_full(chunks.write_buffer) {
+                    chunks.flush(cur)?;
+                }
+            } else if cur.is_full(2 * chunks.write_buffer) {
+                // Far more than a running handle keeps for one log: a
+                // memtable cannot end inside a log, so write them out.
+                eager = true;
+                for m in deferred.iter_mut() {
+                    chunks.flush(m)?;
+                }
+                deferred.truncate(1);
+            }
+            Ok(())
         })?;
         record_replay(ctx, &scan);
         expected = scan.next_seq;
+        wal_lens.push((n, scan.valid_len));
+        let was_eager = eager;
+        if !eager && (scan.end == End::Torn || !matches!(scan.header, WalHeaderState::Valid(_))) {
+            eager = true;
+        } else if !eager && deferred.last().is_some_and(|m| m.is_full(write_buffer)) {
+            // A memtable starts only where a log does: flushing it must leave
+            // a log that begins right after it (recovery starts there, WAL-R1).
+            match plan.live_wals.get(i + 1) {
+                Some(&next) if deferred.len() < max_deferred => deferred.push(Memtable::recovered(next)),
+                Some(_) => eager = true, // out of memory budget
+                None => {}
+            }
+        }
+        if eager && !was_eager {
+            // Out of budget, or a log that must not stay: write what was kept,
+            // oldest first, and go on as recovery always did.
+            for m in deferred.iter_mut() {
+                chunks.flush(m)?;
+            }
+            deferred.truncate(1);
+        }
     }
-    chunks.flush(&mut mem)?;
     let last_seq = expected - 1;
-    if !chunks.tables.is_empty() {
+    if deferred.last().is_some_and(Memtable::is_empty) {
+        deferred.pop();
+    }
+    if eager || deferred.is_empty() {
+        for m in deferred.iter_mut() {
+            chunks.flush(m)?;
+        }
+        deferred.clear();
+    }
+    let defer = !deferred.is_empty();
+    for m in &deferred {
+        if let Some(&(_, len)) = wal_lens.iter().find(|(n, _)| *n == m.wal_number()) {
+            m.set_wal_len(len);
+        }
+    }
+    // Deferred, the live logs are what the next recovery reads: their
+    // directory entries must be durable before `SESSION_OPEN` says so (a log
+    // that a crash left unsynced is otherwise missing, REC-9).
+    if defer || !chunks.tables.is_empty() {
         vfs.sync_dir(dir)?;
     }
     let mut next_file = chunks.next_file;
@@ -515,31 +590,35 @@ pub fn apply(
     next_file += 1;
     let wal = WalWriter::create(vfs, dir, wal_number, db_id, last_seq + 1, wal_prealloc)?;
 
-    // S-4.
+    // S-4. Deferred: the tables still hold what the MANIFEST said, and the
+    // oldest live log is still the first one.
+    let (log_number, flushed_seq) = if defer { (first_live, state.last_seq) } else { (wal_number, last_seq) };
     if writer.checkpoint_due() {
         let metas = level_metas(&levels);
         writer.checkpoint(
             vfs,
             dir,
-            &Snapshot { next_file, last_seq, log_number: wal_number, clean: false, levels: &metas },
+            &Snapshot { next_file, last_seq: flushed_seq, log_number, clean: false, levels: &metas },
         )?;
         bump(&ctx.stats.manifest_checkpoints, 1);
     } else {
-        let edit = Edit::SessionOpen { next_file, last_seq, log_number: wal_number, files: new_l0 };
+        let edit = Edit::SessionOpen { next_file, last_seq: flushed_seq, log_number, files: new_l0 };
         writer.append(edit)?;
         bump(&ctx.stats.manifest_records, 1);
     }
     bump(&ctx.stats.manifest_writes, 1);
     ctx.stats.manifest_bytes.store(writer.len(), std::sync::atomic::Ordering::Relaxed);
 
-    // S-5: nothing in these files is needed any more. A snapshot that
+    // S-5: nothing in these files is needed any more (deferred: the live
+    // WALs still are, until the memtables are flushed). A snapshot that
     // outlived the previous handle may have deleted an obsolete one already.
     let mut deleted = false;
+    let live: &[u64] = if defer { &[] } else { &plan.live_wals };
     let names = plan
         .orphans
         .iter()
         .cloned()
-        .chain(plan.live_wals.iter().map(|&n| wal_name(n)))
+        .chain(live.iter().map(|&n| wal_name(n)))
         .chain(plan.manifest_tmp.then(|| MANIFEST_TMP.to_string()));
     for name in names {
         match vfs.remove_file(&dir.join(&name)) {
@@ -551,5 +630,5 @@ pub fn apply(
     if deleted {
         vfs.sync_dir(dir)?;
     }
-    Ok(Recovered { levels, last_seq, log_number: wal_number, next_file, wal, manifest: writer })
+    Ok(Recovered { levels, last_seq, log_number, next_file, wal, manifest: writer, deferred, flushed_seq })
 }

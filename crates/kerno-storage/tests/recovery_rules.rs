@@ -626,6 +626,7 @@ fn unknown_manifest_tag_rules() {
     let mut with_ignored = image.clone();
     with_ignored.files.get_mut(&path("MANIFEST")).unwrap().extend(noop(vec![(2000, vec![1, 2, 3])]).encode(generation));
     let (disk, db) = opens_with(&with_ignored, &model);
+    db.hooks().flush().unwrap(); // the flush of the replayed log is deferred
     drop(db);
     let (replay2, _) = manifest_of(&disk.dump());
     // The open went on from the same state: what it recovered from the log

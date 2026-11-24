@@ -424,8 +424,9 @@ fn close_and_recovery_flushes_counted() {
     assert!(wal_bytes > 0);
     drop(db); // unclean: the commits are only in the WAL
 
-    // Recovery replays that WAL and flushes it to L0.
+    // Recovery replays that WAL; its flush to L0 is deferred, so wait for it.
     let db = open(&vfs, &cfg);
+    db.hooks().flush().unwrap();
     let m = db.metrics();
     assert!(!m.last_open.clean);
     assert_eq!(m.last_open.replayed_bytes, wal_bytes);
