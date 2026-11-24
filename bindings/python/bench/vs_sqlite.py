@@ -77,6 +77,30 @@ def timed(f):
     return out, time.perf_counter() - start
 
 
+def open_sqlite(path):
+    """Open the SQLite file as the setup does: same autocommit mode, WAL and synchronous=FULL.
+
+    `connect` alone is lazy and touches no file, so reading the journal mode forces the real open
+    (header read and WAL recovery), the work `kerno.open` does eagerly.
+    """
+    conn = sqlite3.connect(path, isolation_level=None)
+    conn.execute("PRAGMA journal_mode").fetchone()
+    conn.execute("PRAGMA synchronous=FULL")
+    return conn
+
+
+def reopen(open_fn, path):
+    """One reopen: open the existing store and close the handle. Same lifecycle for both engines."""
+    open_fn(path).close()
+
+
+def reopen_times(kerno_open, kdir, sfile):
+    """Time the reopen of the same data on both engines with the same `reopen` steps."""
+    _, k = timed(lambda: reopen(kerno_open, kdir))
+    _, q = timed(lambda: reopen(open_sqlite, sfile))
+    return k, q
+
+
 def chunks(items):
     return (items[i : i + BATCH] for i in range(0, len(items), BATCH))
 
@@ -244,8 +268,7 @@ def run_once(n, data_dir):
     _, q = timed(sq.close)
     row("close", k, q)
     rows["disk MiB"] = {"kerno": du(kdir) / 2**20, "sqlite": du(sfile.parent) / 2**20, "note": "after close"}
-    _, k = timed(lambda: kerno.open(kdir).close())
-    _, q = timed(lambda: sqlite3.connect(sfile).execute("select count(*) from unit").fetchone())
+    k, q = reopen_times(kerno.open, kdir, sfile)
     row("reopen", k, q)
     return rows
 
