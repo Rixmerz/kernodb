@@ -264,10 +264,7 @@ fn sst_creation_reason_records_why_the_table_was_written() {
     let crashed = disk.dump();
     let before: Vec<PathBuf> = files_with(&crashed, "sst");
     let recovered = SimVfs::restore(&crashed);
-    // The flush of what recovery replayed is deferred: wait for it.
-    let db = open_in(&recovered.as_vfs(), &m0_config(Durability::Sync)).unwrap();
-    db.hooks().flush().unwrap();
-    drop(db);
+    drop(open_in(&recovered.as_vfs(), &m0_config(Durability::Sync)).unwrap());
     let after = recovered.dump();
     let reason = |image: &DirImage, file: &Path| {
         let bytes = &image.files[file];

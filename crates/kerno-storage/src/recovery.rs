@@ -452,8 +452,7 @@ impl ChunkWriter<'_> {
             self.next_file += 1;
             self.next_file - 1
         };
-        let written =
-            flush::write_memtable(self.ctx, mem, REASON_RECOVERY, &[], self.ctx.block_compression, &mut number)?;
+        let written = flush::write_memtable(self.ctx, mem, REASON_RECOVERY, &[], false, &mut number)?;
         bump(&self.ctx.stats.flushes, 1);
         bump(&self.ctx.stats.flush_bytes_written, written.iter().map(|t| t.size).sum());
         self.tables.splice(0..0, written.into_iter().map(Arc::new));
@@ -477,7 +476,8 @@ impl ChunkWriter<'_> {
 /// when a replayed log has a torn tail or a broken header (REC-10a would
 /// refuse that log once a newer one holds commits), and the deferred
 /// memtables are bounded to `max_deferred` of `write_buffer` bytes each (S-2:
-/// the recovery memory is what a running handle holds).
+/// the recovery memory is what a running handle holds). `defer` is off for
+/// `Background::Inline` (no flusher to hand the work to: the flush is eager).
 pub fn apply(
     ctx: &Arc<TableCtx>,
     plan: &Plan,
@@ -485,6 +485,7 @@ pub fn apply(
     mut levels: Levels,
     write_buffer: usize,
     max_deferred: usize,
+    defer: bool,
     checkpoint_floor: u64,
     wal_prealloc: u64,
 ) -> Result<Recovered> {
@@ -498,7 +499,7 @@ pub fn apply(
     // The last one is the one being filled; in eager mode it is the only one.
     let first_live = plan.live_wals.first().copied().unwrap_or(0);
     let mut deferred = vec![Memtable::recovered(first_live)];
-    let mut eager = false;
+    let mut eager = !defer;
     // Bytes of each live WAL that hold frames (what a recycled log zeroes).
     let mut wal_lens: Vec<(u64, u64)> = Vec::new();
     let mut expected = state.last_seq + 1;

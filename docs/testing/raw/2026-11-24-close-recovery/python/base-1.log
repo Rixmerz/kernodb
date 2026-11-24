@@ -1,0 +1,18 @@
+-- repetition 1/1, n=100000
+store x2000, one commit each                   kerno     2.4778  sqlite     2.7797  x    0.89  
+store x100000, batches of 10000                kerno     1.1413  sqlite     0.8704  x    1.31  
+point read x2000                               kerno     0.0177  sqlite     0.0109  x    1.63  
+scan all 102000 units of a type                kerno     0.2907  sqlite     0.0928  x    3.13  
+update x100000 keeping history, batches        kerno     1.7108  sqlite     0.9671  x    1.77  
+relate x100000, batches                        kerno     3.0111  sqlite     0.3186  x    9.45  
+related() x1000                                kerno     0.0257  sqlite     0.0046  x    5.58  
+two-hop traversal x200                         kerno     0.0152  sqlite     0.0014  x   10.76  
+all relations of a type                        kerno     0.0686  sqlite     0.0733  x    0.94  
+history x1000                                  kerno     0.0084  sqlite     0.0050  x    1.67  
+store x100000 substring-indexed, batches       kerno     5.2165  sqlite     1.8735  x    2.78  kerno trigram index
+substring search x20 vs LIKE scan              kerno     0.1172  sqlite     0.3341  x    0.35  kerno index
+substring search x20 vs FTS5 trigram           kerno     0.1172  sqlite     0.1706  x    0.69  kerno index
+store x100000 keyword-indexed, batches         kerno     7.0167  sqlite     1.1931  x    5.88  
+keyword search x100, top 10                    kerno     0.1092  sqlite     0.2357  x    0.46  
+close                                          kerno     0.1755  sqlite     0.0068  x   25.72  
+reopen                                         kerno     0.0324  sqlite     0.0370  x    0.88  

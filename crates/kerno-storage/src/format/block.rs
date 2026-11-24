@@ -252,6 +252,15 @@ pub fn store_data_payload(payload: &[u8]) -> Vec<u8> {
     }
 }
 
+/// What an SST with `BLOCK_LZ4` stores for `payload` when the LZ4 pass is
+/// skipped: codec 0 and the payload as is.
+pub fn store_raw_data_payload(payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(1 + payload.len());
+    out.push(CODEC_RAW);
+    out.extend_from_slice(payload);
+    out
+}
+
 /// Checks the encapsulation of data block `block` (SST-R1) and returns its
 /// data-block payload, decompressed when the SST has `BLOCK_LZ4` (`lz4`). A
 /// codec this reader does not know, a length above the format limit or a

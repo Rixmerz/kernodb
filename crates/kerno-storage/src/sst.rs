@@ -222,13 +222,6 @@ pub struct TableBuilder {
 
 impl TableBuilder {
     pub fn create(ctx: &Arc<TableCtx>, number: u64, reason: u8) -> Result<Self> {
-        Self::create_with(ctx, number, reason, ctx.block_compression)
-    }
-
-    /// [`create`](Self::create) with the data block compression chosen by the
-    /// caller instead of `ctx` (BLOCK_LZ4 is a per-file bit, so tables of both
-    /// kinds mix freely in one database).
-    pub fn create_with(ctx: &Arc<TableCtx>, number: u64, reason: u8, compress: bool) -> Result<Self> {
         let file = ctx.vfs.open(&ctx.path(number), OpenMode::CreateNew)?;
         let block_size = u32::try_from(ctx.block_size).unwrap_or(MAX_BLOCK_SIZE).clamp(MIN_BLOCK_SIZE, MAX_BLOCK_SIZE);
         Ok(TableBuilder {
@@ -245,9 +238,16 @@ impl TableBuilder {
                 bytes_per_writeback: ctx.bytes_per_writeback,
                 stats: ctx.stats.clone(),
             },
-            inner: SstBuilder::with_compression(ctx.db_id, number, block_size, compress),
+            inner: SstBuilder::with_compression(ctx.db_id, number, block_size, ctx.block_compression),
             entries: 0,
         })
+    }
+
+    /// Skips the LZ4 pass over the data blocks: the table keeps `BLOCK_LZ4`
+    /// and stores every block with codec 0 (v1.md §4.4), the same format.
+    pub fn without_lz4_pass(mut self) -> Self {
+        self.inner = self.inner.without_lz4_pass();
+        self
     }
 
     /// Syncs the file once, when finished, whatever `bytes_per_sync` and

@@ -472,12 +472,9 @@ fn inspect_reports_versions_and_bits() {
         let bytes = &image.files[&path(&f.name)];
         assert_eq!(f.len, bytes.len() as u64, "{}", f.name);
         let h = f.header.expect("valid header");
-        // Version 1; the only feature bit is BLOCK_LZ4, on tables that hold compressed blocks
-        // (v1.md §4.4): the close-time flush writes plain ones.
-        let lz4 = kerno_storage::format::features::BLOCK_LZ4;
-        assert_eq!((h.format_version, h.compat, h.ro_compat), (1, 0, 0), "{}", f.name);
-        let allowed = if f.file_type == FileType::Sst { lz4 } else { 0 };
-        assert_eq!(h.incompat & !allowed, 0, "{}", f.name);
+        // Version 1; the only feature bit is BLOCK_LZ4, on tables (v1.md §4.4).
+        let want_incompat = if f.file_type == FileType::Sst { kerno_storage::format::features::BLOCK_LZ4 } else { 0 };
+        assert_eq!((h.format_version, h.compat, h.ro_compat, h.incompat), (1, 0, 0, want_incompat), "{}", f.name);
         assert_eq!(h.db_id, DB_ID);
         let expected_number =
             if f.file_type == FileType::Manifest { le_u64(bytes, 56) } else { file_number(&path(&f.name)) };

@@ -424,7 +424,8 @@ fn close_and_recovery_flushes_counted() {
     assert!(wal_bytes > 0);
     drop(db); // unclean: the commits are only in the WAL
 
-    // Recovery replays that WAL; its flush to L0 is deferred, so wait for it.
+    // Recovery replays that WAL; with background threads its flush to L0 is deferred to the
+    // flusher, so wait for it (the assertions below are the original ones).
     let db = open(&vfs, &cfg);
     db.hooks().flush().unwrap();
     let m = db.metrics();

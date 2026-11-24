@@ -1,0 +1,22 @@
+-- repetition 1/1, n=100000
+store x2000, one commit each                   kerno     1.6600  sqlite     2.1022  x    0.79  
+store x100000, batches of 10000                kerno     0.9976  sqlite     0.6194  x    1.61  
+point read x2000                               kerno     0.0219  sqlite     0.0117  x    1.87  
+scan all 102000 units of a type                kerno     0.3082  sqlite     0.0901  x    3.42  
+update x100000 keeping history, batches        kerno     1.6840  sqlite     0.8925  x    1.89  
+relate x100000, batches                        kerno     2.9629  sqlite     0.2890  x   10.25  
+related() x1000                                kerno     0.0271  sqlite     0.0046  x    5.89  
+two-hop traversal x200                         kerno     0.0158  sqlite     0.0014  x   11.29  
+all relations of a type                        kerno     0.0690  sqlite     0.0727  x    0.95  
+history x1000                                  kerno     0.0085  sqlite     0.0051  x    1.67  
+store x100000 substring-indexed, batches       kerno     5.1891  sqlite     1.7390  x    2.98  kerno trigram index
+substring search x20 vs LIKE scan              kerno     0.0991  sqlite     0.3156  x    0.31  kerno index
+substring search x20 vs FTS5 trigram           kerno     0.0991  sqlite     0.1640  x    0.60  kerno index
+store x100000 keyword-indexed, batches         kerno     7.1019  sqlite     1.0437  x    6.80  
+keyword search x100, top 10                    kerno     0.0956  sqlite     0.2318  x    0.41  
+XTRACE close_flush 134.968259ms bytes 11736909
+XTRACE close phases flush 136.600884ms compact 6.823µs clean 4.662014ms compacted_bytes 0
+close                                          kerno     0.1488  sqlite     0.0044  x   33.81  
+XTRACE close_flush 2.926µs bytes 0
+XTRACE close phases flush 46.367µs compact 1.763µs clean 2.614917ms compacted_bytes 0
+reopen                                         kerno     0.0246  sqlite     0.0372  x    0.66  

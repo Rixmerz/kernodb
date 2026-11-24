@@ -67,6 +67,11 @@ pub enum Background {
     /// number their points identically in every run (phase1-design.md §1
     /// item 6).
     Inline,
+    /// [`Inline`](Background::Inline), except that a recovery open defers the
+    /// flush of what it replayed, as with `Threads`: nobody writes those tables
+    /// until the next rotation, `flush` or close. It holds that state still, so
+    /// tests can look at it and crash it (`Inline` flushes at open, as before).
+    InlineDeferred,
 }
 
 /// Settings that only tests use. Not part of the API.

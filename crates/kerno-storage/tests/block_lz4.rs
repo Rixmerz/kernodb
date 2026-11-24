@@ -84,6 +84,34 @@ fn compressed_and_plain_tables_hold_the_same_entries_and_both_decoders_agree() {
     }
 }
 
+/// The close-time flush skips the LZ4 pass: the table keeps the bit and stores every block as is
+/// (codec 0), so it is larger than a compressed one, and both decoders read it.
+#[test]
+fn a_table_without_the_lz4_pass_keeps_the_bit_stores_codec_0_and_both_decoders_agree() {
+    let build = |skip: bool| {
+        let mut b = SstBuilder::with_compression(DB, FILE, 4096, true);
+        if skip {
+            b = b.without_lz4_pass();
+        }
+        let mut want = Vec::new();
+        for i in 0..600 {
+            let (k, v) = (format!("key-{i:05}").into_bytes(), json(i));
+            b.add(&k, i as u64 + 1, Some(&v));
+            want.push((k, v));
+        }
+        let (file, _, _) = b.finish::<Vec<u8>>(&[], kerno_storage::format::props::REASON_FLUSH);
+        (file, want)
+    };
+    let (packed, want) = build(false);
+    let (raw, _) = build(true);
+    assert_ne!(incompat(&raw) & BLOCK_LZ4, 0, "the table still has the bit");
+    assert!(raw.len() > packed.len() * 2, "nothing was compressed: {} vs {}", raw.len(), packed.len());
+    let (_, entries) = read_sst(&raw, &expect()).unwrap();
+    let got: Vec<_> = entries.into_iter().map(|e: Entry| (e.key, e.value.unwrap())).collect();
+    assert_eq!(got, want);
+    spec(&raw).unwrap_or_else(|e| panic!("the spec decoder refuses it: {e:?}"));
+}
+
 /// The first data block of `file` replaced by `stored` (its payload), resealed so the CRC
 /// passes and only LZ4-1 can find the damage. Same length keeps every offset valid.
 fn with_first_payload(file: &[u8], f: impl FnOnce(&mut Vec<u8>)) -> Vec<u8> {
