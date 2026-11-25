@@ -256,7 +256,8 @@ export interface Committed {
 /**
  * What `compact` measured, in stored bytes; `null` when the engine does not know. `before` is
  * the size when the call was made (every commit so far counts; the write buffer is written out
- * first), `after` the size once the space is given back.
+ * first), `after` the size once the space is given back. `after` can be larger than `before`
+ * when there is little to reclaim.
  */
 export interface CompactReport {
   before?: number
@@ -330,7 +331,7 @@ export interface HybridQueryInput {
    * Default `rrf`.
    */
   fusion?: 'rrf' | 'graph_gated'
-  /** The `k` of the fusion. Default 60. */
+  /** The `k` of the fusion, a whole number from 0 to 2^32 - 1. Default 60. */
   rrfK?: number
   /** Units each leg contributes, 1 to 1000. Default 100. */
   candidates?: number

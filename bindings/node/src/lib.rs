@@ -31,7 +31,7 @@ use napi_derive::napi;
 enum ErrorCode {
     /// No unit, relation or revision with that id (`NotFoundError` in Python).
     NotFound,
-    /// The unit is deleted, or not in the lifecycle the call needs.
+    /// The unit is deleted. A wrong lifecycle for an op is `InvalidArgument`.
     Deleted,
     /// Another handle or process holds the database directory.
     Locked,
@@ -491,7 +491,8 @@ pub struct Committed {
 
 /// What `compact` measured, in stored bytes; `null` when the engine does not know. `before` is
 /// the size when the call was made (every commit so far counts; the write buffer is written out
-/// first), `after` the size once the space is given back.
+/// first), `after` the size once the space is given back. `after` can be larger than `before`
+/// when there is little to reclaim.
 #[napi(object)]
 pub struct CompactReport {
     pub before: Option<i64>,
@@ -545,7 +546,7 @@ pub struct RetentionReport {
 impl RetentionRule {
     fn into_rule(self) -> Result<Rule> {
         match (given(self.keep_last), given(self.keep_for), given(self.keep_since)) {
-            (Some(n), None, None) => whole("keepLast", Num(Some(n))).map(Rule::KeepLast),
+            (Some(n), None, None) => whole_min("keepLast", Num(Some(n)), 1).map(Rule::KeepLast),
             (None, Some(secs), None) => std::time::Duration::try_from_secs_f64(secs)
                 .map(Rule::KeepFor)
                 .map_err(|_| invalid("keepFor is a number of seconds, 0 or more")),
@@ -831,7 +832,7 @@ pub struct HybridQueryInput {
     /// Default `rrf`.
     #[napi(ts_type = "'rrf' | 'graph_gated'")]
     pub fusion: Option<String>,
-    /// The `k` of the fusion. Default 60.
+    /// The `k` of the fusion, a whole number from 0 to 2^32 - 1. Default 60.
     #[napi(ts_type = "number")]
     pub rrf_k: Option<Num>,
     /// Units each leg contributes, 1 to 1000. Default 100.
@@ -1320,7 +1321,7 @@ impl Db {
                 ErrorCode::Pruned,
                 format!(
                     "commit {seq} predates the oldest kept revision (revision {}): retention pruned what it read. \
-                         `readAsOf` takes a commit sequence; `history` and `compare` take revision numbers",
+                         `readAsOf` takes a commit sequence; `history` takes revision numbers",
                     oldest.0
                 ),
             )),
@@ -1568,7 +1569,8 @@ impl Db {
     pub fn read_document(&self, id: String) -> Result<Option<HashMap<String, Field>>> {
         let id = unit_id(&id)?;
         let Some(payload) = self.with(|db| db.get(id))?.and_then(|u| u.payload) else { return Ok(None) };
-        let doc = Document::decode(&payload).map_err(engine_error)?;
+        let doc = Document::decode(&payload)
+            .map_err(|e| coded(ErrorCode::Schema, format!("the payload is not a document: {e}")))?;
         Ok(Some(doc.iter().map(|(k, v)| (k.to_owned(), from_field(v))).collect()))
     }
 

@@ -227,7 +227,7 @@ test('error messages use the Node names', () => {
   refused(() => db.hybridSearch({ relations: { seeds: [MISSING], maxDepth: 0 } }), /maxDepth/)
   const a = db.store('note', 'a')
   const message = refused(() => db.relate(a, a, 'a\0b'), /relationType/)
-  assert.match(message, /1\.\.=64|1 to 64/)
+  assert.match(message, /NUL/)
   // a read-write handle has nothing to refresh
   const refresh = refused(() => db.refresh(), /readOnly/)
   assert.doesNotMatch(refresh, /AccessMode/)
@@ -262,4 +262,61 @@ test('numeric messages state the real range and name the Node argument', () => {
   const ok = open(dir + '-ops', { maxBatchOps: 2 ** 20 })
   ok.close()
   rmSync(dir + '-ops', { recursive: true, force: true })
+})
+
+test('readDocument of a payload that is not a document throws SCHEMA', () => {
+  const id = db.store('note', 'plain text')
+  const { code, message } = thrown(() => db.readDocument(id))
+  assert.equal(code, 'SCHEMA', message)
+  assert.match(message, /the payload is not a document/)
+})
+
+test('a relation type refusal says which rule failed', () => {
+  const a = db.store('note', 'a')
+  assert.match(refused(() => db.relate(a, a, 'a\0b'), /NUL/), /NUL/)
+  const long = refused(() => db.relate(a, a, 'r'.repeat(65)), /65 bytes/)
+  assert.match(long, /1\.\.=64/)
+  assert.doesNotMatch(long, /NUL/)
+})
+
+test('retention messages state the range and use the Node names', () => {
+  for (const rule of [{ keepLast: 0 }, { keepLast: -1 }]) {
+    const message = refused(() => db.runRetention({ default: rule }), /keepLast/)
+    assert.match(message, /1 or more/)
+    assert.doesNotMatch(message, /KeepLast|keep_last/)
+  }
+  assert.match(refused(() => db.runRetention({ byType: { note: { keepSince: -1 } } }), /keepSince/), /0 or more/)
+})
+
+test('a wrong lifecycle is INVALID_ARGUMENT with lowercase lifecycle names', () => {
+  const id = db.store('note', 'a')
+  const message = refused(() => db.commit([{ op: 'unarchive', id }]), /active/)
+  assert.doesNotMatch(message, /Active|Archived/)
+})
+
+test('a pruned readAsOf names only Node calls', () => {
+  const id = db.store('note', 'v1')
+  for (const v of ['v2', 'v3', 'v4']) db.update(id, v)
+  db.runRetention({ default: { keepLast: 1 } })
+  for (const call of [() => db.readAsOf(id, 1), () => db.history(id, { fromRevision: 1 })]) {
+    const { code, message } = thrown(call)
+    assert.equal(code, 'PRUNED', message)
+    assert.doesNotMatch(message, /compare|_/)
+  }
+})
+
+test('a failure that is not an argument failure reaches INTERNAL', () => {
+  // A getter that throws an error with no Kerno or napi code while the op is read: index.js
+  // passes Kerno codes through, maps napi argument errors to INVALID_ARGUMENT, and anything
+  // else to INTERNAL.
+  const op = {
+    op: 'update',
+    get id() {
+      throw new RangeError('boom')
+    },
+    payload: 'x',
+  }
+  const { code, message } = thrown(() => loose.commit([op]))
+  assert.equal(code, 'INTERNAL', message)
+  assert.match(message, /boom/)
 })

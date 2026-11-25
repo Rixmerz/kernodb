@@ -37,7 +37,7 @@ __all__ = [
     "open",
 ]
 
-# Exactly one of `keep_last` (newest N revisions), `keep_for` (seconds) or `keep_since` (commit sequence).
+# Exactly one of `keep_last` (newest N revisions, 1 or more), `keep_for` (seconds) or `keep_since` (commit sequence).
 RetentionRule = dict[str, float]
 
 class KernoError(Exception):
@@ -247,7 +247,8 @@ class Database:
         Raises `InvalidArgumentError` on a read-write handle (it is always current)."""
     def compact(self) -> dict[str, int]:
         """Drop deleted units' payloads and compact; returns the stored bytes `before` (at call time, every
-        commit counted) and `after`."""
+        commit counted) and `after`. `after` can be larger than `before` when there is little to
+        reclaim."""
     def run_retention(
         self, default: RetentionRule | None = None, by_type: dict[str, RetentionRule] | None = None
     ) -> dict[str, int | None]:

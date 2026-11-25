@@ -238,10 +238,10 @@ never return wrong data.
 | `db.find_range(type, field, low=None, high=None, limit=None)` | `list[Unit]` whose indexed field is in `[low, high]` (both included, `None` = open end), ordered by value then id. No `limit` means no cap; `limit=0`, or `low` above `high`, raises `InvalidArgumentError` |
 | `db.execute(query)` | `{"aliases": [...], "rows": [[Unit, ...], ...]}` |
 | `db.explain(query)` | the plan `execute` would follow, without running it: `root_alias`, `root_type`, `candidates` (`access` `"type_scan"` or `"field_index"`, `field`, `cost`), `chosen` (an index into `candidates`), `joins`, `planner_version` |
-| `db.hybrid_search(text=None, vector=None, vectors=None, seeds=None, *, text_types=None, keyword_weight=1, vector_weight=1, relation_weight=1, limit=10, candidates=100, rrf_k=60, max_depth=2, metric="cosine")` | `list[HybridHit]`, best first: `id`, `score`, `keyword_score`, `vector_score`, `relation_score`, `keyword_rank`, `vector_rank`, `relation_rank` (a signal that missed the unit is `None`). `text_types` restricts the keyword signal to those unit types (a list of names, with the errors of `search_text`). `vector` and `vectors` go together; `metric` is `"cosine"` or `"dot"` |
+| `db.hybrid_search(text=None, vector=None, vectors=None, seeds=None, *, text_types=None, keyword_weight=1, vector_weight=1, relation_weight=1, limit=10, candidates=100, rrf_k=60, max_depth=2, metric="cosine")` | `list[HybridHit]`, best first: `id`, `score`, `keyword_score`, `vector_score`, `relation_score`, `keyword_rank`, `vector_rank`, `relation_rank` (a signal that missed the unit is `None`). `text_types` restricts the keyword signal to those unit types (a list of names, with the errors of `search_text`). `rrf_k` is a whole number from 0 to 2**32 - 1. `vector` and `vectors` go together; `metric` is `"cosine"` or `"dot"` |
 | `db.verify()` | `dict`: `clean`, `commit_seq`, `units`, `revisions`, `relations`, `findings`, maybe `storage_error` |
-| `db.compact()` | `{"before", "after"}` stored bytes: `before` is the size when the call was made (every commit so far counts), `after` the size once the space of deleted units' payloads and retention is given back |
-| `db.run_retention(default=None, by_type=None)` | prune old revisions; a rule is a dict with one of `keep_last` (newest N), `keep_for` (seconds) or `keep_since` (commit sequence); returns `{"units_retained", "revisions_pruned", "payloads_dropped", "bytes_logically_freed", "commit_seq"}`. Pruned revisions raise `PrunedError` in `read_as_of`, `history(from_revision=)` and `compare`. A bad rule raises `InvalidArgumentError` and writes nothing; a `None` rule is no rule. The policy is not stored: pass it each time |
+| `db.compact()` | `{"before", "after"}` stored bytes: `before` is the size when the call was made (every commit so far counts), `after` the size once the space of deleted units' payloads and retention is given back; `after` can be larger than `before` when there is little to reclaim |
+| `db.run_retention(default=None, by_type=None)` | prune old revisions; a rule is a dict with one of `keep_last` (newest N, 1 or more), `keep_for` (seconds) or `keep_since` (commit sequence); returns `{"units_retained", "revisions_pruned", "payloads_dropped", "bytes_logically_freed", "commit_seq"}`. Pruned revisions raise `PrunedError` in `read_as_of`, `history(from_revision=)` and `compare`. A bad rule raises `InvalidArgumentError` and writes nothing; a `None` rule is no rule. The policy is not stored: pass it each time |
 | `db.close()` | `None`. Closing twice is harmless |
 
 Type stubs ship with the package (`py.typed`).
@@ -261,7 +261,7 @@ Engine failures raise `kerno.KernoError` or one of its subclasses:
 | Exception | When |
 |---|---|
 | `NotFoundError` | no unit, relation or revision with that id |
-| `DeletedError` | the unit is deleted (or not in the lifecycle the call needs) |
+| `DeletedError` | the unit is deleted. A unit in the wrong lifecycle for an op (`unarchive` of an active unit) raises `InvalidArgumentError`, not this |
 | `LockedError` | another handle or process holds the directory |
 | `CorruptionError` | stored bytes failed a checksum or a structure rule |
 | `InvalidArgumentError` | also a `ValueError`. A malformed id, a bad type name, direction, order, lifecycle, metric, retention rule or batch op, a bad whole number (negative, over 2**64 - 1, a fraction), a value no document can hold (`None`, an int outside 64 bits), a text search value over 254 bytes, `refresh` on a handle that is not read-only, ... Its subclasses below name the common cases |
@@ -340,7 +340,7 @@ never sees half of a change set.
   (an as-of read of one of their old revisions is then no longer possible) and gives their space back.
   Until you call it, deletes do not shrink the store.
 - An indexed text or bytes value holds at most 254 bytes (a 0x00 byte counts twice).
-- Integers in documents are 64-bit (-2**63 to 2**63 - 1); a counter, limit or revision argument is a whole number from 0 to 2**64 - 1.
+- Integers in documents are 64-bit (-2**63 to 2**63 - 1); a counter or revision argument is a whole number from 0 to 2**64 - 1 (`limit` and `keep_last` from 1).
 
 ## Upgrading from 1.0.0-alpha.1
 

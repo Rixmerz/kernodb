@@ -117,7 +117,9 @@ impl RetentionPolicy {
     fn validate(&self) -> Result<(), UnitError> {
         for r in std::iter::once(&self.default).chain(self.by_type.values()) {
             if *r == RetentionRule::KeepLast(0) {
-                return Err(UnitError::InvalidArgument("KeepLast(0) would drop the head".into()));
+                return Err(UnitError::InvalidArgument(
+                    "a keep-last rule must keep at least 1 revision: 0 would drop the head".into(),
+                ));
             }
         }
         Ok(())
