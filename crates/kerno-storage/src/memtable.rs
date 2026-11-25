@@ -160,6 +160,10 @@ pub struct Memtable {
     /// Replayed by a recovery whose flush was deferred: its table records
     /// `REASON_RECOVERY`.
     recovered: bool,
+    /// The other logs a deferred recovery replayed into this memtable, after
+    /// `wal_number` (or folded into it because they held no keys): the flush
+    /// of the memtable retires them with it.
+    extra_wals: Vec<u64>,
     /// Bytes written to that file when this memtable stopped being the
     /// active one (0: not known, or still active).
     wal_len: AtomicU64,
@@ -193,6 +197,7 @@ impl Memtable {
             max_seq: AtomicU64::new(0),
             wal_number,
             recovered: false,
+            extra_wals: Vec::new(),
             wal_len: AtomicU64::new(0),
             retired: OnceLock::new(),
         }
@@ -207,6 +212,20 @@ impl Memtable {
 
     pub fn is_recovered(&self) -> bool {
         self.recovered
+    }
+
+    /// Records that log `number` also belongs to this memtable (see
+    /// [`extra_wals`](Self::extra_wals)); the log it is named for is not one.
+    pub fn add_wal(&mut self, number: u64) {
+        if number != 0 && number != self.wal_number && !self.extra_wals.contains(&number) {
+            self.extra_wals.push(number);
+        }
+    }
+
+    /// The logs besides [`wal_number`](Self::wal_number) that hold only
+    /// commits of this memtable.
+    pub fn extra_wals(&self) -> &[u64] {
+        &self.extra_wals
     }
 
     /// Called when the memtable leaves the current version after its flush:
