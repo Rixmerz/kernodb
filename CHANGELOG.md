@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.0-alpha.4] - 2026-11-25
+
 ### Added
 
 - **Substring search with a trigram index** ([ADR-0025](docs/adr/0025-substring-index-and-sqlite-parity.md)). Opt-in per unit type like the keyword index: Rust `Db::set_substring(type, enabled)`, `Db::substring(type)` and `Db::search_substring(needle, limit, types)`; Python `db.set_substring`, `db.substring`, `db.search_substring(needle, limit=None, types=None)`; Node `db.setSubstring`, `db.substring`, `db.searchSubstring(needle, { limit?, types? })`. It returns the ids of the units whose payload holds the needle (text or bytes), in id order, with the semantics of SQL's `LIKE '%needle%'`: ASCII letters in either case, every other byte equal, over the first 256 KiB of a payload. It raises like `search_text` when it could never match (`NotIndexed`, `UnknownType`, `InvalidArgument` for `limit` 0, an empty needle or one over 1024 bytes). `verify` checks the index (UNIT-52). In the Python benchmark it is 0.16x (10k units) and 0.34x (100k) of the time of SQLite's `LIKE` scan, and 0.27x / 0.66x of FTS5 `trigram`; it was 57x and 96-112x when a caller had to filter `query(type)` ([report](docs/testing/python-vs-sqlite.md)).
@@ -40,6 +42,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 Gaps found by an outside integration test of 1.0.0-alpha.3 from PyPI. There are no users yet, so the API and the messages change without a compatibility layer.
+
+- **Backups on Windows no longer fail on a WAL that is being deleted or renamed**. Opening a live WAL file could fail with `Access is denied` (os error 5) while the engine removed or renamed it; the backup now retries a denied open for up to about one second on Windows and treats a file that vanished as gone. Behaviour on other platforms is unchanged.
+- **Binding error messages and docs match the code** (alpha.4 gate re-run): Node `readDocument` of a non-document payload raises `SCHEMA`; relation type, retention and `rrf_k` refusals state the rule and range that failed, in the binding's own argument names; the README error tables and `docs/bindings-coverage.md` list what each binding actually raises.
 
 - **A deferred recovery flush keeps the sequences of trailing empty commits**. When a recovery open deferred its flush (the new deferred recovery open) and the newest replayed log held only commits that write no keys, the open dropped their sequences: `close` failed with `closing with commits up to N while the MANIFEST holds M`, and a crash after the deferred flush made the next open refuse the database with WAL-R1. The memtable flushed before the dropped one now carries their `last_seq`. Covered by `tests/deferred_empty_commits.rs`, with the `KernoDb::set_defer_recovery_flush` hook and with background threads.
 - **A flush retires every log of a deferred-recovery memtable**. When a deferred recovery open replayed several live logs into one memtable (the write buffer is larger than when the logs were written), or left a trailing log that holds only empty commits, the flush of that memtable removed only the first log. The others stayed on disk, below the `MANIFEST`'s `log_number`, until the next open or close, so a long-running handle held logs it did not need (W-5). The memtable now remembers every log it holds and the flush removes them after its `FLUSH` record. Covered by `tests/deferred_multi_log.rs`, inline and with background threads.
