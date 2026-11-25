@@ -463,7 +463,7 @@ impl Batch {
     /// not in [`Committed::units`], but it can be a relation end: [`Endpoint::Op`] names it by
     /// the position of the upsert in the batch.
     ///
-    /// [`Db::commit`] fails with `InvalidArgument` when `field` is not declared unique (or the
+    /// [`Db::commit`] fails with `NotUnique` when `field` is not declared unique (or the
     /// type has no schema), and with `SchemaViolation` when `payload` has no value in it.
     pub fn upsert(&mut self, unit_type: &str, field: &str, payload: impl Into<Vec<u8>>) -> &mut Self {
         self.ops.push(Op::Upsert { unit_type: unit_type.to_owned(), field: field.to_owned(), payload: payload.into() });
@@ -571,7 +571,7 @@ impl Db {
     ///
     /// # Errors
     ///
-    /// `InvalidArgument` when the type has no schema or `field` is not declared `unique` in it;
+    /// `NotUnique` when the type has no schema or `field` is not declared `unique` in it;
     /// `SchemaViolation` when the schema refuses the document or it has no value in `field`.
     pub fn upsert_document(&self, unit_type: &str, field: &str, document: &Document) -> Result<Upserted> {
         self.upsert(unit_type, field, document.encode()?)
@@ -627,8 +627,9 @@ impl Db {
     /// # Errors
     ///
     /// As the single operations ([`Db::store`], [`Db::update`], [`Db::delete`],
-    /// [`Db::unrelate`]), and `InvalidArgument` when two operations name the same unit or the
-    /// batch is larger than the layer's change-set limit.
+    /// [`Db::unrelate`]), and `InvalidArgument` when two operations name the same unit.
+    /// `ChangeSetTooLarge` when the batch has more operations than the limit set by
+    /// [`Db::open_with_limits`], or its entries are over the engine's byte limit.
     pub fn commit(&self, batch: impl Borrow<Batch>) -> Result<Vec<UnitId>> {
         Ok(self.commit_with(batch, &CommitMeta::default())?.units)
     }
@@ -843,7 +844,9 @@ impl Db {
     /// # Errors
     ///
     /// The engine fails or finds the unit corrupt, or `HistoryUnavailable` when the revision's
-    /// payload is gone (a deleted unit after [`Db::compact`], or retention).
+    /// payload is gone (a deleted unit after [`Db::compact`]). A revision that retention pruned
+    /// is not an error: it answers `Ok(UnitAt::Pruned { oldest })`, where `oldest` is the oldest
+    /// revision still kept.
     pub fn read_as_of(&self, id: UnitId, commit_seq: u64) -> Result<UnitAt> {
         let snap = self.units.snapshot()?;
         let at = commit_seq.min(snap.seq().0);
@@ -860,6 +863,8 @@ impl Db {
     /// touched. To keep the payloads a retention policy keeps, call
     /// `units::UnitDb::compact_keeping` through [`Db::unit_db`]. What an open snapshot still
     /// sees stays until it is dropped.
+    ///
+    /// `after` can be larger than `before` when there is little to reclaim.
     ///
     /// # Errors
     ///
@@ -957,7 +962,8 @@ impl Db {
     ///
     /// # Errors
     ///
-    /// As [`Db::find`].
+    /// `InvalidArgument` for `limit == 0` or a range whose lower bound is above its upper bound
+    /// (it can hold no value); otherwise as [`Db::find`].
     pub fn find_range(
         &self,
         unit_type: &str,
@@ -978,7 +984,7 @@ impl Db {
         self.units.get_unit(id)
     }
 
-    /// Relates `from` to `to` with a declared relation of type `relation_type` (1 to 256 bytes,
+    /// Relates `from` to `to` with a declared relation of type `relation_type` (1 to 64 bytes,
     /// no NUL), in one committed change set. Parallel relations of one type are allowed.
     ///
     /// # Errors
