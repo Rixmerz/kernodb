@@ -541,16 +541,22 @@ test('every code of the README error table is thrown by its documented trigger',
   db.update(pruned, 'p3')
   db.runRetention({ default: { keepLast: 1 } })
   note('PRUNED', () => db.history(pruned, { fromRevision: 1 }))
+  const doomed = stored('doomed')
+  const doomedSeq = db.lastCommitSeq()
+  db.update(doomed, 'x')
+  db.delete(doomed)
+  db.compact()
+  note('HISTORY_UNAVAILABLE', () => db.readAsOf(doomed, doomedSeq))
   db.close()
   note('CLOSED', () => db.read(a))
   const ro = open(join(dir, 'db'), { readOnly: true })
   note('READ_ONLY', () => ro.store('n', 'x'))
   ro.close()
   assert.ok(!/(?:^|\n)\| `(?:[A-Z_]+)` \|[^\n]*\n/.test('') && seen.size >= 15)
-  // every code the README table lists is one of the codes thrown above, or CORRUPTION / KERNO (see the corruption test)
+  // every code the README table lists is one of the codes thrown above, or CORRUPTION / KERNO (see the corruption test) / INTERNAL (a bug, no trigger)
   const listed = [...NODE_README.matchAll(/^\| `([A-Z_]+)` \| `\w+` \|/gm)].map((m) => m[1]!)
-  assert.ok(listed.length >= 19)
-  for (const code of listed) assert.ok(seen.has(code) || ['CORRUPTION', 'KERNO'].includes(code), `${code} has no trigger in this test`)
+  assert.ok(listed.length >= 20)
+  for (const code of listed) assert.ok(seen.has(code) || ['CORRUPTION', 'KERNO', 'INTERNAL'].includes(code), `${code} has no trigger in this test`)
   db = open(join(dir, 'db'))
 })
 
@@ -689,7 +695,8 @@ const NUMBERS: unknown[] = [
 ]
 const KERNO_CODES = new Set([
   'NOT_FOUND', 'DELETED', 'LOCKED', 'CORRUPTION', 'INVALID_ARGUMENT', 'SCHEMA_EXISTS', 'NOT_INDEXED', 'UNKNOWN_TYPE', 'NOT_UNIQUE', 'BAD_ENDPOINT',
-  'PAYLOAD_TOO_LARGE', 'CHANGESET_TOO_LARGE', 'READ_ONLY', 'DATABASE_NOT_FOUND', 'HAS_RELATIONS', 'PRUNED', 'SCHEMA', 'CLOSED', 'KERNO',
+  'PAYLOAD_TOO_LARGE', 'CHANGESET_TOO_LARGE', 'READ_ONLY', 'DATABASE_NOT_FOUND', 'HAS_RELATIONS', 'PRUNED', 'SCHEMA', 'CLOSED',
+  'HISTORY_UNAVAILABLE', 'KERNO',
 ])
 
 /** `fn` either works or throws an Error with a documented Kerno `code`: never napi's own `StringExpected`, `InvalidArg` or a code-less TypeError. */

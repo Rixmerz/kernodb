@@ -1,4 +1,4 @@
-# kernodb
+# @rixmerz/kernodb
 
 Node.js bindings for [Kerno](https://github.com/Rixmerz/kernodb), an embedded database of
 **units** (typed records with a payload), the **relations** between them, and queries over both.
@@ -74,7 +74,7 @@ Run it in a directory where `memory-db` does not exist yet, because the query co
 
 | Call | Returns |
 |---|---|
-| `open(path, { readOnly?, maxBatchOps? })` | a `Db`. The directory is created when missing. `readOnly` writes nothing to it, takes no lock, and does not create it, so it can run beside a writer (see `refresh`); `maxBatchOps` sets the most operations one `commit` may hold (default 10,000). One read-write handle holds a directory at a time: a second read-write `open` throws `LOCKED`. |
+| `open(path, { readOnly?, maxBatchOps? })` | a `Db`. The directory is created when missing. `readOnly` writes nothing to it, takes no lock, and does not create it, so it can run beside a writer (see `refresh`); `maxBatchOps` sets the most operations one `commit` may hold (a whole number from 1 to 1,048,576, default 10,000). One read-write handle holds a directory at a time: a second read-write `open` throws `LOCKED`. |
 | `db.close()` | nothing. Closing twice is fine; any other call afterwards throws `CLOSED`. |
 
 ### Units and relations
@@ -82,14 +82,14 @@ Run it in a directory where `memory-db` does not exist yet, because the query co
 | Call | Returns |
 |---|---|
 | `db.store(unitType, payload)` | the new unit's id. `unitType` is 1 to 64 bytes of UTF-8. |
-| `db.read(id)` | the `Unit`, or `null` |
+| `db.read(id)` | the `Unit`, or `null`. `oldestRevision` is the oldest revision retention kept (1 until `runRetention` prunes): a `history` `fromRevision` or a `readAsOf` before it throws `PRUNED`. |
 | `db.update(id, payload, { ifChanged? })` | `true` when a revision was written. With `ifChanged`, a payload equal to the current one writes nothing and returns `false`. The earlier revisions stay in the history. |
 | `db.delete(id, { cascade? })` | nothing. Writes a tombstone revision; the history is kept. Without `cascade` a unit that still has relations throws `HAS_RELATIONS`; with it, the relations are removed first, in the same commit. |
 | `db.relate(from, to, relationType, { unique? })` | the relation's id. Both units must exist and be active; `relationType` is 1 to 64 bytes, with no NUL. With `unique`, an existing relation of that type between the two units is reused. |
 | `db.unrelate(relationId)` | nothing |
 | `db.related(id, 'out' \| 'in', relationType?)` | the `Relation[]` that start at (`out`) or end at (`in`) the unit; `NOT_FOUND` for an id no unit ever had, `INVALID_ARGUMENT` for an invalid type name |
 | `db.relations(relationType?)` | every live `Relation[]`, in one scan: much faster than `related` per unit |
-| `db.query({ unitType?, schemaVersion? }?)` | every active `Unit` that matches, in id order. No filter returns every one. |
+| `db.query({ unitType?, schemaVersion?, lifecycle? }?)` | every `Unit` that matches, in id order. No filter returns every active one. `lifecycle` is `'active'` (default), `'archived'`, `'deleted'` or `'all'`; a deleted unit has no payload. An invalid `unitType` throws `INVALID_ARGUMENT` for every lifecycle. The non-active lifecycles read every unit's head, so they are linear in the store. |
 
 ### Atomic commits
 
@@ -160,7 +160,7 @@ deleted one does not.
 
 | Call | Returns |
 |---|---|
-| `db.history(id, { limit?, withPayload?, fromRevision? })` | the newest `limit` `Revision`s (default 100, a whole number from 1 to 2^32 - 1) from `fromRevision` on (default: the oldest kept), newest first; `NOT_FOUND` for an id no unit ever had. `withPayload` reads and verifies each revision's content. A `fromRevision` retention pruned throws `PRUNED`. |
+| `db.history(id, { limit?, withPayload?, fromRevision?, toRevision?, order? })` | up to `limit` `Revision`s (default 100, a whole number from 1 to 2^32 - 1) among those in `[fromRevision, toRevision)` (default: from the oldest kept up to the head), newest first (`order: 'desc'`, the default) or oldest first (`'asc'`); `NOT_FOUND` for an id no unit ever had. To page, pass the last revision of a page as the next `toRevision` (desc), or its successor as the next `fromRevision` (asc). `fromRevision` above `toRevision` throws `INVALID_ARGUMENT` (equal bounds are an empty page). `withPayload` reads and verifies each revision's content. A `fromRevision` retention pruned throws `PRUNED`: compare it with `Unit.oldestRevision`. |
 | `db.readAsOf(id, commitSeq)` | the `Revision` in force once that commit committed (with its payload), or `null` when the unit did not exist yet. A deleted unit returns its tombstone. A sequence past the last commit reads the current state. Throws `PRUNED` when retention removed the revision. |
 | `db.lastCommitSeq()` | the sequence of the last commit (0 for an empty database) |
 | `db.refresh()` | on a `readOnly: true` database: pick up the commits a writer made since the open; returns the sequence now read |
@@ -211,7 +211,7 @@ const hits = db.hybridSearch({
   weights: { keyword: 2 },
   limit: 5,
 })
-// [{ id, score, ranks: { keyword?, vector?, relations? } }], best first
+// [{ id, score, keywordScore?, vectorScore?, relationScore?, ranks: { keyword?, vector?, relations? } }], best first
 ```
 
 | Field | Meaning |
@@ -226,15 +226,19 @@ const hits = db.hybridSearch({
 | `candidates` | units each leg contributes, 1 to 1000, default 100 |
 | `limit` | hits returned, 1 to 1000, default 10 |
 
-A hit's `score` is only for comparing hits of the same query. Units that are not active are never
-hits.
+A hit's `score` is a float, the same as the Python binding returns: the sum, over the legs that found
+the unit, of `weight / (rrfK + rank)`. `keywordScore`, `vectorScore` and `relationScore` are each leg's
+share of it (absent when that leg did not find the unit). Compare scores of the same query. Units that
+are not active are never hits.
 
 ## Errors
 
 Every failure is a plain `Error` with a stable string `code` (and a message). Match on `code`, not on the message.
 A numeric option that is not a whole number in range (a string, `null`, a fraction, a negative, `NaN`) is `INVALID_ARGUMENT`.
 An argument of the wrong JS type (`undefined` or `null` for a `string`, a non-array for an array, ...) is `INVALID_ARGUMENT`
-too: the package entry point turns napi's own `StringExpected`/`InvalidArg` errors and `TypeError`s into it.
+too, with a message that names the call and the argument (`store: unitType must be a string, not undefined`). So is an
+option the call does not know: every options object rejects an unknown key. An error with no `code` of this table
+that is not an argument failure has the code `INTERNAL`: it is a bug of this package, not of the call.
 
 ```js
 try {
@@ -247,7 +251,7 @@ try {
 
 | `code` | Python equivalent | Thrown when |
 |---|---|---|
-| `NOT_FOUND` | `NotFoundError` | no unit, relation or revision with that id |
+| `NOT_FOUND` | `NotFoundError` | no unit, relation or revision with that id (`updateDocument` of an unknown id too) |
 | `DELETED` | `DeletedError` | the unit is deleted (or not in the lifecycle the call needs) |
 | `LOCKED` | `LockedError` | another handle or process holds the database directory |
 | `CORRUPTION` | `CorruptionError` | stored bytes failed validation (a checksum or a structure rule) |
@@ -259,20 +263,22 @@ try {
 | `BAD_ENDPOINT` | `BadEndpointError` | a `relate` end that is not an earlier `store` or `upsert` op of the commit |
 | `PAYLOAD_TOO_LARGE` | `PayloadTooLargeError` | the payload is over 1 MiB |
 | `CHANGESET_TOO_LARGE` | `ChangeSetTooLargeError` | a commit over 10,000 ops (see `maxBatchOps`) or over the engine's bytes per commit |
-| `READ_ONLY` | `ReadOnlyError` | a write through a handle opened with `readOnly: true`. An empty `commit([])`, or a `runRetention` with nothing to prune, writes nothing and does not throw. `updateDocument` reads the unit first, so an unknown id is `NOT_FOUND` there |
+| `READ_ONLY` | `ReadOnlyError` | a write through a handle opened with `readOnly: true`. An empty `commit([])`, or a `runRetention` with nothing to prune, writes nothing and does not throw |
 | `DATABASE_NOT_FOUND` | `DatabaseNotFoundError` | `readOnly: true` on a directory with no database |
 | `HAS_RELATIONS` | `HasRelationsError` | the unit still has live relations; unrelate them or use `cascade` |
 | `PRUNED` | `PrunedError` | retention removed the revision asked for (`readAsOf`, or `history` from a pruned `fromRevision`) |
+| `HISTORY_UNAVAILABLE` | `KernoError` | the payload of a revision is gone: the unit was deleted and `compact()` dropped its payloads. `readAsOf` and `history` with `withPayload` of such a unit throw it; `history` without `withPayload` still lists its revisions |
 | `SCHEMA` | `SchemaError` | the type's schema refused the document, or the payload is not a document |
 | `CLOSED` | `ValueError` | the handle is closed |
 | `KERNO` | `KernoError` | any other engine failure |
+| `INTERNAL` | none | a failure that is neither an engine error nor a refused argument; report it |
 
 ## Limits
 
 * **Payload: at most 1 MiB** (1,048,576 bytes) per unit. A larger one throws `PAYLOAD_TOO_LARGE`.
 * **Unit type:** 1 to 64 bytes of UTF-8. **Relation type:** 1 to 64 bytes, with no NUL.
 * **Commit metadata:** `reason` at most 1024 bytes, `actor` and `source` at most 256 bytes each.
-* **Operations per commit:** 10,000 by default; `open(path, { maxBatchOps })` changes it. A unit
+* **Operations per commit:** 10,000 by default; `open(path, { maxBatchOps })` changes it (1 to 1,048,576). A unit
   is written by at most one operation of a commit (a second `update`, `delete`, `archive`, ... of it throws `INVALID_ARGUMENT`; relations to it are not limited).
 * **Keyword search is opt-in per type.** A type is not keyword-indexed until you call
   `setFulltext(type, true)`; until then `hybridSearch`'s keyword leg finds none of its units.
@@ -314,6 +320,17 @@ pnpm install
 pnpm build   # compiles the addon and regenerates binding.js (the loader, wrapped by the hand-written index.js) and index.d.ts
 pnpm test    # type-checks the types, then runs the tests against the built addon
 ```
+
+To use that build from another project, install the **directory**, not a tarball: `pnpm pack` does not
+ship the compiled `.node` file, so a packed tarball cannot load.
+
+```sh
+cd /path/to/your-project
+npm install /path/to/kernodb/bindings/node   # links the directory, which holds the built kernodb.<platform>.node
+```
+
+(`pnpm add /path/to/kernodb/bindings/node` and `npm link` work the same way.) Run `pnpm build` again after
+every change to the Rust source; the link picks up the new addon.
 
 The crate is outside the cargo workspace of the repository on purpose and has its own
 `Cargo.lock`.
