@@ -243,6 +243,13 @@ impl Memtable {
         self.max_seq.load(Relaxed)
     }
 
+    /// Raises `max_seq` to `seq`: the sequences of commits that wrote no keys
+    /// and were dropped with an empty memtable still count as flushed with
+    /// this one.
+    pub fn raise_max_seq(&self, seq: u64) {
+        self.max_seq.fetch_max(seq, Relaxed);
+    }
+
     /// Whether nothing, points or range tombstones, was applied.
     pub fn is_empty(&self) -> bool {
         self.map.is_empty() && self.range_count() == 0
