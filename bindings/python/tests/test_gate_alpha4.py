@@ -146,3 +146,27 @@ def test_refresh_on_a_read_write_handle_has_no_rust_type_names(db: kerno.Databas
 def test_the_package_has_a_version() -> None:
     assert isinstance(kerno.__version__, str) and kerno.__version__
     assert "__version__" in kerno.__all__
+
+
+def test_retention_messages_state_the_range_and_use_python_names(db: kerno.Database) -> None:
+    for bad in (0, -1, 2**64, 1.5, True):
+        with pytest.raises(kerno.InvalidArgumentError, match=r"keep_last must be a whole number from 1 to 2\*\*64 - 1") as info:
+            db.run_retention(default={"keep_last": bad})
+        assert "KeepLast" not in str(info.value)
+    with pytest.raises(kerno.InvalidArgumentError, match=r"keep_since must be a whole number from 0 to 2\*\*64 - 1"):
+        db.run_retention(by_type={"note": {"keep_since": -1}})
+
+
+def test_a_relation_type_refusal_says_which_rule_failed(db: kerno.Database) -> None:
+    a = db.store("note", "a")
+    with pytest.raises(kerno.InvalidArgumentError, match="NUL"):
+        db.relate(a, a, "a\0b")
+    with pytest.raises(kerno.InvalidArgumentError, match=r"65 bytes is outside 1\.\.=64") as info:
+        db.relate(a, a, "r" * 65)
+    assert "NUL" not in str(info.value)
+
+
+def test_a_wrong_lifecycle_is_an_invalid_argument_in_lowercase(db: kerno.Database) -> None:
+    uid = db.store("note", "a")
+    with pytest.raises(kerno.InvalidArgumentError, match="is active, not archived"):
+        db.commit([("unarchive", uid)])

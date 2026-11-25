@@ -1627,7 +1627,8 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         self.admit(Some(id))?;
         let (head, _, payload) = self.current(id, expected)?;
         if head.lifecycle != from {
-            return Err(UnitError::InvalidArgument(format!("unit {id} is {:?}, not {from:?}", head.lifecycle)));
+            let (is, need) = (format!("{:?}", head.lifecycle).to_lowercase(), format!("{from:?}").to_lowercase());
+            return Err(UnitError::InvalidArgument(format!("unit {id} is {is}, not {need}")));
         }
         if to == Lifecycle::Archived {
             self.ensure_no_relations(id)?;
@@ -1791,11 +1792,13 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
     ) -> Result<RelationId, UnitError> {
         self.admit_relation()?;
         if !valid_relation_type(relation_type) {
-            return Err(UnitError::InvalidArgument(format!(
-                "relation_type of {} bytes is outside 1..={} or has a NUL",
-                relation_type.len(),
-                crate::codec::MAX_RELATION_TYPE_LEN
-            )));
+            let max = crate::codec::MAX_RELATION_TYPE_LEN;
+            let rule = if relation_type.contains('\0') {
+                "it contains a NUL".to_owned()
+            } else {
+                format!("its length of {} bytes is outside 1..={max}", relation_type.len())
+            };
+            return Err(UnitError::InvalidArgument(format!("relation_type is refused: {rule}")));
         }
         self.require_active(from)?;
         self.require_active(to)?;

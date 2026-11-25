@@ -165,8 +165,8 @@ deleted one does not.
 | `db.lastCommitSeq()` | the sequence of the last commit (0 for an empty database) |
 | `db.refresh()` | on a `readOnly: true` database: pick up the commits a writer made since the open; returns the sequence now read |
 | `db.verify()` | `{ clean, commitSeq, units, revisions, relations, findings, findingsOmitted, storageError? }`. A damaged store is reported (`clean: false`), not thrown. |
-| `db.runRetention({ default?, byType? })` | prune old revisions; a rule is `{ keepLast }` (newest N), `{ keepFor }` (seconds) or `{ keepSince }` (commit sequence); returns `{ unitsRetained, revisionsPruned, payloadsDropped, bytesLogicallyFreed, commitSeq? }`. `readAsOf` of a pruned revision and `history` from one throw `PRUNED`; `history` lists what is kept. A bad rule throws `INVALID_ARGUMENT` and writes nothing; `null` is the same as no rule. The policy is not stored: pass it each time |
-| `db.compact()` | `{ before?, after? }`, the stored bytes around the compaction: `before` is the size when the call was made (every commit so far counts), `after` the size once the payloads of deleted units are dropped and their space given back. |
+| `db.runRetention({ default?, byType? })` | prune old revisions; a rule is `{ keepLast }` (newest N, 1 or more), `{ keepFor }` (seconds) or `{ keepSince }` (commit sequence); returns `{ unitsRetained, revisionsPruned, payloadsDropped, bytesLogicallyFreed, commitSeq? }`. `readAsOf` of a pruned revision and `history` from one throw `PRUNED`; `history` lists what is kept. A bad rule throws `INVALID_ARGUMENT` and writes nothing; `null` is the same as no rule. The policy is not stored: pass it each time |
+| `db.compact()` | `{ before?, after? }`, the stored bytes around the compaction: `before` is the size when the call was made (every commit so far counts), `after` the size once the payloads of deleted units are dropped and their space given back. `after` can be larger than `before` when there is little to reclaim. |
 | `db.setFulltext(unitType, enabled)` | nothing. Turns keyword (BM25) indexing of a type on or off (off by default); its active units are indexed or cleared in the same commit. |
 | `db.fulltext(unitType)` | `boolean`: whether the type is keyword-indexed. |
 | `db.searchText(query, { limit?, types? })` | `{ id, score }[]`, best first (`limit` default 10, at least 1), over the keyword-indexed types or only the unit types in `types`. A unit scores the same either way. It throws instead of returning `[]` when it could never match: `NOT_INDEXED` (no type, or a requested type, is indexed), `UNKNOWN_TYPE` (a type nothing ever used), `INVALID_ARGUMENT` (`limit` below 1, a query with no word, an empty `types`). |
@@ -222,7 +222,7 @@ const hits = db.hybridSearch({
 | `relations` | `{ seeds, types?, direction?, maxDepth?, visitBudget? }`: units reached from the seed units by walking relations (`direction` `'out'`, `'in'` or `'both'`; `maxDepth` 1 to 4, default 2; `visitBudget` up to 100,000, default 10,000). Seeds must be active and are not hits. |
 | `weights` | `{ keyword?, vector?, relations? }`, 0 to 1000, default 1 each. 0 switches a leg off. |
 | `fusion` | `'rrf'` (default), or `'graph_gated'`: units the relations leg found rank first, nearest hop first. |
-| `rrfK` | the `k` of the fusion, default 60 |
+| `rrfK` | the `k` of the fusion, default 60; a whole number from 0 to 2^32 - 1 |
 | `candidates` | units each leg contributes, 1 to 1000, default 100 |
 | `limit` | hits returned, 1 to 1000, default 10 |
 
@@ -252,10 +252,10 @@ try {
 | `code` | Python equivalent | Thrown when |
 |---|---|---|
 | `NOT_FOUND` | `NotFoundError` | no unit, relation or revision with that id (`updateDocument` of an unknown id too) |
-| `DELETED` | `DeletedError` | the unit is deleted (or not in the lifecycle the call needs) |
+| `DELETED` | `DeletedError` | the unit is deleted. A unit in the wrong lifecycle for an op (`unarchive` of an active unit) is `INVALID_ARGUMENT`, not `DELETED` |
 | `LOCKED` | `LockedError` | another handle or process holds the database directory |
 | `CORRUPTION` | `CorruptionError` | stored bytes failed validation (a checksum or a structure rule) |
-| `INVALID_ARGUMENT` | `InvalidArgumentError` | an argument was refused: a malformed id, a type name, a limit, a bad op, a value no document can hold (`null`, a bigint outside 64 bits), a `find` value over 254 bytes |
+| `INVALID_ARGUMENT` | `InvalidArgumentError` | an argument was refused (`InvalidArgumentError` is also a `ValueError`): a malformed id, a type name, a limit, a bad op, a value no document can hold (`null`, a bigint outside 64 bits), a `find` value over 254 bytes |
 | `SCHEMA_EXISTS` | `SchemaExistsError` | `defineSchema` for a type that already has a different schema (the same one is accepted and writes nothing) |
 | `NOT_INDEXED` | `NotIndexedError` | `find` on a field that is not indexed; `searchText` or a keyword leg while no type (or no requested type) has `setFulltext` |
 | `UNKNOWN_TYPE` | `UnknownTypeError` | `searchText`, or the `textTypes` of `hybridSearch`, names a type that no unit, schema or `setFulltext` ever named |
@@ -267,9 +267,9 @@ try {
 | `DATABASE_NOT_FOUND` | `DatabaseNotFoundError` | `readOnly: true` on a directory with no database |
 | `HAS_RELATIONS` | `HasRelationsError` | the unit still has live relations; unrelate them or use `cascade` |
 | `PRUNED` | `PrunedError` | retention removed the revision asked for (`readAsOf`, or `history` from a pruned `fromRevision`) |
-| `HISTORY_UNAVAILABLE` | `KernoError` | the payload of a revision is gone: the unit was deleted and `compact()` dropped its payloads. `readAsOf` and `history` with `withPayload` of such a unit throw it; `history` without `withPayload` still lists its revisions |
+| `HISTORY_UNAVAILABLE` | `HistoryUnavailableError` | the payload of a revision is gone: the unit was deleted and `compact()` dropped its payloads. `readAsOf` and `history` with `withPayload` of such a unit throw it; `history` without `withPayload` still lists its revisions |
 | `SCHEMA` | `SchemaError` | the type's schema refused the document, or the payload is not a document |
-| `CLOSED` | `ValueError` | the handle is closed |
+| `CLOSED` | `ClosedError` | the handle is closed (`ClosedError` is also a `ValueError`) |
 | `KERNO` | `KernoError` | any other engine failure |
 | `INTERNAL` | none | a failure that is neither an engine error nor a refused argument; report it |
 

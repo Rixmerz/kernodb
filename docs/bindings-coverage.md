@@ -9,9 +9,9 @@ the Python names from the `#[pymethods]` of `bindings/python/src/lib.rs` and its
 `bindings/node/src/lib.rs`, checked against `bindings/node/index.js` (the package entry, which checks
 the arguments) and `bindings/node/index.d.ts`.
 
-Neither binding was built or run for this page: the rows are read from those sources, not from a
-running module or addon. The tests in `bindings/python/tests` and `bindings/node/__test__` are the
-checks the code is held to.
+Both bindings were built and run against these rows in the alpha.4 gate
+(`docs/release/alpha.4-validation-rerun.md`). The tests in `bindings/python/tests` and
+`bindings/node/__test__` are the checks the code is held to.
 
 Status: **Full** means the binding exposes the call with the facade's semantics. **Partial** means it
 exposes only part of it, or behaves differently in a way named in the row. **Gap** means there is no
@@ -77,6 +77,7 @@ way to call it from that binding.
 |---|---|---|---|
 | `set_fulltext(type, enabled)` | `db.set_fulltext(type, enabled)` | `db.setFulltext(type, enabled)` | Full |
 | `fulltext(type)` | `db.fulltext(type)` | `db.fulltext(type)` | Full |
+| `substring(type)` | `db.substring(type)` | `db.substring(type)` | Full |
 | `set_substring(type, enabled)` | `db.set_substring(type, enabled)` | `db.setSubstring(type, enabled)` | Full |
 | `search_substring(needle, limit, types)` | `db.search_substring(needle, limit=, types=)` | `db.searchSubstring(needle, { limit, types })` | Full. Returns the ids of the units whose payload holds `needle` |
 | `search_text(query, limit, types)` | `db.search_text(query, limit=, types=)` | `db.searchText(query, { limit, types })` | Full. `types` restricts the search to unit types; `hybrid_search` takes it as `text_types` / `textTypes` |
@@ -147,9 +148,10 @@ exception, and Node throws an error whose `code` is the stable string in the las
 Each binding accepts a different range of whole numbers, and refuses a value outside its own range with
 its own invalid-argument error (**difference, not a gap**):
 
-- Python: counts, limits and revisions take 0 to 2**64 - 1 (the engine's own limits still apply, for example `max_batch_ops`).
-- Node: a number argument must be a whole number up to 2^53. `limit`, `schemaVersion` and `maxBatchOps`
-  are also capped at 2^32 - 1.
+- Python: counts and revisions take 0 to 2**64 - 1; `limit` and `keep_last` take 1 to 2**64 - 1
+  (the engine's own limits still apply, for example `max_batch_ops`).
+- Node: a number argument must be a whole number up to 2^53 (`limit` and `keepLast` from 1).
+  `limit`, `schemaVersion` and `maxBatchOps` are also capped at 2^32 - 1.
 
 ## Unknown options
 

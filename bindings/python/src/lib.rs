@@ -25,7 +25,12 @@ use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString};
 
 create_exception!(_kerno, KernoError, PyException, "Any failure reported by the Kerno engine.");
 create_exception!(_kerno, NotFoundError, KernoError, "No unit, relation or revision with that id.");
-create_exception!(_kerno, DeletedError, KernoError, "The unit is deleted (or not in the lifecycle the call needs).");
+create_exception!(
+    _kerno,
+    DeletedError,
+    KernoError,
+    "The unit is deleted. A wrong lifecycle for an op is an InvalidArgumentError."
+);
 create_exception!(_kerno, LockedError, KernoError, "Another handle or process holds the database directory.");
 create_exception!(
     _kerno,
@@ -310,14 +315,9 @@ fn retention_rule(rule: &Bound<'_, PyAny>) -> PyResult<RetentionRule> {
     let name: String = name.extract().map_err(|_| bad())?;
     // `True` is an int to Python; a rule never means it.
     let number = !value.is_instance_of::<PyBool>();
-    let whole = || {
-        value.extract::<u64>().ok().filter(|_| number && value.is_instance_of::<PyInt>()).ok_or_else(|| {
-            InvalidArgumentError::new_err(format!("{name} must be a whole number, 0 or more, not {value}"))
-        })
-    };
     match name.as_str() {
-        "keep_last" => whole().map(RetentionRule::KeepLast),
-        "keep_since" => whole().map(|s| RetentionRule::KeepSince(CommitSeq(s))),
+        "keep_last" => unsigned_from("keep_last", 1, &value).map(RetentionRule::KeepLast),
+        "keep_since" => unsigned_from("keep_since", 0, &value).map(|s| RetentionRule::KeepSince(CommitSeq(s))),
         "keep_for" => value
             .extract::<f64>()
             .ok()
@@ -922,7 +922,8 @@ impl Database {
     /// bytes as `{"before": bytes, "after": bytes}`. `before` is the size when the call was made,
     /// counting every commit so far (the write buffer is written out first); `after` is the size
     /// once the space is given back. A deleted unit keeps its history entries but not their
-    /// payloads, so an as-of read of one of its old revisions is no longer possible.
+    /// payloads, so an as-of read of one of its old revisions is no longer possible. `after` can
+    /// be larger than `before` when there is little to reclaim.
     fn compact<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let r = self.with_db(py, |db| db.compact().map_err(engine_error))?;
         let d = PyDict::new(py);
