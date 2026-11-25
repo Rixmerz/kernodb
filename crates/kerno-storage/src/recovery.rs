@@ -478,6 +478,7 @@ impl ChunkWriter<'_> {
 /// memtables are bounded to `max_deferred` of `write_buffer` bytes each (S-2:
 /// the recovery memory is what a running handle holds). `defer` is off for
 /// `Background::Inline` (no flusher to hand the work to: the flush is eager).
+#[allow(clippy::too_many_arguments)]
 pub fn apply(
     ctx: &Arc<TableCtx>,
     plan: &Plan,

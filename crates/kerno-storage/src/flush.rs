@@ -87,6 +87,7 @@ fn create(ctx: &Arc<TableCtx>, number: u64, reason: u8, closing: bool) -> Result
     Ok(if closing { b.without_lz4_pass().without_intermediate_syncs() } else { b })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fill(
     ctx: &Arc<TableCtx>,
     mem: &Memtable,
