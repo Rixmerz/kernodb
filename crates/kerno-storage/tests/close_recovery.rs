@@ -18,12 +18,13 @@ use kerno_testkit::vfs::{CrashKind, DirImage, HookAction, HookOpKind, HookPoint,
 
 use common::*;
 
-/// `Background::InlineDeferred`: no threads, and a recovery open defers the flush of what
+/// `Inline` with `set_defer_recovery_flush` on: no threads, and a recovery open defers the flush of what
 /// it replays, so the state in between can be looked at and crashed. (`Inline`, which the
 /// crash sweeps use, still flushes at open.)
 fn deferred() -> kerno_storage::Config {
+    kerno_storage::KernoDb::set_defer_recovery_flush(true);
     kerno_storage::Config {
-        test: kerno_storage::TestConfig { background: kerno_storage::Background::InlineDeferred, db_id: Some(DB_ID) },
+        test: kerno_storage::TestConfig { background: kerno_storage::Background::Inline, db_id: Some(DB_ID) },
         ..config(Durability::Sync)
     }
 }
@@ -251,6 +252,7 @@ fn the_flusher_completes_the_deferred_work_after_the_open() {
 /// The eager flush of `Background::Inline` is what the crash sweeps and the format vectors rely on.
 #[test]
 fn inline_recovery_still_flushes_at_open() {
+    kerno_storage::KernoDb::set_defer_recovery_flush(false);
     let (image, model) = unclean_image();
     let (disk, db) = open_copy(&image, &config(Durability::Sync));
     let db = db.unwrap();

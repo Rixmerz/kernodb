@@ -120,7 +120,7 @@ impl Tuning {
             max_subcompactions: c.max_subcompactions,
             // Inline mode promises no threads of its own (`Background::Inline`).
             close_subcompactions: match cfg.test.background {
-                Background::Inline | Background::InlineDeferred => c.max_subcompactions,
+                Background::Inline => c.max_subcompactions,
                 Background::Threads => c.close_subcompactions,
             },
             intermediate_syncs: true,

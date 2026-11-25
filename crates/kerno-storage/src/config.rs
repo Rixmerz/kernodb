@@ -67,11 +67,23 @@ pub enum Background {
     /// number their points identically in every run (phase1-design.md §1
     /// item 6).
     Inline,
-    /// [`Inline`](Background::Inline), except that a recovery open defers the
-    /// flush of what it replayed, as with `Threads`: nobody writes those tables
-    /// until the next rotation, `flush` or close. It holds that state still, so
-    /// tests can look at it and crash it (`Inline` flushes at open, as before).
-    InlineDeferred,
+}
+
+thread_local! {
+    static DEFER_RECOVERY_FLUSH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Test hook: while set on this thread, an `Inline` recovery open defers the
+/// flush of what it replayed, as `Threads` does, so tests can look at that
+/// state and crash it. A thread-local, not a `TestConfig` field, so the
+/// existing `TestConfig` literals keep compiling.
+#[doc(hidden)]
+pub fn set_defer_recovery_flush(on: bool) {
+    DEFER_RECOVERY_FLUSH.with(|c| c.set(on));
+}
+
+pub(crate) fn defer_recovery_flush() -> bool {
+    DEFER_RECOVERY_FLUSH.with(|c| c.get())
 }
 
 /// Settings that only tests use. Not part of the API.

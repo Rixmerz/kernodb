@@ -391,7 +391,7 @@ impl Inner {
     }
 
     fn inline(&self) -> bool {
-        matches!(self.background, Background::Inline | Background::InlineDeferred)
+        matches!(self.background, Background::Inline)
     }
 
     fn check_poisoned(&self) -> Result<()> {
@@ -1582,6 +1582,13 @@ impl Inner {
 }
 
 impl KernoDb {
+    /// Test hook, not API: while on for this thread, an `Inline` recovery open
+    /// defers the flush of what it replayed, as `Threads` does.
+    #[doc(hidden)]
+    pub fn set_defer_recovery_flush(on: bool) {
+        crate::config::set_defer_recovery_flush(on);
+    }
+
     fn spawn(inner: &Arc<Inner>, name: &str, body: fn(&Inner)) -> io::Result<JoinHandle<()>> {
         let inner = inner.clone();
         std::thread::Builder::new().name(name.into()).spawn(move || {
@@ -2017,7 +2024,7 @@ impl KernoDb {
                     levels,
                     tuning.write_buffer,
                     cfg.max_immutable_memtables,
-                    cfg.test.background != Background::Inline,
+                    cfg.test.background != Background::Inline || crate::config::defer_recovery_flush(),
                     floor,
                     wal_prealloc,
                 )?;
