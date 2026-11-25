@@ -926,8 +926,13 @@ fn check_mark_atomic<E: Target>(image: &SimVfs, ctx: &str) {
     let mark = mark_version(&db);
     match n {
         // Every database is at the cut version from its first commit (ADR-0023).
-        [0, 0, 0] => assert!(matches!(mark, None | Some(7)), "{ctx}: no derived key but the mark is {mark:?}"),
-        [1, 1, 1] => assert_eq!(mark, Some(7), "{ctx}: derived keys with the mark {mark:?}"),
+        [0, 0, 0] => assert!(
+            matches!(mark, None | Some(kerno_units::codec::MIN_LAYER_VERSION)),
+            "{ctx}: no derived key but the mark is {mark:?}"
+        ),
+        [1, 1, 1] => {
+            assert_eq!(mark, Some(kerno_units::codec::MIN_LAYER_VERSION), "{ctx}: derived keys with the mark {mark:?}")
+        }
         other => panic!("{ctx}: descriptor, vector and entry are not all there or all absent: {other:?}"),
     }
     clean(&db, ctx);
@@ -1042,7 +1047,7 @@ fn a_failed_first_vector_writes_no_derived_key_and_no_mark<E: Target>() {
     let n = derived_keys(&db);
     // The unit's own change set committed first, so the mark is at 5 either way; the
     // derived keys are all there (3) or none.
-    assert_eq!(mark_version(&db), Some(7));
+    assert_eq!(mark_version(&db), Some(kerno_units::codec::MIN_LAYER_VERSION));
     assert!(n == 0 || n == 3, "{n} derived keys");
     clean(&db, "after the failed first vector");
 }
@@ -1429,7 +1434,7 @@ fn retention_purges_the_derived_data_of_a_purged_revision<E: Target>() {
     assert!(get_raw(&db, &vec_key(old)).is_none() && get_raw(&db, &src_key(u, 1, old)).is_none());
     assert!(get_raw(&db, &desc_key(current)).is_some(), "the datum of the retained revision stays");
     assert_eq!(derived_keys(&db), 3);
-    assert_eq!(mark_version(&db), Some(7));
+    assert_eq!(mark_version(&db), Some(kerno_units::codec::MIN_LAYER_VERSION));
     clean(&db, "after retention");
     db.close().unwrap();
     let (dd, report) = open_dd::<E>(&disk);
@@ -1845,7 +1850,7 @@ fn v1_units<E: Target>(disk: &SimVfs, payloads: &[&[u8]]) -> Vec<UnitId> {
     let db = open_db::<E>(disk);
     db.close().unwrap();
     let db = open_db::<E>(disk);
-    assert_eq!(mark_version(&db), Some(7));
+    assert_eq!(mark_version(&db), Some(kerno_units::codec::MIN_LAYER_VERSION));
     ids
 }
 
@@ -1866,7 +1871,11 @@ fn cs_persist_then_update<E: Target>() {
     dd.close().unwrap();
     let db = open_db::<E>(&disk);
     assert_eq!(persisted_states(&db), vec![(u, VectorState::Stale)]);
-    assert_eq!(mark_version(&db), Some(7), "the vector raised 1 to 2; an update moves no count");
+    assert_eq!(
+        mark_version(&db),
+        Some(kerno_units::codec::MIN_LAYER_VERSION),
+        "the vector raised 1 to 2; an update moves no count"
+    );
     drop(db);
     check_no_ready_on_an_old_source::<E>(&disk, "persist then update");
 }
@@ -1911,7 +1920,11 @@ fn cs_delete_then_persist<E: Target>() {
     dd.close().unwrap();
     let db = open_db::<E>(&disk);
     assert_eq!(derived_keys(&db), 0);
-    assert_eq!(mark_version(&db), Some(7), "nothing derived was written: the delete's count raised the mark to 5");
+    assert_eq!(
+        mark_version(&db),
+        Some(kerno_units::codec::MIN_LAYER_VERSION),
+        "nothing derived was written: the delete's count raised the mark to 5"
+    );
     clean(&db, "delete then persist");
 }
 

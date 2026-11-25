@@ -67,6 +67,13 @@ fn change(db: &UnitDb<E>, f: impl FnOnce(&mut ChangeSet<'_, E>)) {
     cs.commit().unwrap();
 }
 
+fn change_with<T>(db: &UnitDb<E>, f: impl FnOnce(&mut ChangeSet<'_, E>) -> T) -> T {
+    let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
+    let out = f(&mut cs);
+    cs.commit().unwrap();
+    out
+}
+
 fn found(db: &UnitDb<E>, query: &str) -> Vec<UnitId> {
     db.search_text(query, 100, None).unwrap().into_iter().map(|h| h.unit).collect()
 }
@@ -307,7 +314,11 @@ fn the_index_follows_update_archive_restore_and_delete() {
     assert_eq!(found(&db, "beta"), vec![b]);
     assert!(found(&db, "alpha").is_empty());
     assert_eq!(found(&db, "delta"), vec![a]);
-    assert_eq!(db.raw_get(&posting_key("alpha", a)).unwrap(), None, "the old posting is gone");
+    assert_eq!(
+        db.raw_get(&block_key("alpha", None)).unwrap(),
+        None,
+        "the old posting, and its emptied block, are gone"
+    );
     assert_clean(&db);
     // A snapshot keeps the index it was taken at.
     assert_eq!(before.search_text("alpha", 5, None).unwrap().len(), 1);
@@ -451,6 +462,20 @@ fn export_and_import_rebuild_the_index() {
 
 // --------------------------------------------------------------- verify
 
+/// The raw write that gives `unit` the posting `p` in the list of `term` (`None`: takes it out),
+/// for a list of one block, the tail: the damage the verifier must see.
+fn posting_patch(db: &UnitDb<E>, term: &str, unit: UnitId, p: Option<Posting>) -> (Vec<u8>, Option<Vec<u8>>) {
+    use crate::blocks::Block;
+    let key = block_key(term, None);
+    let mut entries = db.raw_get(&key).unwrap().map(|v| Postings::decode(&v).unwrap()).unwrap_or_default();
+    entries.retain(|e| e.0 != unit.0);
+    if let Some(p) = p {
+        entries.push((unit.0, p));
+        entries.sort_by_key(|e| e.0);
+    }
+    (key, (!entries.is_empty()).then(|| Postings::encode(&entries)))
+}
+
 fn corpus_db(seed: u64) -> (UnitDb<E>, Vec<UnitId>) {
     let disk = SimVfs::new(seed);
     let db = open(&disk);
@@ -462,14 +487,14 @@ fn corpus_db(seed: u64) -> (UnitDb<E>, Vec<UnitId>) {
 #[test]
 fn verify_sees_a_lost_posting() {
     let (db, ids) = corpus_db(20);
-    db.raw_commit(vec![(posting_key("gamma", ids[1]), None)]).unwrap();
+    db.raw_commit(vec![posting_patch(&db, "gamma", ids[1], None)]).unwrap();
     assert!(rules(&db).contains(&"UNIT-49".to_string()), "{:?}", db.verify_units().unwrap().findings);
 }
 
 #[test]
 fn verify_sees_a_changed_term_frequency() {
     let (db, ids) = corpus_db(21);
-    db.raw_commit(vec![(posting_key("gamma", ids[1]), Some(encode_posting(Posting { tf: 1, dl: 3 })))]).unwrap();
+    db.raw_commit(vec![posting_patch(&db, "gamma", ids[1], Some(Posting { tf: 1, dl: 3 }))]).unwrap();
     assert_eq!(rules(&db), ["UNIT-49"]);
 }
 
@@ -499,8 +524,8 @@ fn verify_sees_wrong_statistics() {
 
 #[test]
 fn a_record_that_does_not_decode_is_a_structure_finding_alone() {
-    let (db, ids) = corpus_db(25);
-    db.raw_commit(vec![(posting_key("delta", ids[2]), Some(vec![1, 0, 0]))]).unwrap();
+    let (db, _) = corpus_db(25);
+    db.raw_commit(vec![(block_key("delta", None), Some(vec![1, 0, 0]))]).unwrap();
     let r = rules(&db);
     assert!(!r.is_empty() && !r.contains(&"UNIT-49".to_string()), "{r:?}");
 }
@@ -509,7 +534,7 @@ fn a_record_that_does_not_decode_is_a_structure_finding_alone() {
 fn verify_names_no_term() {
     let (db, ids) = corpus_db(26);
     db.raw_commit(vec![
-        (posting_key("gamma", ids[1]), None),
+        posting_patch(&db, "gamma", ids[1], None),
         (doc_key(UnitId([7; 16])), Some(encode_doc(&analyze(b"zeta").unwrap()))),
     ])
     .unwrap();
@@ -536,8 +561,8 @@ fn a_unit_older_than_the_index_is_not_a_finding() {
     s.total_len -= u64::from(first_doc);
     db.raw_commit(vec![
         (doc_key(ids[0]), None),
-        (posting_key("alpha", ids[0]), None),
-        (posting_key("beta", ids[0]), None),
+        posting_patch(&db, "alpha", ids[0], None),
+        posting_patch(&db, "beta", ids[0], None),
         (STATS_KEY.to_vec(), Some(encode_stats(s))),
     ])
     .unwrap();
@@ -546,4 +571,149 @@ fn a_unit_older_than_the_index_is_not_a_finding() {
     update(&db, ids[0], "alpha beta");
     assert!(found(&db, "beta").contains(&ids[0]));
     assert_clean(&db);
+}
+
+// ---------------------------------------------------------- posting blocks
+
+/// A raw `POSTING` record: its key and its decoded entries.
+type PostingBlock = (Vec<u8>, Vec<(UnitId, Posting)>);
+
+/// Every raw `POSTING` record of the store.
+fn posting_blocks(db: &UnitDb<E>) -> Vec<PostingBlock> {
+    use kerno_core::contract::Snapshot;
+    let snap = db.raw_snapshot().unwrap();
+    let all = snap.scan(Bound::Included(&[TAG_POSTING][..]), Bound::Excluded(&[TAG_DOC][..]), 100_000).unwrap();
+    all.into_iter().map(|(k, v)| (k, decode_block(&v).unwrap())).collect()
+}
+
+/// The blocks of one term, in key order.
+fn blocks_of(db: &UnitDb<E>, term: &str) -> Vec<PostingBlock> {
+    let list = list_key(term);
+    posting_blocks(db).into_iter().filter(|(k, _)| k.starts_with(&list)).collect()
+}
+
+/// 300 units that hold "common", written in one change set, and one more that holds "rare".
+fn long_list(seed: u64) -> (UnitDb<E>, Vec<UnitId>) {
+    let disk = SimVfs::new(seed);
+    let db = open(&disk);
+    let mut ids = Vec::new();
+    change(&db, |cs| {
+        for i in 0..300 {
+            ids.push(cs.create(new_unit(format!("common unit{i}").as_bytes())).unwrap());
+        }
+    });
+    store(&db, b"rare");
+    (db, ids)
+}
+
+#[test]
+fn a_batch_writes_one_record_per_block_not_one_per_posting() {
+    let (db, ids) = long_list(40);
+    let blocks = blocks_of(&db, "common");
+    // 300 postings in blocks of at most 128, cut from the low end: 128 + 128 + 44.
+    assert_eq!(blocks.iter().map(|(_, e)| e.len()).collect::<Vec<_>>(), [128, 128, 44]);
+    let units: Vec<UnitId> = blocks.iter().flat_map(|(_, e)| e.iter().map(|(u, _)| *u)).collect();
+    assert_eq!(units, ids, "ascending across the blocks");
+    // The first two blocks are bounded by their last unit, the third is the tail.
+    assert_eq!(blocks[0].0, block_key("common", Some(ids[127])));
+    assert_eq!(blocks[1].0, block_key("common", Some(ids[255])));
+    assert_eq!(blocks[2].0, block_key("common", None));
+    // Each `unitN` term is its own list of one posting: 300 + 1 + 2 lists in all.
+    assert_eq!(posting_blocks(&db).len(), 3 + 300 + 1);
+    assert_eq!(found(&db, "common").len(), 100, "a search is limited, the list is read whole");
+    assert_eq!(db.search_text("common", 1000, None).unwrap().len(), 300);
+    assert_clean(&db);
+}
+
+#[test]
+fn a_posting_changes_and_leaves_a_middle_block_of_a_long_list() {
+    let (db, ids) = long_list(41);
+    // A unit in the middle block loses the term and another gains a repeat of it.
+    update(&db, ids[130], "other");
+    update(&db, ids[200], "common common");
+    let blocks = blocks_of(&db, "common");
+    assert_eq!(blocks.iter().map(|(_, e)| e.len()).collect::<Vec<_>>(), [128, 127, 44]);
+    let tf = blocks[1].1.iter().find(|(u, _)| *u == ids[200]).map(|(_, p)| p.tf);
+    assert_eq!(tf, Some(2), "a posting is replaced in place");
+    assert!(blocks.iter().all(|(_, e)| e.iter().all(|(u, _)| *u != ids[130])));
+    assert_eq!(db.search_text("common", 1000, None).unwrap().len(), 299);
+    assert_clean(&db);
+    // Emptying a block deletes its record: every unit of the first block goes.
+    change(&db, |cs| {
+        for id in &ids[..128] {
+            cs.delete(*id, None).unwrap();
+        }
+    });
+    let blocks = blocks_of(&db, "common");
+    assert_eq!(blocks.iter().map(|(_, e)| e.len()).collect::<Vec<_>>(), [127, 44]);
+    assert_eq!(db.search_text("common", 1000, None).unwrap().len(), 171);
+    assert_clean(&db);
+}
+
+#[test]
+fn a_create_and_an_update_that_share_a_list_in_one_change_set_both_land() {
+    let disk = SimVfs::new(42);
+    let db = open(&disk);
+    let a = store(&db, b"alpha beta");
+    let b = change_with(&db, |cs| {
+        let b = cs.create(new_unit(b"alpha gamma")).unwrap();
+        cs.update(a, UnitUpdate { payload: b"beta alpha alpha".to_vec(), schema_version: None, metadata: None }, None)
+            .unwrap();
+        b
+    });
+    let hits = db.search_text("alpha", 5, None).unwrap();
+    assert_eq!(hits.iter().map(|h| h.unit).collect::<std::collections::BTreeSet<_>>(), [a, b].into());
+    let blocks = blocks_of(&db, "alpha");
+    assert_eq!(blocks.len(), 1, "one block, written once");
+    assert_eq!(blocks[0].1.iter().map(|(_, p)| p.tf).collect::<Vec<_>>(), [2, 1]);
+    assert_clean(&db);
+}
+
+#[test]
+fn turning_the_index_off_removes_every_block_and_on_writes_them_again() {
+    let (db, _) = long_list(43);
+    db.set_fulltext("note", false, ChangeMeta::default()).unwrap();
+    assert!(posting_blocks(&db).is_empty());
+    assert_clean(&db);
+    db.set_fulltext("note", true, ChangeMeta::default()).unwrap();
+    assert_eq!(blocks_of(&db, "common").len(), 3);
+    assert_eq!(db.search_text("common", 1000, None).unwrap().len(), 300);
+    assert_clean(&db);
+}
+
+#[test]
+fn verify_sees_a_block_that_holds_a_unit_outside_its_range() {
+    let (db, ids) = long_list(44);
+    let blocks = blocks_of(&db, "common");
+    // The first block, bounded by its 128th unit, swaps that unit for the 129th.
+    let (key, mut entries) = blocks[0].clone();
+    entries.pop();
+    entries.push(blocks[1].1[0]);
+    use crate::blocks::Block;
+    let raw: Vec<_> = entries.iter().map(|(u, p)| (u.0, *p)).collect();
+    db.raw_commit(vec![(key, Some(Postings::encode(&raw)))]).unwrap();
+    assert!(rules(&db).contains(&"UNIT-49".to_string()), "{:?} {}", db.verify_units().unwrap().findings, ids.len());
+}
+
+#[test]
+fn verify_sees_block_values_that_do_not_decode() {
+    let (db, _) = long_list(45);
+    let key = block_key("rare", None);
+    let good = db.raw_get(&key).unwrap().unwrap();
+    for (name, bad, rule) in [
+        ("no unit", vec![1, 0], "UNIT-9"),
+        ("a partial posting", [&good[..], &[7][..]].concat(), "UNIT-9"),
+        ("a newer envelope", [&[2u8][..], &good[1..]].concat(), "UNIT-7"),
+        ("reserved flags", [&[1u8, 1][..], &good[2..]].concat(), "UNIT-8"),
+        ("a zero frequency", [&good[..18], &[0, 0, 0, 0][..], &good[22..]].concat(), "UNIT-12"),
+    ] {
+        db.raw_commit(vec![(key.clone(), Some(bad))]).unwrap();
+        let r = rules(&db);
+        assert!(r.contains(&rule.to_string()) && !r.contains(&"UNIT-49".to_string()), "{name}: {r:?}");
+        db.raw_commit(vec![(key.clone(), Some(good.clone()))]).unwrap();
+    }
+    assert_clean(&db);
+    // A key that is not tag, term, NUL, bound.
+    db.raw_commit(vec![([&[TAG_POSTING][..], b"rare", &[0, 7]].concat(), Some(good))]).unwrap();
+    assert!(rules(&db).contains(&"UNIT-3".to_string()));
 }

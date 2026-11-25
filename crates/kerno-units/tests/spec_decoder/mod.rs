@@ -124,7 +124,7 @@ fn unit_and_u64(tail: &[u8]) -> ([u8; 16], u64) {
 
 /// `relation_type`: 1..=64 bytes of UTF-8 without NUL (UNIT-12).
 fn valid_relation_type(t: &[u8]) -> bool {
-    !t.is_empty() && !t.contains(&0) && std::str::from_utf8(t).is_ok()
+    (1..=64).contains(&t.len()) && !t.contains(&0) && std::str::from_utf8(t).is_ok()
 }
 
 pub fn decode(key: &[u8], value: &[u8]) -> Res<Rec> {
@@ -136,8 +136,8 @@ pub fn decode(key: &[u8], value: &[u8]) -> Res<Rec> {
         0x30 => Some(9),
         0x31 => Some(13),
         0x40 => Some(17),
-        // tag ‖ unit_id ‖ relation_type (1..=64) ‖ 0x00 ‖ edge_id
-        0x41 | 0x42 if !(35..=98).contains(&key.len()) => return Err(rule(3)),
+        // tag ‖ unit_id ‖ relation_type (1..=64) ‖ 0x00 ‖ (0x01 | 0x00 ‖ bound)
+        0x41 | 0x42 if !(20..=99).contains(&key.len()) => return Err(rule(3)),
         0x41 | 0x42 => Some(key.len()),
         0x50 => Some(1),
         0x51 => Some(17),
@@ -179,26 +179,41 @@ pub fn decode(key: &[u8], value: &[u8]) -> Res<Rec> {
         }));
     }
     if tag == 0x41 || tag == 0x42 {
-        let n = key.len();
-        // The byte before the edge id is the separator (§2): without it the
-        // key does not have the layout of the table.
-        if key[n - 17] != 0 {
-            return Err(rule(3));
-        }
-        let relation_type = key[17..n - 17].to_vec();
+        // The relation type ends at the first NUL (§2): what follows is the block marker.
+        let Some(nul) = key[17..].iter().position(|b| *b == 0) else { return Err(rule(3)) };
+        let relation_type = key[17..17 + nul].to_vec();
         if !valid_relation_type(&relation_type) {
             return Err(rule(12));
         }
+        let bound: Option<[u8; 16]> = match &key[17 + nul + 1..] {
+            [1] => None,
+            [0, edge @ ..] if edge.len() == 16 => Some(edge.try_into().expect("16 bytes")),
+            _ => return Err(rule(3)),
+        };
         let mut r = Reader { buf: value, pos: 0 };
         header(&mut r)?;
-        let other: [u8; 16] = r.arr()?;
-        r.finish()?;
+        let body = &value[r.pos..];
+        if body.is_empty() || !body.len().is_multiple_of(32) {
+            return Err(rule(9));
+        }
+        if body.len() / 32 > 64 {
+            return Err(rule(11));
+        }
+        let entries: Vec<([u8; 16], [u8; 16])> = body
+            .as_chunks::<32>()
+            .0
+            .iter()
+            .map(|c| (c[..16].try_into().expect("16 bytes"), c[16..].try_into().expect("16 bytes")))
+            .collect();
+        if entries.windows(2).any(|w| w[0].0 >= w[1].0) {
+            return Err(rule(13));
+        }
         return Ok(Rec::RelAdj(RelAdj {
             tag,
             unit_id: key[1..17].try_into().expect("16 bytes"),
             relation_type,
-            edge_id: key[n - 16..].try_into().expect("16 bytes"),
-            other,
+            bound,
+            entries,
         }));
     }
     if tag == 0x21 {

@@ -118,14 +118,15 @@ pub struct Rel {
     pub confidence: u16,
 }
 
-/// `REL_OUT` (`tag = 0x41`) or `REL_IN` (`tag = 0x42`) adjacency entry (E4-02).
+/// `REL_OUT` (`tag = 0x41`) or `REL_IN` (`tag = 0x42`) adjacency block (E4-02, ADR-0026): the
+/// entries `(edge_id, other)` of one list, up to `bound` (`None`: the tail block).
 #[derive(Clone, Debug, PartialEq)]
 pub struct RelAdj {
     pub tag: u8,
     pub unit_id: UnitId,
     pub relation_type: Vec<u8>,
-    pub edge_id: [u8; 16],
-    pub other: UnitId,
+    pub bound: Option<[u8; 16]>,
+    pub entries: Vec<([u8; 16], UnitId)>,
 }
 
 /// A decoded key and value.

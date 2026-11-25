@@ -12,6 +12,7 @@ Contents of the directory:
 | [`units-v3.md`](units-v3.md) | Units layer v3 (`layer_version = 3`): public identifiers, records `0x70`/`0x71` ([ADR-0005](../adr/0005-public-identifiers.md)), with the vector table that `crates/kerno-units/tests/public_ids.rs` checks |
 | [`units-v7.md`](units-v7.md) | Units layer v7 (`layer_version = 7`): per-type options, record `0x77`, with the keyword-index opt-out of [ADR-0022](../adr/0022-per-type-fulltext-opt-out.md) |
 | [`units-v8.md`](units-v8.md) | Units layer v8 (`layer_version = 8`): the trigram index of substring search, record `0x7A` and option bit `SUBSTRING`, of [ADR-0025](../adr/0025-substring-index-and-sqlite-parity.md) |
+| [`units-v9.md`](units-v9.md) | Units layer v9 (`layer_version = 9`, a format cut): keyword postings (`0x74`) and adjacency (`0x41`, `0x42`) as posting blocks, of [ADR-0026](../adr/0026-posting-blocks-for-adjacency-and-keyword-postings.md) |
 | [`export-v1.md`](export-v1.md) | Logical export, **frozen** at `format_version = 1` (golden files in `crates/kerno-units/tests/golden/export-v1/`). `export-v0-draft.md` is a pointer kept for old links |
 | `crates/kerno-storage/tests/vectors/v1/` | Structure and directory vectors; a CI guard regenerates them in memory and compares them byte by byte ([CONTRIBUTING](../../CONTRIBUTING.md#format-vectors-and-byte-changes)) |
 

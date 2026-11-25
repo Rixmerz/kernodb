@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use kerno_units::codec::{Adjacency, MAX_LAYER_VERSION};
+use kerno_units::codec::{AdjBlock, MAX_LAYER_VERSION};
 use kerno_units::vector_store::{decode_src_entry, decode_vector, encode_src_entry, encode_vector};
 use kerno_units::*;
 use proptest::prelude::*;
@@ -115,9 +115,15 @@ fn relation_seeds() -> Vec<Pair> {
         };
         out.push(ok(Record::Relation { edge, record }.encode()));
     }
-    let adjacency = Adjacency { other: unit(2) };
-    out.push(ok(Record::RelationOut { unit: unit(1), relation_type: "cites".into(), edge, adjacency }.encode()));
-    out.push(ok(Record::RelationIn { unit: unit(2), relation_type: "cites".into(), edge, adjacency }.encode()));
+    let block = AdjBlock { entries: vec![(edge, unit(2))] };
+    out.push(ok(Record::RelationOut {
+        unit: unit(1),
+        relation_type: "cites".into(),
+        bound: Some(edge),
+        block: block.clone(),
+    }
+    .encode()));
+    out.push(ok(Record::RelationIn { unit: unit(2), relation_type: "cites".into(), bound: None, block }.encode()));
     out
 }
 

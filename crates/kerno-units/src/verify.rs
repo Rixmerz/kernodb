@@ -99,8 +99,8 @@ use std::ops::Bound;
 use kerno_core::contract::{Engine, Snapshot, TxnEngine};
 
 use crate::codec::{
-    Adjacency, ChangeSetRecord, CsMember, IndexMeta, Key, LAYER_MARK_NAME, LayerMeta, PrimaryEntry, Record,
-    RelationRecord, RevisionMeta, TAG_REV_META, TAG_REV_PAYLOAD, UnitHead,
+    ChangeSetRecord, CsMember, IndexMeta, Key, LAYER_MARK_NAME, LayerMeta, PrimaryEntry, Record, RelationRecord,
+    RevisionMeta, TAG_REV_META, TAG_REV_PAYLOAD, UnitHead,
 };
 use crate::db::{MAX_POLICY_UNIT_TYPE_LEN, UnitDb, UnitSnapshot};
 use crate::error::{DecodeError, ErrorClass, UnitError, UnitRule};
@@ -483,10 +483,14 @@ struct State {
     bad_members: BTreeSet<CommitSeq>,
     relations: BTreeMap<RelationId, RelationRecord>,
     bad_relations: BTreeSet<RelationId>,
-    adj_out: BTreeMap<(UnitId, String, RelationId), UnitId>,
-    adj_in: BTreeMap<(UnitId, String, RelationId), UnitId>,
-    /// Relations with an adjacency entry that does not decode.
-    bad_adjacency: BTreeSet<RelationId>,
+    /// The adjacency entries by (unit, type, relation): the unit at the other end and the bound
+    /// of the block that holds the entry (for a finding's key).
+    adj_out: BTreeMap<(UnitId, String, RelationId), (UnitId, Option<RelationId>)>,
+    adj_in: BTreeMap<(UnitId, String, RelationId), (UnitId, Option<RelationId>)>,
+    /// An adjacency block does not decode: which relations it held is unknown.
+    bad_adjacency: bool,
+    /// The list and bound of the last adjacency block met (`None`: the tail), for the range check.
+    adj_last: Option<((u8, UnitId, String), Option<RelationId>)>,
     idx_meta: Option<IndexMeta>,
     bad_idx_meta: bool,
     idx_entries: BTreeMap<UnitId, PrimaryEntry>,
@@ -537,8 +541,8 @@ fn describe(k: &Key) -> String {
         Key::ChangeSet { seq } => format!("CHANGESET {seq}"),
         Key::CsMember { seq, ordinal } => format!("CS_MEMBER {seq}/{ordinal}"),
         Key::Relation { edge } => format!("REL {edge}"),
-        Key::RelationOut { unit, edge, .. } => format!("REL_OUT of unit {unit} for relation {edge}"),
-        Key::RelationIn { unit, edge, .. } => format!("REL_IN of unit {unit} for relation {edge}"),
+        Key::RelationOut { unit, .. } => format!("REL_OUT block of unit {unit}"),
+        Key::RelationIn { unit, .. } => format!("REL_IN block of unit {unit}"),
         Key::IndexMeta => "IDX_META".into(),
         Key::IndexPrimary { unit } => format!("IDX_PRIMARY of unit {unit}"),
         Key::IndexType { unit, .. } => format!("IDX_TYPE of unit {unit}"),
@@ -726,9 +730,7 @@ impl State {
                     Key::Relation { edge } => {
                         self.bad_relations.insert(*edge);
                     }
-                    Key::RelationOut { edge, .. } | Key::RelationIn { edge, .. } => {
-                        self.bad_adjacency.insert(*edge);
-                    }
+                    Key::RelationOut { .. } | Key::RelationIn { .. } => self.bad_adjacency = true,
                     Key::IndexMeta => self.bad_idx_meta = true,
                     Key::IndexPrimary { unit } => {
                         self.bad_idx_entries.insert(*unit);
@@ -741,6 +743,37 @@ impl State {
                 self.decode_error(k, crate::db::context(e, &describe(&decoded_key)));
             }
         }
+    }
+
+    /// One adjacency block of the walk, met in key order: its entries go to the maps the
+    /// relation checks read, and the blocks of a list must hold consecutive ranges.
+    fn keep_adjacency(
+        &mut self,
+        dir: u8,
+        unit: UnitId,
+        relation_type: String,
+        bound: Option<RelationId>,
+        block: crate::codec::AdjBlock,
+    ) {
+        let list = (dir, unit, relation_type);
+        let floor = match self.adj_last.take() {
+            Some((l, b)) if l == list => b,
+            _ => None,
+        };
+        let (lowest, highest) = (block.entries[0].0, block.entries[block.entries.len() - 1].0);
+        if floor.is_some_and(|f| lowest <= f) || bound.is_some_and(|b| highest > b) {
+            let k = if dir == 0 {
+                Key::RelationOut { unit, relation_type: list.2.clone(), bound }
+            } else {
+                Key::RelationIn { unit, relation_type: list.2.clone(), bound }
+            };
+            self.cross(CrossRule::Unit36, key_of(k), "an adjacency block holds a relation outside its range".into());
+        }
+        let map = if dir == 0 { &mut self.adj_out } else { &mut self.adj_in };
+        for (edge, other) in block.entries {
+            map.insert((unit, list.2.clone(), edge), (other, bound));
+        }
+        self.adj_last = Some((list, bound));
     }
 
     fn keep(&mut self, rec: Record) {
@@ -784,11 +817,11 @@ impl State {
                 self.counts.relations += 1;
                 self.relations.insert(edge, record);
             }
-            Record::RelationOut { unit, relation_type, edge, adjacency: Adjacency { other } } => {
-                self.adj_out.insert((unit, relation_type, edge), other);
+            Record::RelationOut { unit, relation_type, bound, block } => {
+                self.keep_adjacency(0, unit, relation_type, bound, block);
             }
-            Record::RelationIn { unit, relation_type, edge, adjacency: Adjacency { other } } => {
-                self.adj_in.insert((unit, relation_type, edge), other);
+            Record::RelationIn { unit, relation_type, bound, block } => {
+                self.keep_adjacency(1, unit, relation_type, bound, block);
             }
             Record::IndexMeta { meta } => self.idx_meta = Some(meta),
             Record::IndexPrimary { unit, entry } => {
@@ -1036,17 +1069,17 @@ impl State {
                     format!("relation {edge}: created_seq {} after the snapshot {}", r.created_seq, self.seq),
                 );
             }
-            if !self.bad_adjacency.contains(edge) {
+            if !self.bad_adjacency {
                 let outs = adj_out.get(&(r.from, r.relation_type.clone(), *edge));
                 let ins = adj_in.get(&(r.to, r.relation_type.clone(), *edge));
-                if outs != Some(&r.to) {
+                if outs.map(|e| e.0) != Some(r.to) {
                     self.cross(
                         CrossRule::Unit36,
                         rk.clone(),
                         format!("relation {edge}: REL_OUT entry missing or wrong"),
                     );
                 }
-                if ins != Some(&r.from) {
+                if ins.map(|e| e.0) != Some(r.from) {
                     self.cross(
                         CrossRule::Unit36,
                         rk.clone(),
@@ -1067,7 +1100,7 @@ impl State {
             }
         }
         for (side, entries) in [("REL_OUT", &adj_out), ("REL_IN", &adj_in)] {
-            for (unit, ty, edge) in entries.keys() {
+            for ((unit, ty, edge), (_, bound)) in entries {
                 if self.bad_relations.contains(edge) {
                     continue;
                 }
@@ -1076,9 +1109,9 @@ impl State {
                 });
                 if !owned {
                     let k = if side == "REL_OUT" {
-                        Key::RelationOut { unit: *unit, relation_type: ty.clone(), edge: *edge }
+                        Key::RelationOut { unit: *unit, relation_type: ty.clone(), bound: *bound }
                     } else {
-                        Key::RelationIn { unit: *unit, relation_type: ty.clone(), edge: *edge }
+                        Key::RelationIn { unit: *unit, relation_type: ty.clone(), bound: *bound }
                     };
                     self.cross(
                         CrossRule::Unit36,
@@ -1110,7 +1143,7 @@ impl State {
                 "adjacency count records in a database whose layer mark is below 4".into(),
             );
         }
-        if !self.bad_adjacency.is_empty() {
+        if self.bad_adjacency {
             return;
         }
         let mut actual: BTreeMap<(UnitId, u8, String), u64> = BTreeMap::new();

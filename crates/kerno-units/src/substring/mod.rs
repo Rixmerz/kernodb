@@ -168,6 +168,7 @@ pub(crate) fn block_key(list: &[u8], bound: Option<UnitId>) -> Vec<u8> {
 }
 
 /// The block value of `units`, ascending.
+#[cfg(test)]
 pub(crate) fn encode_block(units: &[UnitId]) -> Vec<u8> {
     let mut v = Vec::with_capacity(2 + 16 * units.len());
     v.extend_from_slice(&[RECORD_VERSION, 0]);
@@ -199,14 +200,7 @@ pub(crate) fn decode_key(k: &[u8]) -> Result<(String, Gram, Option<UnitId>), Dec
 /// The unit ids of a block value: at least one, at most [`BLOCK_MAX`], strictly ascending.
 pub(crate) fn decode_block(v: &[u8]) -> Result<Vec<UnitId>, DecodeError> {
     let e = |rule, m: &str| DecodeError::new(rule, format!("trigram block: {m}"));
-    match v {
-        [] | [_] => return Err(e(UnitRule::Unit9, "fewer bytes than its envelope")),
-        [0, ..] => return Err(e(UnitRule::Unit6, "envelope_version 0")),
-        [RECORD_VERSION, 0, ..] => {}
-        [RECORD_VERSION, _, ..] => return Err(e(UnitRule::Unit8, "reserved_flags set")),
-        [_, ..] => return Err(e(UnitRule::Unit7, "a newer envelope_version")),
-    }
-    let body = &v[2..];
+    let body = crate::blocks::body(v, "trigram block")?;
     if body.is_empty() || !body.len().is_multiple_of(16) {
         return Err(e(UnitRule::Unit9, "no whole unit id, or a partial one"));
     }
@@ -218,6 +212,28 @@ pub(crate) fn decode_block(v: &[u8]) -> Result<Vec<UnitId>, DecodeError> {
         return Err(e(UnitRule::Unit13, "unit ids not strictly ascending"));
     }
     Ok(units)
+}
+
+/// The trigram blocks as [`crate::blocks`] stores them: unit ids, no value.
+struct Trigrams;
+
+impl crate::blocks::Block for Trigrams {
+    type Val = ();
+    const MAX: usize = BLOCK_MAX;
+    const WHAT: &'static str = "TRIGRAM";
+
+    fn decode(v: &[u8]) -> Result<Vec<(crate::blocks::Id, ())>, DecodeError> {
+        Ok(decode_block(v)?.into_iter().map(|u| (u.0, ())).collect())
+    }
+
+    fn encode(entries: &[(crate::blocks::Id, ())]) -> Vec<u8> {
+        let mut v = Vec::with_capacity(2 + 16 * entries.len());
+        v.extend_from_slice(&[RECORD_VERSION, 0]);
+        for (u, ()) in entries {
+            v.extend_from_slice(u);
+        }
+        v
+    }
 }
 
 // --------------------------------------------------------------- writer
@@ -304,47 +320,12 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         let mut lists: Vec<_> = std::mem::take(&mut self.substring_pending).into_iter().collect();
         lists.sort_unstable_by(|a, b| a.0.cmp(&b.0));
         for (list, mut ops) in lists {
-            let (_, end) = prefix_bounds(&list);
             // Ascending by unit; of several operations on a unit the last wins.
             ops.reverse();
             ops.sort_by_key(|(u, _)| *u);
             ops.dedup_by_key(|(u, _)| *u);
-            let mut ops = ops.into_iter().peekable();
-            while let Some((first, _)) = ops.peek() {
-                let from = block_key(&list, Some(*first));
-                let page = self.txn()?.scan(Bound::Included(&from), Bound::Excluded(&end), 1)?;
-                let (block, mut units, bound) = match page.into_iter().next() {
-                    Some((k, v)) => {
-                        let units = decode_block(&v).map_err(|e| context(e, "TRIGRAM"))?;
-                        let bound = decode_key(&k).map_err(|e| context(e, "TRIGRAM"))?.2;
-                        (Some(k), units, bound)
-                    }
-                    None => (None, Vec::new(), None),
-                };
-                while let Some((unit, add)) = ops.next_if(|(u, _)| bound.is_none_or(|b| *u <= b)) {
-                    match (units.binary_search(&unit), add) {
-                        (Err(at), true) => units.insert(at, unit),
-                        (Ok(at), false) => {
-                            units.remove(at);
-                        }
-                        _ => {}
-                    }
-                }
-                let key = block.clone().unwrap_or_else(|| block_key(&list, bound));
-                if units.is_empty() {
-                    if block.is_some() {
-                        self.write_owned(Write::Delete(key))?;
-                    }
-                    continue;
-                }
-                // Full blocks from the low end, each bounded by its last unit; the rest
-                // keeps the key it had, whose bound is still above every unit in it.
-                let mut chunks = units.chunks(BLOCK_MAX).peekable();
-                while let Some(chunk) = chunks.next() {
-                    let k = if chunks.peek().is_some() { block_key(&list, chunk.last().copied()) } else { key.clone() };
-                    self.write_owned(Write::Put(k, encode_block(chunk)))?;
-                }
-            }
+            let ops = ops.into_iter().map(|(u, add)| (u.0, add.then_some(())));
+            crate::blocks::flush::<Trigrams, E>(self, &list, ops, false)?;
         }
         Ok(())
     }
@@ -364,7 +345,6 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
             let Some(units) = cs.set_option(unit_type, SUBSTRING, enabled)? else {
                 return Ok(());
             };
-            cs.substring_ops += 1;
             let prefix = type_prefix(unit_type);
             let (start, end) = prefix_bounds(&prefix);
             if !enabled {

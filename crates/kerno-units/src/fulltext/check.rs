@@ -15,8 +15,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::tokenize::{Doc, analyze};
 use super::{
-    Posting, STATS_KEY, Stats, TAG_DOC, TAG_POSTING, TAG_STATS, decode_doc, decode_doc_key, decode_posting,
-    decode_posting_key, decode_stats, doc_key,
+    Posting, STATS_KEY, Stats, TAG_DOC, TAG_POSTING, TAG_STATS, decode_block, decode_doc, decode_doc_key,
+    decode_posting_key, decode_stats, doc_key, list_key,
 };
 use crate::error::{DecodeError, UnitRule};
 use crate::types::UnitId;
@@ -28,6 +28,10 @@ pub(crate) struct Check {
     docs: BTreeMap<UnitId, (u32, BTreeSet<String>)>,
     postings: BTreeMap<UnitId, BTreeMap<String, Posting>>,
     stats: Option<Stats>,
+    /// The list key and bound of the last posting block recorded (`None`: the tail).
+    last: Option<(Vec<u8>, Option<UnitId>)>,
+    /// Blocks out of their range: `(key, detail)`.
+    misplaced: Vec<(Vec<u8>, String)>,
     /// A record did not decode: that is a structure finding already, and the
     /// comparison would only repeat it as a pile of cross findings.
     damaged: bool,
@@ -66,8 +70,22 @@ impl Check {
     fn keep(&mut self, k: &[u8], v: &[u8]) -> Result<(), DecodeError> {
         match k.first() {
             Some(&TAG_POSTING) => {
-                let (term, unit) = decode_posting_key(k)?;
-                self.postings.entry(unit).or_default().insert(term, decode_posting(v)?);
+                let (term, bound) = decode_posting_key(k)?;
+                let entries = decode_block(v)?;
+                // The walk is in key order: the blocks of a list hold consecutive ranges.
+                let list = list_key(&term);
+                let floor = match self.last.take() {
+                    Some((l, b)) if l == list => b,
+                    _ => None,
+                };
+                let (lowest, highest) = (entries[0].0, entries[entries.len() - 1].0);
+                if floor.is_some_and(|f| lowest <= f) || bound.is_some_and(|b| highest > b) {
+                    self.misplaced.push((k.to_vec(), "a posting block holds a unit outside its range".into()));
+                }
+                self.last = Some((list, bound));
+                for (unit, p) in entries {
+                    self.postings.entry(unit).or_default().insert(term.clone(), p);
+                }
             }
             Some(&TAG_DOC) => {
                 let unit = decode_doc_key(k)?;
@@ -85,7 +103,7 @@ impl Check {
 
     /// `(key, detail)` of every disagreement.
     pub(crate) fn findings(&self) -> Vec<(Vec<u8>, String)> {
-        let mut out = Vec::new();
+        let mut out = self.misplaced.clone();
         if self.damaged {
             return out;
         }

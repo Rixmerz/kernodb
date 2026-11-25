@@ -169,15 +169,23 @@ fn mark_is_raised_to_3_by_the_first_token_and_never_lowered<E: Target>() {
     let disk = SimVfs::new(16);
     let db = open::<E>(&disk);
     let unit = plain(&db, b"before");
-    assert_eq!(layer_version(&db), 7, "the first unit raised the mark to the layer of the live counts");
+    assert_eq!(
+        layer_version(&db),
+        kerno_units::codec::MIN_LAYER_VERSION,
+        "the first unit raised the mark to the layer of the live counts"
+    );
     let (with_token, _) = issue(&db, b"token");
-    assert_eq!(layer_version(&db), 7, "a token needs layer 3, which layer 5 includes");
+    assert_eq!(
+        layer_version(&db),
+        kerno_units::codec::MIN_LAYER_VERSION,
+        "a token needs layer 3, which layer 5 includes"
+    );
     // Neither deleting the only token nor a policy change lowers it.
     delete(&db, with_token);
     assert_eq!(token_records(&db), (0, 0));
     db.set_policy("doc", HistoryPolicy::Versioned, ChangeMeta::default()).unwrap();
     plain(&db, b"after");
-    assert_eq!(layer_version(&db), 7);
+    assert_eq!(layer_version(&db), kerno_units::codec::MIN_LAYER_VERSION);
     assert!(db.get_unit(unit).unwrap().is_some());
     clean(&db);
 }
@@ -410,7 +418,11 @@ fn legacy_units_without_a_token_stay_readable<E: Target>() {
     let report = import(&target, &export(&src).unwrap()).unwrap();
     assert_eq!(report.tokens, 0);
     assert_eq!(target.public_id(carried).unwrap(), None);
-    assert_eq!(layer_version(&target), 7, "no token, but units: the layer of the live counts");
+    assert_eq!(
+        layer_version(&target),
+        kerno_units::codec::MIN_LAYER_VERSION,
+        "no token, but units: the layer of the live counts"
+    );
     clean(&target);
     db.close().unwrap();
     // Reopened, mixed with a unit that has one.
@@ -572,7 +584,7 @@ fn export_carries_tokens_and_import_restores_them<E: Target>() {
     assert_eq!(target.public_id(untokened).unwrap(), None);
     assert_eq!(target.resolve_public_id(&tgone).unwrap(), None);
     assert_eq!(token_records(&target), (2, 2));
-    assert_eq!(layer_version(&target), 7);
+    assert_eq!(layer_version(&target), kerno_units::codec::MIN_LAYER_VERSION);
     clean(&target);
     // The exported bytes are the same again, and a unit made afterwards gets
     // a token that collides with none of them.

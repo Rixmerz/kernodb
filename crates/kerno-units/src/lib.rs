@@ -30,9 +30,11 @@
 //! `docs/query-language.md`). This crate stays separate from `kerno-storage`.
 
 pub mod adj_count;
+pub(crate) mod adjacency;
 pub mod ann;
 pub mod assoc;
 pub mod assoc_rank;
+pub(crate) mod blocks;
 pub mod cache;
 pub mod clock;
 pub mod codec;

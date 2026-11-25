@@ -523,8 +523,9 @@ fn verifier_reports_index_damage<E: TxnEngine>() {
     let report = db.verify_units().unwrap();
     assert_eq!(report.counts.relations, 1);
 
-    let out = Key::RelationOut { unit: u[0], relation_type: "cites".into(), edge: id }.encode().unwrap();
-    let inn = Key::RelationIn { unit: u[1], relation_type: "cites".into(), edge: id }.encode().unwrap();
+    // The one entry of each list is its whole block: the key of the block that edits it.
+    let block_of = |dir, unit| db.adjacency_patch(&[(dir, unit, "cites", id, None)]).unwrap().remove(0).0;
+    let (out, inn) = (block_of(Direction::Out, u[0]), block_of(Direction::In, u[1]));
     let rel = Key::Relation { edge: id }.encode().unwrap();
     let snap = db.raw_snapshot().unwrap();
     let (out_v, in_v, rel_v) =
@@ -580,20 +581,15 @@ fn verifier_reports_index_damage<E: TxnEngine>() {
         provenance: RelationProvenance::Declared,
     };
     let fid = RelationId([0xAB; 16]);
-    put_all(
-        &db,
-        vec![
-            (Key::Relation { edge: fid }.encode().unwrap(), Some(forged.encode().unwrap())),
-            (
-                Key::RelationOut { unit: u[0], relation_type: "cites".into(), edge: fid }.encode().unwrap(),
-                Some(codec::Adjacency { other: u[1] }.encode()),
-            ),
-            (
-                Key::RelationIn { unit: u[1], relation_type: "cites".into(), edge: fid }.encode().unwrap(),
-                Some(codec::Adjacency { other: u[0] }.encode()),
-            ),
-        ],
+    let mut forge = vec![(Key::Relation { edge: fid }.encode().unwrap(), Some(forged.encode().unwrap()))];
+    forge.extend(
+        db.adjacency_patch(&[
+            (Direction::Out, u[0], "cites", fid, Some(u[1])),
+            (Direction::In, u[1], "cites", fid, Some(u[0])),
+        ])
+        .unwrap(),
     );
+    put_all(&db, forge);
     let report = db.verify_units().unwrap();
     assert!(report.rules().contains("UNIT-36"), "{:?}", report.findings);
     assert!(report.findings.iter().any(|f| f.to_string().contains("Archived")), "{:?}", report.findings);
@@ -615,8 +611,8 @@ fn one_adjacency_entry_missing<E: TxnEngine>(filler: usize) {
     for _ in 0..filler {
         relate(&db, u[2], u[3], "other", RelationProvenance::Declared).unwrap();
     }
-    let out = Key::RelationOut { unit: u[0], relation_type: "cites".into(), edge: id }.encode().unwrap();
-    let inn = Key::RelationIn { unit: u[1], relation_type: "cites".into(), edge: id }.encode().unwrap();
+    let block_of = |dir, unit| db.adjacency_patch(&[(dir, unit, "cites", id, None)]).unwrap().remove(0).0;
+    let (out, inn) = (block_of(Direction::Out, u[0]), block_of(Direction::In, u[1]));
     // (damage, the end that kept its entry, the end that lost it)
     let cases = [
         ("REL_IN lost", &inn, (u[0], Direction::Out), (u[1], Direction::In)),
