@@ -596,4 +596,43 @@ mod tests {
         svc.close().unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// A server that starts after a crash replays the dead one's log and flushes it from a
+    /// background thread (the recovery-open flush is deferred); the log is deleted only then. A
+    /// first tick that comes before that finds the log and ships the commit from it, with no new
+    /// base: both are right, and which one a start gets is a race between two threads. Here the
+    /// flush is held back, so the tick is the one that comes first.
+    #[test]
+    fn a_tick_ahead_of_the_recovery_flush_ships_the_dead_servers_commit_without_a_base() {
+        let root = std::env::temp_dir().join(format!("kerno-server-service-crash-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (live, crashed) = (root.join("live"), root.join("crashed"));
+        let store = Arc::new(MemStore::default());
+        let config = Config { allow_unverified_platform: true, ..Config::default() };
+
+        let svc = Service::open(&live, &[], &config).unwrap().with_backups(store.clone());
+        assert!(svc.backup_tick().unwrap().base.is_some());
+        svc.db.store("note", b"before the crash".to_vec()).unwrap();
+        // The files as a crash leaves them: the log holds the commit, the engine has not flushed it.
+        std::fs::create_dir_all(&crashed).unwrap();
+        for entry in std::fs::read_dir(&live).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_name() != "LOCK" {
+                std::fs::copy(entry.path(), crashed.join(entry.file_name())).unwrap();
+            }
+        }
+        svc.close().unwrap();
+
+        let inline = kerno::storage::TestConfig { background: kerno::storage::Background::Inline, ..Default::default() };
+        let config = Config { test: inline, ..config };
+        KernoDb::set_defer_recovery_flush(true);
+        let again = Service::open(&crashed, &[], &config);
+        KernoDb::set_defer_recovery_flush(false);
+        let again = again.unwrap().with_backups(store);
+        let tick = again.backup_tick().unwrap();
+        assert!(tick.base.is_none(), "the log is still there: no gap, no new base");
+        assert_eq!(tick.shipped.commits, 1);
+        again.close().unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
