@@ -548,7 +548,13 @@ pub fn apply(
     }
     let last_seq = expected - 1;
     if deferred.last().is_some_and(Memtable::is_empty) {
-        deferred.pop();
+        // Its commits wrote no keys, but their sequences exist: the table
+        // flushed before it must carry them, or the MANIFEST ends below the
+        // `base_seq` of the new log (WAL-R1).
+        let empty = deferred.pop().expect("checked above");
+        if let Some(prev) = deferred.last() {
+            prev.raise_max_seq(empty.max_seq());
+        }
     }
     if eager || deferred.is_empty() {
         for m in deferred.iter_mut() {
