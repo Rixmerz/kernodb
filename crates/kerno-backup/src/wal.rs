@@ -31,14 +31,42 @@ pub(crate) fn format_error(file: &str, e: &FormatError) -> Error {
     Error::Corrupt(format!("{file}: {} at offset {}: {}", e.rule, e.offset, e.detail))
 }
 
+/// Windows answers `Access is denied` (os error 5) to an open of a file the engine is deleting or
+/// renaming at that moment (the delete-pending window, until its last handle is gone), where
+/// Linux answers `NotFound`. Nothing else is wrong with such a file, so on Windows the open is
+/// tried again for a moment; elsewhere a denied open is a real permission problem.
+const DENIED_IS_TRANSIENT: bool = cfg!(windows);
+const DENIED_ATTEMPTS: u32 = 50;
+const DENIED_PAUSE: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// Runs `open`, trying again (at most [`DENIED_ATTEMPTS`] times, [`DENIED_PAUSE`] apart) while it
+/// is denied and `transient` says a denial may pass.
+fn retry_denied<T>(transient: bool, mut open: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    let mut attempt = 1;
+    loop {
+        match open() {
+            Err(e) if transient && e.kind() == std::io::ErrorKind::PermissionDenied && attempt < DENIED_ATTEMPTS => {
+                attempt += 1;
+                std::thread::sleep(DENIED_PAUSE);
+            }
+            other => return other,
+        }
+    }
+}
+
+/// Opens `path` to read; `None` when the file is gone.
+fn open_wal(path: &Path) -> Result<Option<std::fs::File>> {
+    match retry_denied(DENIED_IS_TRANSIENT, || std::fs::File::open(path)) {
+        Ok(f) => Ok(Some(f)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(Error::Store(format!("cannot read {}: {e}", path.display()))),
+    }
+}
+
 /// The first bytes of `path` (up to what a header can take) and the length of the file;
 /// `None` when the file is gone.
 fn prefix_of(path: &Path) -> Result<Option<(Vec<u8>, u64)>> {
-    let file = match std::fs::File::open(path) {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(Error::Store(format!("cannot read {}: {e}", path.display()))),
-    };
+    let Some(file) = open_wal(path)? else { return Ok(None) };
     let len = file.metadata()?.len();
     let mut prefix = Vec::new();
     file.take(u64::from(MAX_HEADER_LEN)).read_to_end(&mut prefix)?;
@@ -118,12 +146,11 @@ pub fn read_commits(dir: &Path, after: u64) -> Result<(Vec<Commit>, Option<[u8; 
         if heads.get(i + 1).is_some_and(|next| next.base_seq <= after + 1) {
             continue;
         }
-        let bytes = match std::fs::read(&head.path) {
-            Ok(b) => b,
-            // Deleted between the listing and now: the gap check below says whether it mattered.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(Error::Store(format!("cannot read {}: {e}", head.path.display()))),
-        };
+        // Deleted between the listing and now: the gap check below says whether it mattered.
+        let Some(mut file) = open_wal(&head.path)? else { continue };
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .map_err(|e| Error::Store(format!("cannot read {}: {e}", head.path.display())))?;
         let params = WalScanParams { file_number: head.number, db_id: head.db_id, expected_seq: head.base_seq };
         let name = format!("{:06}.wal", head.number);
         scan_wal(&mut &bytes[..], &params, |_, frame| {
@@ -250,6 +277,36 @@ mod tests {
         let err = seqs(&d, 0).unwrap_err().to_string();
         assert!(err.starts_with("000001.wal: "), "{err}");
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// The Windows race of CI run 45717319100: a log the engine deletes right then is denied, not
+    /// missing, for a moment. It cannot be staged on Linux, so the rule is tested with the platform
+    /// as a parameter.
+    #[test]
+    fn a_denied_open_is_tried_again_only_where_a_denial_can_pass() {
+        let denied = || std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let mut calls = 0;
+        let r: std::io::Result<()> = retry_denied(true, || {
+            calls += 1;
+            if calls < 3 { Err(denied()) } else { Err(std::io::ErrorKind::NotFound.into()) }
+        });
+        assert_eq!((calls, r.unwrap_err().kind()), (3, std::io::ErrorKind::NotFound));
+
+        // A denial that never passes ends after the attempts, with its own error.
+        calls = 0;
+        let r: std::io::Result<()> = retry_denied(true, || {
+            calls += 1;
+            Err(denied())
+        });
+        assert_eq!((calls, r.unwrap_err().kind()), (DENIED_ATTEMPTS, std::io::ErrorKind::PermissionDenied));
+
+        // Elsewhere a denial is a real permission problem: one attempt, no waiting.
+        calls = 0;
+        let r: std::io::Result<()> = retry_denied(false, || {
+            calls += 1;
+            Err(denied())
+        });
+        assert_eq!((calls, r.unwrap_err().kind()), (1, std::io::ErrorKind::PermissionDenied));
     }
 
     #[test]
