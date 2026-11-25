@@ -211,7 +211,7 @@ never return wrong data.
 |------|---------|
 | `kerno.open(path, read_only=False, max_batch_ops=None)` | a `Database`. A read-only open writes nothing and takes no lock, so it runs beside a writer and reads the commits made up to the open (see `refresh`); a write on it raises `ReadOnlyError`, and a directory with no database raises `DatabaseNotFoundError`. `max_batch_ops` changes the 10,000-operation limit of one `commit` |
 | `db.store(unit_type, payload)` | the new unit's id |
-| `db.read(id)` | `Unit` (`id`, `unit_type`, `schema_version`, `lifecycle`, `revision`, `oldest_revision`, `payload`) or `None`. `oldest_revision` is the oldest revision retention still keeps |
+| `db.read(id)` | `Unit` (`id`, `unit_type`, `schema_version`, `lifecycle`, `revision`, `oldest_revision`, `created_at_us`, `updated_at_us`, `payload`) or `None`. `oldest_revision` is the oldest revision retention still keeps |
 | `db.update(id, payload, if_changed=False)` | `True` when a revision was written |
 | `db.delete(id, cascade=False)` | `None`. Without `cascade`, a unit with relations raises `HasRelationsError` |
 | `db.relate(from, to, type, unique=False)` | the relation id. `unique` reuses an existing one |
