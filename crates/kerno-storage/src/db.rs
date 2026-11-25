@@ -1141,6 +1141,9 @@ impl Inner {
         // log below `log_number` is deleted by the next recovery).
         let _delete = probe::phase("delete");
         self.retire_wal(mem.wal_number(), mem.wal_len());
+        for &n in mem.extra_wals() {
+            let _ = self.vfs.remove_file(&self.dir.join(wal_name(n)));
+        }
         bump(&self.stats.flushes, 1);
         bump_max(&self.stats.flush_nanos_max, nanos(start, Instant::now()));
         Ok(())

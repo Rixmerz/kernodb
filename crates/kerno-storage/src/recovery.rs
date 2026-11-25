@@ -504,6 +504,7 @@ pub fn apply(
     let mut wal_lens: Vec<(u64, u64)> = Vec::new();
     let mut expected = state.last_seq + 1;
     for (i, &n) in plan.live_wals.iter().enumerate() {
+        deferred.last_mut().expect("never empty").add_wal(n);
         let scan = wal::replay(vfs, dir, n, db_id, expected, |seq, commit| {
             let cur = deferred.last_mut().expect("never empty");
             cur.apply_commit(seq, commit);
@@ -552,8 +553,13 @@ pub fn apply(
         // flushed before it must carry them, or the MANIFEST ends below the
         // `base_seq` of the new log (WAL-R1).
         let empty = deferred.pop().expect("checked above");
-        if let Some(prev) = deferred.last() {
+        if let Some(prev) = deferred.last_mut() {
             prev.raise_max_seq(empty.max_seq());
+            // Its logs go with the table that carries its sequences.
+            prev.add_wal(empty.wal_number());
+            for &n in empty.extra_wals() {
+                prev.add_wal(n);
+            }
         }
     }
     if eager || deferred.is_empty() {
