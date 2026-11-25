@@ -37,7 +37,14 @@ create_exception!(
     _kerno,
     InvalidArgumentError,
     KernoError,
-    "The engine refused an argument (a type name, a limit, a batch)."
+    "The engine or the binding refused an argument (an id, a type name, a limit, a batch). Also a `ValueError`."
+);
+create_exception!(_kerno, ClosedError, KernoError, "A call on a database handle that was closed. Also a `ValueError`.");
+create_exception!(
+    _kerno,
+    HistoryUnavailableError,
+    KernoError,
+    "The content of that revision is no longer stored: `compact()` dropped the payloads of a deleted unit's history."
 );
 create_exception!(
     _kerno,
@@ -98,6 +105,12 @@ create_exception!(
     "The type's schema refused the document (or the payload is not a document)."
 );
 
+/// The longest unit type name, in bytes.
+const MAX_TYPE_LEN: usize = 64;
+
+const HISTORY_UNAVAILABLE: &str = "the content of that revision is no longer stored: compact() dropped the payloads \
+     of a deleted unit's history (its revisions are still listed by history(), without a payload)";
+
 /// Units `query(lifecycle=...)` reads per `state_as_of` page.
 const STATE_PAGE: usize = 256;
 
@@ -132,6 +145,7 @@ fn engine_error(e: kerno::Error) -> PyErr {
         E::BadEndpoint { .. } => BadEndpointError::new_err(msg),
         E::UnitHasRelations { .. } => HasRelationsError::new_err(msg),
         E::Pruned { .. } => PrunedError::new_err(msg),
+        E::HistoryUnavailable { .. } => HistoryUnavailableError::new_err(HISTORY_UNAVAILABLE),
         E::SchemaViolation { .. } => SchemaError::new_err(msg),
         _ => KernoError::new_err(msg),
     }
@@ -142,16 +156,39 @@ fn engine_error(e: kerno::Error) -> PyErr {
 /// names `what`: the binding never lets an `OverflowError` or `TypeError` out for a number it was
 /// given.
 fn unsigned<T: TryFrom<u64>>(what: &str, v: &Bound<'_, PyAny>) -> PyResult<T> {
-    let bits = std::mem::size_of::<T>() * 8;
-    let whole = v.is_instance_of::<PyInt>() && !v.is_instance_of::<PyBool>();
-    whole.then(|| v.extract::<u64>().ok().and_then(|n| T::try_from(n).ok())).flatten().ok_or_else(|| {
-        InvalidArgumentError::new_err(format!("{what} must be a whole number from 0 to 2**{bits} - 1, not {v}"))
-    })
+    unsigned_from(what, 0, v)
 }
 
-/// [`unsigned`], or `None` for Python's `None`.
-fn maybe_unsigned<T: TryFrom<u64>>(what: &str, v: &Bound<'_, PyAny>) -> PyResult<Option<T>> {
-    if v.is_none() { Ok(None) } else { unsigned(what, v).map(Some) }
+/// [`unsigned`] with a lowest accepted value `min` (a count that must be at least 1).
+fn unsigned_from<T: TryFrom<u64>>(what: &str, min: u64, v: &Bound<'_, PyAny>) -> PyResult<T> {
+    let bits = std::mem::size_of::<T>() * 8;
+    let whole = v.is_instance_of::<PyInt>() && !v.is_instance_of::<PyBool>();
+    whole.then(|| v.extract::<u64>().ok().filter(|n| *n >= min).and_then(|n| T::try_from(n).ok())).flatten().ok_or_else(
+        || InvalidArgumentError::new_err(format!("{what} must be a whole number from {min} to 2**{bits} - 1, not {v}")),
+    )
+}
+
+/// [`unsigned_from`], or `None` for Python's `None`.
+fn maybe_unsigned_from<T: TryFrom<u64>>(what: &str, min: u64, v: &Bound<'_, PyAny>) -> PyResult<Option<T>> {
+    if v.is_none() { Ok(None) } else { unsigned_from(what, min, v).map(Some) }
+}
+
+/// A list of names (`str`) as the argument `what`, or `None`. A bare `str` (the usual slip) and
+/// any other non-list value is an `InvalidArgumentError`, not a raw extraction error.
+fn names(what: &str, v: &Bound<'_, PyAny>) -> PyResult<Option<Vec<String>>> {
+    if v.is_none() {
+        return Ok(None);
+    }
+    let bad = || {
+        InvalidArgumentError::new_err(format!(
+            "{what} must be a list of strings (for example [\"note\"]), not {}",
+            v.get_type().name().map_or_else(|_| "this value".to_owned(), |n| n.to_string())
+        ))
+    };
+    if v.is_instance_of::<PyString>() {
+        return Err(bad());
+    }
+    v.extract::<Vec<String>>().map(Some).map_err(|_| bad())
 }
 
 /// Defines the extractor of one whole-number parameter, for `#[pyo3(from_py_with = ...)]`: pyo3
@@ -164,13 +201,31 @@ macro_rules! whole_arg {
     };
     (maybe $name:ident, $what:literal, $ty:ty) => {
         fn $name(v: &Bound<'_, PyAny>) -> PyResult<Option<$ty>> {
-            maybe_unsigned($what, v)
+            maybe_unsigned_from($what, 0, v)
+        }
+    };
+    (at_least_1 $name:ident, $what:literal, $ty:ty) => {
+        fn $name(v: &Bound<'_, PyAny>) -> PyResult<$ty> {
+            unsigned_from($what, 1, v)
+        }
+    };
+    (maybe_at_least_1 $name:ident, $what:literal, $ty:ty) => {
+        fn $name(v: &Bound<'_, PyAny>) -> PyResult<Option<$ty>> {
+            maybe_unsigned_from($what, 1, v)
+        }
+    };
+    (names $name:ident, $what:literal) => {
+        fn $name(v: &Bound<'_, PyAny>) -> PyResult<Option<Vec<String>>> {
+            names($what, v)
         }
     };
 }
 
-whole_arg!(limit_arg, "limit", usize);
-whole_arg!(maybe max_rows_arg, "limit", usize);
+whole_arg!(at_least_1 limit_arg, "limit", usize);
+whole_arg!(maybe_at_least_1 max_rows_arg, "limit", usize);
+whole_arg!(names types_arg, "types");
+whole_arg!(names text_types_arg, "text_types");
+whole_arg!(names seeds_arg, "seeds");
 whole_arg!(maybe schema_version_arg, "schema_version", u32);
 whole_arg!(maybe from_revision_arg, "from_revision", u64);
 whole_arg!(maybe to_revision_arg, "to_revision", u64);
@@ -183,7 +238,21 @@ whole_arg!(relation_weight_arg, "relation_weight", u32);
 whole_arg!(candidates_arg, "candidates", usize);
 whole_arg!(rrf_k_arg, "rrf_k", u32);
 whole_arg!(max_depth_arg, "max_depth", u32);
-whole_arg!(maybe max_batch_ops_arg, "max_batch_ops", usize);
+/// `max_batch_ops`: `1 ..= MAX_MEMBER_COUNT` (the most members one change set can record).
+fn max_batch_ops_arg(v: &Bound<'_, PyAny>) -> PyResult<Option<usize>> {
+    let max = u64::from(kerno::units::codec::MAX_MEMBER_COUNT);
+    let whole = v.is_instance_of::<PyInt>() && !v.is_instance_of::<PyBool>();
+    if v.is_none() {
+        return Ok(None);
+    }
+    whole
+        .then(|| v.extract::<u64>().ok().filter(|n| (1..=max).contains(n)))
+        .flatten()
+        .map(|n| Some(n as usize))
+        .ok_or_else(|| {
+            InvalidArgumentError::new_err(format!("max_batch_ops must be a whole number from 1 to {max}, not {v}"))
+        })
+}
 
 /// A Python value as a document field: bool, int (64 bits), float, str or bytes. Anything else
 /// is an `InvalidArgumentError`, as is an int outside `-2**63 .. 2**63 - 1`.
@@ -231,8 +300,9 @@ fn field_to_py<'py>(py: Python<'py>, v: &FieldValue) -> PyResult<Bound<'py, PyAn
 /// (seconds) or `keep_since` (a whole number). Every bad rule is a `ValueError`, never a
 /// truncated or wrapped-around number.
 fn retention_rule(rule: &Bound<'_, PyAny>) -> PyResult<RetentionRule> {
-    let bad =
-        || PyValueError::new_err("a retention rule is a dict with exactly one of keep_last, keep_for, keep_since");
+    let bad = || {
+        InvalidArgumentError::new_err("a retention rule is a dict with exactly one of keep_last, keep_for, keep_since")
+    };
     let d = rule.cast::<PyDict>().map_err(|_| bad())?;
     let Some((name, value)) = d.iter().next().filter(|_| d.len() == 1) else {
         return Err(bad());
@@ -241,11 +311,9 @@ fn retention_rule(rule: &Bound<'_, PyAny>) -> PyResult<RetentionRule> {
     // `True` is an int to Python; a rule never means it.
     let number = !value.is_instance_of::<PyBool>();
     let whole = || {
-        value
-            .extract::<u64>()
-            .ok()
-            .filter(|_| number && value.is_instance_of::<PyInt>())
-            .ok_or_else(|| PyValueError::new_err(format!("{name} must be a whole number, 0 or more, not {value}")))
+        value.extract::<u64>().ok().filter(|_| number && value.is_instance_of::<PyInt>()).ok_or_else(|| {
+            InvalidArgumentError::new_err(format!("{name} must be a whole number, 0 or more, not {value}"))
+        })
     };
     match name.as_str() {
         "keep_last" => whole().map(RetentionRule::KeepLast),
@@ -256,7 +324,9 @@ fn retention_rule(rule: &Bound<'_, PyAny>) -> PyResult<RetentionRule> {
             .filter(|_| number)
             .and_then(|secs| std::time::Duration::try_from_secs_f64(secs).ok())
             .map(RetentionRule::KeepFor)
-            .ok_or_else(|| PyValueError::new_err(format!("keep_for is a number of seconds, 0 or more, not {value}"))),
+            .ok_or_else(|| {
+                InvalidArgumentError::new_err(format!("keep_for is a number of seconds, 0 or more, not {value}"))
+            }),
         _ => Err(bad()),
     }
 }
@@ -266,9 +336,9 @@ fn field_type(name: &str) -> PyResult<FieldType> {
         "bool" => FieldType::Bool,
         "int" => FieldType::Int,
         "float" => FieldType::Float,
-        "text" | "str" => FieldType::Text,
+        "text" => FieldType::Text,
         "bytes" => FieldType::Bytes,
-        other => return Err(PyValueError::new_err(format!("unknown field type {other:?}"))),
+        other => return Err(InvalidArgumentError::new_err(format!("unknown field type {other:?}"))),
     })
 }
 
@@ -283,7 +353,7 @@ fn endpoint(v: &Bound<'_, PyAny>) -> PyResult<Endpoint> {
 }
 
 fn parse_id(hex: &str) -> PyResult<[u8; 16]> {
-    let bad = || PyValueError::new_err(format!("not a unit id (expected 32 hex digits): {hex:?}"));
+    let bad = || InvalidArgumentError::new_err(format!("not a unit id (expected 32 hex digits): {hex:?}"));
     if hex.len() != 32 || !hex.is_ascii() {
         return Err(bad());
     }
@@ -356,9 +426,9 @@ struct Revision {
     kind: &'static str,
     #[pyo3(get)]
     commit_seq: u64,
-    /// Descriptive wall-clock time (milliseconds); never used for ordering.
+    /// Descriptive wall-clock time, in microseconds since the Unix epoch; never used for ordering.
     #[pyo3(get)]
-    created_at: i64,
+    created_at_us: i64,
     #[pyo3(get)]
     lifecycle: &'static str,
     #[pyo3(get)]
@@ -395,7 +465,7 @@ impl From<kerno::units::Revision> for Revision {
                 RevisionKind::Restore => "restore",
             },
             commit_seq: r.commit_seq.0,
-            created_at: r.created_at.0,
+            created_at_us: r.created_at.0,
             lifecycle: lifecycle_name(r.lifecycle),
             schema_version: r.schema_version,
             content_hash: encode_hex(&r.content_hash.digest),
@@ -433,6 +503,12 @@ struct Unit {
     /// fail with `PrunedError` below it. 1 until retention prunes the unit.
     #[pyo3(get)]
     oldest_revision: u64,
+    /// When the unit was created, in microseconds since the Unix epoch.
+    #[pyo3(get)]
+    created_at_us: i64,
+    /// When the unit's head revision was written, in microseconds since the Unix epoch.
+    #[pyo3(get)]
+    updated_at_us: i64,
     payload: Option<Vec<u8>>,
 }
 
@@ -458,6 +534,8 @@ impl From<kerno::Unit> for Unit {
             lifecycle: lifecycle_name(u.lifecycle),
             revision: u.head.0,
             oldest_revision: u.oldest.0,
+            created_at_us: u.created_at.0,
+            updated_at_us: u.updated_at.0,
             payload: u.payload,
         }
     }
@@ -557,7 +635,7 @@ impl Database {
             let guard = self.db.read().map_err(|_| KernoError::new_err("database lock poisoned"))?;
             match guard.as_ref() {
                 Some(db) => op(db),
-                None => Err(PyValueError::new_err("operation on a closed database")),
+                None => Err(ClosedError::new_err("operation on a closed database")),
             }
         })
     }
@@ -617,7 +695,9 @@ impl Database {
         let direction = match direction {
             "out" => Direction::Out,
             "in" => Direction::In,
-            other => return Err(PyValueError::new_err(format!("direction must be 'out' or 'in', not {other:?}"))),
+            other => {
+                return Err(InvalidArgumentError::new_err(format!("direction must be 'out' or 'in', not {other:?}")));
+            }
         };
         self.with_db(py, |db| {
             let edges = db.related(id, direction, relation_type).map_err(engine_error)?;
@@ -652,7 +732,8 @@ impl Database {
         })
     }
 
-    /// The units in id order; `unit_type` (an invalid name raises `InvalidArgumentError`) and
+    /// The units in id order; `unit_type` (an invalid name raises `InvalidArgumentError`, for every
+    /// `lifecycle`) and
     /// `schema_version` narrow them. `lifecycle` is
     /// "active" (the default), "archived", "deleted" or "all". A deleted unit has no payload.
     #[pyo3(signature = (unit_type=None, schema_version=None, lifecycle="active"))]
@@ -669,13 +750,23 @@ impl Database {
             "deleted" => Some(Lifecycle::Deleted),
             "all" => None,
             other => {
-                return Err(PyValueError::new_err(format!(
+                return Err(InvalidArgumentError::new_err(format!(
                     "lifecycle must be 'active', 'archived', 'deleted' or 'all', not {other:?}"
                 )));
             }
         };
         let filter = UnitFilter { unit_type: unit_type.map(str::to_owned), schema_version };
         self.with_db(py, |db| {
+            // `filter.matches` below checks nothing, so refuse a bad type name here for every
+            // lifecycle, as the "active" path does.
+            if wanted != Some(Lifecycle::Active)
+                && let Some(t) = unit_type.filter(|t| t.is_empty() || t.len() > MAX_TYPE_LEN)
+            {
+                return Err(InvalidArgumentError::new_err(format!(
+                    "unit_type must be 1 to {MAX_TYPE_LEN} bytes, not {} bytes",
+                    t.len()
+                )));
+            }
             if wanted == Some(Lifecycle::Active) {
                 return Ok(db.query(&filter).map_err(engine_error)?.into_iter().map(Unit::from).collect());
             }
@@ -756,7 +847,7 @@ impl Database {
         py: Python<'_>,
         query: &str,
         #[pyo3(from_py_with = limit_arg)] limit: usize,
-        types: Option<Vec<String>>,
+        #[pyo3(from_py_with = types_arg)] types: Option<Vec<String>>,
     ) -> PyResult<Vec<TextHit>> {
         self.with_db(py, |db| {
             let names: Option<Vec<&str>> = types.as_ref().map(|t| t.iter().map(String::as_str).collect());
@@ -793,7 +884,7 @@ impl Database {
         py: Python<'_>,
         needle: Payload,
         #[pyo3(from_py_with = max_rows_arg)] limit: Option<usize>,
-        types: Option<Vec<String>>,
+        #[pyo3(from_py_with = types_arg)] types: Option<Vec<String>>,
     ) -> PyResult<Vec<String>> {
         let needle = into_bytes(needle);
         self.with_db(py, |db| {
@@ -814,7 +905,17 @@ impl Database {
     /// `InvalidArgumentError` on a handle that is not read-only (a read-write handle is always
     /// current).
     fn refresh(&self, py: Python<'_>) -> PyResult<u64> {
-        self.with_db(py, |db| db.refresh().map_err(engine_error))
+        self.with_db(py, |db| {
+            db.refresh().map_err(|e| {
+                if e.is_engine_argument() {
+                    InvalidArgumentError::new_err(
+                        "refresh() is for a database opened with read_only=True; a read-write handle is always current",
+                    )
+                } else {
+                    engine_error(e)
+                }
+            })
+        })
     }
 
     /// Drops the payloads of deleted units, compacts the revision ranges and returns the stored
@@ -850,11 +951,11 @@ impl Database {
         if let Some(by_type) = by_type {
             let by_type = by_type
                 .cast::<PyDict>()
-                .map_err(|_| PyValueError::new_err("by_type is a dict of unit type to rule"))?;
+                .map_err(|_| InvalidArgumentError::new_err("by_type is a dict of unit type to rule"))?;
             for (unit_type, rule) in by_type.iter() {
                 let unit_type: String = unit_type
                     .extract()
-                    .map_err(|_| PyValueError::new_err(format!("a unit type is a str, not {unit_type}")))?;
+                    .map_err(|_| InvalidArgumentError::new_err(format!("a unit type is a str, not {unit_type}")))?;
                 // `None` is no rule, as `default=None` is.
                 if !rule.is_none() {
                     policy = policy.with_type(&unit_type, retention_rule(&rule)?);
@@ -882,9 +983,9 @@ impl Database {
         let mut defs = Vec::new();
         for f in &fields {
             let name: String =
-                f.get_item("name")?.ok_or_else(|| PyValueError::new_err("field without name"))?.extract()?;
+                f.get_item("name")?.ok_or_else(|| InvalidArgumentError::new_err("field without name"))?.extract()?;
             let ty: String =
-                f.get_item("type")?.ok_or_else(|| PyValueError::new_err("field without type"))?.extract()?;
+                f.get_item("type")?.ok_or_else(|| InvalidArgumentError::new_err("field without type"))?.extract()?;
             let flag =
                 |k: &str| -> PyResult<bool> { Ok(f.get_item(k)?.map(|v| v.is_truthy()).transpose()?.unwrap_or(false)) };
             let mut def = FieldDef::new(name, field_type(&ty)?);
@@ -916,7 +1017,7 @@ impl Database {
     /// Stores `document` as a `unit_type` unit, or revises the active unit that already holds the
     /// same value of `field`, a field the type's schema declares `unique`. Returns `{"id",
     /// "outcome"}`, the outcome being "created", "updated" or "unchanged" (the unit had this
-    /// document already: no revision is written). Raises `InvalidArgumentError` when `field` is
+    /// document already: no revision is written). Raises `NotUniqueError` when `field` is
     /// not declared unique (or the type has no schema) and `SchemaError` when the schema refuses
     /// the document or it has no value in `field`.
     fn upsert<'py>(
@@ -939,11 +1040,13 @@ impl Database {
     }
 
     /// The payload of `id` decoded as a document dict, or `None` for an unknown or deleted unit.
+    /// A payload that is not a document raises `SchemaError`.
     fn read_document<'py>(&self, py: Python<'py>, id: &str) -> PyResult<Option<Bound<'py, PyDict>>> {
         let id = UnitId(parse_id(id)?);
         let unit = self.with_db(py, |db| db.get(id).map_err(engine_error))?;
         let Some(payload) = unit.and_then(|u| u.payload) else { return Ok(None) };
-        let doc = Document::decode(&payload).map_err(engine_error)?;
+        let doc = Document::decode(&payload)
+            .map_err(|e| SchemaError::new_err(format!("the payload is not a document: {e}")))?;
         let d = PyDict::new(py);
         for (k, v) in doc.iter() {
             d.set_item(k, field_to_py(py, v)?)?;
@@ -1069,8 +1172,8 @@ impl Database {
         text: Option<&str>,
         vector: Option<Vec<f32>>,
         vectors: Option<HashMap<String, Vec<f32>>>,
-        seeds: Option<Vec<String>>,
-        text_types: Option<Vec<String>>,
+        #[pyo3(from_py_with = seeds_arg)] seeds: Option<Vec<String>>,
+        #[pyo3(from_py_with = text_types_arg)] text_types: Option<Vec<String>>,
         #[pyo3(from_py_with = keyword_weight_arg)] keyword_weight: u32,
         #[pyo3(from_py_with = vector_weight_arg)] vector_weight: u32,
         #[pyo3(from_py_with = relation_weight_arg)] relation_weight: u32,
@@ -1083,7 +1186,9 @@ impl Database {
         let metric = match metric {
             "cosine" => VectorMetric::Cosine,
             "dot" => VectorMetric::Dot,
-            other => return Err(PyValueError::new_err(format!("metric must be 'cosine' or 'dot', not {other:?}"))),
+            other => {
+                return Err(InvalidArgumentError::new_err(format!("metric must be 'cosine' or 'dot', not {other:?}")));
+            }
         };
         let set = match (&vector, vectors) {
             (Some(q), Some(vs)) => {
@@ -1095,7 +1200,7 @@ impl Database {
                 Some(set)
             }
             (None, None) => None,
-            _ => return Err(PyValueError::new_err("vector and vectors must be given together")),
+            _ => return Err(InvalidArgumentError::new_err("vector and vectors must be given together")),
         };
         let graph = seeds
             .map(|s| {
@@ -1174,7 +1279,7 @@ impl Database {
         };
         for op in &ops {
             if op.is_empty() {
-                return Err(PyValueError::new_err("unknown or malformed batch op: ()"));
+                return Err(InvalidArgumentError::new_err("unknown or malformed batch op: ()"));
             }
             let name: String = op.get_item(0)?.extract()?;
             match (name.as_str(), op.len()) {
@@ -1224,11 +1329,11 @@ impl Database {
                     let t: String = op.get_item(1)?.extract()?;
                     let field: String = op.get_item(2)?.extract()?;
                     let doc = to_document(op.get_item(3)?.cast::<PyDict>().map_err(|_| {
-                        PyValueError::new_err("an upsert op's document is a dict of bool/int/float/str/bytes")
+                        InvalidArgumentError::new_err("an upsert op's document is a dict of bool/int/float/str/bytes")
                     })?)?;
                     batch.upsert(&t, &field, doc.encode().map_err(engine_error)?);
                 }
-                _ => return Err(PyValueError::new_err(format!("unknown or malformed batch op: {op}"))),
+                _ => return Err(InvalidArgumentError::new_err(format!("unknown or malformed batch op: {op}"))),
             }
         }
         let meta = CommitMeta { reason, actor: actor.map(into_bytes), source: source.map(into_bytes) };
@@ -1254,7 +1359,8 @@ impl Database {
     /// `from_revision` below `Unit.oldest_revision` raises `PrunedError`, and an id no unit ever had
     /// raises `NotFoundError` (not `[]`); `from_revision` above `to_revision` raises
     /// `InvalidArgumentError` (equal bounds are an empty page). `with_payload` reads
-    /// and verifies each revision's content.
+    /// and verifies each revision's content; for a deleted unit whose payloads `compact()` dropped,
+    /// the revisions are listed with `payload` `None` instead of raising.
     #[pyo3(signature = (id, limit=100, with_payload=false, from_revision=None, to_revision=None, order="desc"))]
     #[allow(clippy::too_many_arguments)]
     fn history(
@@ -1271,17 +1377,32 @@ impl Database {
         let order = match order {
             "desc" => Order::Desc,
             "asc" => Order::Asc,
-            other => return Err(PyValueError::new_err(format!("order must be 'desc' or 'asc', not {other:?}"))),
+            other => {
+                return Err(InvalidArgumentError::new_err(format!("order must be 'desc' or 'asc', not {other:?}")));
+            }
         };
-        let q = HistoryQuery { from: from_revision.map(RevNo), to: to_revision.map(RevNo), order, limit, with_payload };
+        let query = |with_payload| HistoryQuery {
+            from: from_revision.map(RevNo),
+            to: to_revision.map(RevNo),
+            order,
+            limit,
+            with_payload,
+        };
         self.with_db(py, |db| {
-            Ok(db.unit_db().history(id, q).map_err(engine_error)?.into_iter().map(Revision::from).collect())
+            let revisions = match db.unit_db().history(id, query(with_payload)) {
+                // `compact()` dropped the content of a deleted unit's revisions: list them
+                // without payloads rather than fail the whole call.
+                Err(kerno::Error::HistoryUnavailable { .. }) if with_payload => db.unit_db().history(id, query(false)),
+                other => other,
+            };
+            Ok(revisions.map_err(engine_error)?.into_iter().map(Revision::from).collect())
         })
     }
 
     /// Revisions `a` and `b` of unit `id`, with their verified payloads, and whether their
     /// content is the same. Raises `NotFoundError` for an unknown unit or revision and
-    /// `PrunedError` for a revision retention removed.
+    /// `PrunedError` for a revision retention removed, and `HistoryUnavailableError` for a deleted
+    /// unit after `compact()`.
     fn compare(
         &self,
         py: Python<'_>,
@@ -1300,7 +1421,9 @@ impl Database {
 
     /// The revision of `id` in force once commit `commit_seq` committed, with its payload;
     /// `None` when the unit did not exist yet (or never did). A deleted unit returns its
-    /// tombstone. A sequence after the last commit reads the current state.
+    /// tombstone. A sequence after the last commit reads the current state. Raises `PrunedError`
+    /// below the oldest kept revision and `HistoryUnavailableError` for a deleted unit after
+    /// `compact()`.
     fn read_as_of(
         &self,
         py: Python<'_>,
@@ -1421,7 +1544,15 @@ fn _kerno(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("DeletedError", m.py().get_type::<DeletedError>())?;
     m.add("LockedError", m.py().get_type::<LockedError>())?;
     m.add("CorruptionError", m.py().get_type::<CorruptionError>())?;
-    m.add("InvalidArgumentError", m.py().get_type::<InvalidArgumentError>())?;
+    let invalid = m.py().get_type::<InvalidArgumentError>();
+    let closed = m.py().get_type::<ClosedError>();
+    // Both contracts hold: `except KernoError` and `except ValueError` each catch these.
+    let bases = (m.py().get_type::<KernoError>(), m.py().get_type::<PyValueError>());
+    invalid.setattr("__bases__", bases.clone())?;
+    closed.setattr("__bases__", bases)?;
+    m.add("InvalidArgumentError", invalid)?;
+    m.add("ClosedError", closed)?;
+    m.add("HistoryUnavailableError", m.py().get_type::<HistoryUnavailableError>())?;
     m.add("PayloadTooLargeError", m.py().get_type::<PayloadTooLargeError>())?;
     m.add("HasRelationsError", m.py().get_type::<HasRelationsError>())?;
     m.add("PrunedError", m.py().get_type::<PrunedError>())?;

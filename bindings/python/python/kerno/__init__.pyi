@@ -2,14 +2,20 @@ from os import PathLike
 from types import TracebackType
 from typing import Literal
 
+__version__: str
+"""The installed package version."""
+
 __all__ = [
+    "__version__",
     "BadEndpointError",
     "ChangeSetTooLargeError",
+    "ClosedError",
     "CorruptionError",
     "DatabaseNotFoundError",
     "Database",
     "DeletedError",
     "HasRelationsError",
+    "HistoryUnavailableError",
     "InvalidArgumentError",
     "KernoError",
     "LockedError",
@@ -41,7 +47,19 @@ class NotFoundError(KernoError): ...
 class DeletedError(KernoError): ...
 class LockedError(KernoError): ...
 class CorruptionError(KernoError): ...
-class InvalidArgumentError(KernoError): ...
+class InvalidArgumentError(KernoError, ValueError):
+    """An argument was refused (a malformed id, a bad type name, a limit out of range, a bad batch op).
+
+    Also a `ValueError`: `except KernoError` and `except ValueError` both catch it."""
+
+class ClosedError(KernoError, ValueError):
+    """A call on a closed database handle. Also a `ValueError`."""
+
+class HistoryUnavailableError(KernoError):
+    """The content of a revision is no longer stored: `compact()` dropped the payloads of a deleted
+    unit's history. Raised by `read_as_of` and `compare`; `history(with_payload=True)` lists such
+    revisions with `payload` `None` instead."""
+
 class SchemaExistsError(InvalidArgumentError): ...
 class NotIndexedError(InvalidArgumentError): ...
 class UnknownTypeError(InvalidArgumentError): ...
@@ -74,6 +92,12 @@ class Unit:
     def oldest_revision(self) -> int:
         """The oldest revision retention still keeps (1 until it prunes the unit)."""
     @property
+    def created_at_us(self) -> int:
+        """When the unit was created, in microseconds since the Unix epoch."""
+    @property
+    def updated_at_us(self) -> int:
+        """When the head revision was written, in microseconds since the Unix epoch."""
+    @property
     def payload(self) -> bytes | None:
         """The content; `None` for a deleted unit."""
 
@@ -99,7 +123,8 @@ class Revision:
     @property
     def commit_seq(self) -> int: ...
     @property
-    def created_at(self) -> int: ...
+    def created_at_us(self) -> int:
+        """Descriptive wall-clock time in microseconds since the Unix epoch; never used for ordering."""
     @property
     def lifecycle(self) -> Literal["active", "archived", "deleted"]: ...
     @property
@@ -177,7 +202,8 @@ class Database:
     ) -> list[Unit]:
         """Units in id order, narrowed by type, schema version and lifecycle (active by default).
 
-        An invalid `unit_type` name (empty or over 64 bytes) raises `InvalidArgumentError`.
+        An invalid `unit_type` name (empty or over 64 bytes) raises `InvalidArgumentError` for every
+        `lifecycle`.
         """
     def update(self, id: str, payload: str | bytes, if_changed: bool = False) -> bool:
         """Replace the payload of `id`; returns whether a revision was written."""
@@ -308,12 +334,19 @@ class Database:
         """Up to `limit` revisions of `id` in `[from_revision, to_revision)`, newest first by default.
 
         `NotFoundError` for an id no unit ever had; `InvalidArgumentError` when `from_revision` is
-        above `to_revision` (equal bounds are an empty page, the end of a paged read).
+        above `to_revision` (equal bounds are an empty page, the end of a paged read). For a deleted
+        unit whose payloads `compact()` dropped, `with_payload=True` lists the revisions with `payload`
+        `None` (no error).
         """
     def compare(self, id: str, a: int, b: int) -> Comparison:
-        """Revisions `a` and `b` of unit `id`, with payloads, and whether their content is equal."""
+        """Revisions `a` and `b` of unit `id`, with payloads, and whether their content is equal.
+
+        Raises `HistoryUnavailableError` for a deleted unit after `compact()`."""
     def read_as_of(self, id: str, commit_seq: int) -> Revision | None:
-        """The revision in force once `commit_seq` committed; `None` before creation."""
+        """The revision in force once `commit_seq` committed; `None` before creation.
+
+        Raises `PrunedError` below the oldest kept revision and `HistoryUnavailableError` for a
+        deleted unit after `compact()`."""
     def verify(self) -> dict[str, object]:
         """Integrity check of the units layer (clean, commit_seq, counts, findings)."""
     def close(self) -> None:

@@ -282,7 +282,7 @@ def test_read_the_past_example(db: kerno.Database) -> None:
     with pytest.raises(kerno.NotFoundError):
         db.compare(uid, 1, 99)
     for r in db.history(uid, with_payload=True):
-        assert r.payload is not None and r.content_hash and r.created_at > 0 and r.commit_seq > 0
+        assert r.payload is not None and r.content_hash and r.created_at_us > 0 and r.commit_seq > 0
     assert all(r.payload is None for r in db.history(uid))
 
 
