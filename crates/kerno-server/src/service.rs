@@ -623,7 +623,8 @@ mod tests {
         }
         svc.close().unwrap();
 
-        let inline = kerno::storage::TestConfig { background: kerno::storage::Background::Inline, ..Default::default() };
+        let inline =
+            kerno::storage::TestConfig { background: kerno::storage::Background::Inline, ..Default::default() };
         let config = Config { test: inline, ..config };
         KernoDb::set_defer_recovery_flush(true);
         let again = Service::open(&crashed, &[], &config);
