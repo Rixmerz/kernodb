@@ -39,7 +39,7 @@ The alpha is published with the pre-release version `1.0.0-alpha.3`. Each regist
 | `@rixmerz/kernodb` (Node.js bindings) | npm | `npm install @rixmerz/kernodb@alpha` |
 | `kernodb` (Python bindings, imported as `kerno`) | PyPI | `pip install --pre kernodb` |
 
-The HTTP clients (`kerno-client`) and the LangChain, LlamaIndex and Vercel AI SDK integrations live in this repository but are not published in this alpha; install them from source. The release steps and the package list are in [the release checklist](docs/release/1.0.0-alpha.2-checklist.md). The quick start is in [the `kerno` crate README](crates/kerno/README.md).
+The HTTP clients (`kerno-client`) and the LangChain, LlamaIndex and Vercel AI SDK integrations live in this repository but are not published in this alpha; install them from source. The release gate is in [RELEASING.md](RELEASING.md), and the latest validation record is [the 1.0.0-alpha.4 validation](docs/release/alpha.4-validation.md). The quick start is in [the `kerno` crate README](crates/kerno/README.md).
 
 ## Status
 
@@ -64,6 +64,7 @@ Stages follow the [roadmap](docs/roadmap/README.md):
 |---|---|
 | [Getting started](docs/getting-started.md) | Install the `kerno` crate, open a database, store and retrieve memory in five minutes, and three runnable examples (agent memory, chat history, document store) |
 | [Python bindings](bindings/python/README.md) | Install from PyPI, concepts, API, errors, performance advice and limits for the `kernodb` package |
+| [Node bindings](bindings/node/README.md) | Install from npm, concepts, API, errors, durability and limits for the `@rixmerz/kernodb` package |
 | [Bindings coverage](docs/bindings-coverage.md) | Every public call of the `kerno` facade, and whether the Python and Node bindings expose it, under which name |
 | [Kerno as a history next to another database](docs/guides/history-alongside.md) | Keep a main database as the source of truth and mirror it into Kerno: revisions, tombstones, as-of reads, retention, readers with `refresh` |
 | [One unit per entity](docs/guides/one-unit-per-entity.md) | Recipe: a unique field, `find` by a logical key, and `upsert` by it |

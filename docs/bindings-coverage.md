@@ -2,7 +2,7 @@
 
 This table lists every public method of the `kerno` facade (`kerno::Db`, `crates/kerno/src/lib.rs`)
 and the `Batch` operations, and says whether the Python binding (`bindings/python`, package
-`kernodb`, module `kerno`) and the Node binding (`bindings/node`, package `kernodb`) expose each one,
+`kernodb`, module `kerno`) and the Node binding (`bindings/node`, package `@rixmerz/kernodb`) expose each one,
 and under which name. It is built from the source: the Rust names come from `crates/kerno/src/lib.rs`,
 the Python names from the `#[pymethods]` of `bindings/python/src/lib.rs`, and the Node names from the
 `#[napi]` methods of `bindings/node/src/lib.rs` (napi camelCases them; `bindings/node/index.d.ts` agrees).
@@ -73,11 +73,13 @@ exposes only part of it. **Gap** means there is no way to call it from that bind
 |---|---|---|---|
 | `set_fulltext(type, enabled)` | `db.set_fulltext(type, enabled)` | `db.setFulltext(type, enabled)` | Full |
 | `fulltext(type)` | `db.fulltext(type)` | `db.fulltext(type)` | Full |
+| `set_substring(type, enabled)` | `db.set_substring(type, enabled)` | `db.setSubstring(type, enabled)` | Full |
+| `search_substring(needle, limit, types)` | `db.search_substring(needle, limit=, types=)` | `db.searchSubstring(needle, { limit, types })` | Full. Returns the ids of the units whose payload holds `needle` |
 | `search_text(query, limit, types)` | `db.search_text(query, limit=, types=)` | `db.searchText(query, { limit, types })` | Full. `types` restricts the search to unit types; `hybrid_search` takes it as `text_types` / `textTypes` |
-| `query(filter)` | `db.query(unit_type=, schema_version=, lifecycle=)` | `db.query({ unitType, schemaVersion })` | Full. Node returns active units only, like the facade; Python also takes `lifecycle` |
+| `query(filter)` | `db.query(unit_type=, schema_version=, lifecycle=)` | `db.query({ unitType, schemaVersion })` | Partial: Python also takes `lifecycle`. Node has no `lifecycle` option and returns active units only; an unknown option key is ignored without an error |
 | `execute(query)` | `db.execute(query)` | `db.execute(query)` | Full |
 | `explain(query)` | `db.explain(query)` | none | **Gap** (Node) |
-| `hybrid_search(query)` | `db.hybrid_search(text=, vector=, vectors=, seeds=, ...)` | `db.hybridSearch({ text, vectors, relations, weights, fusion, ... })` | Full. The option names differ; see each binding's README |
+| `hybrid_search(query)` | `db.hybrid_search(text=, vector=, vectors=, seeds=, ...)` | `db.hybridSearch({ text, vectors, relations, weights, fusion, ... })` | Partial. Python has no `fusion`, no relation `direction` or relation-type filter, and no `visit_budget` (its budget is fixed). Scores differ: Python's `score` is a float and it reports per-leg scores (`keyword_score`, `vector_score`, `relation_score`); Node's `score` is an integer scaled by 1e9 and it reports ranks only (`ranks`). The rank of the relation leg is `relation_rank` in Python and `ranks.relations` in Node |
 
 ## Batch operations
 
@@ -106,9 +108,19 @@ listed so that nothing a binding offers is missing from this page.
 
 | Call | Python | Node |
 |---|---|---|
-| `UnitDb::history` | `db.history(id, ...)` | `db.history(id, { fromRevision, ... })` |
+| `UnitDb::history` | `db.history(id, limit=, with_payload=, from_revision=, to_revision=, order=)` | `db.history(id, { limit, withPayload, fromRevision })`. **Gap**: `toRevision` and `order` (an unknown option key is ignored without an error) |
 | `UnitDb::compare` | `db.compare(id, a, b)` | **Gap**: no `compare` |
 | read a document back (`Document::decode`) | `db.read_document(id)` | `db.readDocument(id)` |
+| the `Unit` record that `read`, `query` and `find` return | fields `id, unit_type, schema_version, lifecycle, revision, oldest_revision, payload`; **no timestamps** | fields `id, unitType, schemaVersion, lifecycle, revision, createdAtUs, updatedAtUs, payload`; **no `oldestRevision`**. Partial: each binding lacks a field the other has |
+
+## Numeric ranges
+
+Each binding accepts a different range of whole numbers, and refuses a value outside its own range with
+its own invalid-argument error (**difference, not a gap**):
+
+- Python: counts, limits and revisions take 0 to 2**64 - 1 (the engine's own limits still apply, for example `max_batch_ops`).
+- Node: a number argument must be a whole number up to 2^53. `limit`, `schemaVersion` and `maxBatchOps`
+  are also capped at 2^32 - 1.
 
 ## Rust only, by design
 
@@ -120,5 +132,9 @@ listed so that nothing a binding offers is missing from this page.
 
 - `drop_index` and `schema`: missing from both bindings.
 - `find_range`, `explain` and `compare`: missing from Node.
+- Node `history` has no `toRevision` or `order`, and Node `query` has no `lifecycle`: Python has all three.
+- Node `Unit` has no `oldestRevision`; Python `Unit` has no `createdAtUs` / `updatedAtUs`.
+- Hybrid search: Python lacks `fusion`, relation `direction`, relation-type filter and `visit_budget`;
+  the score scales differ (see the `hybrid_search` row).
 - `open_with` and `open_with_limits` take a `Config` in Rust; the bindings expose only the read-only
   mode and the batch limit.
