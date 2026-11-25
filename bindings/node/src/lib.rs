@@ -14,7 +14,8 @@ use std::sync::{PoisonError, RwLock};
 
 use kerno::units::assoc_rank::{VectorMetric, VectorSet};
 use kerno::units::hybrid::Fusion;
-use kerno::units::{HistoryQuery, RevNo, RevisionKind, UnitAt};
+use kerno::units::hybrid::RRF_SCALE;
+use kerno::units::{AsOf, HistoryQuery, Order, RevNo, RevisionKind, UnitAt};
 use kerno::{
     AccessMode, AssocDirection, AssocQuery, Batch, CommitMeta, Config, Direction, Document, Endpoint, FieldDef,
     FieldType, FieldValue, HybridQuery, HybridWeights, Lifecycle, RelationId, RetentionPolicy, RetentionRule as Rule,
@@ -65,6 +66,8 @@ enum ErrorCode {
     Schema,
     /// The database handle is closed.
     Closed,
+    /// The revision's payload is gone: the unit was deleted and `compact` dropped its payloads.
+    HistoryUnavailable,
     /// Any other engine failure.
     Kerno,
 }
@@ -90,6 +93,7 @@ impl ErrorCode {
             ErrorCode::Pruned => "PRUNED",
             ErrorCode::Schema => "SCHEMA",
             ErrorCode::Closed => "CLOSED",
+            ErrorCode::HistoryUnavailable => "HISTORY_UNAVAILABLE",
             ErrorCode::Kerno => "KERNO",
         }
     }
@@ -109,7 +113,7 @@ fn invalid(msg: impl std::fmt::Display) -> JsError {
 /// The same mapping as the Python binding's `engine_error`.
 fn engine_error(e: kerno::Error) -> JsError {
     use kerno::Error as E;
-    let msg = e.to_string();
+    let msg = node_names(&e.to_string());
     let code = if e.is_locked() {
         ErrorCode::Locked
     } else if e.is_corruption() {
@@ -135,10 +139,36 @@ fn engine_error(e: kerno::Error) -> JsError {
             E::UnitHasRelations { .. } => ErrorCode::HasRelations,
             E::Pruned { .. } => ErrorCode::Pruned,
             E::SchemaViolation { .. } => ErrorCode::Schema,
+            E::HistoryUnavailable { .. } => {
+                return coded(
+                    ErrorCode::HistoryUnavailable,
+                    "the payload of that revision is gone: the unit was deleted and `compact()` dropped its payloads \
+                     (its revisions are still listed by `history` without `withPayload`)",
+                );
+            }
             _ => ErrorCode::Kerno,
         }
     };
     coded(code, msg)
+}
+
+/// An engine message in the names this package uses: the engine words its errors with the Rust
+/// (snake_case) names of the options.
+fn node_names(msg: &str) -> String {
+    const RENAMES: [(&str, &str); 11] = [
+        ("set_fulltext", "setFulltext"),
+        ("set_substring", "setSubstring"),
+        ("search_text", "searchText"),
+        ("search_substring", "searchSubstring"),
+        ("text_types", "textTypes"),
+        ("max_depth", "maxDepth"),
+        ("visit_budget", "visitBudget"),
+        ("max_changeset_ops", "maxBatchOps"),
+        ("relation_type", "relationType"),
+        ("rrf_k", "rrfK"),
+        ("graph leg", "relations leg"),
+    ];
+    RENAMES.iter().fold(msg.to_owned(), |m, (from, to)| m.replace(from, to))
 }
 
 /// A counter, sequence or size as a JS number.
@@ -201,6 +231,9 @@ pub struct Unit {
     pub lifecycle: String,
     /// The number of the unit's latest revision.
     pub revision: i64,
+    /// The oldest revision retention kept (1 until `runRetention` prunes something): `history`
+    /// from a lower `fromRevision` and `readAsOf` before it throw `PRUNED`.
+    pub oldest_revision: i64,
     /// Microseconds since the Unix epoch; descriptive, not an ordering guarantee.
     pub created_at_us: i64,
     pub updated_at_us: i64,
@@ -216,6 +249,7 @@ impl From<kerno::Unit> for Unit {
             schema_version: u.schema_version,
             lifecycle: lifecycle_name(u.lifecycle),
             revision: num(u.head.0),
+            oldest_revision: num(u.oldest.0),
             created_at_us: u.created_at.0,
             updated_at_us: u.updated_at.0,
             payload: u.payload.map(Buffer::from),
@@ -307,6 +341,9 @@ pub struct UnitFilter {
     pub unit_type: Option<String>,
     #[napi(ts_type = "number")]
     pub schema_version: Option<Num>,
+    /// Default `active`. `archived`, `deleted` and `all` read every unit's head (linear in the store).
+    #[napi(ts_type = "'active' | 'archived' | 'deleted' | 'all'")]
+    pub lifecycle: Option<String>,
 }
 
 #[napi(object)]
@@ -315,7 +352,7 @@ pub struct OpenOptions {
     /// to the moment it opened (`refresh()` shows later ones). A write throws `READ_ONLY`, and a
     /// directory with no database throws `DATABASE_NOT_FOUND`. Default `false`.
     pub read_only: Option<bool>,
-    /// The most operations one `commit` may hold. Default 10,000.
+    /// The most operations one `commit` may hold, 1 to 1,048,576. Default 10,000.
     #[napi(ts_type = "number")]
     pub max_batch_ops: Option<Num>,
 }
@@ -340,7 +377,7 @@ pub struct RelateOptions {
 
 #[napi(object)]
 pub struct HistoryOptions {
-    /// The newest `limit` revisions (at least 1). Default 100.
+    /// At most this many revisions (at least 1). Default 100.
     #[napi(ts_type = "number")]
     pub limit: Option<Num>,
     /// Read and verify each revision's content. Default `false`.
@@ -348,6 +385,13 @@ pub struct HistoryOptions {
     /// The oldest revision to list, inclusive. Default: the oldest kept. Below it throws `PRUNED`.
     #[napi(ts_type = "number")]
     pub from_revision: Option<Num>,
+    /// The end revision, exclusive. Default: up to the head. Below `fromRevision` throws
+    /// `INVALID_ARGUMENT` (equal bounds are an empty page).
+    #[napi(ts_type = "number")]
+    pub to_revision: Option<Num>,
+    /// `desc` (newest first) or `asc` (oldest first). Default `desc`.
+    #[napi(ts_type = "'desc' | 'asc'")]
+    pub order: Option<String>,
 }
 
 #[napi(object)]
@@ -559,20 +603,34 @@ impl ToNapiValue for Num {
 /// A JS number that must be a whole number in `0..=2^53`: a fraction, a negative, NaN, an
 /// infinity or a value that is not a number is refused rather than truncated.
 fn whole(what: &str, n: Num) -> Result<u64> {
+    whole_min(what, n, 0)
+}
+
+/// Like `whole`, but the number must also be `min` or more; the message says so.
+fn whole_min(what: &str, n: Num, min: u64) -> Result<u64> {
     match n.0 {
-        Some(n) if n.fract() == 0.0 && (0.0..=MAX_SAFE).contains(&n) => {
+        Some(v) if v.fract() == 0.0 && (min as f64..=MAX_SAFE).contains(&v) => {
             // Exact: a whole number in 0..=2^53 converts without loss.
-            Ok(n as u64)
+            Ok(v as u64)
         }
-        Some(n) => Err(invalid(format!("{what} must be a whole number, 0 or more, not {n}"))),
+        Some(v) => Err(invalid(format!("{what} must be a whole number, {min} or more, not {v}"))),
         None => Err(invalid(format!("{what} must be a number"))),
     }
 }
 
 /// Like `whole`, for an optional option that the engine takes as a `u32`.
 fn whole_u32(what: &str, n: Option<Num>) -> Result<Option<u32>> {
-    n.map(|n| whole(what, n).and_then(|w| u32::try_from(w).map_err(|_| invalid(format!("{what} is too large")))))
-        .transpose()
+    whole_u32_min(what, n, 0)
+}
+
+/// Like `whole_u32`, with a lower bound.
+fn whole_u32_min(what: &str, n: Option<Num>, min: u64) -> Result<Option<u32>> {
+    n.map(|n| {
+        whole_min(what, n, min).and_then(|w| {
+            u32::try_from(w).map_err(|_| invalid(format!("{what} must be a whole number of at most {}", u32::MAX)))
+        })
+    })
+    .transpose()
 }
 
 /// What `verify` found. A damaged store is reported (`clean: false`), not thrown.
@@ -729,9 +787,11 @@ pub struct VectorItem {
 #[napi(object)]
 pub struct RelationsInput {
     /// Active units to start from; they are not hits themselves.
-    pub seeds: Vec<String>,
+    #[napi(ts_type = "Array<string>")]
+    pub seeds: Names,
     /// Follow only these relation types. Default: any.
-    pub types: Option<Vec<String>>,
+    #[napi(ts_type = "Array<string>")]
+    pub types: Option<Names>,
     /// Default `both`.
     #[napi(ts_type = "'out' | 'in' | 'both'")]
     pub direction: Option<String>,
@@ -800,7 +860,8 @@ pub struct SearchSubstringOptions {
     #[napi(ts_type = "number")]
     pub limit: Option<Num>,
     /// Search only these unit types (at least one). Default: every substring-indexed type.
-    pub types: Option<Vec<String>>,
+    #[napi(ts_type = "Array<string>")]
+    pub types: Option<Names>,
 }
 
 /// One hit of `searchText`.
@@ -822,8 +883,15 @@ pub struct LegRanks {
 #[napi(object)]
 pub struct HybridHit {
     pub id: String,
-    /// The sum of the leg contributions, scaled by 1e9. Compare, do not interpret.
-    pub score: i64,
+    /// The sum of the leg scores, `weight / (rrfK + rank)` per leg that found the unit (a float,
+    /// as in the Python binding).
+    pub score: f64,
+    /// The share of `score` the keyword leg contributed; absent when it did not find the unit.
+    pub keyword_score: Option<f64>,
+    /// The share of `score` the vector leg contributed.
+    pub vector_score: Option<f64>,
+    /// The share of `score` the relations leg contributed.
+    pub relation_score: Option<f64>,
     pub ranks: LegRanks,
 }
 
@@ -868,6 +936,9 @@ impl Db {
         Ok(out)
     }
 }
+
+/// Units `query` reads per `state_as_of` page.
+const STATE_PAGE: usize = 256;
 
 const MAX_SAFE: f64 = 9_007_199_254_740_992.0; // 2^53
 
@@ -1012,8 +1083,15 @@ pub fn open(path: String, options: Option<OpenOptions>) -> Result<Db> {
     } else {
         Config { allow_unverified_platform: true, ..Config::default() }
     };
-    let max_ops = whole_u32("maxBatchOps", options.max_batch_ops)?
-        .map_or(kerno::units::DEFAULT_MAX_CHANGESET_OPS, |n| n as usize);
+    // 1_048_576 is the engine's cap on the members of one change set.
+    let max_ops = match options.max_batch_ops {
+        None => kerno::units::DEFAULT_MAX_CHANGESET_OPS,
+        Some(Num(Some(v))) if v.fract() == 0.0 && (1.0..=1_048_576.0).contains(&v) => v as usize,
+        Some(Num(Some(v))) => {
+            return Err(invalid(format!("maxBatchOps must be a whole number from 1 to 1048576, not {v}")));
+        }
+        Some(Num(None)) => return Err(invalid("maxBatchOps must be a number")),
+    };
     let db = kerno::Db::open_with_limits(path, config, max_ops).map_err(engine_error)?;
     Ok(Db { inner: RwLock::new(Some(db)) })
 }
@@ -1118,16 +1196,57 @@ impl Db {
         Ok(edges.into_iter().map(Relation::from).collect())
     }
 
-    /// Every active unit that matches `filter` (all of them without one), in id order. An
-    /// invalid `unitType` (empty or over 64 bytes) throws `INVALID_ARGUMENT`.
+    /// Every unit that matches `filter` (all active ones without one), in id order; `lifecycle`
+    /// picks `active` (the default), `archived`, `deleted` or `all`. A deleted unit has no
+    /// payload. An invalid `unitType` (empty or over 64 bytes) throws `INVALID_ARGUMENT`,
+    /// whatever the lifecycle.
     #[napi]
     pub fn query(&self, filter: Option<UnitFilter>) -> Result<Vec<Unit>> {
-        let filter = filter.unwrap_or(UnitFilter { unit_type: None, schema_version: None });
+        let filter = filter.unwrap_or(UnitFilter { unit_type: None, schema_version: None, lifecycle: None });
+        let wanted = match filter.lifecycle.as_deref() {
+            None | Some("active") => Some(Lifecycle::Active),
+            Some("archived") => Some(Lifecycle::Archived),
+            Some("deleted") => Some(Lifecycle::Deleted),
+            Some("all") => None,
+            Some(other) => {
+                return Err(invalid(format!(
+                    "lifecycle must be \"active\", \"archived\", \"deleted\" or \"all\", not {other:?}"
+                )));
+            }
+        };
+        if filter.unit_type.as_deref().is_some_and(|t| !kerno::units::codec::valid_unit_type(t)) {
+            return Err(invalid("unitType is not a valid unit type name (1 to 64 bytes)"));
+        }
         let filter = kerno::UnitFilter {
             unit_type: filter.unit_type,
             schema_version: whole_u32("schemaVersion", filter.schema_version)?,
         };
-        let units = self.with(|db| db.query(&filter))?;
+        if wanted == Some(Lifecycle::Active) {
+            let units = self.with(|db| db.query(&filter))?;
+            return Ok(units.into_iter().map(Unit::from).collect());
+        }
+        // ponytail: reads every unit's head through `state_as_of` (linear in the store, and it
+        // verifies each payload); the engine has no index of archived or deleted units.
+        let units = self.with(|db| {
+            let snap = db.unit_db().snapshot()?;
+            let at = AsOf::Seq(snap.seq());
+            let (mut out, mut after) = (Vec::new(), None);
+            loop {
+                let page = snap.state_as_of(at, after, STATE_PAGE)?;
+                for (id, state) in &page {
+                    let (UnitAt::Present(r) | UnitAt::DeletedAt(r)) = state else { continue };
+                    if wanted.is_some_and(|l| l != r.lifecycle) {
+                        continue;
+                    }
+                    let unit = snap.get_unit(*id)?;
+                    out.extend(unit.filter(|u| filter.matches(&u.unit_type, u.schema_version)));
+                }
+                match page.last() {
+                    Some((id, _)) if page.len() == STATE_PAGE => after = Some(*id),
+                    _ => return Ok(out),
+                }
+            }
+        })?;
         Ok(units.into_iter().map(Unit::from).collect())
     }
 
@@ -1155,20 +1274,32 @@ impl Db {
         })
     }
 
-    /// The newest `limit` revisions of `id` from `fromRevision` on, newest first. Throws `NOT_FOUND`
-    /// for a unit that never existed (not `[]`) and `PRUNED` when `fromRevision` is below the
-    /// oldest revision retention kept.
+    /// Up to `limit` revisions of `id`, newest first (`order: "desc"`) or oldest first (`"asc"`),
+    /// among those in `[fromRevision, toRevision)`; a missing bound is the oldest kept or the head.
+    /// To page, pass the last revision of a page as the next `toRevision` (desc) or its successor
+    /// as the next `fromRevision` (asc). Throws `NOT_FOUND` for a unit that never existed (not
+    /// `[]`), `PRUNED` when `fromRevision` is below the oldest revision retention kept, and
+    /// `INVALID_ARGUMENT` when `fromRevision` is above `toRevision`. With `withPayload`, a deleted unit
+    /// whose payloads `compact` dropped throws `HISTORY_UNAVAILABLE`.
     #[napi]
     pub fn history(&self, id: String, options: Option<HistoryOptions>) -> Result<Vec<Revision>> {
         let id = unit_id(&id)?;
-        let options = options.unwrap_or(HistoryOptions { limit: None, with_payload: None, from_revision: None });
-        let limit = whole_u32("limit", options.limit)?.unwrap_or(100) as usize;
-        if limit == 0 {
-            return Err(invalid("limit must be at least 1"));
-        }
+        let options = options.unwrap_or(HistoryOptions {
+            limit: None,
+            with_payload: None,
+            from_revision: None,
+            to_revision: None,
+            order: None,
+        });
+        let limit = whole_u32_min("limit", options.limit, 1)?.unwrap_or(100) as usize;
         let from = options.from_revision.map(|r| whole("fromRevision", r).map(RevNo)).transpose()?;
-        let q =
-            HistoryQuery { from, with_payload: options.with_payload.unwrap_or(false), ..HistoryQuery::latest(limit) };
+        let to = options.to_revision.map(|r| whole("toRevision", r).map(RevNo)).transpose()?;
+        let order = match options.order.as_deref() {
+            None | Some("desc") => Order::Desc,
+            Some("asc") => Order::Asc,
+            Some(other) => return Err(invalid(format!("order must be \"desc\" or \"asc\", not {other:?}"))),
+        };
+        let q = HistoryQuery { from, to, order, limit, with_payload: options.with_payload.unwrap_or(false) };
         let revs = self.with(|db| db.unit_db().history(id, q))?;
         Ok(revs.into_iter().map(Revision::from).collect())
     }
@@ -1176,7 +1307,8 @@ impl Db {
     /// The revision of `id` in force once commit `commitSeq` committed, with its payload;
     /// `null` when the unit did not exist yet. A deleted unit returns its tombstone. A
     /// sequence after the last commit reads the current state. Throws `PRUNED` when retention
-    /// removed that revision.
+    /// removed that revision, and `HISTORY_UNAVAILABLE` for a deleted unit whose payloads `compact`
+    /// dropped.
     #[napi]
     pub fn read_as_of(&self, id: String, #[napi(ts_arg_type = "number")] commit_seq: Num) -> Result<Option<Revision>> {
         let id = unit_id(&id)?;
@@ -1207,7 +1339,13 @@ impl Db {
     /// `INVALID_ARGUMENT` on a handle that is not read-only (a read-write handle is always current).
     #[napi]
     pub fn refresh(&self) -> Result<i64> {
-        self.with(|db| db.refresh()).map(num)
+        match self.raw(|db| db.refresh())? {
+            Ok(seq) => Ok(num(seq)),
+            Err(e) if e.is_engine_argument() || matches!(e, kerno::Error::InvalidArgument(_)) => Err(invalid(
+                "refresh needs a handle opened with `readOnly: true`; a read-write handle is always current",
+            )),
+            Err(e) => Err(engine_error(e)),
+        }
     }
 
     /// Checks every record of the units layer. A damaged store is reported, not thrown.
@@ -1301,8 +1439,8 @@ impl Db {
     #[napi]
     pub fn search_text(&self, query: String, options: Option<SearchTextOptions>) -> Result<Vec<TextHit>> {
         let (limit, types) = options.map_or((None, None), |o| (o.limit, o.types));
-        let limit = whole_u32("limit", limit)?.unwrap_or(10) as usize;
-        let types = names("options.types", types)?;
+        let limit = whole_u32_min("limit", limit, 1)?.unwrap_or(10) as usize;
+        let types = names("types", types)?;
         let names: Option<Vec<&str>> = types.as_ref().map(|t| t.iter().map(String::as_str).collect());
         let hits = self.with(|db| db.search_text(&query, limit, names.as_deref()))?;
         Ok(hits.into_iter().map(|h| TextHit { id: h.unit.to_string(), score: h.score }).collect())
@@ -1337,7 +1475,8 @@ impl Db {
     #[napi]
     pub fn search_substring(&self, needle: Payload, options: Option<SearchSubstringOptions>) -> Result<Vec<String>> {
         let (limit, types) = options.map_or((None, None), |o| (o.limit, o.types));
-        let limit = whole_u32("limit", limit)?.map(|n| n as usize);
+        let limit = whole_u32_min("limit", limit, 1)?.map(|n| n as usize);
+        let types = names("types", types)?;
         let needle = into_bytes(needle);
         let names: Option<Vec<&str>> = types.as_ref().map(|t| t.iter().map(String::as_str).collect());
         let found = self.with(|db| db.search_substring(&needle, limit, names.as_deref()))?;
@@ -1418,7 +1557,8 @@ impl Db {
         >,
     ) -> Result<()> {
         let id = unit_id(&id)?;
-        let unit = self.with(|db| db.get(id))?.ok_or_else(|| coded(ErrorCode::NotFound, format!("no unit {id}")))?;
+        let unit =
+            self.with(|db| db.get(id))?.ok_or_else(|| coded(ErrorCode::NotFound, format!("unit {id} not found")))?;
         let doc = self.to_document(&unit.unit_type, document)?;
         self.with(|db| db.update_document(id, &doc))
     }
@@ -1466,8 +1606,8 @@ impl Db {
     // ponytail: the vector leg ranks the `items` of each call by brute force; a persistent
     // vector index (HNSW) needs its own handle if a caller has more than ~100k vectors.
     #[napi]
-    pub fn hybrid_search(&self, query: HybridQueryInput) -> Result<Vec<HybridHit>> {
-        let mut q = HybridQuery::new(whole_u32("limit", query.limit)?.unwrap_or(10) as usize);
+    pub fn hybrid_search(&self, mut query: HybridQueryInput) -> Result<Vec<HybridHit>> {
+        let mut q = HybridQuery::new(whole_u32_min("limit", query.limit, 1)?.unwrap_or(10) as usize);
         q.text = query.text.as_deref();
         let text_types = names("textTypes", query.text_types)?;
         let text_types: Option<Vec<&str>> = text_types.as_ref().map(|t| t.iter().map(String::as_str).collect());
@@ -1489,20 +1629,23 @@ impl Db {
         if let Some(k) = whole_u32("rrfK", query.rrf_k)? {
             q.rrf_k = k;
         }
-        if let Some(c) = whole_u32("candidates", query.candidates)? {
+        if let Some(c) = whole_u32_min("candidates", query.candidates, 1)? {
             q.candidates = c as usize;
         }
-        if let Some(r) = &query.relations {
-            let seeds = r.seeds.iter().map(|s| unit_id(s)).collect::<Result<Vec<_>>>()?;
+        if let Some(r) = query.relations.as_mut() {
+            let seeds =
+                names("relations.seeds", Some(std::mem::replace(&mut r.seeds, Names(None))))?.unwrap_or_default();
+            let seeds = seeds.iter().map(|s| unit_id(s)).collect::<Result<Vec<_>>>()?;
+            let types = names("relations.types", r.types.take())?;
             // The leg's own limit bounds its walk; `candidates` bounds what it contributes.
             let limit = q.candidates.min(kerno::units::MAX_ASSOC_LIMIT);
             let mut g = AssocQuery::new(
                 seeds,
-                whole_u32("maxDepth", r.max_depth)?.unwrap_or(2),
+                whole_u32_min("maxDepth", r.max_depth, 1)?.unwrap_or(2),
                 limit,
-                u64::from(whole_u32("visitBudget", r.visit_budget)?.unwrap_or(10_000)),
+                u64::from(whole_u32_min("visitBudget", r.visit_budget, 1)?.unwrap_or(10_000)),
             );
-            g.relation_types = r.types.as_ref().map(|t| t.iter().cloned().collect::<BTreeSet<_>>());
+            g.relation_types = types.map(|t| t.into_iter().collect::<BTreeSet<_>>());
             g.direction = match r.direction.as_deref() {
                 None | Some("both") => AssocDirection::Both,
                 Some("out") => AssocDirection::Out,
@@ -1536,11 +1679,19 @@ impl Db {
             q.vector = Some(VectorLeg { index: set, query: qv });
         }
         let hits = self.with(|db| db.hybrid_search(&q))?;
+        let rrf_k = u64::from(q.rrf_k);
+        // The share of a leg: the same integer arithmetic as the engine, then back to a float.
+        let share = |weight: u32, rank: Option<u32>| {
+            rank.map(|r| (u64::from(weight) * RRF_SCALE / (rrf_k + u64::from(r))) as f64 / RRF_SCALE as f64)
+        };
         Ok(hits
             .into_iter()
             .map(|h| HybridHit {
                 id: h.unit.to_string(),
-                score: num(h.score),
+                score: h.score as f64 / RRF_SCALE as f64,
+                keyword_score: share(q.weights.keyword, h.ranks.keyword),
+                vector_score: share(q.weights.vector, h.ranks.vector),
+                relation_score: share(q.weights.graph, h.ranks.graph),
                 ranks: LegRanks { keyword: h.ranks.keyword, vector: h.ranks.vector, relations: h.ranks.graph },
             })
             .collect())

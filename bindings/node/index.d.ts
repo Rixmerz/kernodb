@@ -49,8 +49,10 @@ export declare class Db {
    */
   relations(relationType?: string | undefined | null): Array<Relation>
   /**
-   * Every active unit that matches `filter` (all of them without one), in id order. An
-   * invalid `unitType` (empty or over 64 bytes) throws `INVALID_ARGUMENT`.
+   * Every unit that matches `filter` (all active ones without one), in id order; `lifecycle`
+   * picks `active` (the default), `archived`, `deleted` or `all`. A deleted unit has no
+   * payload. An invalid `unitType` (empty or over 64 bytes) throws `INVALID_ARGUMENT`,
+   * whatever the lifecycle.
    */
   query(filter?: UnitFilter | undefined | null): Array<Unit>
   /**
@@ -59,16 +61,21 @@ export declare class Db {
    */
   commit(ops: Array<CommitOp>, options?: CommitOptions | undefined | null): Committed
   /**
-   * The newest `limit` revisions of `id` from `fromRevision` on, newest first. Throws `NOT_FOUND`
-   * for a unit that never existed (not `[]`) and `PRUNED` when `fromRevision` is below the
-   * oldest revision retention kept.
+   * Up to `limit` revisions of `id`, newest first (`order: "desc"`) or oldest first (`"asc"`),
+   * among those in `[fromRevision, toRevision)`; a missing bound is the oldest kept or the head.
+   * To page, pass the last revision of a page as the next `toRevision` (desc) or its successor
+   * as the next `fromRevision` (asc). Throws `NOT_FOUND` for a unit that never existed (not
+   * `[]`), `PRUNED` when `fromRevision` is below the oldest revision retention kept, and
+   * `INVALID_ARGUMENT` when `fromRevision` is above `toRevision`. With `withPayload`, a deleted unit
+   * whose payloads `compact` dropped throws `HISTORY_UNAVAILABLE`.
    */
   history(id: string, options?: HistoryOptions | undefined | null): Array<Revision>
   /**
    * The revision of `id` in force once commit `commitSeq` committed, with its payload;
    * `null` when the unit did not exist yet. A deleted unit returns its tombstone. A
    * sequence after the last commit reads the current state. Throws `PRUNED` when retention
-   * removed that revision.
+   * removed that revision, and `HISTORY_UNAVAILABLE` for a deleted unit whose payloads `compact`
+   * dropped.
    */
   readAsOf(id: string, commitSeq: number): Revision | null
   /**
@@ -272,18 +279,34 @@ export interface FieldSpec {
 }
 
 export interface HistoryOptions {
-  /** The newest `limit` revisions (at least 1). Default 100. */
+  /** At most this many revisions (at least 1). Default 100. */
   limit?: number
   /** Read and verify each revision's content. Default `false`. */
   withPayload?: boolean
   /** The oldest revision to list, inclusive. Default: the oldest kept. Below it throws `PRUNED`. */
   fromRevision?: number
+  /**
+   * The end revision, exclusive. Default: up to the head. Below `fromRevision` throws
+   * `INVALID_ARGUMENT` (equal bounds are an empty page).
+   */
+  toRevision?: number
+  /** `desc` (newest first) or `asc` (oldest first). Default `desc`. */
+  order?: 'desc' | 'asc'
 }
 
 export interface HybridHit {
   id: string
-  /** The sum of the leg contributions, scaled by 1e9. Compare, do not interpret. */
+  /**
+   * The sum of the leg scores, `weight / (rrfK + rank)` per leg that found the unit (a float,
+   * as in the Python binding).
+   */
   score: number
+  /** The share of `score` the keyword leg contributed; absent when it did not find the unit. */
+  keywordScore?: number
+  /** The share of `score` the vector leg contributed. */
+  vectorScore?: number
+  /** The share of `score` the relations leg contributed. */
+  relationScore?: number
   ranks: LegRanks
 }
 
@@ -342,7 +365,7 @@ export interface OpenOptions {
    * directory with no database throws `DATABASE_NOT_FOUND`. Default `false`.
    */
   readOnly?: boolean
-  /** The most operations one `commit` may hold. Default 10,000. */
+  /** The most operations one `commit` may hold, 1 to 1,048,576. Default 10,000. */
   maxBatchOps?: number
 }
 
@@ -469,6 +492,11 @@ export interface Unit {
   lifecycle: 'active' | 'archived' | 'deleted'
   /** The number of the unit's latest revision. */
   revision: number
+  /**
+   * The oldest revision retention kept (1 until `runRetention` prunes something): `history`
+   * from a lower `fromRevision` and `readAsOf` before it throw `PRUNED`.
+   */
+  oldestRevision: number
   /** Microseconds since the Unix epoch; descriptive, not an ordering guarantee. */
   createdAtUs: number
   updatedAtUs: number
@@ -480,6 +508,8 @@ export interface Unit {
 export interface UnitFilter {
   unitType?: string
   schemaVersion?: number
+  /** Default `active`. `archived`, `deleted` and `all` read every unit's head (linear in the store). */
+  lifecycle?: 'active' | 'archived' | 'deleted' | 'all'
 }
 
 export interface UpdateOptions {
