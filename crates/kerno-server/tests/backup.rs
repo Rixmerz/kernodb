@@ -58,6 +58,21 @@ fn wait_for(server: &Server, name: &str, at_least: u64) {
     }
 }
 
+/// Waits until the metrics say the first tick of a restarted server did its work: it took a base,
+/// or it shipped the commits it found in the logs.
+fn wait_for_first_tick(server: &Server) {
+    let until = Instant::now() + Duration::from_secs(20);
+    loop {
+        let text = metrics(server);
+        let done = ["kerno_backup_bases_total", "kerno_backup_shipped_commits_total"];
+        if done.iter().any(|name| metric(&text, name).unwrap_or(0) >= 1) {
+            return;
+        }
+        assert!(Instant::now() < until, "the first tick did nothing:\n{text}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// The texts of the notes in a restored database, after checking it is sound.
 fn notes_in(dir: &Path) -> BTreeSet<String> {
     let db = Db::open(dir).unwrap();
@@ -147,7 +162,7 @@ fn a_clean_stop_ships_the_commits_no_tick_has_seen() {
 }
 
 #[test]
-fn a_server_that_died_takes_a_new_base_when_it_starts_again() {
+fn a_server_that_died_loses_nothing_from_its_backups_when_it_starts_again() {
     let _turn = take_turn();
     let t = TempDir::new();
     let store = t.0.join("store");
@@ -161,8 +176,11 @@ fn a_server_that_died_takes_a_new_base_when_it_starts_again() {
     assert!(!server.kill().success(), "the server was killed, not stopped");
 
     let again = Server::launch(&args, None);
-    // The engine replayed the commit and deleted its log, so only a new base has it.
-    wait_for(&again, "kerno_backup_bases_total", 1);
+    // The engine replayed the commit, and its flusher deletes the log some time after the start.
+    // A first tick that comes after that finds a gap and takes a new base; one that comes before
+    // finds the log and ships the commit from it. Which one it is depends on the two threads (the
+    // slower the disk, the likelier the second), and the restore below must hold both notes either way.
+    wait_for_first_tick(&again);
     note(&again, &[], "after");
     assert!(again.stop().success());
     assert_eq!(restored(&store, "", &t.0.join("copy")), set(&["before the crash", "after"]));
