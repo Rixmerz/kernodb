@@ -173,6 +173,49 @@ Gains are estimates from the profile shares above, not measurements. Each fix ne
 
 *Other rows of the same runs, including losses.* At 10k, `disk` goes 31 to 39.2 MiB (+26%, ratio to SQLite 1.83 to 2.31) and `reopen` stays 0.00784 to 0.00786 s for kerno, but its ratio reads 7.09 (0.594-14.3) before and 14.5 (2.4-17.6) after: the SQLite reopen time is bimodal (0.00045-0.0008 s, or 0.0078-0.0143 s; slow in 3 of the 6 base runs and in 1 of the 6 head runs), so the ratio median moves with how many slow SQLite runs a side drew and is not a reliable reading. At 100k, close is 0.163 to 0.134 s (ratio 28 to 26.8, still about 27x SQLite), reopen 0.0292 to 0.0347 s (1.19x of before, a loss within a 0.0186-0.045 range) and disk 298 to 307 MiB; all three come from Rank 5, not from this change. The point read, scan, relate, `related()`, two-hop traversal, all relations, history, keyword store and search, and substring store and search rows moved between 0.93x and 1.11x of the before time (`tables.md`, column `after/before`). Losses among them: **keyword search x100, top 10 is 1.11x slower at 10k, the clearest loss of this set** (0.00826 to 0.0092 s; runs 0.00790-0.00888 before and 0.00816-0.0108 after: the after median is above every before run, and the ranges overlap only through the spread of the after runs; ratio to SQLite 0.356 to 0.393, still faster than FTS5 but worse than before) and 1.07x at 100k (0.0986 to 0.106 s, ranges overlap, ratio 0.43 to 0.447); relate at 10k is 1.09x (0.129 to 0.141 s, runs 0.122-0.141 before and 0.126-0.142 after, ranges overlap); substring search at 10k is 1.06x (0.00456 to 0.00482 s). None of them is a win. The machine was not idle in any round (1-minute load 10.7 to 19.1 in the first three 10k rounds, 3.4 to 10.0 in the first three 100k rounds, 2.6 to 4.0 in rounds 4 to 6), far from the load below 1 that certified runs need, so every number here is indicative.
 
+*Rust storage harness (`spike-bench`, key-value contract), same round.* `spike-bench` links `kerno-storage` and drives `WriteTxn`, so it is affected and was re-run with the 2026-11-23 baseline's counts (§1b): all 12 workloads, `--scales 10000,100000`, 5 runs per side, both durability pairs, `--features candidates,kerno`. Base `ea8b610` (from a `git archive`) and head `7b78b0f` (the same code as `baf4085`; `spikes/storage` is identical at both commits) were each built in `release` in their own target directory. Then `spike-bench suite --engines kerno,sqlite --reps 1` ran once per side per round (fresh process and directory per combination, ADR-0012 warm-up inside the harness), 5 `sync` rounds then 5 `buffered` rounds, sequential and alternating: `sync` base first in rounds 1, 3 and 5; `buffered` head first in rounds 1, 3 and 5. So each side ran first in 5 of its 10 runs. 1-minute load 1.58 to 6.11 at run starts (6.11 only for base `sync` round 1, right after the builds; the rest 1.58 to 3.29). Every run completed: 48 rows per run, 960 rows, no `error` row. Cells: median of 5 runs, `(min-max)` when the range is over 15% of the median. Ratio = kerno / SQLite inside each run, then the median. **For throughput metrics (`*_kops`, `*_per_s`) a higher ratio is better for kerno; for times and latencies a lower one is.** Every metric, with the raw value of every run: [`results/2026-11-25-write-path/rust/`](results/2026-11-25-write-path/rust/) (`tables.md`, `per-run.md`, `*.jsonl`, `load-*.txt`, `aggregate.py`).
+
+| Pair, scale | Metric | Kerno before | Kerno after | SQLite | Ratio before | Ratio after |
+|---|---|---:|---:|---:|---:|---:|
+| `sync` 100k | `bulk_load` `load_kops` | 103 (95-114) | 153 | 9.82 | 9.91 (9.59-11.9) | 15.7 |
+| `sync` 100k | `small_commits` `commits_per_s` | 917 (889-1050) | 882 | 919 | 0.981 (0.954-1.11) | 0.984 (0.968-1.13) |
+| `sync` 100k | `append_seq` `update_kops` | 75.1 (71.2-91.2) | 76.8 (56.1-90.7) | 69.1 (51.5-77.3) | 1.30 (1.02-1.38) | 1.11 (0.826-1.33) |
+| `sync` 100k | `concurrent_commits` `cc_commits_per_s` | 3300 | 3250 (3110-3830) | 814 (721-891) | 4.58 (3.89-4.67) | 4.03 |
+| `sync` 10k | `bulk_load` `load_kops` | 197 (131-316) | 201 | 31.9 (22.7-40.8) | 7.75 (4.39-9.13) | 5.57 (5.17-9.05) |
+| `sync` 10k | `small_commits` `commits_per_s` | 914 (872-1080) | 892 | 813 (751-988) | 1.08 | 1.16 (1.02-1.23) |
+| `sync` 10k | `append_seq` `update_kops` | 84.6 | 83.6 (70.2-87.5) | 56.8 (40.4-78.5) | 1.55 (1.19-1.89) | 1.18 (0.943-2.16) |
+| `buffered` 100k | `bulk_load` `load_kops` | 276 (189-378) | 254 (213-399) | 9.84 (8.88-11.1) | 27.7 (20.8-35) | 27.3 (22.9-39.9) |
+| `buffered` 100k | `small_commits` `commits_per_s` | 194000 | 161000 (136000-196000) | 14300 (11900-15600) | 13.8 (11.7-16.5) | 12.1 (9.08-15.4) |
+| `buffered` 100k | `append_seq` `update_kops` | 564 (425-665) | 452 (341-663) | 159 (142-242) | 3.52 (1.94-4.37) | 2.93 (2.03-4.15) |
+| `buffered` 10k | `small_commits` `commits_per_s` | 216000 (156000-216000) | 162000 (144000-198000) | 24400 (18300-27900) | 8.44 (6.21-11.8) | 6.34 (5.85-10.3) |
+| `buffered` 10k | `append_seq` `update_kops` | 605 (371-632) | 455 (366-619) | 242 (152-306) | 2.08 (1.55-2.44) | 1.90 (1.81-3.61) |
+| `sync` 100k | `cauce` `recovery_ms` | 32.3 (27.7-50.6) | 13.6 (12.9-18.7) | 0.39 | 83.4 (62.2-132) | 33.6 (30.1-47.4) |
+
+*Reading, Rust.* There are 268 kerno metrics (67 per pair and scale, not counting `cc_threads`, which is the load). In 262 of them the before and after ranges overlap. Five are better with disjoint ranges and one is worse:
+
+- **Better:** `sync` 100k `bulk_load` `load_kops`, 103 to 153 kops (every head run, 144.5 to 162.5, is above every base run, 95.0 to 114.2), the ratio to SQLite 9.91 to 15.7. This is the only write metric that moves beyond its variance. It does not repeat at 10k (197 to 201, ranges overlap) or with `buffered` at 100k (276 to 254, ranges overlap), so it is one row, not a general write gain.
+- **Better, not from this change:** `recovery_ms` of `cauce` (`sync` 100k 32.3 to 13.6 ms, `sync` 10k 16.3 to 8.53, `buffered` 10k 19.1 to 12.1) and of `bulk_load` (`sync` 10k 9.51 to 3.98). These come from the deferred recovery-open flush, which head also contains. Kerno stays 10x to 34x slower than SQLite there (0.38 to 0.40 ms).
+- **Worse:** `buffered` 10k `history_sim` `reconstruct_p99_us`, 1.61 to 1.66 µs (+3%, disjoint ranges, ratio 0.516 to 0.528; kerno still about half SQLite's time).
+
+**Losses at the median, ranges overlapping. Not wins, and not proven losses either.** This is every metric whose after median is more than 10% worse than before (after/before shown; for throughput a value under 1 is a loss):
+
+- `buffered` `small_commits` `commits_per_s`: 0.83x at 100k and 0.75x at 10k. In 4 of 5 runs per side, head is below base. Same workload at 100k: `commit_p99_us` 1.13x, `commit_p999_us` 1.17x.
+- `buffered` `append_seq`: `update_kops` 0.80x at 100k and 0.75x at 10k; `append_kops` 0.90x at 100k; `update_commit100_p99_us` 1.12x at 100k and 1.24x at 10k.
+- `buffered` `agent_memory`:
+  - 100k: `steps_per_s` 0.81x; `memory_write_p99_us` 23.6x (31.7 to 750 µs, ranges 28.2-849 and 35.7-923); `expire_commit_p99_us` 3.99x; `recall_p99_us` 1.18x.
+  - 10k: `steps_per_s` 0.86x; `expire_commit_p99_us` 1.55x.
+- `buffered` `mixed`:
+  - 10k: `mixed_kops` 0.86x, `read_p50_us` 1.20x, `read_p99_us` 1.45x, `write_p99_us` 1.20x.
+  - 100k: `write_p99_us` 1.18x.
+- `buffered`, other metrics:
+  - 100k: `bulk_load` `reopen_ms` 1.21x; `livespec` `module_scan_p99_us` 1.12x.
+  - 10k: `point_reads` `get_4t_p99_us` 1.22x.
+- `sync` 100k `point_deletes`: `delete_commit_p99_us` 2.63x (3400 to 8930 µs), `get_deleted_p50_us` 1.18x, `get_deleted_p99_us` 1.51x, `get_live_p99_us` 1.27x, `delete_commits_per_s` 0.90x.
+- `sync` 100k, other metrics: `small_commits` `commit_p99_us` 1.11x, `history_sim` `history_scan_p50_us` 1.11x, `agent_memory` `memory_write_p99_us` 1.13x.
+- `sync` 10k: `agent_memory` `memory_write_p99_us` 1.55x, `mixed` `write_p99_us` 1.20x, `history_sim` `reconstruct_p99_us` 1.21x.
+
+The `buffered` small-commit and update throughput drops are the most consistent direction in this set. They are where a per-commit sort costs most relative to the work, since there is no fsync to hide it, but that cause is **not established** (no profile was taken). With `sync`, the equal-guarantee pair, small commits stay at SQLite's speed (ratio 0.98 to 1.16) and no write throughput moves except `bulk_load` at 100k. `buffered` is not an equal guarantee (§1b), so those rows say what kerno costs, not how it compares with SQLite. Every Rust number here is indicative: the machine was not idle (load above 1 in every run).
+
 ## 4. Benchmark fairness (not changed; these notes only)
 
 - **Reopen is not like-for-like (unfair to both sides).** `vs_sqlite.py:247` times `kerno.open(kdir).close()`, which fsyncs the manifest. `vs_sqlite.py:248` times `sqlite3.connect(sfile).execute("select count(*) ...")` and never closes that connection. The kerno side includes a close and the SQLite side includes a count. Fix: Rank 1.
