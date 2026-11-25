@@ -109,7 +109,7 @@ db.history(r["id"], order="asc")                 # create, update
 
 In `commit`, `("upsert", type, field, document)` runs in the same change set as the other ops, and
 several upserts of one key in a batch make one unit (the last document wins). A field that is
-not declared `unique` raises `InvalidArgumentError`; a document without a value in it raises
+not declared `unique` raises `NotUniqueError`; a document without a value in it raises
 `SchemaError`. Only active units hold a key: an archived or deleted one does not.
 
 ### Look things up by a field
@@ -220,7 +220,7 @@ never return wrong data.
 | `db.relations(relation_type=None)` | every live relation, in one scan. Use it instead of `related` per unit |
 | `db.query(unit_type=None, schema_version=None, lifecycle="active")` | `list[Unit]` that match, in id order. `lifecycle` is `"active"`, `"archived"`, `"deleted"` or `"all"`; the last three read every unit's head, so they cost time linear in the store |
 | `db.commit(ops, reason=None, actor=None, source=None, detailed=False)` | stored ids, or a dict with `detailed=True` |
-| `db.history(id, limit=100, with_payload=False, from_revision=None, to_revision=None, order="desc")` | `list[Revision]` (`revision`, `kind`, `commit_seq`, `created_at`, `lifecycle`, `schema_version`, `content_hash`, `payload`) in `[from_revision, to_revision)`, at most `limit`. A `from_revision` below `oldest_revision` raises `PrunedError`; an id no unit ever had raises `NotFoundError`; `from_revision` above `to_revision` raises `InvalidArgumentError` |
+| `db.history(id, limit=100, with_payload=False, from_revision=None, to_revision=None, order="desc")` | `list[Revision]` (`revision`, `kind`, `commit_seq`, `created_at_us`, `lifecycle`, `schema_version`, `content_hash`, `payload`) in `[from_revision, to_revision)`, at most `limit`. A `from_revision` below `oldest_revision` raises `PrunedError`; an id no unit ever had raises `NotFoundError`; `from_revision` above `to_revision` raises `InvalidArgumentError`. For a deleted unit whose payloads `compact()` dropped, `with_payload=True` lists the revisions with `payload` `None` |
 | `db.compare(id, a, b)` | `Comparison` (`a`, `b`: the two `Revision`s with payloads; `same_content`). Takes the unit id, as the Rust call does |
 | `db.read_as_of(id, commit_seq)` | the `Revision` in force then, or `None` before creation. A sequence past the last commit reads now |
 | `db.set_fulltext(type, enabled)` | `None`. Keyword-index a type (off by default); its active units follow in the same commit |
@@ -238,10 +238,10 @@ never return wrong data.
 | `db.find_range(type, field, low=None, high=None, limit=None)` | `list[Unit]` whose indexed field is in `[low, high]` (both included, `None` = open end), ordered by value then id. No `limit` means no cap; `limit=0`, or `low` above `high`, raises `InvalidArgumentError` |
 | `db.execute(query)` | `{"aliases": [...], "rows": [[Unit, ...], ...]}` |
 | `db.explain(query)` | the plan `execute` would follow, without running it: `root_alias`, `root_type`, `candidates` (`access` `"type_scan"` or `"field_index"`, `field`, `cost`), `chosen` (an index into `candidates`), `joins`, `planner_version` |
-| `db.hybrid_search(text=None, vector=None, vectors=None, seeds=None, *, keyword_weight=1, vector_weight=1, relation_weight=1, limit=10, candidates=100, rrf_k=60, max_depth=2, metric="cosine")` | `list[HybridHit]`, best first: `id`, `score`, `keyword_score`, `vector_score`, `relation_score`, `keyword_rank`, `vector_rank`, `relation_rank` (a signal that missed the unit is `None`). `vector` and `vectors` go together; `metric` is `"cosine"` or `"dot"` |
+| `db.hybrid_search(text=None, vector=None, vectors=None, seeds=None, *, text_types=None, keyword_weight=1, vector_weight=1, relation_weight=1, limit=10, candidates=100, rrf_k=60, max_depth=2, metric="cosine")` | `list[HybridHit]`, best first: `id`, `score`, `keyword_score`, `vector_score`, `relation_score`, `keyword_rank`, `vector_rank`, `relation_rank` (a signal that missed the unit is `None`). `text_types` restricts the keyword signal to those unit types (a list of names, with the errors of `search_text`). `vector` and `vectors` go together; `metric` is `"cosine"` or `"dot"` |
 | `db.verify()` | `dict`: `clean`, `commit_seq`, `units`, `revisions`, `relations`, `findings`, maybe `storage_error` |
 | `db.compact()` | `{"before", "after"}` stored bytes: `before` is the size when the call was made (every commit so far counts), `after` the size once the space of deleted units' payloads and retention is given back |
-| `db.run_retention(default=None, by_type=None)` | prune old revisions; a rule is a dict with one of `keep_last` (newest N), `keep_for` (seconds) or `keep_since` (commit sequence); returns `{"units_retained", "revisions_pruned", "payloads_dropped", "bytes_logically_freed", "commit_seq"}`. Pruned revisions raise `PrunedError` in `read_as_of`, `history(from_revision=)` and `compare`. A bad rule raises `ValueError` and writes nothing; a `None` rule is no rule. The policy is not stored: pass it each time |
+| `db.run_retention(default=None, by_type=None)` | prune old revisions; a rule is a dict with one of `keep_last` (newest N), `keep_for` (seconds) or `keep_since` (commit sequence); returns `{"units_retained", "revisions_pruned", "payloads_dropped", "bytes_logically_freed", "commit_seq"}`. Pruned revisions raise `PrunedError` in `read_as_of`, `history(from_revision=)` and `compare`. A bad rule raises `InvalidArgumentError` and writes nothing; a `None` rule is no rule. The policy is not stored: pass it each time |
 | `db.close()` | `None`. Closing twice is harmless |
 
 Type stubs ship with the package (`py.typed`).
@@ -264,23 +264,26 @@ Engine failures raise `kerno.KernoError` or one of its subclasses:
 | `DeletedError` | the unit is deleted (or not in the lifecycle the call needs) |
 | `LockedError` | another handle or process holds the directory |
 | `CorruptionError` | stored bytes failed a checksum or a structure rule |
-| `InvalidArgumentError` | a bad type name, a bad whole number (negative, over 2**64 - 1, a fraction), a value no document can hold (`None`, an int outside 64 bits), a text search value over 254 bytes, `refresh` on a handle that is not read-only, ... Its subclasses below name the common cases |
+| `InvalidArgumentError` | also a `ValueError`. A malformed id, a bad type name, direction, order, lifecycle, metric, retention rule or batch op, a bad whole number (negative, over 2**64 - 1, a fraction), a value no document can hold (`None`, an int outside 64 bits), a text search value over 254 bytes, `refresh` on a handle that is not read-only, ... Its subclasses below name the common cases |
+| `ClosedError` | any call on a closed database; also a `ValueError` |
 | `SchemaExistsError` | `define_schema` for a type that already has a different schema |
 | `NotIndexedError` | `find`, `find_range` on a field that is not indexed; `search_text` or a keyword signal while no type (or no requested type) has `set_fulltext` |
 | `UnknownTypeError` | `search_text` or `hybrid_search(text_types=)` names a type that no unit, schema or `set_fulltext` ever named |
 | `NotUniqueError` | `upsert` by a field the schema does not declare unique (or a type with no schema) |
 | `BadEndpointError` | a batch `relate` end that is not an earlier `store` or `upsert` op |
 | `PayloadTooLargeError` | a payload over 1 MiB |
-| `ChangeSetTooLargeError` | a batch over 10,000 ops (see `max_batch_ops`) or over the engine's bytes per commit; a `PayloadTooLargeError` |
+| `ChangeSetTooLargeError` | a batch over 10,000 ops (the default; `max_batch_ops` changes it) or over the engine's bytes per commit. A subclass of `PayloadTooLargeError` |
 | `ReadOnlyError` | a write through a handle opened with `read_only=True`. An empty `commit([])`, or a `run_retention` that has nothing to prune, writes nothing and does not raise |
 | `DatabaseNotFoundError` | `read_only=True` on a directory with no database |
 | `HasRelationsError` | deleting a unit that still has relations, without `cascade` |
 | `PrunedError` | retention removed the revision asked for |
+| `HistoryUnavailableError` | `read_as_of` or `compare` of a deleted unit's revision after `compact()`, which dropped its payloads. `history(with_payload=True)` of such a unit lists the revisions with `payload` `None` instead |
 | `SchemaError` | the type's schema refused a document, or a typed unit got a payload that is not a document |
 
-A malformed id, direction, order, lifecycle, metric, retention rule or batch op (a tuple that names no op or
-has the wrong number of items), a `vector` without `vectors` (or the reverse), or a call on a closed database,
-raises `ValueError`. An argument of the wrong Python type (`None` or an `int` for a `str`, a `list` for a
+Every argument refusal is a `KernoError`: a malformed id, direction, order, lifecycle, metric, retention rule or
+batch op (a tuple that names no op or has the wrong number of items), or a `vector` without `vectors` (or the
+reverse), raises `InvalidArgumentError`, which is also a `ValueError`; a call on a closed database raises
+`ClosedError`, also a `ValueError`. `kerno.__version__` is the installed version. An argument of the wrong Python type (`None` or an `int` for a `str`, a `list` for a
 payload), or a `str` with a lone surrogate, which has no UTF-8 form, raises `InvalidArgumentError`
 (never a bare `TypeError` or `UnicodeEncodeError`).
 A payload or document `bytes` value is `bytes`, `bytearray` or a `memoryview`, never a list of ints.
