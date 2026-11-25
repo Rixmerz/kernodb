@@ -267,7 +267,10 @@ impl<'db> WriteTxn<'db> {
         let mut ranges = std::mem::take(&mut self.ranges);
         ranges.sort_unstable();
         ranges.dedup();
-        CanonicalCommit { ranges, points: std::mem::take(self.overlay.get_mut().unwrap_or_else(PoisonError::into_inner)).into_sorted() }
+        CanonicalCommit {
+            ranges,
+            points: std::mem::take(self.overlay.get_mut().unwrap_or_else(PoisonError::into_inner)).into_sorted(),
+        }
     }
 
     /// Commits the writes as one batch with the next sequence and returns it,
