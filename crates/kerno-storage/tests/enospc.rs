@@ -138,7 +138,7 @@ fn enospc_during_flush_poisons_handle() {
         let err = db.hooks().flush().unwrap_err();
         match mode {
             // The flush ran in this thread and returns the I/O error.
-            Background::Inline => assert!(is_disk_full(&err), "{ctx}: expected the disk-full error, got {err}"),
+            Background::Inline | Background::InlineDeferred => assert!(is_disk_full(&err), "{ctx}: expected the disk-full error, got {err}"),
             // The background flush failed and poisoned the handle.
             Background::Threads => {
                 assert!(matches!(&err, Error::Poisoned(m) if m.starts_with("flush failed")), "{ctx}: got {err}")
