@@ -51,12 +51,16 @@ fn eager_model(image: &DirImage) -> Model {
     model
 }
 
-/// Open deferred, check the replay, close, reopen and check again.
-fn open_close_reopen(image: &DirImage, cfg: &Config, last_seq: u64, expected: &Model) {
+/// Open deferred, check the replay, close, reopen and check again. With
+/// background threads the flusher may write the deferred memtable right after
+/// the open, so only the inline run can assert that nothing was flushed yet.
+fn open_close_reopen(image: &DirImage, cfg: &Config, inline: bool, last_seq: u64, expected: &Model) {
     let (disk, db) = open_copy(image, cfg);
     let db = db.expect("the deferred recovery open");
     assert!(stat(&db, "last_open_replayed_bytes") > 0);
-    assert_eq!(stat(&db, "flushes"), 0, "the recovery flush was deferred");
+    if inline {
+        assert_eq!(stat(&db, "flushes"), 0, "the recovery flush was deferred");
+    }
     assert!(&model_of(&db) == expected, "the replayed commits are readable");
     // No commit between the open and the close: only the replay holds the
     // sequences of the empty commits.
@@ -91,7 +95,7 @@ fn deferred_recovery_keeps_trailing_empty_commits_inline() {
     let expected = eager_model(&image);
     kerno_storage::KernoDb::set_defer_recovery_flush(true);
     let cfg = Config { close_budget: kerno_storage::CloseBudget::Unbounded, ..config(Durability::Sync) };
-    open_close_reopen(&image, &cfg, last_seq, &expected);
+    open_close_reopen(&image, &cfg, true, last_seq, &expected);
     kerno_storage::KernoDb::set_defer_recovery_flush(false);
 }
 
@@ -115,5 +119,5 @@ fn a_flush_after_a_deferred_recovery_keeps_trailing_empty_commits_with_threads()
 fn deferred_recovery_keeps_trailing_empty_commits_with_threads() {
     let (image, last_seq) = image_with_trailing_empty_commits();
     let expected = eager_model(&image);
-    open_close_reopen(&image, &threads_config(Durability::Sync), last_seq, &expected);
+    open_close_reopen(&image, &threads_config(Durability::Sync), false, last_seq, &expected);
 }
