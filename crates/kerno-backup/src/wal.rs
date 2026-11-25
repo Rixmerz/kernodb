@@ -149,8 +149,7 @@ pub fn read_commits(dir: &Path, after: u64) -> Result<(Vec<Commit>, Option<[u8; 
         // Deleted between the listing and now: the gap check below says whether it mattered.
         let Some(mut file) = open_wal(&head.path)? else { continue };
         let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)
-            .map_err(|e| Error::Store(format!("cannot read {}: {e}", head.path.display())))?;
+        file.read_to_end(&mut bytes).map_err(|e| Error::Store(format!("cannot read {}: {e}", head.path.display())))?;
         let params = WalScanParams { file_number: head.number, db_id: head.db_id, expected_seq: head.base_seq };
         let name = format!("{:06}.wal", head.number);
         scan_wal(&mut &bytes[..], &params, |_, frame| {
