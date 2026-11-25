@@ -26,7 +26,7 @@ use crate::flush;
 use crate::format::header::new_db_id;
 use crate::format::limits::MAX_SEQ;
 use crate::format::manifest::{Edit, FileMeta, REASON_BACKGROUND, REASON_CLOSE, REASON_DIRECTED, REASON_TRIVIAL_MOVE};
-use crate::format::props::REASON_FLUSH;
+use crate::format::props::{REASON_FLUSH, REASON_RECOVERY};
 use crate::format::wal::{CanonicalCommit, CommitOp, canonicalize};
 use crate::manifest::{self, CHECKPOINT_FLOOR, MANIFEST, ManifestWriter, Snapshot as ManifestSnapshot};
 use crate::memtable::Memtable;
@@ -391,7 +391,7 @@ impl Inner {
     }
 
     fn inline(&self) -> bool {
-        self.background == Background::Inline
+        matches!(self.background, Background::Inline)
     }
 
     fn check_poisoned(&self) -> Result<()> {
@@ -922,7 +922,7 @@ impl Inner {
             return Ok(());
         }
         self.or_poison("memtable switch failed", || self.rotate(w))?;
-        self.flush_inline()?;
+        self.flush_inline(false)?;
         while self.compact_inline(w)? {}
         Ok(())
     }
@@ -1066,7 +1066,7 @@ impl Inner {
         }) {
             match work {
                 FlusherWork::Flush(mem) => {
-                    if self.or_poison("flush failed", || self.flush(&mem)).is_err() {
+                    if self.or_poison("flush failed", || self.flush(&mem, false)).is_err() {
                         return;
                     }
                 }
@@ -1080,12 +1080,13 @@ impl Inner {
 
     /// Inline mode: flushes every immutable memtable, oldest first, in the
     /// calling thread (which holds the writer lock).
-    fn flush_inline(&self) -> Result<()> {
+    /// `closing` is the close-time flush: its tables skip the LZ4 pass and the intermediate syncs.
+    fn flush_inline(&self, closing: bool) -> Result<()> {
         loop {
             let Some(mem) = self.state.lock().version.imms.last().cloned() else {
                 return Ok(());
             };
-            self.or_poison("flush failed", || self.flush(&mem))?;
+            self.or_poison("flush failed", || self.flush(&mem, closing))?;
         }
     }
 
@@ -1102,20 +1103,21 @@ impl Inner {
     }
 
     /// [`flush::write_memtable`] with file numbers from this engine.
-    fn write_memtable(&self, mem: &Memtable, l1: &[Arc<Table>]) -> Result<Vec<Arc<Table>>> {
+    fn write_memtable(&self, mem: &Memtable, l1: &[Arc<Table>], closing: bool) -> Result<Vec<Arc<Table>>> {
         let mut number = || self.next_file.fetch_add(1, Ordering::SeqCst);
-        Ok(flush::write_memtable(&self.ctx, mem, REASON_FLUSH, l1, &mut number)?.into_iter().map(Arc::new).collect())
+        let reason = if mem.is_recovered() { REASON_RECOVERY } else { REASON_FLUSH };
+        Ok(flush::write_memtable(&self.ctx, mem, reason, l1, closing, &mut number)?.into_iter().map(Arc::new).collect())
     }
 
     /// Writes the oldest immutable memtable to L0 and retires its WAL.
-    fn flush(&self, mem: &Arc<Memtable>) -> Result<()> {
+    fn flush(&self, mem: &Arc<Memtable>, closing: bool) -> Result<()> {
         let _phase = probe::phase("flush");
         let _io = BackgroundIo::start(&self.stats);
         let start = Instant::now();
         let tables = if mem.is_empty() {
             Vec::new()
         } else {
-            let tables = self.write_memtable(mem, &self.l1_for_split())?;
+            let tables = self.write_memtable(mem, &self.l1_for_split(), closing)?;
             self.vfs.sync_dir(&self.dir)?;
             bump(&self.stats.flush_bytes_written, tables.iter().map(|t| t.size).sum());
             tables
@@ -1449,7 +1451,7 @@ impl Inner {
         if w.mem.max_seq() > 0 {
             self.rotate(&mut w)?;
         }
-        self.flush_inline()?;
+        self.flush_inline(true)?;
         drop(w);
         Ok(self.stats.flush_bytes_written.load(Ordering::Relaxed) - before)
     }
@@ -1543,7 +1545,7 @@ impl Inner {
             self.or_poison("memtable switch failed", || self.rotate(&mut w))?;
         }
         if self.inline() {
-            return self.flush_inline();
+            return self.flush_inline(false);
         }
         drop(w);
         let mut st = self.state.lock();
@@ -1580,6 +1582,13 @@ impl Inner {
 }
 
 impl KernoDb {
+    /// Test hook, not API: while on for this thread, an `Inline` recovery open
+    /// defers the flush of what it replayed, as `Threads` does.
+    #[doc(hidden)]
+    pub fn set_defer_recovery_flush(on: bool) {
+        crate::config::set_defer_recovery_flush(on);
+    }
+
     fn spawn(inner: &Arc<Inner>, name: &str, body: fn(&Inner)) -> io::Result<JoinHandle<()>> {
         let inner = inner.clone();
         std::thread::Builder::new().name(name.into()).spawn(move || {
@@ -1988,22 +1997,45 @@ impl KernoDb {
         // recycles one either.
         let wal_prealloc = if cfg.wal_preallocate && read_only.is_none() { tuning.write_buffer as u64 } else { 0 };
         let floor = CHECKPOINT_FLOOR;
-        let (levels, last_seq, log_number, next_file, wal, manifest_writer, mem) = if read_only.is_some() {
-            let (mem, last_seq) = match replayed {
-                Some(r) => r,
-                None => recovery::replay_in_memory(&ctx, &plan, db_id, &loaded.replay.state)?,
+        let (levels, last_seq, log_number, next_file, wal, manifest_writer, mem, imms, flushed_seq) =
+            if read_only.is_some() {
+                let (mem, last_seq) = match replayed {
+                    Some(r) => r,
+                    None => recovery::replay_in_memory(&ctx, &plan, db_id, &loaded.replay.state)?,
+                };
+                let writer = loaded.writer(floor);
+                let state = &loaded.replay.state;
+                (
+                    levels,
+                    last_seq,
+                    state.log_number,
+                    plan.next_file,
+                    WalWriter::read_only(0),
+                    writer,
+                    Arc::new(mem),
+                    Vec::new(),
+                    last_seq,
+                )
+            } else {
+                let r = recovery::apply(
+                    &ctx,
+                    &plan,
+                    &loaded,
+                    levels,
+                    tuning.write_buffer,
+                    cfg.max_immutable_memtables,
+                    cfg.test.background != Background::Inline || crate::config::defer_recovery_flush(),
+                    floor,
+                    wal_prealloc,
+                )?;
+                let mem = Arc::new(Memtable::new(r.wal.number()));
+                // Newest first, as `Version::imms` is: the flusher takes the last.
+                let imms = r.deferred.into_iter().rev().map(Arc::new).collect();
+                (r.levels, r.last_seq, r.log_number, r.next_file, r.wal, r.manifest, mem, imms, r.flushed_seq)
             };
-            let writer = loaded.writer(floor);
-            let state = &loaded.replay.state;
-            (levels, last_seq, state.log_number, plan.next_file, WalWriter::read_only(0), writer, Arc::new(mem))
-        } else {
-            let r = recovery::apply(&ctx, &plan, &loaded, levels, tuning.write_buffer, floor, wal_prealloc)?;
-            let mem = Arc::new(Memtable::new(r.wal.number()));
-            (r.levels, r.last_seq, r.log_number, r.next_file, r.wal, r.manifest, mem)
-        };
         // The L0 found at open counts as seen by this handle.
         bump_max(&stats.l0_files_max, levels[0].len() as u64);
-        let version = Arc::new(Version { mem: mem.clone(), imms: Vec::new(), levels: levels.clone() });
+        let version = Arc::new(Version { mem: mem.clone(), imms, levels: levels.clone() });
         let inner = Arc::new(Inner {
             vfs,
             dir: dir.to_path_buf(),
@@ -2035,7 +2067,7 @@ impl KernoDb {
                     _ => 0,
                 }),
             }),
-            manifest: Mutex::new(ManifestState { levels, last_seq, log_number, writer: manifest_writer }),
+            manifest: Mutex::new(ManifestState { levels, last_seq: flushed_seq, log_number, writer: manifest_writer }),
             state: Mutex::new(State {
                 version,
                 last_seq,

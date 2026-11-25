@@ -1,0 +1,113 @@
+{
+ "env": {
+  "n": 100000,
+  "reps": 1,
+  "commit": "9772813",
+  "kerno": "",
+  "sqlite": "3.54.0",
+  "python": "3.14.9",
+  "loadavg_1m_at_each_start": [
+   2.0654296875
+  ],
+  "unit": "seconds, except the rows named hits and MiB"
+ },
+ "runs": [
+  {
+   "store x2000, one commit each": {
+    "kerno": 1.707120783998107,
+    "sqlite": 2.160332769002707,
+    "note": ""
+   },
+   "store x100000, batches of 10000": {
+    "kerno": 0.9990526199981105,
+    "sqlite": 0.6306035829984467,
+    "note": ""
+   },
+   "point read x2000": {
+    "kerno": 0.015311086004658137,
+    "sqlite": 0.01033351799560478,
+    "note": ""
+   },
+   "scan all 102000 units of a type": {
+    "kerno": 0.2784112320005079,
+    "sqlite": 0.09329107499797828,
+    "note": ""
+   },
+   "update x100000 keeping history, batches": {
+    "kerno": 1.6393452159973094,
+    "sqlite": 0.9109664400020847,
+    "note": ""
+   },
+   "relate x100000, batches": {
+    "kerno": 2.830499943003815,
+    "sqlite": 0.28703319499618374,
+    "note": ""
+   },
+   "related() x1000": {
+    "kerno": 0.025058758998056874,
+    "sqlite": 0.004629371003829874,
+    "note": ""
+   },
+   "two-hop traversal x200": {
+    "kerno": 0.014978309001890011,
+    "sqlite": 0.0014156370016280562,
+    "note": ""
+   },
+   "all relations of a type": {
+    "kerno": 0.06907771799887996,
+    "sqlite": 0.07364385099936044,
+    "note": ""
+   },
+   "history x1000": {
+    "kerno": 0.009818086997256614,
+    "sqlite": 0.005229372000030708,
+    "note": ""
+   },
+   "store x100000 substring-indexed, batches": {
+    "kerno": 5.228678711995599,
+    "sqlite": 1.8696991649994743,
+    "note": "kerno trigram index"
+   },
+   "substring search x20 vs LIKE scan": {
+    "kerno": 0.10458284799824469,
+    "sqlite": 0.31716933799907565,
+    "note": "kerno index"
+   },
+   "substring search x20 vs FTS5 trigram": {
+    "kerno": 0.10458284799824469,
+    "sqlite": 0.1649522200023057,
+    "note": "kerno index"
+   },
+   "substring hits": {
+    "kerno": 186413,
+    "sqlite": 186413,
+    "note": "matches over all needles"
+   },
+   "store x100000 keyword-indexed, batches": {
+    "kerno": 6.668188834999455,
+    "sqlite": 1.106727136997506,
+    "note": ""
+   },
+   "keyword search x100, top 10": {
+    "kerno": 0.08588017299916828,
+    "sqlite": 0.23211988999537425,
+    "note": ""
+   },
+   "close": {
+    "kerno": 0.14277775500522694,
+    "sqlite": 0.003075664004427381,
+    "note": ""
+   },
+   "disk MiB": {
+    "kerno": 306.7507629394531,
+    "sqlite": 162.19140625,
+    "note": "after close"
+   },
+   "reopen": {
+    "kerno": 0.01852026100095827,
+    "sqlite": 0.0009279779987991787,
+    "note": ""
+   }
+  }
+ ]
+}

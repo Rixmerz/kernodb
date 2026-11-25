@@ -243,6 +243,13 @@ impl TableBuilder {
         })
     }
 
+    /// Skips the LZ4 pass over the data blocks: the table keeps `BLOCK_LZ4`
+    /// and stores every block with codec 0 (v1.md §4.4), the same format.
+    pub fn without_lz4_pass(mut self) -> Self {
+        self.inner = self.inner.without_lz4_pass();
+        self
+    }
+
     /// Syncs the file once, when finished, whatever `bytes_per_sync` and
     /// `bytes_per_writeback` say.
     pub fn without_intermediate_syncs(mut self) -> Self {

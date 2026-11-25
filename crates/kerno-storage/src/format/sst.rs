@@ -484,6 +484,8 @@ pub fn read_sst(file: &[u8], ex: &SstExpect<'_>) -> Result<(SstMeta, Vec<Entry>)
 pub struct SstBuilder {
     /// Data blocks are stored with a codec byte (§4.4).
     lz4: bool,
+    /// Whether a block is tried with LZ4; off, every block gets codec 0.
+    try_lz4: bool,
     file_number: u64,
     block_size: u32,
     pending: Vec<u8>,
@@ -525,6 +527,7 @@ impl SstBuilder {
         }
         SstBuilder {
             lz4,
+            try_lz4: lz4,
             file_number,
             block_size,
             pending: header.encode().to_vec(),
@@ -536,6 +539,14 @@ impl SstBuilder {
             last_key: Vec::new(),
             props: Props { smallest_seq: u64::MAX, ..Props::default() },
         }
+    }
+
+    /// Skips the LZ4 pass: the header and the codec byte stay as with `lz4`
+    /// (§4.4), but every data block is stored with codec 0, as is. For a
+    /// writer that must be fast (the close-time flush); a no-op without `lz4`.
+    pub fn without_lz4_pass(mut self) -> Self {
+        self.try_lz4 = false;
+        self
     }
 
     /// Bytes produced so far (taken or pending).
@@ -580,7 +591,11 @@ impl SstBuilder {
 
     fn close_block(&mut self) {
         let raw = self.block.finish();
-        let payload = if self.lz4 { super::block::store_data_payload(&raw) } else { raw };
+        let payload = match (self.lz4, self.try_lz4) {
+            (false, _) => raw,
+            (true, true) => super::block::store_data_payload(&raw),
+            (true, false) => super::block::store_raw_data_payload(&raw),
+        };
         let offset = self.len();
         append_block(&mut self.pending, &payload, self.file_number, offset);
         let handle = BlockHandle { offset, len: (payload.len() + BLOCK_TRAILER_LEN) as u64 };

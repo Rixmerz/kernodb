@@ -55,16 +55,21 @@ impl<'a> SplitPoints<'a> {
 /// are not yet durable: the caller syncs the directory. A memtable without
 /// entries gives no table. On failure the partial output is removed.
 /// `reason` is recorded as each table's `creation_reason` (v1.md §7.6).
+/// `closing` is the close-time flush: nothing else is writing, so its tables
+/// skip the LZ4 pass and the intermediate syncs (they keep `BLOCK_LZ4` and
+/// store every block with codec 0; the pass was a quarter of a close, and the
+/// syncs slowed it more, see the report of 2026-11-24).
 pub fn write_memtable(
     ctx: &Arc<TableCtx>,
     mem: &Memtable,
     reason: u8,
     l1: &[Arc<Table>],
+    closing: bool,
     next_number: &mut dyn FnMut() -> u64,
 ) -> Result<Vec<Table>> {
     let mut tables: Vec<Table> = Vec::new();
     let mut builder: Option<TableBuilder> = None;
-    let result = fill(ctx, mem, reason, l1, next_number, &mut tables, &mut builder);
+    let result = fill(ctx, mem, reason, l1, closing, next_number, &mut tables, &mut builder);
     if result.is_err() {
         if let Some(b) = builder {
             b.abandon();
@@ -77,11 +82,17 @@ pub fn write_memtable(
     result.map(|()| tables)
 }
 
+fn create(ctx: &Arc<TableCtx>, number: u64, reason: u8, closing: bool) -> Result<TableBuilder> {
+    let b = TableBuilder::create(ctx, number, reason)?;
+    Ok(if closing { b.without_lz4_pass().without_intermediate_syncs() } else { b })
+}
+
 fn fill(
     ctx: &Arc<TableCtx>,
     mem: &Memtable,
     reason: u8,
     l1: &[Arc<Table>],
+    closing: bool,
     next_number: &mut dyn FnMut() -> u64,
     tables: &mut Vec<Table>,
     builder: &mut Option<TableBuilder>,
@@ -106,7 +117,7 @@ fn fill(
             tables.push(builder.take().expect("checked above").finish_with(&pieces)?);
         }
         if builder.is_none() {
-            *builder = Some(TableBuilder::create(ctx, next_number(), reason)?);
+            *builder = Some(create(ctx, next_number(), reason, closing)?);
         }
         builder.as_mut().expect("just created").add(it.key(), it.seq(), it.value())?;
         prev.clear();
@@ -116,7 +127,7 @@ fn fill(
     let rest = splitter.take_below(None);
     if builder.is_none() && !rest.is_empty() {
         // Only tombstones left.
-        *builder = Some(TableBuilder::create(ctx, next_number(), reason)?);
+        *builder = Some(create(ctx, next_number(), reason, closing)?);
     }
     if let Some(b) = builder.take() {
         tables.push(b.finish_with(&rest)?);
@@ -162,7 +173,7 @@ mod tests {
 
     fn write(ctx: &Arc<TableCtx>, mem: &Memtable, l1: &[Arc<Table>]) -> Vec<Table> {
         static NEXT: AtomicU64 = AtomicU64::new(100);
-        write_memtable(ctx, mem, REASON_FLUSH, l1, &mut || NEXT.fetch_add(1, Ordering::SeqCst)).unwrap()
+        write_memtable(ctx, mem, REASON_FLUSH, l1, false, &mut || NEXT.fetch_add(1, Ordering::SeqCst)).unwrap()
     }
 
     #[test]

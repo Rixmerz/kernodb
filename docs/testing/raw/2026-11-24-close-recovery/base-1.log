@@ -1,0 +1,8 @@
+[1/8] 10000 bulk_load kerno rep 0 ... 0.9s
+[2/8] 10000 bulk_load sqlite rep 0 ... 1.2s
+[3/8] 10000 cauce kerno rep 0 ... 9.5s
+[4/8] 10000 cauce sqlite rep 0 ... 11.2s
+[5/8] 100000 bulk_load kerno rep 0 ... 1.5s
+[6/8] 100000 bulk_load sqlite rep 0 ... 10.7s
+[7/8] 100000 cauce kerno rep 0 ... 14.7s
+[8/8] 100000 cauce sqlite rep 0 ... 20.1s
