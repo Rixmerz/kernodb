@@ -4,6 +4,9 @@
 //! payloads as `bytes` (a `str` is stored as its UTF-8 bytes), and every engine failure becomes
 //! a `kerno.KernoError`.
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::collections::HashMap;
 use std::ops::Bound as Range;
 use std::path::PathBuf;
