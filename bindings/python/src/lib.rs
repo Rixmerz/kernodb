@@ -288,9 +288,31 @@ fn to_field(v: &Bound<'_, PyAny>) -> PyResult<FieldValue> {
 }
 
 fn to_document(d: &Bound<'_, PyDict>) -> PyResult<Document> {
+    to_document_cached(d, &mut Vec::new())
+}
+
+/// [`to_document`] for many dicts in a row: `keys[i]` is the key object met at position `i`
+/// of an earlier dict and its conversion. Dicts built by the same code hold the same (interned)
+/// key objects in the same order, so a key is converted once, then copied. Each slot holds a
+/// strong reference, so an address cannot be reused by another object while cached.
+fn to_document_cached<'py>(
+    d: &Bound<'py, PyDict>,
+    keys: &mut Vec<Option<(Bound<'py, PyAny>, String)>>,
+) -> PyResult<Document> {
     let mut doc = Document::new();
-    for (k, v) in d.iter() {
-        doc = doc.with(k.extract::<String>()?, to_field(&v)?);
+    for (i, (k, v)) in d.iter().enumerate() {
+        if keys.len() <= i {
+            keys.resize_with(i + 1, || None);
+        }
+        let name = match &keys[i] {
+            Some((o, name)) if o.as_ptr() == k.as_ptr() => name.clone(),
+            _ => {
+                let name = k.extract::<String>()?;
+                keys[i] = Some((k, name.clone()));
+                name
+            }
+        };
+        doc = doc.with(name, to_field(&v)?);
     }
     Ok(doc)
 }
@@ -1725,6 +1747,7 @@ impl Database {
         // The same for the unit type of "store" and "upsert" ops and the key field of "upsert".
         let mut last_unit_type: Option<(Bound<'py, PyAny>, String)> = None;
         let mut last_field: Option<(Bound<'py, PyAny>, String)> = None;
+        let mut doc_keys: Vec<Option<(Bound<'py, PyAny>, String)>> = Vec::new();
         for op in &ops {
             if op.is_empty() {
                 return Err(InvalidArgumentError::new_err("unknown or malformed batch op: ()"));
@@ -1794,9 +1817,14 @@ impl Database {
                 ("upsert", 4) => {
                     let t = cached_str(&mut last_unit_type, op.get_borrowed_item(1)?)?;
                     let field = cached_str(&mut last_field, op.get_borrowed_item(2)?)?;
-                    let doc = to_document(op.get_item(3)?.cast::<PyDict>().map_err(|_| {
-                        InvalidArgumentError::new_err("an upsert op's document is a dict of bool/int/float/str/bytes")
-                    })?)?;
+                    let doc = to_document_cached(
+                        op.get_item(3)?.cast::<PyDict>().map_err(|_| {
+                            InvalidArgumentError::new_err(
+                                "an upsert op's document is a dict of bool/int/float/str/bytes",
+                            )
+                        })?,
+                        &mut doc_keys,
+                    )?;
                     batch.upsert(t, field, doc.encode().map_err(engine_error)?);
                 }
                 _ => return Err(InvalidArgumentError::new_err(format!("unknown or malformed batch op: {op}"))),
@@ -1987,7 +2015,7 @@ fn open(
         other => {
             return Err(InvalidArgumentError::new_err(format!(
                 "durability must be \"sync\" or \"buffered\", not {other:?}"
-            )))
+            )));
         }
     };
     let db = py
