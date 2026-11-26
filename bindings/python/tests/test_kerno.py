@@ -1084,3 +1084,42 @@ def test_search_substring_raises_when_it_could_never_match(tmp_path):
         ):
             with pytest.raises(kerno.InvalidArgumentError):
                 call()
+
+
+def test_unit_document_and_neighbors(tmp_path):
+    with kerno.open(tmp_path / "db") as db:
+        db.define_schema("sym", [{"name": "sid", "type": "int", "unique": True}, {"name": "name", "type": "text"}])
+        a = db.store_document("sym", {"sid": 1, "name": "a"})
+        b = db.store_document("sym", {"sid": 300, "name": "b"})
+        raw = db.store("note", "plain")
+        db.relate(a, b, "calls")
+        db.relate(a, raw, "about")
+
+        (unit,) = db.find("sym", "sid", 300)
+        assert unit.document() == {"sid": 300, "name": "b"} == db.read_document(b)
+        with pytest.raises(kerno.SchemaError):
+            db.read(raw).document()
+
+        out = db.neighbors(a)
+        assert sorted((r.relation_type, u.id) for r, u in out) == [("about", raw), ("calls", b)]
+        ((rel, caller),) = db.neighbors(b, "in", "calls")
+        assert (rel.from_id, rel.to_id, caller.document()["name"]) == (a, b, "a")
+        assert rel.from_id is rel.from_id  # one str per attribute, not one per read
+        assert db.neighbors(b) == []
+        with pytest.raises(kerno.InvalidArgumentError):
+            db.neighbors(a, "sideways")
+
+
+def test_keyword_search_finds_documents_of_any_encoding(tmp_path):
+    # Issue #12: an int >= 128 or a text of >= 128 bytes makes the record invalid UTF-8.
+    with kerno.open(tmp_path / "db") as db:
+        db.define_schema("doc", [{"name": "n", "type": "int"}, {"name": "text", "type": "text"}])
+        db.set_fulltext("doc", True)
+        ids = [
+            db.store_document("doc", {"n": 127, "text": "zebra"}),
+            db.store_document("doc", {"n": 128, "text": "zebra"}),
+            db.store_document("doc", {"n": 1, "text": "zebra " + "x" * 122}),
+            db.store_document("doc", {"n": 1, "text": "zebra " + "x" * 121}),
+        ]
+        assert {h.id for h in db.search_text("zebra", limit=10)} == set(ids)
+        assert db.verify()["clean"]

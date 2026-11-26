@@ -15,3 +15,9 @@ crate-type = ["cdylib"]
 [dependencies]
 kerno = { package = "kernodb", path = "../../crates/kerno", version = "1.0.0-alpha.4" }
 pyo3 = { version = "0.30", features = ["abi3-py39"] }
+
+# The wheel is the product: whole-program inlining across the storage, units and binding crates
+# is worth the longer build.
+[profile.release]
+lto = "fat"
+codegen-units = 1

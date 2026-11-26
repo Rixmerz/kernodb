@@ -100,6 +100,10 @@ class Unit:
     @property
     def payload(self) -> bytes | None:
         """The content; `None` for a deleted unit."""
+    def document(self) -> dict[str, FieldValue] | None:
+        """The payload decoded as a document, without reading the database again.
+
+        `None` for a deleted unit; `SchemaError` when the payload is not a document."""
 
 class Relation:
     """A directed, typed edge between two units."""
@@ -194,6 +198,13 @@ class Database:
         An invalid `relation_type` name (empty, over 64 bytes, with a NUL) raises `InvalidArgumentError`,
         and an id no unit ever had raises `NotFoundError` (a deleted unit is known and has none).
         """
+    def neighbors(
+        self,
+        id: str,
+        direction: Literal["out", "in"] = "out",
+        relation_type: str | None = None,
+    ) -> list[tuple[Relation, Unit]]:
+        """The relations of `id`, as `related`, each with the unit at its other end, in one call."""
     def query(
         self,
         unit_type: str | None = None,

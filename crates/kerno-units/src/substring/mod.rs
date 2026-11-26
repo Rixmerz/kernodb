@@ -124,10 +124,13 @@ fn indexed(payload: &[u8]) -> &[u8] {
 pub(crate) fn grams(payload: &[u8]) -> Vec<Gram> {
     let text = indexed(payload);
     let at = |i: usize| text.get(i).map_or(0, u8::to_ascii_lowercase);
-    let mut out: Vec<Gram> = (0..text.len()).map(|i| [at(i), at(i + 1), at(i + 2)]).collect();
-    out.sort_unstable();
-    out.dedup();
-    out
+    // Sorted as integers: a big-endian packing orders like the three bytes do, and sorting
+    // machine words is several times faster than comparing 3-byte arrays.
+    let mut packed: Vec<u32> =
+        (0..text.len()).map(|i| u32::from(at(i)) << 16 | u32::from(at(i + 1)) << 8 | u32::from(at(i + 2))).collect();
+    packed.sort_unstable();
+    packed.dedup();
+    packed.into_iter().map(|g| [(g >> 16) as u8, (g >> 8) as u8, g as u8]).collect()
 }
 
 /// Whether the indexed part of `payload` holds `needle` (already folded).

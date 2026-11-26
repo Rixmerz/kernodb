@@ -167,7 +167,7 @@ mod tests {
             (Error::UnitHasRelations { unit: UNIT, relation: RELATION }, Kind::Conflict),
             (Error::AlreadyExists { unit: UNIT }, Kind::Conflict),
             (Error::PayloadTooLarge { len: 2, max: 1 }, Kind::PayloadTooLarge),
-            (Error::ChangeSetTooLarge { ops: 2, bytes: 2 }, Kind::PayloadTooLarge),
+            (Error::ChangeSetTooLarge { ops: 2, bytes: 2, engine_limit: None }, Kind::PayloadTooLarge),
             (Error::IndexNotReady { state: IndexState::Stale, watermark: None }, Kind::Unavailable),
             (io(), Kind::Internal),
             (Error::HistoryUnavailable { policy: HistoryPolicy::None }, Kind::Internal),

@@ -194,9 +194,13 @@ pub enum UnitError {
         len: usize,
         max: usize,
     },
+    /// `ops` counts the caller's operations, except when `engine_limit` is
+    /// set: then the storage engine refused a batch over one of its limits
+    /// (the message it gave), and `ops` counts storage-level writes.
     ChangeSetTooLarge {
         ops: usize,
         bytes: usize,
+        engine_limit: Option<String>,
     },
     InvalidArgument(String),
     NotAUnitDatabase,
@@ -280,8 +284,11 @@ impl fmt::Display for UnitError {
             UnitError::Pruned { unit, oldest } => write!(f, "unit {unit}: history pruned before revision {oldest}"),
             UnitError::HistoryUnavailable { policy } => write!(f, "history unavailable under policy {policy:?}"),
             UnitError::PayloadTooLarge { len, max } => write!(f, "payload of {len} bytes exceeds {max}"),
-            UnitError::ChangeSetTooLarge { ops, bytes } => {
+            UnitError::ChangeSetTooLarge { ops, bytes, engine_limit: None } => {
                 write!(f, "change set too large: {ops} operations, {bytes} bytes")
+            }
+            UnitError::ChangeSetTooLarge { ops, bytes, engine_limit: Some(m) } => {
+                write!(f, "change set too large: {ops} storage writes, {bytes} bytes; storage engine limit: {m}")
             }
             UnitError::InvalidArgument(m) => write!(f, "invalid argument: {m}"),
             UnitError::NotAUnitDatabase => f.write_str("the database has keys but no units layer mark"),

@@ -520,6 +520,19 @@ impl Unit {
         self.payload.as_deref().map(|p| PyBytes::new(py, p))
     }
 
+    /// The payload decoded as a document (`dict`), without reading the database again; `None`
+    /// for a deleted unit. Raises `SchemaError` when the payload is not a document.
+    fn document<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let Some(payload) = self.payload.as_deref() else { return Ok(None) };
+        let doc = Document::decode(payload)
+            .map_err(|e| SchemaError::new_err(format!("the payload is not a document: {e}")))?;
+        let d = PyDict::new(py);
+        for (k, v) in doc.iter() {
+            d.set_item(k, field_to_py(py, v)?)?;
+        }
+        Ok(Some(d))
+    }
+
     fn __repr__(&self) -> String {
         format!("Unit(id={:?}, unit_type={:?}, lifecycle={:?})", self.id, self.unit_type, self.lifecycle)
     }
@@ -542,22 +555,61 @@ impl From<kerno::Unit> for Unit {
 }
 
 /// A directed, typed edge between two units.
+///
+/// The fields are Python strings made once: reading an attribute hands out a reference, it does
+/// not build a new `str` (a scan of every relation reads three attributes per relation).
 #[pyclass(frozen, module = "kerno")]
 struct Relation {
     #[pyo3(get)]
-    id: String,
+    id: Py<PyString>,
     #[pyo3(get)]
-    from_id: String,
+    from_id: Py<PyString>,
     #[pyo3(get)]
-    to_id: String,
+    to_id: Py<PyString>,
     #[pyo3(get)]
-    relation_type: String,
+    relation_type: Py<PyString>,
 }
 
 #[pymethods]
 impl Relation {
-    fn __repr__(&self) -> String {
-        format!("Relation(from_id={:?}, to_id={:?}, relation_type={:?})", self.from_id, self.to_id, self.relation_type)
+    fn __repr__(&self, py: Python<'_>) -> String {
+        format!(
+            "Relation(from_id={:?}, to_id={:?}, relation_type={:?})",
+            self.from_id.bind(py).to_string_lossy(),
+            self.to_id.bind(py).to_string_lossy(),
+            self.relation_type.bind(py).to_string_lossy()
+        )
+    }
+}
+
+/// Python `Relation`s of engine relations. A relation type is one shared `str` per distinct
+/// name: a database has few types and many relations.
+struct RelationMaker<'py> {
+    py: Python<'py>,
+    types: HashMap<String, Py<PyString>>,
+}
+
+impl<'py> RelationMaker<'py> {
+    fn new(py: Python<'py>) -> Self {
+        RelationMaker { py, types: HashMap::new() }
+    }
+
+    fn make(&mut self, r: kerno::Relation) -> Relation {
+        let py = self.py;
+        let relation_type = match self.types.get(&r.relation_type) {
+            Some(t) => t.clone_ref(py),
+            None => {
+                let t = PyString::new(py, &r.relation_type).unbind();
+                self.types.insert(r.relation_type, t.clone_ref(py));
+                t
+            }
+        };
+        Relation {
+            id: PyString::new(py, &RelationId::to_string(&r.id)).unbind(),
+            from_id: PyString::new(py, &r.from.to_string()).unbind(),
+            to_id: PyString::new(py, &r.to.to_string()).unbind(),
+            relation_type,
+        }
     }
 }
 
@@ -699,37 +751,51 @@ impl Database {
                 return Err(InvalidArgumentError::new_err(format!("direction must be 'out' or 'in', not {other:?}")));
             }
         };
-        self.with_db(py, |db| {
-            let edges = db.related(id, direction, relation_type).map_err(engine_error)?;
-            Ok(edges
-                .into_iter()
-                .map(|r| Relation {
-                    id: RelationId::to_string(&r.id),
-                    from_id: r.from.to_string(),
-                    to_id: r.to.to_string(),
-                    relation_type: r.relation_type,
-                })
-                .collect())
-        })
+        let edges = self.with_db(py, |db| db.related(id, direction, relation_type).map_err(engine_error))?;
+        let mut maker = RelationMaker::new(py);
+        Ok(edges.into_iter().map(|r| maker.make(r)).collect())
     }
 
     /// Every live relation, optionally of one `relation_type`, in one scan: much faster than
     /// calling `related` for each unit.
     #[pyo3(signature = (relation_type=None))]
     fn relations(&self, py: Python<'_>, relation_type: Option<&str>) -> PyResult<Vec<Relation>> {
-        self.with_db(py, |db| {
-            Ok(db
-                .relations(relation_type)
-                .map_err(engine_error)?
-                .into_iter()
-                .map(|r| Relation {
-                    id: RelationId::to_string(&r.id),
-                    from_id: r.from.to_string(),
-                    to_id: r.to.to_string(),
-                    relation_type: r.relation_type,
-                })
-                .collect())
-        })
+        let edges = self.with_db(py, |db| db.relations(relation_type).map_err(engine_error))?;
+        let mut maker = RelationMaker::new(py);
+        Ok(edges.into_iter().map(|r| maker.make(r)).collect())
+    }
+
+    /// The relations of `id` like [`related`](Self::related), each with the unit at its other
+    /// end, in one call: `[(Relation, Unit), ...]`. A relation whose other end no longer exists
+    /// is left out.
+    #[pyo3(signature = (id, direction="out", relation_type=None))]
+    fn neighbors(
+        &self,
+        py: Python<'_>,
+        id: &str,
+        direction: &str,
+        relation_type: Option<&str>,
+    ) -> PyResult<Vec<(Relation, Unit)>> {
+        let id = UnitId(parse_id(id)?);
+        let direction = match direction {
+            "out" => Direction::Out,
+            "in" => Direction::In,
+            other => {
+                return Err(InvalidArgumentError::new_err(format!("direction must be 'out' or 'in', not {other:?}")));
+            }
+        };
+        let pairs = self.with_db(py, |db| {
+            let edges = db.related(id, direction, relation_type).map_err(engine_error)?;
+            let mut out = Vec::with_capacity(edges.len());
+            for r in edges {
+                let other = if matches!(direction, Direction::Out) { r.to } else { r.from };
+                let Some(unit) = db.get(other).map_err(engine_error)? else { continue };
+                out.push((r, unit));
+            }
+            Ok(out)
+        })?;
+        let mut maker = RelationMaker::new(py);
+        Ok(pairs.into_iter().map(|(r, u)| (maker.make(r), Unit::from(u))).collect())
     }
 
     /// The units in id order; `unit_type` (an invalid name raises `InvalidArgumentError`, for every

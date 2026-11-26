@@ -1007,6 +1007,8 @@ fn kerno_batch_limit_breaks_the_changeset() {
     let e = cs.create(new_unit("doc", b"\xff3")).unwrap_err();
     // The second create took 5 writes (its live count rewritten, head, REV_META, REV_PAYLOAD, member); the third stops at its REV_META.
     assert!(matches!(e, UnitError::ChangeSetTooLarge { ops: 8, .. }), "{e}");
+    assert!(matches!(e, UnitError::ChangeSetTooLarge { engine_limit: Some(_), .. }), "{e}");
+    assert!(e.to_string().contains("8 storage writes") && e.to_string().contains("engine limit"), "{e}");
     assert!(matches!(cs.create(new_unit("doc", b"\xff4")), Err(UnitError::ChangeSetClosed)));
     assert!(matches!(cs.get_unit(id(1)), Err(UnitError::ChangeSetClosed)));
     assert!(matches!(cs.commit(), Err(UnitError::ChangeSetClosed)));

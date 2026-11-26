@@ -45,9 +45,20 @@ pub(crate) struct Doc {
 }
 
 /// The document of a payload, or `None` when it is not indexed: bytes that
-/// are not UTF-8, and text without a single term.
+/// are neither UTF-8 nor a canonical record, and text without a single term.
+///
+/// A UTF-8 payload is indexed from its raw text, as always. A payload that is
+/// not UTF-8 but decodes as a canonical record (`schema::Document`) is indexed
+/// from its Text field values, in field order, joined by a newline.
 pub(crate) fn analyze(payload: &[u8]) -> Option<Doc> {
-    let text = std::str::from_utf8(payload).ok()?;
+    let owned;
+    let text = match std::str::from_utf8(payload) {
+        Ok(t) => t,
+        Err(_) => {
+            owned = record_text(payload)?;
+            owned.as_str()
+        }
+    };
     let mut end = text.len().min(MAX_INDEXED_BYTES);
     while !text.is_char_boundary(end) {
         end -= 1;
@@ -58,4 +69,18 @@ pub(crate) fn analyze(payload: &[u8]) -> Option<Doc> {
         *doc.terms.entry(t).or_insert(0) += 1;
     }
     (doc.len > 0).then_some(doc)
+}
+
+/// The Text field values of a canonical record, joined by a newline, or
+/// `None` when `payload` is not one.
+fn record_text(payload: &[u8]) -> Option<String> {
+    let doc = crate::schema::Document::parse(payload).ok()?;
+    let texts: Vec<&str> = doc
+        .iter()
+        .filter_map(|(_, v)| match v {
+            crate::schema::FieldValue::Text(s) => Some(s.as_str()),
+            _ => None,
+        })
+        .collect();
+    Some(texts.join("\n"))
 }

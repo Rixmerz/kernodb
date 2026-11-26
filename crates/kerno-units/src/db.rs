@@ -1221,7 +1221,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         self.txn()?;
         let ops = self.members.len() + self.relation_ops + self.derived_ops;
         if ops >= self.db.cfg.max_changeset_ops {
-            return Err(UnitError::ChangeSetTooLarge { ops: ops + 1, bytes: self.bytes });
+            return Err(UnitError::ChangeSetTooLarge { ops: ops + 1, bytes: self.bytes, engine_limit: None });
         }
         Ok(())
     }
@@ -1238,7 +1238,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         self.txn()?;
         let ops = self.members.len() + self.relation_ops;
         if ops >= self.db.cfg.max_changeset_ops {
-            return Err(UnitError::ChangeSetTooLarge { ops: ops + 1, bytes: self.bytes });
+            return Err(UnitError::ChangeSetTooLarge { ops: ops + 1, bytes: self.bytes, engine_limit: None });
         }
         if let Some(u) = unit
             && self.touched.contains(&u)
@@ -1324,7 +1324,9 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
                 Err(match e {
                     // The engine refuses a write over its batch or value
                     // limits before any effect (design §4).
-                    kerno_core::Error::InvalidArgument(_) => UnitError::ChangeSetTooLarge { ops: writes, bytes },
+                    kerno_core::Error::InvalidArgument(m) => {
+                        UnitError::ChangeSetTooLarge { ops: writes, bytes, engine_limit: Some(m) }
+                    }
                     e => UnitError::Storage(e),
                 })
             }
@@ -1509,8 +1511,11 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
             actor_ref: self.actor(),
             source_ref: self.source(),
         };
-        let ordinal = u32::try_from(self.members.len())
-            .map_err(|_| UnitError::ChangeSetTooLarge { ops: self.members.len() + 1, bytes: self.bytes })?;
+        let ordinal = u32::try_from(self.members.len()).map_err(|_| UnitError::ChangeSetTooLarge {
+            ops: self.members.len() + 1,
+            bytes: self.bytes,
+            engine_limit: None,
+        })?;
         let member = CsMember { unit, rev_no: rev, kind };
         writes.push(Write::Put(key(Key::UnitHead { unit })?, head.encode()?));
         writes.push(Write::Put(key(Key::RevMeta { unit, rev })?, meta.encode(rev)?));
@@ -1841,7 +1846,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         self.txn()?;
         let ops = self.members.len() + self.relation_ops;
         if ops >= self.db.cfg.max_changeset_ops {
-            return Err(UnitError::ChangeSetTooLarge { ops: ops + 1, bytes: self.bytes });
+            return Err(UnitError::ChangeSetTooLarge { ops: ops + 1, bytes: self.bytes, engine_limit: None });
         }
         Ok(())
     }
@@ -2001,8 +2006,11 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         if self.touched.contains(&unit) {
             return Err(UnitError::InvalidArgument(format!("unit {unit} already retained in this change set")));
         }
-        let ordinal = u32::try_from(self.members.len())
-            .map_err(|_| UnitError::ChangeSetTooLarge { ops: self.members.len() + 1, bytes: self.bytes })?;
+        let ordinal = u32::try_from(self.members.len()).map_err(|_| UnitError::ChangeSetTooLarge {
+            ops: self.members.len() + 1,
+            bytes: self.bytes,
+            engine_limit: None,
+        })?;
         let member = CsMember { unit, rev_no: rev, kind };
         writes.push(Write::Put(key(Key::CsMember { seq: self.seq, ordinal })?, member.encode()?));
         // A revision retention purges takes the derived data computed from it

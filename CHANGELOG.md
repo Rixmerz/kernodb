@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **The keyword index skipped typed documents whose encoding is not UTF-8** ([#12](https://github.com/Rixmerz/kernodb/issues/12)). A document is a binary record, and an `int` field of 128 or more, or a `text` or `bytes` field of 128 bytes or more, puts a byte in it that is not valid UTF-8; `analyze` then indexed nothing and reported nothing, so `search_text` missed the unit and `verify` stayed clean. Such a payload is now indexed from its text field values, in field order. A payload that is valid UTF-8 is indexed from its raw bytes as before, so entries already stored still match. **A database that holds documents the old build skipped needs its index rebuilt**: `set_fulltext(type, false)` then `set_fulltext(type, true)`; until then `verify` reports their missing entries.
+- **`ChangeSetTooLarge` said "operations" for storage writes** ([#13](https://github.com/Rixmerz/kernodb/issues/13)). When the storage engine refuses a batch over one of its limits, the error now carries the engine's message (`engine_limit`) and reads "N storage writes, M bytes; storage engine limit: ...". The refusals that count the caller's operations keep "N operations". The variant gained a field, so code that builds it with a struct literal must add `engine_limit`.
+
+### Added
+
+- **Python: `Unit.document()` and `Database.neighbors()`**. `unit.document()` decodes the payload the unit already holds, so a `find`, `query` or `execute` result needs no `read_document` call per unit. `db.neighbors(id, direction="out", relation_type=None)` returns `[(Relation, Unit), ...]`: the relations of `related` with the unit at the other end, in one call.
+
+### Changed
+
+- **Python: cheaper relation objects and a whole-program optimised wheel**. A `Relation`'s `id`, `from_id`, `to_id` and `relation_type` are Python strings made once (reading an attribute no longer builds a new `str`, and the relations of one call share one `str` per relation type), and the wheel is built with fat LTO and one codegen unit. Trigrams are sorted as integers. Measured from a client that mirrors a code index (Django: 40,263 units, 413,714 relations): reading every unit and relation went from 1.58 s to 1.14 s, a lookup by an indexed text field from 17 to 14.5 microseconds, and the ingest from 32.8 s to 29.5 s; one-hop neighbours did not move. SQLite is still faster on all of these except keyword and substring search; the causes are the ones in [`perf-gaps-2026-11.md`](docs/testing/perf-gaps-2026-11.md) (three point reads per unit, per-neighbour record reads, both text indexes written inline).
+
 ## [1.0.0-alpha.4] - 2026-11-25
 
 ### Added

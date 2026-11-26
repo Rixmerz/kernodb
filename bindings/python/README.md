@@ -217,6 +217,7 @@ never return wrong data.
 | `db.relate(from, to, type, unique=False)` | the relation id. `unique` reuses an existing one |
 | `db.unrelate(relation_id)` | `None` |
 | `db.related(id, direction="out", relation_type=None)` | `list[Relation]` (`id`, `from_id`, `to_id`, `relation_type`); `NotFoundError` for an id no unit ever had, `InvalidArgumentError` for an invalid type name |
+| `db.neighbors(id, direction="out", relation_type=None)` | `list[tuple[Relation, Unit]]`: the relations of `related`, each with the unit at its other end, in one call |
 | `db.relations(relation_type=None)` | every live relation, in one scan. Use it instead of `related` per unit |
 | `db.query(unit_type=None, schema_version=None, lifecycle="active")` | `list[Unit]` that match, in id order. `lifecycle` is `"active"`, `"archived"`, `"deleted"` or `"all"`; the last three read every unit's head, so they cost time linear in the store |
 | `db.commit(ops, reason=None, actor=None, source=None, detailed=False)` | stored ids, or a dict with `detailed=True` |
@@ -233,6 +234,7 @@ never return wrong data.
 | `db.refresh()` | on a `read_only=True` database: pick up the commits a writer made since the open; returns the sequence now read |
 | `db.define_schema(type, fields)` / `db.create_index(type, field)` | `None` |
 | `db.store_document(type, dict)` / `db.update_document(id, dict)` / `db.read_document(id)` | id / `None` / `dict` or `None` |
+| `unit.document()` | the `dict` of a `Unit` you already hold (from `find`, `query`, `execute`, `neighbors`), decoded without another read; `None` for a deleted unit |
 | `db.upsert(type, field, dict)` | `{"id", "outcome"}`: store the document or revise the active unit holding the same value of the unique `field`; `outcome` is `"created"`, `"updated"` or `"unchanged"` |
 | `db.find(type, field, value)` | `list[Unit]` whose indexed field equals `value` |
 | `db.find_range(type, field, low=None, high=None, limit=None)` | `list[Unit]` whose indexed field is in `[low, high]` (both included, `None` = open end), ordered by value then id. No `limit` means no cap; `limit=0`, or `low` above `high`, raises `InvalidArgumentError` |

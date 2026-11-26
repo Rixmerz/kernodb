@@ -115,6 +115,38 @@ fn only_text_with_a_term_is_a_document() {
     assert_eq!((doc.len, doc.terms.get("a"), doc.terms.get("b")), (3, Some(&2), Some(&1)));
 }
 
+fn record(n: i64, text_len: usize) -> Vec<u8> {
+    use crate::schema::{Document, FieldValue};
+    let body = format!("alpha {}", "b".repeat(text_len - 6));
+    Document::new().with("count", FieldValue::Int(n)).with("body", FieldValue::Text(body)).encode().unwrap()
+}
+
+#[test]
+fn a_record_that_is_not_utf8_is_indexed_from_its_text_fields() {
+    for (n, len) in [(127, 127), (128, 127), (127, 128), (128, 128)] {
+        let doc = analyze(&record(n, len)).unwrap_or_else(|| panic!("int {n}, text {len}: not indexed"));
+        assert_eq!(doc.terms.get("alpha"), Some(&1), "int {n}, text {len}");
+    }
+    // A record whose bytes happen to be UTF-8 keeps its raw-text indexing.
+    let raw = record(127, 127);
+    assert!(std::str::from_utf8(&raw).is_ok());
+    assert!(analyze(&raw).unwrap().terms.contains_key("count"));
+}
+
+#[test]
+fn records_of_any_encoding_are_found_by_search() {
+    let disk = SimVfs::new(3);
+    let db = open(&disk);
+    let ids: Vec<UnitId> =
+        [(127, 127), (128, 127), (127, 128), (128, 128)].iter().map(|&(n, l)| store(&db, &record(n, l))).collect();
+    let mut got = found(&db, "alpha");
+    got.sort();
+    let mut want = ids.clone();
+    want.sort();
+    assert_eq!(got, want);
+    assert_clean(&db);
+}
+
 // -------------------------------------------------------------- ranking
 
 #[test]
