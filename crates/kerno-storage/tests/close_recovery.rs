@@ -37,12 +37,18 @@ fn incompat(image: &DirImage, file: &std::path::Path) -> u64 {
 /// Ten small commits, which stay in one memtable: the only table the session
 /// writes is the one of the close, or of the `flush` asked for.
 fn one_memtable(flush_before_close: bool) -> (DirImage, Model) {
+    one_memtable_of(flush_before_close, 300)
+}
+
+fn one_memtable_of(flush_before_close: bool, value_len: usize) -> (DirImage, Model) {
     let disk = SimVfs::new(7);
-    let db = open_in(&disk.as_vfs(), &deferred()).unwrap();
-    assert!(deferred().block_compression, "the default compresses");
+    // A write buffer that holds all ten values, whatever their length.
+    let cfg = kerno_storage::Config { write_buffer_bytes: (16 << 10).max(16 * value_len), ..deferred() };
+    let db = open_in(&disk.as_vfs(), &cfg).unwrap();
+    assert!(cfg.block_compression, "the default compresses");
     let mut model = Model::new();
     for i in 0..10u32 {
-        put(&db, &mut model, &format!("key-{i:05}"), &[b'x'; 300]);
+        put(&db, &mut model, &format!("key-{i:05}"), &vec![b'x'; value_len]);
     }
     if flush_before_close {
         db.hooks().flush().unwrap();
@@ -52,13 +58,23 @@ fn one_memtable(flush_before_close: bool) -> (DirImage, Model) {
 }
 
 #[test]
+fn a_small_close_time_flush_is_compressed_like_a_running_one() {
+    let (closed, _) = one_memtable(false);
+    let (running, _) = one_memtable(true);
+    let (a, b) = (files_with(&closed, "sst"), files_with(&running, "sst"));
+    assert_eq!((a.len(), b.len()), (1, 1));
+    assert_eq!(closed.files[&a[0]].len(), running.files[&b[0]].len());
+}
+
+#[test]
 fn the_close_time_flush_skips_the_lz4_pass_and_the_file_reopens_and_reads() {
-    let (closed, model) = one_memtable(false);
+    // Ten values of 1 MiB: a memtable above the size a close still compresses.
+    let (closed, model) = one_memtable_of(false, 1 << 20);
     let ssts = files_with(&closed, "sst");
     assert_eq!(ssts.len(), 1, "{ssts:?}");
     let closed_table = ssts[0].clone();
     // The same data flushed while the database runs gets the LZ4 pass.
-    let (running, _) = one_memtable(true);
+    let (running, _) = one_memtable_of(true, 1 << 20);
     let ssts = files_with(&running, "sst");
     assert_eq!(ssts.len(), 1, "{ssts:?}");
     // Both have the bit (the codec byte, v1.md §4.4): the close-time table stores every block as is.

@@ -56,7 +56,8 @@ impl<'a> SplitPoints<'a> {
 /// entries gives no table. On failure the partial output is removed.
 /// `reason` is recorded as each table's `creation_reason` (v1.md §7.6).
 /// `closing` is the close-time flush: nothing else is writing, so its tables
-/// skip the LZ4 pass and the intermediate syncs (they keep `BLOCK_LZ4` and
+/// skip the intermediate syncs and, for a memtable above
+/// `CLOSE_LZ4_MAX_BYTES`, the LZ4 pass (they keep `BLOCK_LZ4` and
 /// store every block with codec 0; the pass was a quarter of a close, and the
 /// syncs slowed it more, see the report of 2026-11-24).
 pub fn write_memtable(
@@ -82,9 +83,16 @@ pub fn write_memtable(
     result.map(|()| tables)
 }
 
-fn create(ctx: &Arc<TableCtx>, number: u64, reason: u8, closing: bool) -> Result<TableBuilder> {
+/// The largest memtable a close-time flush still compresses. Below it the LZ4
+/// pass costs a few milliseconds and the table, which for a small database is
+/// the whole database, comes out about half the size; above it the pass is a
+/// visible part of the close and compaction compresses the data later anyway.
+const CLOSE_LZ4_MAX_BYTES: usize = 8 << 20;
+
+fn create(ctx: &Arc<TableCtx>, number: u64, reason: u8, closing: bool, lz4: bool) -> Result<TableBuilder> {
     let b = TableBuilder::create(ctx, number, reason)?;
-    Ok(if closing { b.without_lz4_pass().without_intermediate_syncs() } else { b })
+    let b = if closing { b.without_intermediate_syncs() } else { b };
+    Ok(if lz4 { b } else { b.without_lz4_pass() })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -98,6 +106,7 @@ fn fill(
     tables: &mut Vec<Table>,
     builder: &mut Option<TableBuilder>,
 ) -> Result<()> {
+    let lz4 = !closing || mem.approx_bytes() <= CLOSE_LZ4_MAX_BYTES;
     let fragments = mem.fragments(u64::MAX).unwrap_or_default();
     let mut cover = CoverCursor::new(vec![Cow::Borrowed(&fragments[..])]);
     cover.seek(&[]);
@@ -118,7 +127,7 @@ fn fill(
             tables.push(builder.take().expect("checked above").finish_with(&pieces)?);
         }
         if builder.is_none() {
-            *builder = Some(create(ctx, next_number(), reason, closing)?);
+            *builder = Some(create(ctx, next_number(), reason, closing, lz4)?);
         }
         builder.as_mut().expect("just created").add(it.key(), it.seq(), it.value())?;
         prev.clear();
@@ -128,7 +137,7 @@ fn fill(
     let rest = splitter.take_below(None);
     if builder.is_none() && !rest.is_empty() {
         // Only tombstones left.
-        *builder = Some(create(ctx, next_number(), reason, closing)?);
+        *builder = Some(create(ctx, next_number(), reason, closing, lz4)?);
     }
     if let Some(b) = builder.take() {
         tables.push(b.finish_with(&rest)?);
