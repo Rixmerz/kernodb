@@ -139,10 +139,10 @@ impl Check {
                 out.push((doc_key(*unit), format!("DOC of unit {unit}, which is not an Active unit with text")));
                 continue;
             };
-            let same_terms = want.terms.keys().eq(terms.iter());
+            let same_terms = want.terms().map(|(t, _)| t).eq(terms.iter().map(String::as_str));
             let same_postings = self.postings.get(unit).is_some_and(|p| {
-                p.len() == want.terms.len()
-                    && p.iter().all(|(t, p)| want.terms.get(t) == Some(&p.tf) && p.dl == want.len)
+                p.len() == want.terms().len()
+                    && p.iter().all(|(t, p)| want.get(t) == Some(p.tf) && p.dl == want.len)
             });
             if *dl != want.len || !same_terms || !same_postings {
                 out.push((doc_key(*unit), format!("unit {unit}: DOC and postings disagree with its payload")));

@@ -361,3 +361,39 @@ fn an_upsert_of_an_existing_unit_is_a_relate_end_too() {
     assert_eq!(out.len(), 2);
     assert!(out.iter().all(|r| r.to == known.id));
 }
+
+/// A batch of many stores cuts their texts into terms on several threads ahead of the creates:
+/// the index is the one the stores make one by one (same search answers, same scores, `verify`
+/// clean), including stores of a type without the index mixed in.
+#[test]
+fn a_batch_of_stores_indexes_its_texts_as_single_stores_do() {
+    let texts: Vec<String> = (0..300)
+        .map(|i| format!("Doc{i} alpha{} Beta gamma{} ÉTÉ {}", i % 7, i % 13, "delta ".repeat(1 + i % 5)))
+        .collect();
+    let (one_dir, batch_dir) = (TempDir::new(), TempDir::new());
+    let (one, batch) = (Db::open(&one_dir.0).unwrap(), Db::open(&batch_dir.0).unwrap());
+    for db in [&one, &batch] {
+        db.set_fulltext("note", true).unwrap();
+    }
+    for t in &texts {
+        one.store("note", t.as_str()).unwrap();
+        one.store("plain", t.as_str()).unwrap();
+    }
+    let mut b = Batch::new();
+    for t in &texts {
+        b.store("note", t.as_str());
+        b.store("plain", t.as_str());
+    }
+    batch.commit(&b).unwrap();
+    for q in ["alpha3", "beta", "gamma12 delta", "été", "doc299"] {
+        let score = |db: &Db| -> Vec<(usize, String)> {
+            let hits = db.search_text(q, 500, None).unwrap();
+            let mut ids: Vec<kerno::UnitId> = hits.iter().map(|h| h.unit).collect();
+            ids.sort();
+            // Unit ids differ between the two databases; their rank in id order does not.
+            hits.iter().map(|h| (ids.binary_search(&h.unit).unwrap(), format!("{:.9}", h.score))).collect()
+        };
+        assert_eq!(score(&one), score(&batch), "query {q:?}");
+    }
+    assert!(batch.verify().unwrap().is_clean(), "{:?}", batch.verify().unwrap().findings);
+}

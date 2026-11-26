@@ -81,6 +81,7 @@ use crate::db::{ChangeSet, UnitDb, UnitSnapshot, Write, context, scan_all};
 use crate::error::{DecodeError, UnitError, UnitRule};
 use crate::type_options::TAG_TYPE_OPTIONS;
 use crate::types::{Lifecycle, UnitId};
+use crate::db::NewUnit;
 use tokenize::{Doc, analyze};
 
 pub(crate) use check::Check;
@@ -285,8 +286,8 @@ pub(crate) fn decode_block(v: &[u8]) -> Result<Vec<(UnitId, Posting)>, DecodeErr
 fn encode_doc(doc: &Doc) -> Vec<u8> {
     let mut v = vec![RECORD_VERSION, 0];
     v.extend_from_slice(&doc.len.to_be_bytes());
-    v.extend_from_slice(&(doc.terms.len() as u32).to_be_bytes());
-    for t in doc.terms.keys() {
+    v.extend_from_slice(&(doc.terms().len() as u32).to_be_bytes());
+    for (t, _) in doc.terms() {
         v.push(t.len() as u8);
         v.extend_from_slice(t.as_bytes());
     }
@@ -384,8 +385,13 @@ pub(crate) fn next_of(unit: UnitId, writes: &[Write]) -> Result<Next<'_>, UnitEr
 /// What a change set will change in the posting lists: per term, the postings
 /// to put (`Some`) or remove (`None`) by unit, the last operation of a unit
 /// winning.
-pub(crate) type PendingPostings =
-    HashMap<String, Vec<(crate::blocks::Id, Option<Posting>)>, std::hash::BuildHasherDefault<tokenize::TermHasher>>;
+#[derive(Default)]
+pub(crate) struct PendingPostings {
+    /// The terms staged, numbered.
+    terms: tokenize::Interner,
+    /// The operations by term number, in staging order.
+    lists: Vec<Vec<(crate::blocks::Id, Option<Posting>)>>,
+}
 
 /// The index change of one operation that is not a record of its own: the
 /// postings the unit gives up and gains, and what its document does to the
@@ -393,7 +399,8 @@ pub(crate) type PendingPostings =
 pub(crate) struct TextChange {
     unit: UnitId,
     gone: Vec<String>,
-    put: Vec<(String, Posting)>,
+    /// The new document: a posting of each of its terms.
+    put: Option<Doc>,
     /// The change of the number of documents and of their summed length.
     docs: i64,
     len: i64,
@@ -433,7 +440,12 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
     /// what [`ChangeSet::set_fulltext`](crate::type_options) needs to index or
     /// clear the units a type already has.
     pub(crate) fn plan_document(&self, unit: UnitId, payload: Option<&[u8]>) -> Result<TextPlan, UnitError> {
-        let new = payload.and_then(analyze);
+        // A payload cut into terms ahead of its operation (`create_prepared`), else here.
+        let prepared = self.prepared_text.borrow_mut().take().filter(|p| Some(p.len) == payload.map(<[u8]>::len));
+        let new = match prepared {
+            Some(p) => p.doc,
+            None => payload.and_then(analyze),
+        };
         let old = match self.txn()?.get(&doc_key(unit))? {
             Some(raw) => Some(decode_doc(&raw).map_err(|e| context(e, &format!("DOC of unit {unit}")))?),
             None => None,
@@ -449,7 +461,7 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         let gone = old
             .iter()
             .flat_map(|(_, terms)| terms)
-            .filter(|t| !new.as_ref().is_some_and(|d| d.terms.contains_key(*t)))
+            .filter(|t| !new.as_ref().is_some_and(|d| d.get(t).is_some()))
             .cloned()
             .collect();
         let (mut docs, mut len) = (0i64, 0i64);
@@ -461,11 +473,9 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
             Some(doc) => {
                 docs += 1;
                 len += i64::from(doc.len);
-                let write = Write::Put(doc_key(unit), encode_doc(&doc));
-                let put = doc.terms.into_iter().map(|(t, tf)| (t, Posting { tf, dl: doc.len })).collect();
-                (write, put)
+                (Write::Put(doc_key(unit), encode_doc(&doc)), Some(doc))
             }
-            None => (Write::Delete(doc_key(unit)), Vec::new()),
+            None => (Write::Delete(doc_key(unit)), None),
         };
         Ok(TextPlan { writes: vec![write], change: Some(TextChange { unit, gone, put, docs, len }) })
     }
@@ -475,10 +485,12 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
     pub(crate) fn stage_fulltext(&mut self, change: Option<TextChange>) {
         let Some(c) = change else { return };
         for term in c.gone {
-            stage(&mut self.text_pending, term, c.unit, None);
+            stage(&mut self.text_pending, &term, c.unit, None);
         }
-        for (term, p) in c.put {
-            stage(&mut self.text_pending, term, c.unit, Some(p));
+        if let Some(doc) = &c.put {
+            for (term, tf) in doc.terms() {
+                stage(&mut self.text_pending, term, c.unit, Some(Posting { tf, dl: doc.len }));
+            }
         }
         let (docs, len) = self.text_stats.get_or_insert((0, 0));
         *docs += c.docs;
@@ -495,9 +507,10 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         // another.
         let mut probe = crate::blocks::Probe::new(vec![TAG_POSTING + 1]);
         let above = self.fresh_from().map(|u| u.0);
-        let mut lists: Vec<_> = std::mem::take(&mut self.text_pending).into_iter().collect();
-        lists.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-        for (term, mut ops) in lists {
+        let PendingPostings { terms, mut lists } = std::mem::take(&mut self.text_pending);
+        for i in terms.ascending() {
+            let term = std::str::from_utf8(terms.get(i as usize)).unwrap_or_default();
+            let mut ops = std::mem::take(&mut lists[i as usize]);
             // Ascending by unit; of several operations on a unit the last wins. A batch of
             // new units stages them in id order already: nothing to sort then.
             if !ops.windows(2).all(|w| w[0].0 < w[1].0) {
@@ -505,7 +518,7 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
                 ops.sort_by_key(|(u, _)| *u);
                 ops.dedup_by_key(|(u, _)| *u);
             }
-            crate::blocks::flush::<Postings, E>(self, &list_key(&term), ops, false, Some(&mut probe), above)?;
+            crate::blocks::flush::<Postings, E>(self, &list_key(term), ops, false, Some(&mut probe), above)?;
         }
         let Some((docs, len)) = self.text_stats.take() else {
             return Ok(());
@@ -525,9 +538,70 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
     }
 }
 
-/// Records that `unit` has `value` (`None`: no posting) in the list of `term`.
-fn stage(pending: &mut PendingPostings, term: String, unit: UnitId, value: Option<Posting>) {
-    pending.entry(term).or_default().push((unit.0, value));
+/// A payload cut into terms ahead of the operation that writes it, by
+/// [`ChangeSet::prepare_texts`]: the operation then does not cut it again.
+pub struct PreparedText {
+    len: usize,
+    doc: Option<Doc>,
+}
+
+/// Fewer payloads than this are cut on the calling thread.
+const PREPARE_PARALLEL_MIN: usize = 64;
+
+impl<E: TxnEngine> ChangeSet<'_, E> {
+    /// Cuts the payloads of `items` (`(unit_type, payload)`) into terms, on several threads when
+    /// there are many, for [`create_prepared`](Self::create_prepared): the same documents the
+    /// creates would make one by one, so the index is the same, byte for byte. `None` for an
+    /// item whose type has no keyword index, whose create cuts nothing.
+    ///
+    /// # Errors
+    ///
+    /// The change set is closed, or a type-options record is damaged.
+    pub fn prepare_texts(&self, items: &[(&str, &[u8])]) -> Result<Vec<Option<PreparedText>>, UnitError> {
+        let mut wanted = Vec::with_capacity(items.len());
+        for (unit_type, _) in items {
+            wanted.push(self.fulltext_enabled(unit_type)?);
+        }
+        let payloads: Vec<&[u8]> = items.iter().zip(&wanted).filter(|(_, w)| **w).map(|((_, p), _)| *p).collect();
+        let cut = |part: &[&[u8]]| -> Vec<PreparedText> {
+            part.iter().map(|p| PreparedText { len: p.len(), doc: analyze(p) }).collect()
+        };
+        let threads = std::thread::available_parallelism().map_or(1, usize::from);
+        let docs: Vec<PreparedText> = if threads == 1 || payloads.len() < PREPARE_PARALLEL_MIN {
+            cut(&payloads)
+        } else {
+            let per = payloads.len().div_ceil(threads);
+            std::thread::scope(|scope| {
+                let parts: Vec<_> = payloads.chunks(per).map(|part| scope.spawn(move || cut(part))).collect();
+                // A panic of `analyze` on a worker is a panic of the caller, as it would have been.
+                parts.into_iter().flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
+            })
+        };
+        let mut docs = docs.into_iter();
+        Ok(wanted.into_iter().map(|w| if w { docs.next() } else { None }).collect())
+    }
+
+    /// [`create`](Self::create), with the payload already cut into terms by
+    /// [`prepare_texts`](Self::prepare_texts) (`None`: cut it here, as `create` does).
+    ///
+    /// # Errors
+    ///
+    /// As [`create`](Self::create).
+    pub fn create_prepared(&mut self, new: NewUnit, text: Option<PreparedText>) -> Result<UnitId, UnitError> {
+        *self.prepared_text.get_mut() = text;
+        let created = self.create(new);
+        *self.prepared_text.get_mut() = None;
+        created
+    }
+}
+
+/// Records that `unit` has `value` (`None`: no posting) in the list of `term`. The term is
+/// copied only the first time the change set stages it.
+fn stage(pending: &mut PendingPostings, term: &str, unit: UnitId, value: Option<Posting>) {
+    match pending.terms.intern(term.as_bytes()) {
+        (_, true) => pending.lists.push(vec![(unit.0, value)]),
+        (i, false) => pending.lists[i].push((unit.0, value)),
+    }
 }
 
 // --------------------------------------------------------------- query

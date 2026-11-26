@@ -112,7 +112,46 @@ fn only_text_with_a_term_is_a_document() {
     assert!(analyze(b"... --- !!!").is_none(), "no term");
     assert!(analyze(b"").is_none());
     let doc = analyze(b"a A b").unwrap();
-    assert_eq!((doc.len, doc.terms.get("a"), doc.terms.get("b")), (3, Some(&2), Some(&1)));
+    assert_eq!((doc.len, doc.get("a"), doc.get("b")), (3, Some(2), Some(1)));
+}
+
+/// `analyze` counts exactly what `tokens` cuts (the query side's tokenizer), on mixed text:
+/// ASCII words of every case and length, Unicode words, long terms, separators, many repeats
+/// (the interning table grows several times).
+#[test]
+fn analyze_counts_what_tokens_cut() {
+    let mut state = 0x2545_F491_4F6C_DD1Du64;
+    let mut next = move |n: u64| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state % n
+    };
+    let pieces = ["foo", "Foo", "BAR", "x1", "Ünïcode", "ÉTÉ", "日本語", "a", "ß", "İstanbul", "_", " ", ".", "\n", "-", "€"];
+    for round in 0..40 {
+        let mut text = String::new();
+        for _ in 0..(1 + round * 40) {
+            match next(10) {
+                0 => text.push_str(&"Ab".repeat(1 + next(50) as usize)),
+                1 => text.push_str(&format!("w{}", next(5000))),
+                _ => text.push_str(pieces[next(pieces.len() as u64) as usize]),
+            }
+        }
+        let mut want: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
+        let mut len = 0;
+        for t in tokens(&text) {
+            *want.entry(t).or_default() += 1;
+            len += 1;
+        }
+        match analyze(text.as_bytes()) {
+            None => assert_eq!(len, 0, "round {round}"),
+            Some(doc) => {
+                assert_eq!(doc.len, len, "round {round}");
+                let got: Vec<(String, u32)> = doc.terms().map(|(t, n)| (t.to_owned(), n)).collect();
+                assert_eq!(got, want.into_iter().collect::<Vec<_>>(), "round {round}");
+            }
+        }
+    }
 }
 
 fn record(n: i64, text_len: usize) -> Vec<u8> {
@@ -125,12 +164,12 @@ fn record(n: i64, text_len: usize) -> Vec<u8> {
 fn a_record_that_is_not_utf8_is_indexed_from_its_text_fields() {
     for (n, len) in [(127, 127), (128, 127), (127, 128), (128, 128)] {
         let doc = analyze(&record(n, len)).unwrap_or_else(|| panic!("int {n}, text {len}: not indexed"));
-        assert_eq!(doc.terms.get("alpha"), Some(&1), "int {n}, text {len}");
+        assert_eq!(doc.get("alpha"), Some(1), "int {n}, text {len}");
     }
     // A record whose bytes happen to be UTF-8 keeps its raw-text indexing.
     let raw = record(127, 127);
     assert!(std::str::from_utf8(&raw).is_ok());
-    assert!(analyze(&raw).unwrap().terms.contains_key("count"));
+    assert!(analyze(&raw).unwrap().get("count").is_some());
 }
 
 #[test]

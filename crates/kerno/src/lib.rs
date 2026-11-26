@@ -282,7 +282,7 @@ use std::path::Path;
 use kerno_core::vfs::StdVfs;
 use kerno_storage::KernoDb;
 use kerno_units::{
-    AsOf, ChangeMeta, CommitSeq, NewUnit, RelationProvenance, RevNo, UnitAt, UnitConfig, UnitDb, UnitUpdate, upsert_key,
+    AsOf, ChangeMeta, CommitSeq, NewUnit, PreparedText, RelationProvenance, RevNo, UnitAt, UnitConfig, UnitDb, UnitUpdate, upsert_key,
 };
 
 pub use kerno_core::Durability;
@@ -674,6 +674,23 @@ impl Db {
             ..ChangeMeta::default()
         };
         let mut changes = self.units.begin_changeset(change_meta)?;
+        // The stores' payloads cut into terms up front, on several threads when there are many:
+        // the creates below then only stage the terms.
+        let stores: Vec<(usize, &str, &[u8])> = ops
+            .iter()
+            .enumerate()
+            .filter_map(|(i, op)| match op {
+                Op::Store { unit_type, payload } => Some((i, unit_type.as_str(), payload.as_slice())),
+                _ => None,
+            })
+            .collect();
+        let mut prepared: Vec<Option<PreparedText>> = (0..ops.len()).map(|_| None).collect();
+        if stores.len() > 1 {
+            let items: Vec<(&str, &[u8])> = stores.iter().map(|&(_, t, p)| (t, p)).collect();
+            for ((i, ..), text) in stores.iter().zip(changes.prepare_texts(&items)?) {
+                prepared[*i] = text;
+            }
+        }
         let mut out = Committed::default();
         let mut unrelated: HashSet<RelationId> = HashSet::new();
         let mut related: Vec<(UnitId, UnitId, &str, RelationId)> = Vec::new();
@@ -694,12 +711,13 @@ impl Db {
         for (i, op) in ops.iter().enumerate() {
             match op {
                 Op::Store { unit_type, payload } => {
-                    let id = changes.create(NewUnit {
+                    let new = NewUnit {
                         unit_type: unit_type.clone(),
                         schema_version: SCHEMA_VERSION,
                         metadata: Vec::new(),
                         payload: payload.clone(),
-                    })?;
+                    };
+                    let id = changes.create_prepared(new, prepared[i].take())?;
                     out.units.push(id);
                     made[i] = Some(id);
                     wrote = true;

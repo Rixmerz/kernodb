@@ -11,8 +11,6 @@
 //! Upgrade path: `unicode-segmentation` as a dependency and a new record
 //! version, since the terms of stored text would change.
 
-use std::collections::BTreeMap;
-
 /// Longest term in bytes. A longer one is cut at a character boundary, in the
 /// index and in the query alike.
 pub const MAX_TERM_LEN: usize = 64;
@@ -38,10 +36,185 @@ pub fn tokens(text: &str) -> impl Iterator<Item = String> + '_ {
 
 /// What the index keeps of one payload: its length in terms and the
 /// frequency of each distinct term.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// The distinct terms are kept back to back in one buffer, with their places and frequencies
+/// in term order: a document costs a few allocations, not one per term.
+#[derive(Clone, Debug)]
 pub(crate) struct Doc {
     pub len: u32,
-    pub terms: BTreeMap<String, u32>,
+    /// The distinct terms, each once, back to back (in order of first appearance).
+    text: String,
+    /// Per distinct term, ascending by term: its bytes in `text` and its frequency.
+    spans: Vec<(u32, u32, u32)>,
+}
+
+impl PartialEq for Doc {
+    fn eq(&self, other: &Self) -> bool {
+        self.len == other.len && self.terms().eq(other.terms())
+    }
+}
+
+impl Eq for Doc {}
+
+impl Doc {
+    /// The distinct terms and their frequencies, ascending by term.
+    pub(crate) fn terms(&self) -> impl ExactSizeIterator<Item = (&str, u32)> + '_ {
+        self.spans.iter().map(|&(s, e, tf)| (&self.text[s as usize..e as usize], tf))
+    }
+
+    /// The frequency of `term`, if the document has it.
+    pub(crate) fn get(&self, term: &str) -> Option<u32> {
+        self.spans
+            .binary_search_by(|&(s, e, _)| self.text[s as usize..e as usize].cmp(term))
+            .ok()
+            .map(|at| self.spans[at].2)
+    }
+}
+
+/// Distinct byte strings, numbered in order of first appearance: an open-addressing table over
+/// one buffer that holds each string once. What a text's terms are counted with, and what a
+/// change set keeps its posting lists by.
+#[derive(Default)]
+pub(crate) struct Interner {
+    text: Vec<u8>,
+    spans: Vec<(u32, u32)>,
+    /// `0` (empty) or `1 +` a number. Length a power of two (or 0), at most half full.
+    slots: Vec<u32>,
+}
+
+impl Interner {
+    pub(crate) fn with_capacity(strings: usize, bytes: usize) -> Self {
+        Interner {
+            text: Vec::with_capacity(bytes),
+            spans: Vec::with_capacity(strings),
+            slots: vec![0; (strings.max(8) * 2).next_power_of_two()],
+        }
+    }
+
+    /// The number of `s`, and whether it is new.
+    pub(crate) fn intern(&mut self, s: &[u8]) -> (usize, bool) {
+        if self.slots.is_empty() {
+            self.slots = vec![0; 16];
+        }
+        let mask = self.slots.len() - 1;
+        let mut at = term_hash(s) as usize & mask;
+        loop {
+            match self.slots[at] {
+                0 => break,
+                n => {
+                    let (from, to) = self.spans[n as usize - 1];
+                    if self.text[from as usize..to as usize] == *s {
+                        return (n as usize - 1, false);
+                    }
+                    at = (at + 1) & mask;
+                }
+            }
+        }
+        let from = self.text.len() as u32;
+        self.text.extend_from_slice(s);
+        self.spans.push((from, self.text.len() as u32));
+        self.slots[at] = self.spans.len() as u32;
+        if self.spans.len() * 2 > self.slots.len() {
+            self.grow();
+        }
+        (self.spans.len() - 1, true)
+    }
+
+    /// The string numbered `i`.
+    pub(crate) fn get(&self, i: usize) -> &[u8] {
+        let (from, to) = self.spans[i];
+        &self.text[from as usize..to as usize]
+    }
+
+    /// The numbers in ascending order of their strings.
+    ///
+    /// Sorted on the first eight bytes as a number first (zero-padded: a string with no NUL
+    /// orders the same), the whole strings compared only on a tie.
+    pub(crate) fn ascending(&self) -> Vec<u32> {
+        let mut keyed: Vec<(u64, u32)> = (0..self.spans.len())
+            .map(|i| {
+                let s = self.get(i);
+                let mut head = [0u8; 8];
+                let n = s.len().min(8);
+                head[..n].copy_from_slice(&s[..n]);
+                (u64::from_be_bytes(head), i as u32)
+            })
+            .collect();
+        keyed.sort_unstable_by(|a, b| {
+            a.0.cmp(&b.0).then_with(|| self.get(a.1 as usize).cmp(self.get(b.1 as usize)))
+        });
+        keyed.into_iter().map(|(_, i)| i).collect()
+    }
+
+    fn grow(&mut self) {
+        let len = self.slots.len() * 2;
+        self.slots.clear();
+        self.slots.resize(len, 0);
+        let mask = len - 1;
+        for i in 0..self.spans.len() {
+            let mut at = term_hash(self.get(i)) as usize & mask;
+            while self.slots[at] != 0 {
+                at = (at + 1) & mask;
+            }
+            self.slots[at] = i as u32 + 1;
+        }
+    }
+}
+
+/// Counts the terms of a text.
+struct Counter {
+    terms: Interner,
+    tf: Vec<u32>,
+}
+
+impl Counter {
+    fn with_capacity(bytes: usize) -> Self {
+        // Distinct terms are a fraction of the words, and a word takes at least two bytes.
+        let terms = (bytes / 8).max(8);
+        Counter { terms: Interner::with_capacity(terms, bytes / 2), tf: Vec::with_capacity(terms) }
+    }
+
+    fn add(&mut self, term: &[u8]) {
+        match self.terms.intern(term) {
+            (_, true) => self.tf.push(1),
+            (i, false) => self.tf[i] += 1,
+        }
+    }
+
+    fn finish(self, len: u32) -> Option<Doc> {
+        if len == 0 {
+            return None;
+        }
+        let spans: Vec<(u32, u32, u32)> = self
+            .terms
+            .ascending()
+            .into_iter()
+            .map(|i| {
+                let (from, to) = self.terms.spans[i as usize];
+                (from, to, self.tf[i as usize])
+            })
+            .collect();
+        // Every term is a `str` (an ASCII word lowered, or what `tokens` gave), so is the buffer.
+        let text = String::from_utf8(self.terms.text).ok()?;
+        Some(Doc { len, text, spans })
+    }
+}
+
+/// A hash of a term for [`Interner`]: eight bytes at a
+/// time (the table only needs a spread, and hashes the terms of its own text).
+pub(crate) fn term_hash(t: &[u8]) -> u64 {
+    const K: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut h = (t.len() as u64).wrapping_mul(K);
+    let (words, rest) = t.as_chunks::<8>();
+    for w in words {
+        h = (h.rotate_left(26) ^ u64::from_le_bytes(*w)).wrapping_mul(K);
+    }
+    if !rest.is_empty() {
+        let mut w = [0u8; 8];
+        w[..rest.len()].copy_from_slice(rest);
+        h = (h.rotate_left(26) ^ u64::from_le_bytes(w)).wrapping_mul(K);
+    }
+    h ^ (h >> 31)
 }
 
 /// The document of a payload, or `None` when it is not indexed: bytes that
@@ -63,35 +236,27 @@ pub(crate) fn analyze(payload: &[u8]) -> Option<Doc> {
     while !text.is_char_boundary(end) {
         end -= 1;
     }
-    // Counted in a hash map and ordered once at the end: a text repeats most of its terms, so
-    // a term is allocated and ordered once, not per occurrence. A word of ASCII letters and
-    // digits (most words) is lower-cased in a reused buffer, which is what `tokens` does to
-    // it; any other word goes through `tokens` itself, so the terms are the same.
-    let mut counts: std::collections::HashMap<String, u32, std::hash::BuildHasherDefault<TermHasher>> =
-        std::collections::HashMap::default();
-    let mut len = 0u32;
-    let mut lower = String::new();
     let text = &text[..end];
     let bytes = text.as_bytes();
-    let mut count = |word: &str, ascii: bool| {
-        lower.clear();
-        if ascii {
-            lower.push_str(&word[..word.len().min(MAX_TERM_LEN)]);
-            lower.make_ascii_lowercase();
-        } else {
-            lower.extend(tokens(word));
-        }
+    // A word of ASCII letters and digits (most words) is cut and lower-cased in a buffer on the
+    // stack, which is what `tokens` does to it; any other word goes through `tokens` itself, so
+    // the terms are the same. Only a term not seen before in the text is copied.
+    let mut counter = Counter::with_capacity(bytes.len());
+    let mut len = 0u32;
+    let mut lower = [0u8; MAX_TERM_LEN];
+    let mut count = |from: usize, to: usize, ascii: bool| {
         len += 1;
-        match counts.get_mut(lower.as_str()) {
-            Some(n) => *n += 1,
-            None => {
-                counts.insert(lower.clone(), 1);
-            }
+        if ascii {
+            let word = &bytes[from..to.min(from + MAX_TERM_LEN)];
+            let lower = &mut lower[..word.len()];
+            lower.copy_from_slice(word);
+            lower.make_ascii_lowercase();
+            counter.add(lower);
+        } else {
+            let term: String = tokens(&text[from..to]).collect();
+            counter.add(term.as_bytes());
         }
     };
-    // The words are the maximal runs of alphanumeric characters, as in `tokens`. An ASCII
-    // byte is judged as a byte (for ASCII, `char::is_alphanumeric` is `is_ascii_alphanumeric`);
-    // any other character is decoded and judged as `tokens` judges it.
     let (mut i, mut start, mut ascii) = (0, None, true);
     while i < bytes.len() {
         let (alnum, width) = if bytes[i] < 0x80 {
@@ -104,7 +269,7 @@ pub(crate) fn analyze(payload: &[u8]) -> Option<Doc> {
             (true, None) => (start, ascii) = (Some(i), width == 1),
             (true, Some(_)) => ascii &= width == 1,
             (false, Some(from)) => {
-                count(&text[from..i], ascii);
+                count(from, i, ascii);
                 start = None;
             }
             (false, None) => {}
@@ -112,33 +277,9 @@ pub(crate) fn analyze(payload: &[u8]) -> Option<Doc> {
         i += width;
     }
     if let Some(from) = start {
-        count(&text[from..], ascii);
+        count(from, bytes.len(), ascii);
     }
-    let doc = Doc { len, terms: counts.into_iter().collect() };
-    (doc.len > 0).then_some(doc)
-}
-
-/// FNV-1a: the terms are short and the map is the document's own.
-#[derive(Clone, Copy)]
-pub(crate) struct TermHasher(u64);
-
-impl Default for TermHasher {
-    fn default() -> Self {
-        TermHasher(0xCBF2_9CE4_8422_2325)
-    }
-}
-
-impl std::hash::Hasher for TermHasher {
-    fn finish(&self) -> u64 {
-        // The table takes its index from the low bits and its tag from the high ones.
-        self.0 ^ (self.0 >> 32)
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        for b in bytes {
-            self.0 = (self.0 ^ u64::from(*b)).wrapping_mul(0x0100_0000_01B3);
-        }
-    }
+    counter.finish(len)
 }
 
 /// The Text field values of a canonical record, joined by a newline, or

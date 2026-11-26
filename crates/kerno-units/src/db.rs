@@ -752,6 +752,7 @@ impl<E: TxnEngine> UnitDb<E> {
             options_cache: std::cell::RefCell::default(),
             schema_cache: std::cell::RefCell::default(),
             unique_free: std::cell::RefCell::default(),
+            prepared_text: std::cell::RefCell::default(),
             no_derived: std::cell::Cell::new(None),
         })
     }
@@ -1303,6 +1304,8 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     /// The unique-field prefix (`field_prefix ‖ value`) an `upsert` just found held by no unit,
     /// while it creates the unit; cleared by any write.
     pub(crate) unique_free: std::cell::RefCell<Option<Vec<u8>>>,
+    /// The document of the payload a `create_prepared` is creating, cut ahead of it.
+    pub(crate) prepared_text: std::cell::RefCell<Option<crate::fulltext::PreparedText>>,
     pub(crate) schema_cache:
         std::cell::RefCell<std::collections::HashMap<String, Option<std::sync::Arc<crate::schema::Schema>>>>,
     /// Whether the database held no `DERIVED_SRC` record when this change set
