@@ -2,6 +2,7 @@
 //! entries of an indexed field.
 
 use std::ops::Bound;
+use std::sync::Arc;
 
 use kerno_core::contract::{Engine, Snapshot};
 
@@ -15,6 +16,11 @@ use crate::types::Lifecycle;
 
 /// Entries read per scan call by a lookup.
 const PAGE: usize = 256;
+
+/// Owned copies of shared units, for the methods that hand out `Unit`.
+fn owned(units: Vec<Arc<Unit>>) -> Vec<Unit> {
+    units.into_iter().map(Arc::unwrap_or_clone).collect()
+}
 
 impl<E: Engine> UnitSnapshot<E> {
     /// The schema of `unit_type`, if it has one.
@@ -43,6 +49,17 @@ impl<E: Engine> UnitSnapshot<E> {
     /// As [`find_range`](Self::find_range), and `InvalidArgument` for a text or bytes `value` too
     /// long to index (no unit can hold it).
     pub fn find_by_field(&self, unit_type: &str, field: &str, value: &FieldValue) -> Result<Vec<Unit>, UnitError> {
+        Ok(owned(self.find_by_field_shared(unit_type, field, value)?))
+    }
+
+    /// [`find_by_field`](Self::find_by_field), sharing the units the read cache holds instead of
+    /// cloning them.
+    pub fn find_by_field_shared(
+        &self,
+        unit_type: &str,
+        field: &str,
+        value: &FieldValue,
+    ) -> Result<Vec<Arc<Unit>>, UnitError> {
         // A value too long to index can never have been stored, so "no unit" would be a wrong
         // answer to a wrong question. (A range bound this long is meaningful and still allowed.)
         self.field_bounds(unit_type, field, Bound::Included(value), Bound::Included(value))?;
@@ -52,7 +69,7 @@ impl<E: Engine> UnitSnapshot<E> {
                  0x00 byte counting twice), so no unit can hold it"
             )));
         }
-        self.find_range(unit_type, field, Bound::Included(value), Bound::Included(value), usize::MAX)
+        self.find_range_shared(unit_type, field, Bound::Included(value), Bound::Included(value), usize::MAX)
     }
 
     /// The `Active` units of `unit_type` whose indexed `field` lies between
@@ -77,6 +94,19 @@ impl<E: Engine> UnitSnapshot<E> {
         hi: Bound<&FieldValue>,
         limit: usize,
     ) -> Result<Vec<Unit>, UnitError> {
+        Ok(owned(self.find_range_shared(unit_type, field, lo, hi, limit)?))
+    }
+
+    /// [`find_range`](Self::find_range), sharing the units the read cache holds instead of
+    /// cloning them.
+    pub fn find_range_shared(
+        &self,
+        unit_type: &str,
+        field: &str,
+        lo: Bound<&FieldValue>,
+        hi: Bound<&FieldValue>,
+        limit: usize,
+    ) -> Result<Vec<Arc<Unit>>, UnitError> {
         // A range that can hold no value, or a limit of 0, can never match: refuse, do not answer [].
         if limit == 0 {
             return Err(UnitError::InvalidArgument("find_range: limit must be at least 1".into()));
@@ -103,7 +133,7 @@ impl<E: Engine> UnitSnapshot<E> {
         if start >= end {
             return Ok(Vec::new());
         }
-        self.scan_range(unit_type, field, start, end, limit)
+        Ok(owned(self.scan_range(unit_type, field, start, end, limit)?))
     }
 
     fn scan_range(
@@ -113,13 +143,13 @@ impl<E: Engine> UnitSnapshot<E> {
         start: Vec<u8>,
         end: Vec<u8>,
         limit: usize,
-    ) -> Result<Vec<Unit>, UnitError> {
+    ) -> Result<Vec<Arc<Unit>>, UnitError> {
         // A range this snapshot's sequence already scanned and checked: its units, as read then.
         let seq = self.snap.seq();
         let cache_key = (start, end, limit);
         if let Some(ids) = self.read_cache.range(seq, &cache_key) {
             let mut out = Vec::with_capacity(ids.len());
-            for (&id, u) in ids.iter().zip(self.get_units(&ids)?) {
+            for (&id, u) in ids.iter().zip(self.get_units_shared(&ids)?) {
                 let Some(u) = u else {
                     return Err(corruption(format!("a FIELD_INDEX entry of unit {id} has no UNIT_HEAD")));
                 };
@@ -153,7 +183,7 @@ impl<E: Engine> UnitSnapshot<E> {
         }
         let ids: Vec<crate::types::UnitId> = entries.iter().map(|(u, _)| *u).collect();
         let mut out = Vec::with_capacity(entries.len());
-        for ((unit, enc), u) in entries.iter().zip(self.get_units(&ids)?) {
+        for ((unit, enc), u) in entries.iter().zip(self.get_units_shared(&ids)?) {
             let Some(u) = u else {
                 return Err(corruption(format!("a FIELD_INDEX entry of unit {unit} has no UNIT_HEAD")));
             };

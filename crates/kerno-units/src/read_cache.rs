@@ -26,9 +26,10 @@
 //! larger than the budget becomes common.
 
 use std::collections::HashMap;
+use std::hash::BuildHasherDefault;
 use std::sync::{Arc, Mutex};
 
-use crate::db::{Relation, Unit};
+use crate::db::{IdHasher, Relation, Unit};
 use crate::schema::Schema;
 use crate::types::UnitId;
 
@@ -43,11 +44,14 @@ struct Inner {
     seq: u64,
     budget: usize,
     bytes: usize,
-    units: HashMap<UnitId, Arc<Unit>>,
+    units: HashMap<UnitId, Arc<Unit>, IdHash>,
     schemas: HashMap<String, Option<Arc<Schema>>>,
     ranges: HashMap<RangeKey, Arc<Vec<UnitId>>>,
-    relations: HashMap<RelationsKey, Arc<Vec<Relation>>>,
+    relations: HashMap<RelationsKey, Arc<Vec<Relation>>, IdHash>,
 }
+
+/// Unit ids are UUIDv7 with random tail bytes: [`IdHasher`] spreads them, no keyed hash needed.
+type IdHash = BuildHasherDefault<IdHasher>;
 
 /// An index key range and the limit it was read with.
 type RangeKey = (Vec<u8>, Vec<u8>, usize);
@@ -121,11 +125,11 @@ impl ReadCache {
         if c.at(seq) { c.units.get(&id).cloned() } else { None }
     }
 
-    pub(crate) fn put_unit(&self, seq: u64, unit: &Unit) {
+    pub(crate) fn put_unit(&self, seq: u64, unit: &Arc<Unit>) {
         let weight = UNIT_OVERHEAD + unit.payload.as_ref().map_or(0, Vec::len) + unit.metadata.len();
         let mut c = self.lock();
         if c.at(seq) && !c.units.contains_key(&unit.id) && c.admit(weight) {
-            c.units.insert(unit.id, Arc::new(unit.clone()));
+            c.units.insert(unit.id, Arc::clone(unit));
         }
     }
 

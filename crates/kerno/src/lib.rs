@@ -975,6 +975,15 @@ impl Db {
         self.units.snapshot()?.find_by_field(unit_type, field, value)
     }
 
+    /// [`Db::find`], sharing the units the read cache holds instead of cloning them.
+    ///
+    /// # Errors
+    ///
+    /// As [`Db::find`].
+    pub fn find_shared(&self, unit_type: &str, field: &str, value: &FieldValue) -> Result<Vec<std::sync::Arc<Unit>>> {
+        self.units.snapshot()?.find_by_field_shared(unit_type, field, value)
+    }
+
     /// The active units of `unit_type` whose indexed `field` lies between `lo` and `hi`,
     /// ordered by value then unit id, at most `limit`. Floats order as numbers, text and
     /// bytes as bytes.
@@ -1001,6 +1010,15 @@ impl Db {
     /// The engine fails or finds the unit corrupt.
     pub fn get(&self, id: UnitId) -> Result<Option<Unit>> {
         self.units.get_unit(id)
+    }
+
+    /// [`Db::get`], sharing the unit the read cache holds instead of cloning it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Db::get`].
+    pub fn get_shared(&self, id: UnitId) -> Result<Option<std::sync::Arc<Unit>>> {
+        self.units.snapshot()?.get_unit_shared(id)
     }
 
     /// Relates `from` to `to` with a declared relation of type `relation_type` (1 to 64 bytes,

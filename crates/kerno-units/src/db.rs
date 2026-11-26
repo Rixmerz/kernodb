@@ -1096,13 +1096,18 @@ impl<E: Engine> UnitSnapshot<E> {
 
     /// The unit at this snapshot (see [`UnitDb::get_unit`]).
     pub fn get_unit(&self, id: UnitId) -> Result<Option<Unit>, UnitError> {
+        Ok(self.get_unit_shared(id)?.map(|u| (*u).clone()))
+    }
+
+    /// [`get_unit`](Self::get_unit), sharing the unit the read cache holds instead of cloning it.
+    pub fn get_unit_shared(&self, id: UnitId) -> Result<Option<Arc<Unit>>, UnitError> {
         let seq = self.snap.seq();
         if let Some(hit) = self.read_cache.unit(seq, id) {
-            return Ok(Some((*hit).clone()));
+            return Ok(Some(hit));
         }
         let get = |k: &[u8]| self.snap.get(k);
         let loaded = if self.checked_reads { load_unit_checked(&get, id)? } else { load_unit(&get, id, self.verify_payload_on_read)? };
-        let unit = loaded.map(|(head, payload)| to_unit(id, head, payload));
+        let unit = loaded.map(|(head, payload)| Arc::new(to_unit(id, head, payload)));
         if let Some(u) = &unit {
             self.read_cache.put_unit(seq, u);
         }
@@ -1114,13 +1119,18 @@ impl<E: Engine> UnitSnapshot<E> {
     /// on a few threads when there are many). Each unit is then loaded and checked as
     /// `get_unit` does; a head without its payload reads the rest as `get_unit` does.
     pub fn get_units(&self, ids: &[UnitId]) -> Result<Vec<Option<Unit>>, UnitError> {
+        Ok(self.get_units_shared(ids)?.into_iter().map(|u| u.map(|u| (*u).clone())).collect())
+    }
+
+    /// [`get_units`](Self::get_units), sharing the units the read cache holds instead of cloning them.
+    pub fn get_units_shared(&self, ids: &[UnitId]) -> Result<Vec<Option<Arc<Unit>>>, UnitError> {
         let seq = self.snap.seq();
-        let mut out: Vec<Option<Option<Unit>>> =
-            ids.iter().map(|&id| self.read_cache.unit(seq, id).map(|hit| Some((*hit).clone()))).collect();
+        let mut out: Vec<Option<Option<Arc<Unit>>>> =
+            ids.iter().map(|&id| self.read_cache.unit(seq, id).map(Some)).collect();
         let missing: Vec<usize> = (0..ids.len()).filter(|&i| out[i].is_none()).collect();
         if missing.len() < 2 {
             for &i in &missing {
-                out[i] = Some(self.get_unit(ids[i])?);
+                out[i] = Some(self.get_unit_shared(ids[i])?);
             }
             return Ok(out.into_iter().map(|u| u.expect("every id is answered")).collect());
         }
@@ -1140,7 +1150,7 @@ impl<E: Engine> UnitSnapshot<E> {
                 }
             };
             let loaded = if self.checked_reads { load_unit_checked(&get, id)? } else { load_unit(&get, id, self.verify_payload_on_read)? };
-            let unit = loaded.map(|(head, payload)| to_unit(id, head, payload));
+            let unit = loaded.map(|(head, payload)| Arc::new(to_unit(id, head, payload)));
             if let Some(u) = &unit {
                 self.read_cache.put_unit(seq, u);
             }

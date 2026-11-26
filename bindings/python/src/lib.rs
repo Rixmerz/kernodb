@@ -586,28 +586,34 @@ impl Unit {
     /// The payload decoded as a document (`dict`), without reading the database again; `None`
     /// for a deleted unit. Raises `SchemaError` when the payload is not a document.
     fn document<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
-        let Some(payload) = self.payload.as_deref() else { return Ok(None) };
-        // Straight from the bytes into the dict: no intermediate document.
-        let d = PyDict::new(py);
-        let mut failed: Option<PyErr> = None;
-        let walked = Document::visit(payload, |name, value| {
-            if failed.is_none()
-                && let Err(e) = value_ref_to_py(py, value).and_then(|v| d.set_item(name, v))
-            {
-                failed = Some(e);
-            }
-        });
-        if let Err(e) = walked {
-            return Err(SchemaError::new_err(format!("the payload is not a document: {e}")));
-        }
-        match failed {
-            Some(e) => Err(e),
-            None => Ok(Some(d)),
-        }
+        payload_document(py, self.payload.as_deref())
     }
 
     fn __repr__(&self) -> String {
         format!("Unit(id={:?}, unit_type={:?}, lifecycle={:?})", self.id.to_string(), self.unit_type, self.lifecycle)
+    }
+}
+
+/// A payload decoded as a document dict (`None` for no payload), straight from the bytes: no
+/// intermediate document. Raises `SchemaError` when the payload is not a document.
+fn payload_document<'py>(py: Python<'py>, payload: Option<&[u8]>) -> PyResult<Option<Bound<'py, PyDict>>> {
+    let Some(payload) = payload else { return Ok(None) };
+    // Straight from the bytes into the dict: no intermediate document.
+    let d = PyDict::new(py);
+    let mut failed: Option<PyErr> = None;
+    let walked = Document::visit(payload, |name, value| {
+        if failed.is_none()
+            && let Err(e) = value_ref_to_py(py, value).and_then(|v| d.set_item(name, v))
+        {
+            failed = Some(e);
+        }
+    });
+    if let Err(e) = walked {
+        return Err(SchemaError::new_err(format!("the payload is not a document: {e}")));
+    }
+    match failed {
+        Some(e) => Err(e),
+        None => Ok(Some(d)),
     }
 }
 
@@ -1251,10 +1257,10 @@ impl Database {
         value: Bound<'py, PyAny>,
     ) -> PyResult<Vec<Bound<'py, PyDict>>> {
         let v = to_field(&value)?;
-        let units = self.with_db(py, |db| db.find(unit_type, field, &v).map_err(engine_error))?;
+        let units = self.with_db(py, |db| db.find_shared(unit_type, field, &v).map_err(engine_error))?;
         let mut out = Vec::with_capacity(units.len());
         for u in units {
-            if let Some(d) = Unit::from(u).document(py)? {
+            if let Some(d) = payload_document(py, u.payload.as_deref())? {
                 out.push(d);
             }
         }
@@ -1285,13 +1291,13 @@ impl Database {
         };
         let pairs = self.with_db(py, |db| {
             let mut out = Vec::new();
-            for unit in db.find(unit_type, field, &v).map_err(engine_error)? {
+            for unit in db.find_shared(unit_type, field, &v).map_err(engine_error)? {
                 for r in db.related(unit.id, dir, None).map_err(engine_error)? {
                     if type_prefix.is_some_and(|p| !r.relation_type.starts_with(p)) {
                         continue;
                     }
                     let other = if matches!(dir, Direction::Out) { r.to } else { r.from };
-                    let Some(u) = db.get(other).map_err(engine_error)? else { continue };
+                    let Some(u) = db.get_shared(other).map_err(engine_error)? else { continue };
                     out.push((r.relation_type, u));
                 }
             }
@@ -1299,7 +1305,7 @@ impl Database {
         })?;
         let mut out = Vec::with_capacity(pairs.len());
         for (t, u) in pairs {
-            if let Some(d) = Unit::from(u).document(py)? {
+            if let Some(d) = payload_document(py, u.payload.as_deref())? {
                 out.push((t, d));
             }
         }
