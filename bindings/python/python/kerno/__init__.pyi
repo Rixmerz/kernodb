@@ -1,6 +1,6 @@
 from os import PathLike
 from types import TracebackType
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Literal
 
 __version__: str
@@ -211,11 +211,13 @@ class Database:
         With `type_prefix`, relations whose type does not start with it are skipped before the
         unit at their other end is loaded."""
     def find_documents(
-        self, unit_type: str, field: str, value: Any, fields: Sequence[str] | None = None
+        self, unit_type: str, field: str, value: Any, fields: Sequence[str] | Mapping[str, str] | None = None
     ) -> list[dict[str, Any]]:
         """`find`, with each hit as its document dict.
 
-        With `fields`, each dict holds only those field names (one the document lacks is absent)."""
+        With `fields`, each dict holds only those field names (one the document lacks is absent).
+        As a mapping `{field_name: key_in_result}`, each dict holds those fields under the mapped
+        keys, in the mapping's order."""
     def neighbor_documents(
         self,
         unit_type: str,
@@ -223,11 +225,12 @@ class Database:
         value: Any,
         direction: Literal["out", "in"] = "out",
         type_prefix: str | None = None,
-        fields: Sequence[str] | None = None,
+        fields: Sequence[str] | Mapping[str, str] | None = None,
     ) -> list[tuple[str, dict[str, Any]]]:
         """`find`, then `neighbors` of each unit found, as `[(relation_type, other end's document)]`.
 
-        `fields` keeps only those field names in each dict, as in `find_documents`."""
+        `fields` keeps only those field names in each dict, or renames them when it is a mapping
+        `{field_name: key_in_result}`, as in `find_documents`."""
     def query(
         self,
         unit_type: str | None = None,

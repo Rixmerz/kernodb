@@ -25,7 +25,7 @@ use pyo3::exceptions::{PyException, PyValueError};
 use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedBytes;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString};
+use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyMapping, PyString};
 
 create_exception!(_kerno, KernoError, PyException, "Any failure reported by the Kerno engine.");
 create_exception!(_kerno, NotFoundError, KernoError, "No unit, relation or revision with that id.");
@@ -605,11 +605,43 @@ fn payload_document<'py>(py: Python<'py>, payload: Option<&[u8]>) -> PyResult<Op
 struct DocBuilder {
     keys: Vec<(String, Py<PyString>)>,
     fields: Option<Vec<String>>,
+    /// `fields` given as a mapping: each kept field name and its key in the result, interned
+    /// once, in the mapping's order.
+    renamed: Option<Vec<(String, Py<PyString>)>>,
+}
+
+/// What `fields=` of `find_documents` / `neighbor_documents` takes: a sequence of field names,
+/// or a mapping `{field_name: key_in_result}`.
+enum FieldsArg {
+    Names(Vec<String>),
+    Renamed(Vec<(String, Py<PyString>)>),
+}
+
+/// `fields=` of `find_documents` / `neighbor_documents`, for `#[pyo3(from_py_with = ...)]`
+/// (a sequence that is not one of names fails as when the parameter was typed as one).
+fn fields_arg(ob: &Bound<'_, PyAny>) -> PyResult<Option<FieldsArg>> {
+    if ob.is_none() {
+        return Ok(None);
+    }
+    if let Ok(m) = ob.cast::<PyMapping>() {
+        let py = ob.py();
+        let mut out = Vec::new();
+        for item in m.items()?.iter() {
+            let (name, key): (String, String) = item.extract()?;
+            out.push((name, PyString::intern(py, &key).unbind()));
+        }
+        return Ok(Some(FieldsArg::Renamed(out)));
+    }
+    Ok(Some(FieldsArg::Names(ob.extract()?)))
 }
 
 impl DocBuilder {
-    fn new(fields: Option<Vec<String>>) -> Self {
-        DocBuilder { keys: Vec::new(), fields }
+    fn new(fields: Option<FieldsArg>) -> Self {
+        match fields {
+            Some(FieldsArg::Renamed(r)) => DocBuilder { keys: Vec::new(), fields: None, renamed: Some(r) },
+            Some(FieldsArg::Names(f)) => DocBuilder { keys: Vec::new(), fields: Some(f), renamed: None },
+            None => DocBuilder { keys: Vec::new(), fields: None, renamed: None },
+        }
     }
 
     /// The key of `name`, the `at`-th field kept: documents of one type list their fields in one
@@ -630,6 +662,9 @@ impl DocBuilder {
 
     fn build<'py>(&mut self, py: Python<'py>, payload: Option<&[u8]>) -> PyResult<Option<Bound<'py, PyDict>>> {
         let Some(payload) = payload else { return Ok(None) };
+        if let Some(renamed) = &self.renamed {
+            return Self::build_renamed(py, renamed, payload).map(Some);
+        }
         let d = PyDict::new(py);
         let mut failed: Option<PyErr> = None;
         let mut at = 0;
@@ -650,6 +685,41 @@ impl DocBuilder {
             Some(e) => Err(e),
             None => Ok(Some(d)),
         }
+    }
+
+    /// [`build`](Self::build) with `fields` as a mapping: the kept fields under their mapped
+    /// keys, in the mapping's order (a name the document lacks is absent).
+    fn build_renamed<'py>(
+        py: Python<'py>,
+        renamed: &[(String, Py<PyString>)],
+        payload: &[u8],
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let mut values: Vec<Option<Bound<'py, PyAny>>> = (0..renamed.len()).map(|_| None).collect();
+        let mut failed: Option<PyErr> = None;
+        let walked = Document::visit(payload, |name, value| {
+            if failed.is_some() {
+                return;
+            }
+            if let Some((slot, _)) = values.iter_mut().zip(renamed).find(|(_, (n, _))| n == name) {
+                match value_ref_to_py(py, value) {
+                    Ok(v) => *slot = Some(v),
+                    Err(e) => failed = Some(e),
+                }
+            }
+        });
+        if let Err(e) = walked {
+            return Err(SchemaError::new_err(format!("the payload is not a document: {e}")));
+        }
+        if let Some(e) = failed {
+            return Err(e);
+        }
+        let d = PyDict::new(py);
+        for (v, (_, key)) in values.into_iter().zip(renamed) {
+            if let Some(v) = v {
+                d.set_item(key.bind(py), v)?;
+            }
+        }
+        Ok(d)
     }
 }
 
@@ -1285,7 +1355,9 @@ impl Database {
 
     /// `find`, but each hit as its document dict: no `Unit` objects, no per-unit `document()`
     /// call. A hit whose payload is not a document raises `SchemaError`. `fields`, a sequence of
-    /// field names, keeps only those in each dict (a name the document lacks is absent).
+    /// field names, keeps only those in each dict (a name the document lacks is absent); as a
+    /// mapping `{field_name: key_in_result}` it also renames them, each dict built with the
+    /// mapped keys in the mapping's order.
     #[pyo3(signature = (unit_type, field, value, fields=None))]
     fn find_documents<'py>(
         &self,
@@ -1293,7 +1365,7 @@ impl Database {
         unit_type: &str,
         field: &str,
         value: Bound<'py, PyAny>,
-        fields: Option<Vec<String>>,
+        #[pyo3(from_py_with = fields_arg)] fields: Option<FieldsArg>,
     ) -> PyResult<Vec<Bound<'py, PyDict>>> {
         let v = to_field(&value)?;
         let units = self.with_db(py, |db| db.find_shared(unit_type, field, &v).map_err(engine_error))?;
@@ -1310,8 +1382,8 @@ impl Database {
     /// `find(unit_type, field, value)` then `neighbors(unit, direction, type_prefix=...)` of every
     /// unit found then `.document()` of each other end, in one call:
     /// `[(relation_type, document), ...]`. An other end that is deleted or whose payload is not a
-    /// document is left out. `fields` keeps only those field names in each dict, as in
-    /// `find_documents`.
+    /// document is left out. `fields` keeps only those field names in each dict, or renames them
+    /// when it is a mapping `{field_name: key_in_result}`, as in `find_documents`.
     #[pyo3(signature = (unit_type, field, value, direction="out", type_prefix=None, fields=None))]
     #[allow(clippy::too_many_arguments)] // the Python signature's keywords
     fn neighbor_documents<'py>(
@@ -1322,7 +1394,7 @@ impl Database {
         value: Bound<'py, PyAny>,
         direction: &str,
         type_prefix: Option<&str>,
-        fields: Option<Vec<String>>,
+        #[pyo3(from_py_with = fields_arg)] fields: Option<FieldsArg>,
     ) -> PyResult<Vec<(String, Bound<'py, PyDict>)>> {
         let v = to_field(&value)?;
         let dir = match direction {
