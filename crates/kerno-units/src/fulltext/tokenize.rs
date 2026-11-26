@@ -240,6 +240,129 @@ pub(crate) fn analyze(payload: &[u8]) -> Option<Doc> {
     let bytes = text.as_bytes();
     // A word of ASCII letters and digits (most words) is cut and lower-cased in a buffer on the
     // stack, which is what `tokens` does to it; any other word goes through `tokens` itself, so
+    // the terms are the same. Only a term not seen before in the text is copied. ASCII bytes
+    // are classified and lower-cased through `ASCII_CLASS`; a non-ASCII char is decoded and
+    // asked `char::is_alphanumeric`, as `tokens` does.
+    let mut counter = Counter::with_capacity(bytes.len());
+    let mut len = 0u32;
+    let mut lower = [0u8; MAX_TERM_LEN];
+    // Whether the char at `i` (a non-ASCII lead byte) is alphanumeric, and its width.
+    let wide = |i: usize| {
+        let c = text[i..].chars().next().unwrap_or(' ');
+        (c.is_alphanumeric(), c.len_utf8())
+    };
+    let n = bytes.len();
+    let mut i = 0;
+    while i < n {
+        // Separators.
+        let b = bytes[i];
+        match ASCII_CLASS[b as usize] {
+            SEP => {
+                i += 1;
+                continue;
+            }
+            WIDE => {
+                let (alnum, w) = wide(i);
+                if !alnum {
+                    i += w;
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        // A word from `from`: ASCII letters and digits are lower-cased into `lower` as they go.
+        let from = i;
+        let mut ascii = true;
+        while i < n {
+            let b = bytes[i];
+            let class = ASCII_CLASS[b as usize];
+            if class >= ALNUM {
+                let at = i - from;
+                if at < MAX_TERM_LEN {
+                    lower[at] = class - ALNUM;
+                }
+                i += 1;
+            } else if class == WIDE {
+                let (alnum, w) = wide(i);
+                if !alnum {
+                    break;
+                }
+                ascii = false;
+                i += w;
+            } else {
+                break;
+            }
+        }
+        len += 1;
+        if ascii {
+            counter.add(&lower[..(i - from).min(MAX_TERM_LEN)]);
+        } else {
+            let term: String = tokens(&text[from..i]).collect();
+            counter.add(term.as_bytes());
+        }
+    }
+    counter.finish(len)
+}
+
+/// [`ASCII_CLASS`] of a byte that separates words.
+const SEP: u8 = 0;
+/// [`ASCII_CLASS`] of a byte at or above `0x80`: the char it starts is decoded.
+const WIDE: u8 = 1;
+/// [`ASCII_CLASS`] of an ASCII letter or digit: `ALNUM` below its lower case (which is at
+/// least `b'0'`, so above `WIDE`).
+const ALNUM: u8 = 2;
+
+/// Per byte: [`SEP`], [`WIDE`], or `ALNUM +` the byte lower-cased (`u8` wraps: the lower-cased
+/// byte is recovered by subtracting `ALNUM`, and every one is at least `b'0' + ALNUM`).
+const ASCII_CLASS: [u8; 256] = {
+    let mut t = [SEP; 256];
+    let mut b = 0usize;
+    while b < 256 {
+        let c = b as u8;
+        t[b] = if c >= 0x80 {
+            WIDE
+        } else if c.is_ascii_alphanumeric() {
+            c.to_ascii_lowercase() + ALNUM
+        } else {
+            SEP
+        };
+        b += 1;
+    }
+    t
+};
+
+/// The Text field values of a canonical record, joined by a newline, or
+/// `None` when `payload` is not one.
+fn record_text(payload: &[u8]) -> Option<String> {
+    let doc = crate::schema::Document::parse(payload).ok()?;
+    let texts: Vec<&str> = doc
+        .iter()
+        .filter_map(|(_, v)| match v {
+            crate::schema::FieldValue::Text(s) => Some(s.as_str()),
+            _ => None,
+        })
+        .collect();
+    Some(texts.join("\n"))
+}
+
+#[cfg(test)]
+fn analyze_reference(payload: &[u8]) -> Option<Doc> {
+    let owned;
+    let text = match std::str::from_utf8(payload) {
+        Ok(t) => t,
+        Err(_) => {
+            owned = record_text(payload)?;
+            owned.as_str()
+        }
+    };
+    let mut end = text.len().min(MAX_INDEXED_BYTES);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let text = &text[..end];
+    let bytes = text.as_bytes();
+    // A word of ASCII letters and digits (most words) is cut and lower-cased in a buffer on the
+    // stack, which is what `tokens` does to it; any other word goes through `tokens` itself, so
     // the terms are the same. Only a term not seen before in the text is copied.
     let mut counter = Counter::with_capacity(bytes.len());
     let mut len = 0u32;
@@ -282,16 +405,55 @@ pub(crate) fn analyze(payload: &[u8]) -> Option<Doc> {
     counter.finish(len)
 }
 
-/// The Text field values of a canonical record, joined by a newline, or
-/// `None` when `payload` is not one.
-fn record_text(payload: &[u8]) -> Option<String> {
-    let doc = crate::schema::Document::parse(payload).ok()?;
-    let texts: Vec<&str> = doc
-        .iter()
-        .filter_map(|(_, v)| match v {
-            crate::schema::FieldValue::Text(s) => Some(s.as_str()),
-            _ => None,
-        })
-        .collect();
-    Some(texts.join("\n"))
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn same(text: &str) {
+        let (new, old) = (analyze(text.as_bytes()), analyze_reference(text.as_bytes()));
+        match (&new, &old) {
+            (Some(a), Some(b)) => {
+                assert_eq!(a.len, b.len, "{text:?}");
+                assert!(a.terms().eq(b.terms()), "{text:?}");
+            }
+            (None, None) => {}
+            _ => panic!("{text:?}: {:?} vs {:?}", new.is_some(), old.is_some()),
+        }
+    }
+
+    #[test]
+    fn analyze_matches_the_reference() {
+        let long = "Abc".repeat(40);
+        let cases = [
+            "",
+            "   ",
+            "fn main() { println!(\"Hello, World\"); }",
+            "Straße ÉCOLE école naïve café_42 x²y",
+            "don't stop: ÀÉÎ ÕÜ 東京タワー 123abc ABC",
+            "mixed\u{00a0}nbsp\u{2003}em—dash…ellipsis",
+            "İstanbul ΣΊΣΥΦΟΣ ǅ ﬁ ß ẞ",
+            "trailing word",
+            "Ωmega",
+            "aΩ",
+            "٣٤٥ digits ① ½",
+            &long,
+            &format!("{long}é{long}"),
+            &format!("é{long}"),
+            "a\u{0301}b combining",
+            "emoji 😀wow😀 ok",
+        ];
+        for c in cases {
+            same(c);
+        }
+        // Every pair of a small alphabet of ASCII and non-ASCII chars, in short strings.
+        let alphabet = ['a', 'Z', '0', ' ', '_', '-', 'é', 'Σ', 'İ', '東', '·', '\u{0301}', '😀', '²'];
+        for &x in &alphabet {
+            for &y in &alphabet {
+                for &z in &alphabet {
+                    same(&format!("{x}{y}{z}{x}"));
+                }
+            }
+        }
+    }
 }
