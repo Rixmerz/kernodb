@@ -414,6 +414,7 @@ def open(
     max_batch_ops: int | None = None,
     verify_payload_on_read: bool = False,
     durability: str = "sync",
+    close_compaction: bool = True,
 ) -> Database:
     """Open the database in `path`, creating it when `path` holds none.
 

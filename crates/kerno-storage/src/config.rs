@@ -285,6 +285,11 @@ pub enum CloseBudget {
     /// Compact until no level is over its target, however long it takes
     /// (the M0 behaviour).
     Unbounded,
+    /// No compaction at close, not even the one that brings L0 below
+    /// `l0_trigger`: the close only flushes. For a bulk load that closes
+    /// right after its last commit; the next session that writes compacts in
+    /// the background as usual, and reads meanwhile merge the L0 files.
+    Deferred,
     /// First, always, compact until the L0 metric is below `l0_trigger`; then
     /// one more compaction at a time while both limits hold. A compaction
     /// that starts under the byte budget may exceed it by up to
@@ -315,6 +320,7 @@ impl CloseBudget {
         match self {
             CloseBudget::Bounded { max_bytes, .. } => CloseBudget::Bounded { max_bytes, max_duration: None },
             CloseBudget::Unbounded => CloseBudget::Unbounded,
+            CloseBudget::Deferred => CloseBudget::Deferred,
         }
     }
 
@@ -333,6 +339,7 @@ impl CloseBudget {
     ) -> bool {
         match *self {
             CloseBudget::Unbounded => true,
+            CloseBudget::Deferred => false,
             CloseBudget::Bounded { max_bytes, max_duration } => {
                 let next = if compacted_bytes == 0 {
                     Duration::ZERO

@@ -95,6 +95,44 @@ fn the_close_time_flush_skips_the_lz4_pass_and_the_file_reopens_and_reads() {
     db.close().unwrap();
 }
 
+/// The L0 files a close leaves after three flushed memtables, and the model.
+fn l0_after_close(budget: kerno_storage::CloseBudget) -> (usize, DirImage, Model) {
+    let disk = SimVfs::new(11);
+    let cfg = kerno_storage::Config {
+        close_budget: budget,
+        compaction: kerno_storage::CompactionConfig { l0_trigger: 2, ..deferred().compaction },
+        ..deferred()
+    };
+    let db = open_in(&disk.as_vfs(), &cfg).unwrap();
+    let mut model = Model::new();
+    for round in 0..3u32 {
+        // The same keys each round: the three tables overlap.
+        for i in 0..20u32 {
+            put(&db, &mut model, &format!("key-{i:05}"), format!("v{round}").as_bytes());
+        }
+        if round < 2 {
+            db.hooks().flush().unwrap();
+        }
+    }
+    let l0 = {
+        db.close().unwrap();
+        files_with(&disk.dump(), "sst").len()
+    };
+    (l0, disk.dump(), model)
+}
+
+#[test]
+fn a_deferred_close_budget_leaves_the_l0_files_and_loses_nothing() {
+    let (compacted, _, _) = l0_after_close(kerno_storage::CloseBudget::Unbounded);
+    let (left, image, model) = l0_after_close(kerno_storage::CloseBudget::Deferred);
+    assert!(left > compacted, "deferred left {left} tables, a compacting close {compacted}");
+    let (_, db) = open_copy(&image, &deferred());
+    let db = db.unwrap();
+    assert_eq!(stat(&db, "last_open_clean"), 1);
+    assert!(model_of(&db) == model);
+    db.close().unwrap();
+}
+
 #[test]
 fn a_mixed_close_reopens_with_every_key() {
     let disk = SimVfs::new(9);

@@ -1905,9 +1905,11 @@ impl Database {
 /// (the default) returns from a commit only once it is on stable storage; `"buffered"` does not
 /// wait for it (no `fsync` per commit, like SQLite's `synchronous=NORMAL` in WAL mode): after a
 /// power cut the last commits may be missing, never torn, and `close()` still makes everything
-/// durable.
+/// durable. `close_compaction=False` makes `close()` only flush: it skips the compaction a close
+/// otherwise does to tidy the newest files, which a bulk load that closes right after its last
+/// commit pays in full; the next session that writes compacts in the background as usual.
 #[pyfunction]
-#[pyo3(signature = (path, read_only=false, max_batch_ops=None, verify_payload_on_read=false, durability="sync"))]
+#[pyo3(signature = (path, read_only=false, max_batch_ops=None, verify_payload_on_read=false, durability="sync", close_compaction=true))]
 fn open(
     py: Python<'_>,
     path: PathBuf,
@@ -1915,6 +1917,7 @@ fn open(
     #[pyo3(from_py_with = max_batch_ops_arg)] max_batch_ops: Option<usize>,
     verify_payload_on_read: bool,
     durability: &str,
+    close_compaction: bool,
 ) -> PyResult<Database> {
     let durability = match durability {
         "sync" => kerno::Durability::Sync,
@@ -1939,7 +1942,12 @@ fn open(
                     ..Config::default()
                 }
             } else {
-                Config { allow_unverified_platform: true, verify_payload_on_read, durability, ..Config::default() }
+                let mut config =
+                    Config { allow_unverified_platform: true, verify_payload_on_read, durability, ..Config::default() };
+                if !close_compaction {
+                    config.close_budget = kerno::storage::CloseBudget::Deferred;
+                }
+                config
             };
             Db::open_with_limits(path, config, max_batch_ops.unwrap_or(kerno::units::DEFAULT_MAX_CHANGESET_OPS))
         })

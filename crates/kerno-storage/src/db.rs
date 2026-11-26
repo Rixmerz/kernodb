@@ -1433,6 +1433,9 @@ impl Inner {
     /// no level is over its target. Returns the bytes compacted (read plus
     /// written) and whether the budget stopped work that was still due.
     fn compact_for_close(&self, start: Instant) -> Result<(u64, bool)> {
+        if self.close_budget == CloseBudget::Deferred {
+            return Ok((0, false));
+        }
         // The compaction must not see the shutdown flag and abandon its work.
         self.shutting_down.store(false, Ordering::SeqCst);
         // A close writes into L1 even if it is empty: merging the L0 files
