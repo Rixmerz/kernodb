@@ -285,8 +285,19 @@ impl TableBuilder {
 
     /// Bytes the table would have if finished now (excluding filter, index
     /// and footer).
-    pub fn estimated_size(&self) -> u64 {
+    pub fn estimated_size(&mut self) -> u64 {
+        self.inner.drain();
         self.inner.len() + self.inner.open_block_len() as u64
+    }
+
+    /// Whether [`estimated_size`](Self::estimated_size) is at least `target`, compressing the
+    /// queued blocks only when their upper bound could reach it: the same answer, without
+    /// giving up the batched compression for most entries.
+    pub fn reached(&mut self, target: u64) -> bool {
+        if self.inner.len_at_most() + (self.inner.open_block_len() as u64) < target {
+            return false;
+        }
+        self.estimated_size() >= target
     }
 
     /// Writes filter, properties, index and footer, syncs the file and

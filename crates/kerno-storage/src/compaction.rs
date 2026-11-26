@@ -819,7 +819,7 @@ fn merge_into(
         }
         let b = builder.as_mut().expect("just created");
         b.add(it.key(), it.seq(), it.value())?;
-        size_reached = b.estimated_size() >= tuning.target_file_size;
+        size_reached = b.reached(tuning.target_file_size);
         it.next()?;
     }
     let rest = splitter.take_below(None);

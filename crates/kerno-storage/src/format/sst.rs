@@ -763,7 +763,18 @@ pub struct SstBuilder {
     first_key: Option<Vec<u8>>,
     last_key: Vec<u8>,
     props: Props,
+    /// Closed data blocks waiting for their LZ4 pass, with the last key of each: compressed
+    /// together on several threads, then appended in order (see [`SstBuilder::drain`]). Only
+    /// used when blocks are compressed; empty otherwise.
+    queue: Vec<(Vec<u8>, Vec<u8>)>,
+    /// Upper bound of the bytes the queued blocks will take once stored.
+    queued_bytes: u64,
 }
+
+/// Data blocks compressed together by one [`SstBuilder::drain`].
+const QUEUE_BLOCKS: usize = 1024;
+/// Fewer queued blocks than this are compressed on the calling thread.
+const PARALLEL_MIN_BLOCKS: usize = 16;
 
 impl SstBuilder {
     /// A writer for SST `file_number`. `block_size` is both the data block
@@ -805,6 +816,8 @@ impl SstBuilder {
             first_key: None,
             last_key: Vec::new(),
             props: Props { smallest_seq: u64::MAX, ..Props::default() },
+            queue: Vec::new(),
+            queued_bytes: 0,
         }
     }
 
@@ -816,9 +829,16 @@ impl SstBuilder {
         self
     }
 
-    /// Bytes produced so far (taken or pending).
+    /// Bytes produced so far (taken or pending), not counting the blocks still queued for
+    /// compression: see [`len_at_most`](Self::len_at_most) and [`drain`](Self::drain).
     pub fn len(&self) -> u64 {
         self.taken + self.pending.len() as u64
+    }
+
+    /// An upper bound of [`len`](Self::len) once the queued blocks are stored (a stored block
+    /// is at most its payload, a codec byte and the trailer).
+    pub fn len_at_most(&self) -> u64 {
+        self.len() + self.queued_bytes
     }
 
     pub fn is_empty(&self) -> bool {
@@ -858,16 +878,56 @@ impl SstBuilder {
 
     fn close_block(&mut self) {
         let raw = self.block.finish();
-        let payload = match (self.lz4, self.try_lz4) {
-            (false, _) => raw,
-            (true, true) => super::block::store_data_payload(&raw),
-            (true, false) => super::block::store_raw_data_payload(&raw),
-        };
-        let offset = self.len();
-        append_block(&mut self.pending, &payload, self.file_number, offset);
-        let handle = BlockHandle { offset, len: (payload.len() + BLOCK_TRAILER_LEN) as u64 };
-        self.index.push(IndexEntry { last_key: self.last_key.clone(), handle });
         self.props.data_blocks += 1;
+        if self.lz4 && self.try_lz4 {
+            // Compressed later, with the blocks that follow it.
+            self.queued_bytes += (raw.len() + 1 + BLOCK_TRAILER_LEN) as u64;
+            self.queue.push((raw, self.last_key.clone()));
+            if self.queue.len() >= QUEUE_BLOCKS {
+                self.drain();
+            }
+            return;
+        }
+        let payload = if self.lz4 { super::block::store_raw_data_payload(&raw) } else { raw };
+        self.append_data(&payload, self.last_key.clone());
+    }
+
+    fn append_data(&mut self, payload: &[u8], last_key: Vec<u8>) {
+        let offset = self.len();
+        append_block(&mut self.pending, payload, self.file_number, offset);
+        let handle = BlockHandle { offset, len: (payload.len() + BLOCK_TRAILER_LEN) as u64 };
+        self.index.push(IndexEntry { last_key, handle });
+    }
+
+    /// Compresses the queued data blocks, on several threads when there are many, and appends
+    /// them in order: the bytes are those of compressing and appending each block as it closes
+    /// (a block's compression depends on its bytes alone; its offset only on the blocks before).
+    pub fn drain(&mut self) {
+        if self.queue.is_empty() {
+            return;
+        }
+        let queue = std::mem::take(&mut self.queue);
+        self.queued_bytes = 0;
+        let threads = std::thread::available_parallelism().map_or(1, usize::from);
+        let stored: Vec<Vec<u8>> = if threads == 1 || queue.len() < PARALLEL_MIN_BLOCKS {
+            queue.iter().map(|(raw, _)| super::block::store_data_payload(raw)).collect()
+        } else {
+            let per = queue.len().div_ceil(threads);
+            std::thread::scope(|scope| {
+                let parts: Vec<_> = queue
+                    .chunks(per)
+                    .map(|part| {
+                        scope.spawn(move || {
+                            part.iter().map(|(raw, _)| super::block::store_data_payload(raw)).collect::<Vec<_>>()
+                        })
+                    })
+                    .collect();
+                parts.into_iter().flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
+            })
+        };
+        for (payload, (_, last_key)) in stored.iter().zip(queue) {
+            self.append_data(payload, last_key);
+        }
     }
 
     /// Bytes ready to be appended to the file.
@@ -889,6 +949,7 @@ impl SstBuilder {
         if !self.block.is_empty() {
             self.close_block();
         }
+        self.drain();
         let mut footer = Footer::default();
         if !fragments.is_empty() {
             footer.rdel = self.append_meta(&encode_rangedel(fragments));
@@ -946,6 +1007,31 @@ mod tests {
     }
     use crate::format::props::REASON_FLUSH;
     use crate::format::testing::Recording;
+
+    /// Blocks compressed together (on several threads when there are many) give the bytes of
+    /// compressing each block as it closes.
+    #[test]
+    fn batched_compression_writes_the_bytes_of_one_block_at_a_time() {
+        let build = |each: bool| {
+            let mut b = SstBuilder::with_compression([2; 16], 9, 512, true);
+            let mut out = Vec::new();
+            for i in 0..40_000u32 {
+                let v = format!("value {} {}", i % 17, "x".repeat((i % 40) as usize));
+                b.add(format!("k{i:07}").as_bytes(), 1 + u64::from(i), Some(v.as_bytes()));
+                if each {
+                    b.drain();
+                }
+                out.extend(b.take_ready());
+            }
+            let (rest, props, len) = b.finish(&[] as &[Fragment<Vec<u8>>], REASON_FLUSH);
+            out.extend(rest);
+            (out, props.data_blocks, len)
+        };
+        let (batched, blocks, len) = build(false);
+        assert!(blocks as usize > 2 * QUEUE_BLOCKS, "several full batches: {blocks}");
+        assert_eq!(batched.len() as u64, len);
+        assert!(batched == build(true).0, "same bytes");
+    }
 
     #[test]
     fn open_reads_only_header_footer_and_meta_blocks() {
