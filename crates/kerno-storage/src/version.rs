@@ -62,15 +62,20 @@ impl Version {
     /// whose newest entry is older than `max_tomb` ends the search: nothing
     /// at or below it can be visible.
     pub fn get(&self, key: &[u8], seq: u64) -> Result<Option<Vec<u8>>> {
-        let probe = InternalKey { user_key: key.to_vec(), seq };
+        let hash = bloom::hash(key);
+        // Built for the first memtable whose filter does not rule the key out.
+        let mut probe = None;
         let mut max_tomb = 0;
         for mem in std::iter::once(&self.mem).chain(&self.imms) {
             max_tomb = max_tomb.max(mem.covering_seq(key, seq));
-            if let Some((s, v)) = mem.get(&probe) {
+            if !mem.may_hold(hash) {
+                continue;
+            }
+            let probe = probe.get_or_insert_with(|| InternalKey { user_key: key.to_vec(), seq });
+            if let Some((s, v)) = mem.get(probe) {
                 return Ok(if s >= max_tomb { v } else { None });
             }
         }
-        let hash = bloom::hash(key);
         for t in &self.levels[0] {
             if let Some(found) = lookup(t, key, hash, &mut max_tomb)? {
                 return Ok(found);

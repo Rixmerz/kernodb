@@ -680,7 +680,7 @@ impl<E: TxnEngine> UnitDb<E> {
             layer_version,
             derived_ops: 0,
             token_ops: 0,
-            active_known: std::collections::HashSet::new(),
+            active_known: std::collections::HashSet::default(),
             rel_ceiling: RelCeiling::Unknown,
             fresh: std::cell::Cell::new(Fresh::Unknown),
             schema_ops: 0,
@@ -1177,7 +1177,7 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     /// goes through [`ChangeSet::write`], which drops a unit from here when
     /// it writes or deletes its `UNIT_HEAD` (and clears it on a range
     /// delete), so an entry is never stale.
-    active_known: std::collections::HashSet<UnitId>,
+    active_known: std::collections::HashSet<UnitId, std::hash::BuildHasherDefault<IdHasher>>,
     /// A relation id at or above every `REL` record this change set sees (the
     /// transaction's view, its own writes included), once one is known: see
     /// [`ChangeSet::relation_id_is_free`].
@@ -1228,6 +1228,28 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     /// first asked (`None`: not asked yet). Without one, and while the change
     /// set writes no derived record itself, no unit has derived data to follow.
     no_derived: std::cell::Cell<Option<bool>>,
+}
+
+/// Hashes a unit id for a set inside one change set: the id's own bytes, folded. An id is
+/// random or a counter in its low bytes, and the set holds the change set's own units, so a
+/// keyed hash buys nothing here and costs most of a lookup.
+#[derive(Default)]
+pub(crate) struct IdHasher(u64);
+
+impl std::hash::Hasher for IdHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            let mut word = [0u8; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            self.0 = (self.0.rotate_left(29) ^ u64::from_le_bytes(word)).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        }
+        // The table takes its index from the low bits and its tag from the high ones.
+        self.0 ^= self.0 >> 32;
+    }
 }
 
 /// What a change set knows about the ids of the units it creates.
