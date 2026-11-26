@@ -232,7 +232,8 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
                 fresh: add && plan.before == 0,
                 count: plan.before,
                 dirty: false,
-                ops: Vec::with_capacity(1),
+                // Most lists of a bulk load take several entries: no growth from one.
+                ops: Vec::with_capacity(4),
             });
             list.count = plan.next;
             list.dirty |= plan.dirty;

@@ -756,6 +756,7 @@ impl<E: TxnEngine> UnitDb<E> {
             base: std::cell::OnceCell::new(),
             ranges_deleted: false,
             unique_staged: Default::default(),
+            live_pending: Default::default(),
             no_derived: std::cell::Cell::new(None),
         })
     }
@@ -1317,6 +1318,9 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     /// The entries of unique fields this change set put (`true`) or deleted (`false`), in
     /// order, by `field_prefix ‖ value`: with `base`, who holds a unique value.
     pub(crate) unique_staged: std::collections::HashMap<Vec<u8>, Vec<(UnitId, bool)>>,
+    /// The live counts of the unit types this change set moved, by count key, written once at
+    /// commit by [`ChangeSet::flush_live`].
+    pub(crate) live_pending: std::collections::HashMap<Vec<u8>, u64>,
     /// The document of the payload a `create_prepared` is creating, cut ahead of it.
     pub(crate) prepared_text: std::cell::RefCell<Option<crate::fulltext::PreparedText>>,
     pub(crate) schema_cache:
@@ -1333,18 +1337,38 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
 #[derive(Default)]
 pub(crate) struct IdHasher(u64);
 
+impl IdHasher {
+    fn mix(&mut self, word: u64) {
+        self.0 = (self.0.rotate_left(29) ^ word).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+}
+
 impl std::hash::Hasher for IdHasher {
     fn finish(&self) -> u64 {
         self.0
     }
 
     fn write(&mut self, bytes: &[u8]) {
-        for chunk in bytes.chunks(8) {
+        let (words, rest) = bytes.as_chunks::<8>();
+        for w in words {
+            self.mix(u64::from_le_bytes(*w));
+        }
+        if !rest.is_empty() {
             let mut word = [0u8; 8];
-            word[..chunk.len()].copy_from_slice(chunk);
-            self.0 = (self.0.rotate_left(29) ^ u64::from_le_bytes(word)).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            word[..rest.len()].copy_from_slice(rest);
+            self.mix(u64::from_le_bytes(word));
         }
         // The table takes its index from the low bits and its tag from the high ones.
+        self.0 ^= self.0 >> 32;
+    }
+
+    // The length prefix of a slice (a unit id's 16 bytes) and the words of a key: no buffer.
+    fn write_usize(&mut self, n: usize) {
+        self.mix(n as u64);
+    }
+
+    fn write_u64(&mut self, n: u64) {
+        self.mix(n);
         self.0 ^= self.0 >> 32;
     }
 }
@@ -1407,6 +1431,11 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
             return Err(UnitError::ChangeSetTooLarge { ops: ops + 1, bytes: self.bytes, engine_limit: None });
         }
         Ok(())
+    }
+
+    /// Whether `unit` has a revision in this change set.
+    pub(crate) fn is_touched(&self, unit: UnitId) -> bool {
+        self.touched.contains(&unit)
     }
 
     /// The state the transaction began on, as a snapshot, while it is still the transaction's
@@ -1734,12 +1763,12 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         unit: UnitId,
         mut head: UnitHead,
         kind: RevisionKind,
-        payload: Option<&[u8]>,
+        payload: Option<std::borrow::Cow<'_, [u8]>>,
         restored_from: Option<RevNo>,
     ) -> Result<Planned, UnitError> {
         let mut writes = self.supersede(unit, &mut head)?;
         // The head carries the payload of the revision it now names, never an older one's.
-        head.inline_payload = UnitHead::inline_of(payload);
+        head.inline_payload = UnitHead::inline_of(payload.as_deref());
         let rev = head.head_rev;
         let meta = RevisionMeta {
             kind,
@@ -1764,7 +1793,8 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         writes.push(Write::Put(key(Key::UnitHead { unit })?, head.encode()?));
         writes.push(Write::Put(key(Key::RevMeta { unit, rev })?, meta.encode(rev)?));
         if let Some(p) = payload {
-            writes.push(Write::Put(key(Key::RevPayload { unit, rev })?, p.to_vec()));
+            // An owned payload (a create's) moves into the write: no copy.
+            writes.push(Write::Put(key(Key::RevPayload { unit, rev })?, p.into_owned()));
         }
         writes.push(Write::Put(key(Key::CsMember { seq: self.seq, ordinal })?, member.encode()?));
         Ok(Planned { writes, rev: RevisionId { unit, rev }, kind, live: None })
@@ -1812,7 +1842,15 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         Self::check_metadata(&new.metadata)?;
         self.check_payload(&new.payload)?;
         let id = self.db.cfg.ids.next_id();
-        if self.touched.contains(&id) || self.txn()?.get(&key(Key::UnitHead { unit: id })?)?.is_some() {
+        if self.touched.contains(&id) {
+            return Err(UnitError::AlreadyExists { unit: id });
+        }
+        // Ids are minted ascending: once the change set knows (one seek) that no stored unit has
+        // an id at or above one it created, a later id needs no read to know it is new (a unit
+        // created in this change set is in `touched`).
+        self.learn_fresh(id)?;
+        let fresh = self.fresh_from().is_some_and(|f| id >= f);
+        if !fresh && self.txn()?.get(&key(Key::UnitHead { unit: id })?)?.is_some() {
             return Err(UnitError::AlreadyExists { unit: id });
         }
         let head = UnitHead {
@@ -1831,7 +1869,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
             inline_payload: None,
         };
         let unit_type = head.unit_type.clone();
-        let mut plan = self.plan(id, head, RevisionKind::Create, Some(&new.payload), None)?;
+        let mut plan = self.plan(id, head, RevisionKind::Create, Some(std::borrow::Cow::Owned(new.payload)), None)?;
         plan.live = Some((unit_type, 1));
         self.apply(plan)?;
         Ok(id)
@@ -1862,7 +1900,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         if let Some(m) = upd.metadata {
             next.metadata = m;
         }
-        let plan = self.plan(id, next, RevisionKind::Update, Some(&upd.payload), None)?;
+        let plan = self.plan(id, next, RevisionKind::Update, Some(std::borrow::Cow::Owned(upd.payload)), None)?;
         self.apply(plan)
     }
 
@@ -1890,7 +1928,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         let mut next = self.next_head(&head);
         next.lifecycle = to;
         let live = (next.unit_type.clone(), if to == Lifecycle::Archived { -1 } else { 1 });
-        let mut plan = self.plan(id, next, kind, Some(&payload), None)?;
+        let mut plan = self.plan(id, next, kind, Some(std::borrow::Cow::Borrowed(&payload)), None)?;
         plan.live = Some(live);
         self.apply(plan)
     }
@@ -1976,7 +2014,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         next.payload_len = source.payload_len;
         next.schema_version = source.schema_version;
         next.metadata = source.metadata;
-        let plan = self.plan(id, next, RevisionKind::Restore, Some(&payload), Some(from))?;
+        let plan = self.plan(id, next, RevisionKind::Restore, Some(std::borrow::Cow::Borrowed(&payload)), Some(from))?;
         self.apply(plan)
     }
 
@@ -2193,6 +2231,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
     /// without operations writes nothing and returns the current sequence.
     pub fn commit(mut self) -> Result<CommitInfo, UnitError> {
         self.txn()?;
+        self.flush_live()?;
         self.flush_adjacency()?;
         // The keyword index before the trigram index: their keys ascend in that order, and a
         // flush that only writes above what was written so far lets the transaction answer its

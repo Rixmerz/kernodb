@@ -236,8 +236,18 @@ impl Key {
     /// The key bytes. Refuses a key the decoder would reject (an empty or
     /// over-long `LAYER_META` name, `rev_no = 0`, `commit_seq = 0`).
     pub fn encode(&self) -> Result<Vec<u8>, UnitError> {
+        // The fixed-shape keys whose only rule is a non-zero number: nothing for the decoder to
+        // refuse once that holds, so it is not run (it is on every record a write makes).
+        let plain = match self {
+            Key::UnitHead { .. } | Key::IndexPrimary { .. } | Key::IndexMeta | Key::Relation { .. } => true,
+            Key::RevMeta { rev, .. } | Key::RevPayload { rev, .. } => rev.0 != 0,
+            Key::ChangeSet { seq } | Key::CsMember { seq, .. } => seq.0 != 0,
+            _ => false,
+        };
         let out = self.raw();
-        Key::decode(&out).map_err(|e| refuse("key", &e))?;
+        if !plain {
+            Key::decode(&out).map_err(|e| refuse("key", &e))?;
+        }
         Ok(out)
     }
 
@@ -571,6 +581,13 @@ impl<'a> Reader<'a> {
 struct Writer(Vec<u8>);
 
 impl Writer {
+    /// [`envelope`](Self::envelope) with room for `len` bytes in all.
+    fn envelope_for(len: usize) -> Self {
+        let mut v = Vec::with_capacity(len.max(2));
+        v.extend_from_slice(&[ENVELOPE_VERSION, 0]);
+        Writer(v)
+    }
+
     fn envelope() -> Self {
         // Room for a typical record up front: growing from two bytes costs a
         // reallocation per doubling on every record written.
@@ -713,7 +730,10 @@ impl UnitHead {
     }
 
     pub fn encode(&self) -> Result<Vec<u8>, UnitError> {
-        let mut w = Writer::envelope();
+        // Fixed fields, the variable ones, and the trailer with its tag.
+        let len = 2 + 4 + self.unit_type.len() + 4 + 1 + 6 * 8 + 32 + 4 + 1 + 4 + self.metadata.len()
+            + self.inline_payload.as_ref().map_or(0, |p| 1 + p.len());
+        let mut w = Writer::envelope_for(len + 16);
         w.bytes(self.unit_type.as_bytes(), MAX_UNIT_TYPE_LEN, "UNIT_HEAD.unit_type")?;
         w.u32(self.schema_version);
         w.u8(self.lifecycle.to_byte());
@@ -1254,34 +1274,63 @@ pub struct RelationRecord {
 
 impl RelationRecord {
     pub fn encode(&self) -> Result<Vec<u8>, UnitError> {
-        let mut w = Writer::envelope();
-        w.0.extend_from_slice(&self.from.0);
-        w.0.extend_from_slice(&self.to.0);
-        w.bytes(self.relation_type.as_bytes(), MAX_RELATION_TYPE_LEN, "REL.relation_type")?;
-        w.u64(self.created_seq.0);
         let (origin, confidence): (&[u8], u16) = match &self.provenance {
             RelationProvenance::Declared => (&[], 0),
             RelationProvenance::Imported { source } => (source, 0),
             RelationProvenance::Algorithmic { origin } => (origin, 0),
             RelationProvenance::Inferred { origin, confidence_permille } => (origin, *confidence_permille),
         };
+        let mut w = Writer::envelope_for(2 + 32 + 4 + self.relation_type.len() + 8 + 1 + 4 + origin.len() + 2);
+        w.0.extend_from_slice(&self.from.0);
+        w.0.extend_from_slice(&self.to.0);
+        w.bytes(self.relation_type.as_bytes(), MAX_RELATION_TYPE_LEN, "REL.relation_type")?;
+        w.u64(self.created_seq.0);
         w.u8(self.provenance.kind().to_byte());
         w.bytes(origin, MAX_RELATION_ORIGIN_LEN, "REL.origin")?;
         w.u16(confidence);
-        let back = Self::decode(&w.0).map_err(|e| refuse("REL", &e))?;
-        if back != *self {
-            return Err(UnitError::InvalidArgument("refusing to encode an invalid REL".into()));
-        }
+        // The rules `decode` applies to what it reads, applied to the fields written (the
+        // lengths were checked as they were written): the same refusals, without reading the
+        // bytes back.
+        let parts = RelationParts {
+            from: self.from,
+            to: self.to,
+            relation_type: &self.relation_type,
+            created_seq: self.created_seq.0,
+            kind: self.provenance.kind(),
+            origin,
+            confidence,
+        };
+        Self::check(&parts).map_err(|e| refuse("REL", &e))?;
         Ok(w.0)
     }
 
     pub fn decode(value: &[u8]) -> Res<Self> {
+        let p = Self::parse(value)?;
+        let origin = p.origin.to_vec();
+        let provenance = match p.kind {
+            ProvenanceKind::Declared => RelationProvenance::Declared,
+            ProvenanceKind::Imported => RelationProvenance::Imported { source: origin },
+            ProvenanceKind::Algorithmic => RelationProvenance::Algorithmic { origin },
+            ProvenanceKind::Inferred => RelationProvenance::Inferred { origin, confidence_permille: p.confidence },
+        };
+        Ok(RelationRecord {
+            from: p.from,
+            to: p.to,
+            relation_type: p.relation_type.to_owned(),
+            created_seq: CommitSeq(p.created_seq),
+            provenance,
+        })
+    }
+
+    /// The fields of a `REL` value, borrowed, with every rule of [`decode`](Self::decode)
+    /// checked (the provenance's included).
+    fn parse(value: &[u8]) -> Res<RelationParts<'_>> {
         let mut r = Reader::new(value, "REL");
         r.envelope()?;
         let from = UnitId(arr(r.take(16, "from")?));
         let to = UnitId(arr(r.take(16, "to")?));
         let relation_type = match std::str::from_utf8(r.bytes(MAX_RELATION_TYPE_LEN, "relation_type")?) {
-            Ok(t) if valid_relation_type(t) => t.to_owned(),
+            Ok(t) if valid_relation_type(t) => t,
             _ => return reject(UnitRule::Unit12, "REL.relation_type is empty, has a NUL or is not UTF-8"),
         };
         let created_seq = r.u64("created_seq")?;
@@ -1289,28 +1338,52 @@ impl RelationRecord {
             return reject(UnitRule::Unit23, "REL.created_seq 0");
         }
         let kind = r.enumeration("provenance", ProvenanceKind::from_byte)?;
-        let origin = r.bytes(MAX_RELATION_ORIGIN_LEN, "origin")?.to_vec();
+        let origin = r.bytes(MAX_RELATION_ORIGIN_LEN, "origin")?;
         let confidence = r.u16("confidence")?;
         r.finish()?;
+        let parts = RelationParts { from, to, relation_type, created_seq, kind, origin, confidence };
+        Self::check(&parts)?;
+        Ok(parts)
+    }
+
+    /// The rules of a `REL` value on its fields, in the order `decode` applies them after
+    /// reading: the relation type, the sequence, then the provenance.
+    fn check(p: &RelationParts<'_>) -> Res<()> {
+        if !valid_relation_type(p.relation_type) {
+            return reject(UnitRule::Unit12, "REL.relation_type is empty, has a NUL or is not UTF-8");
+        }
+        if p.created_seq == 0 {
+            return reject(UnitRule::Unit23, "REL.created_seq 0");
+        }
+        let (kind, origin, confidence) = (p.kind, p.origin, p.confidence);
         let bad = |what: &str| reject(UnitRule::Unit13, format!("REL provenance {kind:?}: {what}"));
-        let provenance = match kind {
+        match kind {
             ProvenanceKind::Declared if !origin.is_empty() || confidence != 0 => {
                 return bad("a declared relation has no origin and no confidence");
             }
-            ProvenanceKind::Declared => RelationProvenance::Declared,
+            ProvenanceKind::Declared => {}
             _ if origin.is_empty() => return bad("the origin is empty"),
             ProvenanceKind::Imported | ProvenanceKind::Algorithmic if confidence != 0 => {
                 return bad("only an inferred relation has a confidence");
             }
-            ProvenanceKind::Imported => RelationProvenance::Imported { source: origin },
-            ProvenanceKind::Algorithmic => RelationProvenance::Algorithmic { origin },
             ProvenanceKind::Inferred if confidence > MAX_CONFIDENCE_PERMILLE => {
                 return bad("confidence above 1000");
             }
-            ProvenanceKind::Inferred => RelationProvenance::Inferred { origin, confidence_permille: confidence },
-        };
-        Ok(RelationRecord { from, to, relation_type, created_seq: CommitSeq(created_seq), provenance })
+            _ => {}
+        }
+        Ok(())
     }
+}
+
+/// The fields of a `REL` value as [`RelationRecord::parse`] reads them.
+struct RelationParts<'a> {
+    from: UnitId,
+    to: UnitId,
+    relation_type: &'a str,
+    created_seq: u64,
+    kind: ProvenanceKind,
+    origin: &'a [u8],
+    confidence: u16,
 }
 
 /// Most entries in one adjacency block (ADR-0026): 64 × 32 bytes, about 2 KiB.
@@ -1327,8 +1400,7 @@ pub struct AdjBlock {
 
 impl AdjBlock {
     pub fn encode(&self) -> Vec<u8> {
-        let mut w = Writer::envelope();
-        w.0.reserve(32 * self.entries.len());
+        let mut w = Writer::envelope_for(2 + 32 * self.entries.len());
         for (edge, other) in &self.entries {
             w.0.extend_from_slice(&edge.0);
             w.0.extend_from_slice(&other.0);

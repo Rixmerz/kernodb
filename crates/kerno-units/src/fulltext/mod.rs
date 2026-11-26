@@ -139,7 +139,8 @@ fn posting_range(term: &str) -> (Vec<u8>, Vec<u8>) {
 }
 
 pub(crate) fn doc_key(unit: UnitId) -> Vec<u8> {
-    let mut k = vec![TAG_DOC];
+    let mut k = Vec::with_capacity(17);
+    k.push(TAG_DOC);
     k.extend_from_slice(&unit.0);
     k
 }
@@ -284,7 +285,8 @@ pub(crate) fn decode_block(v: &[u8]) -> Result<Vec<(UnitId, Posting)>, DecodeErr
 }
 
 fn encode_doc(doc: &Doc) -> Vec<u8> {
-    let mut v = vec![RECORD_VERSION, 0];
+    let mut v = Vec::with_capacity(10 + doc.terms().map(|(t, _)| 1 + t.len()).sum::<usize>());
+    v.extend_from_slice(&[RECORD_VERSION, 0]);
     v.extend_from_slice(&doc.len.to_be_bytes());
     v.extend_from_slice(&(doc.terms().len() as u32).to_be_bytes());
     for (t, _) in doc.terms() {
@@ -446,7 +448,10 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
             Some(p) => p.doc,
             None => payload.and_then(analyze),
         };
-        let old = match self.txn()?.get(&doc_key(unit))? {
+        // A unit with an id above every stored one that has no revision in this change set yet
+        // (one being created) has no document anywhere: no read.
+        let fresh = self.fresh_from().is_some_and(|f| unit >= f) && !self.is_touched(unit);
+        let old = match if fresh { None } else { self.txn()?.get(&doc_key(unit))? } {
             Some(raw) => Some(decode_doc(&raw).map_err(|e| context(e, &format!("DOC of unit {unit}")))?),
             None => None,
         };

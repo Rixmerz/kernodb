@@ -90,7 +90,8 @@ pub(crate) fn dir_of(byte: u8) -> Direction {
 
 /// The key of the count record of `(unit, dir, relation_type)`.
 pub(crate) fn count_key(unit: UnitId, dir: Direction, relation_type: &str) -> Vec<u8> {
-    let mut k = vec![TAG_REL_COUNT];
+    let mut k = Vec::with_capacity(19 + relation_type.len());
+    k.push(TAG_REL_COUNT);
     k.extend_from_slice(&unit.0);
     k.push(dir_byte(dir));
     k.extend_from_slice(relation_type.as_bytes());
@@ -124,7 +125,8 @@ fn count_range(unit: UnitId, dir: Direction) -> (Vec<u8>, Vec<u8>) {
 }
 
 pub(crate) fn encode_value(count: u64) -> Vec<u8> {
-    let mut v = vec![REL_COUNT_RECORD_VERSION, 0];
+    let mut v = Vec::with_capacity(VALUE_LEN);
+    v.extend_from_slice(&[REL_COUNT_RECORD_VERSION, 0]);
     v.extend_from_slice(&count.to_be_bytes());
     v
 }

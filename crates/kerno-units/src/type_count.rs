@@ -78,7 +78,8 @@ const HEAD_PAGE: usize = 256;
 
 /// The key of the count record of `unit_type`.
 pub(crate) fn count_key(unit_type: &str) -> Vec<u8> {
-    let mut k = vec![TAG_TYPE_COUNT, unit_type.len() as u8];
+    let mut k = Vec::with_capacity(2 + unit_type.len());
+    k.extend_from_slice(&[TAG_TYPE_COUNT, unit_type.len() as u8]);
     k.extend_from_slice(unit_type.as_bytes());
     k
 }
@@ -139,6 +140,11 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
     pub(crate) fn plan_live(&self, unit_type: &str, delta: i64) -> Result<(Vec<u8>, u64), UnitError> {
         let k = count_key(unit_type);
         let txn = self.txn()?;
+        // A count this change set moved already is kept in it until commit.
+        if let Some(&n) = self.live_pending.get(&k) {
+            let next = if delta >= 0 { n.saturating_add(delta as u64) } else { n.saturating_sub(delta.unsigned_abs()) };
+            return Ok((k, next));
+        }
         let base = match txn.get(&k)? {
             Some(raw) => {
                 let (_, n) = decode_record(&k, &raw).map_err(|e| context(e, "TYPE_COUNT"))?;
@@ -153,9 +159,22 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         Ok((k, next))
     }
 
-    /// Writes a planned count.
+    /// Keeps a planned count for [`flush_live`](Self::flush_live): a change set of many units
+    /// of one type writes its count record once, not once per unit.
     pub(crate) fn put_live(&mut self, (k, n): (Vec<u8>, u64)) -> Result<(), UnitError> {
-        self.write(&Write::Put(k, encode_value(n)))
+        self.txn()?;
+        self.live_pending.insert(k, n);
+        Ok(())
+    }
+
+    /// Writes the counts the change set kept, in key order. Called by `commit`.
+    pub(crate) fn flush_live(&mut self) -> Result<(), UnitError> {
+        let mut counts: Vec<(Vec<u8>, u64)> = std::mem::take(&mut self.live_pending).into_iter().collect();
+        counts.sort_unstable();
+        for (k, n) in counts {
+            self.write_owned(Write::Put(k, encode_value(n)))?;
+        }
+        Ok(())
     }
 }
 
