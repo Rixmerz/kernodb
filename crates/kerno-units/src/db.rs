@@ -321,6 +321,8 @@ pub struct UnitDb<E: TxnEngine> {
     /// The embedding provider the caller registered (see [`crate::embed`]);
     /// none until one is. In memory only: it is never written to the database.
     pub(crate) embedder: Mutex<Option<Arc<dyn crate::embed::EmbeddingProvider>>>,
+    /// What reads at the newest commit already loaded and verified (see [`crate::read_cache`]).
+    pub(crate) read_cache: Arc<crate::read_cache::ReadCache>,
 }
 
 fn layer_mark_key() -> Vec<u8> {
@@ -590,6 +592,7 @@ impl<E: TxnEngine> UnitDb<E> {
                 index_builds: AtomicUsize::new(0),
                 observer: Arc::default(),
                 cache: Arc::default(),
+                read_cache: Arc::new(crate::read_cache::ReadCache::new(crate::read_cache::DEFAULT_READ_CACHE_BYTES)),
                 embedder: Mutex::new(None),
             }),
             Err(e) => {
@@ -724,7 +727,14 @@ impl<E: TxnEngine> UnitDb<E> {
             policies,
             observer: self.observer.clone(),
             cache: self.cache.clone(),
+            read_cache: self.read_cache.clone(),
         })
+    }
+
+    /// Sets how many bytes of verified units the read cache may hold ([`crate::DEFAULT_READ_CACHE_BYTES`]
+    /// by default); `0` turns it off. The cache starts empty either way.
+    pub fn set_read_cache_bytes(&self, bytes: usize) {
+        self.read_cache.set_budget(bytes);
     }
 
     /// The history policy in force for `unit_type` (see the [module
@@ -899,6 +909,8 @@ pub struct UnitSnapshot<E: Engine> {
     pub(crate) observer: Arc<crate::observation::Observer>,
     /// The database's result cache: `query` and `query_relations` consult it.
     pub(crate) cache: Arc<crate::cache::ResultCache>,
+    /// The database's read cache: `get_unit` and `schema` consult it.
+    pub(crate) read_cache: Arc<crate::read_cache::ReadCache>,
 }
 
 impl<E: Engine> UnitSnapshot<E> {
@@ -944,12 +956,23 @@ impl<E: Engine> UnitSnapshot<E> {
 
     /// The unit at this snapshot (see [`UnitDb::get_unit`]).
     pub fn get_unit(&self, id: UnitId) -> Result<Option<Unit>, UnitError> {
-        Ok(load_unit(&|k| self.snap.get(k), id)?.map(|(head, _, payload)| to_unit(id, head, payload)))
+        let seq = self.snap.seq();
+        if let Some(hit) = self.read_cache.unit(seq, id) {
+            return Ok(Some((*hit).clone()));
+        }
+        let unit = load_unit(&|k| self.snap.get(k), id)?.map(|(head, _, payload)| to_unit(id, head, payload));
+        if let Some(u) = &unit {
+            self.read_cache.put_unit(seq, u);
+        }
+        Ok(unit)
     }
 
     /// Whether a unit with this id ever existed at this snapshot (a deleted one did): one read of
     /// its head, without loading or checking its payload.
     pub fn unit_exists(&self, id: UnitId) -> Result<bool, UnitError> {
+        if self.read_cache.unit(self.snap.seq(), id).is_some() {
+            return Ok(true);
+        }
         Ok(crate::history::read_head(&|k| self.snap.get(k), id)?.is_some())
     }
 
@@ -1032,6 +1055,12 @@ impl<E: Engine> UnitSnapshot<E> {
         let Some((start, end)) = Key::adjacency_range(tag, unit, relation_type) else {
             return Err(UnitError::InvalidArgument("relation_type is not a valid relation type name".into()));
         };
+        // What this sequence already read and checked for this unit, direction and type.
+        let seq = self.snap.seq();
+        let cache_key = (unit, tag, relation_type.map(str::to_owned));
+        if let Some(hit) = self.read_cache.relations(seq, &cache_key) {
+            return Ok((*hit).clone());
+        }
         // K1: the counts the scan must meet, by type (P1).
         let expected = crate::adj_count::expected(&self.snap, unit, dir, relation_type)?;
         let mut seen: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
@@ -1062,6 +1091,7 @@ impl<E: Engine> UnitSnapshot<E> {
             Ok(())
         })?;
         crate::adj_count::compare(unit, &expected, &seen)?;
+        self.read_cache.put_relations(seq, cache_key, &out);
         Ok(out)
     }
 }

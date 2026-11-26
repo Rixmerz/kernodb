@@ -36,6 +36,8 @@ pub mod assoc;
 pub mod assoc_rank;
 pub(crate) mod blocks;
 pub mod cache;
+mod read_cache;
+pub use read_cache::DEFAULT_READ_CACHE_BYTES;
 pub mod clock;
 pub mod codec;
 pub mod consolidation;

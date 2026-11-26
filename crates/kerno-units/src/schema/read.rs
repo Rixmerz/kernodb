@@ -23,10 +23,16 @@ impl<E: Engine> UnitSnapshot<E> {
     ///
     /// `Storage(Corruption)` when the record does not decode.
     pub fn schema(&self, unit_type: &str) -> Result<Option<Schema>, UnitError> {
-        match self.snap.get(&schema_key(unit_type))? {
-            Some(raw) => Ok(Some(Schema::decode(&raw).map_err(|e| context(e, "SCHEMA"))?)),
-            None => Ok(None),
+        let seq = self.snap.seq();
+        if let Some(hit) = self.read_cache.schema(seq, unit_type) {
+            return Ok(hit.map(|s| (*s).clone()));
         }
+        let schema = match self.snap.get(&schema_key(unit_type))? {
+            Some(raw) => Some(Schema::decode(&raw).map_err(|e| context(e, "SCHEMA"))?),
+            None => None,
+        };
+        self.read_cache.put_schema(seq, unit_type, schema.as_ref());
+        Ok(schema)
     }
 
     /// The `Active` units of `unit_type` whose indexed `field` equals `value`,
@@ -108,10 +114,24 @@ impl<E: Engine> UnitSnapshot<E> {
         end: Vec<u8>,
         limit: usize,
     ) -> Result<Vec<Unit>, UnitError> {
+        // A range this snapshot's sequence already scanned and checked: its units, as read then.
+        let seq = self.snap.seq();
+        let cache_key = (start, end, limit);
+        if let Some(ids) = self.read_cache.range(seq, &cache_key) {
+            let mut out = Vec::with_capacity(ids.len());
+            for &id in ids.iter() {
+                let Some(u) = self.get_unit(id)? else {
+                    return Err(corruption(format!("a FIELD_INDEX entry of unit {id} has no UNIT_HEAD")));
+                };
+                out.push(u);
+            }
+            return Ok(out);
+        }
+        let (start, end) = (cache_key.0.clone(), &cache_key.1);
         let mut out = Vec::new();
         let mut cursor = start;
         let mut inclusive = true;
-        while out.len() < limit && cursor < end {
+        while out.len() < limit && &cursor < end {
             let from = if inclusive { Bound::Included(cursor.as_slice()) } else { Bound::Excluded(cursor.as_slice()) };
             let page = self.snap.scan(from, Bound::Excluded(end.as_slice()), PAGE)?;
             let n = page.len();
@@ -136,6 +156,8 @@ impl<E: Engine> UnitSnapshot<E> {
                 _ => break,
             }
         }
+        let ids = out.iter().map(|u| u.id).collect();
+        self.read_cache.put_range(seq, cache_key, ids);
         Ok(out)
     }
 

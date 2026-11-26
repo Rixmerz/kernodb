@@ -587,11 +587,19 @@ impl Relation {
 struct RelationMaker<'py> {
     py: Python<'py>,
     types: HashMap<String, Py<PyString>>,
+    /// One `str` per unit id: the ends of a database's relations repeat (many relations, fewer
+    /// units), and a caller that keys a dict by them hashes each `str` once.
+    units: HashMap<UnitId, Py<PyString>>,
 }
 
 impl<'py> RelationMaker<'py> {
     fn new(py: Python<'py>) -> Self {
-        RelationMaker { py, types: HashMap::new() }
+        RelationMaker { py, types: HashMap::new(), units: HashMap::new() }
+    }
+
+    fn unit(&mut self, id: UnitId) -> Py<PyString> {
+        let py = self.py;
+        self.units.entry(id).or_insert_with(|| PyString::new(py, &id.to_string()).unbind()).clone_ref(py)
     }
 
     fn make(&mut self, r: kerno::Relation) -> Relation {
@@ -606,8 +614,8 @@ impl<'py> RelationMaker<'py> {
         };
         Relation {
             id: PyString::new(py, &RelationId::to_string(&r.id)).unbind(),
-            from_id: PyString::new(py, &r.from.to_string()).unbind(),
-            to_id: PyString::new(py, &r.to.to_string()).unbind(),
+            from_id: self.unit(r.from),
+            to_id: self.unit(r.to),
             relation_type,
         }
     }

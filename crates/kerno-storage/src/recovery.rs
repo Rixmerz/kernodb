@@ -361,6 +361,7 @@ pub fn open_tables_reusing(
     state: &ManifestState,
     reuse: &mut HashMap<u64, Arc<Table>>,
 ) -> Result<(Levels, Option<(String, u64)>)> {
+    open_missing_in_parallel(ctx, state, reuse)?;
     let mut levels: Levels = vec![Vec::new(); NUM_LEVELS];
     let mut unknown = None;
     for (l, files) in state.levels.iter().enumerate() {
@@ -380,6 +381,51 @@ pub fn open_tables_reusing(
         }
     }
     Ok((levels, unknown))
+}
+
+/// Fewer tables than this are opened one after the other: threads cost more than they save.
+const PARALLEL_OPEN_MIN: usize = 8;
+
+/// Opens the tables of `state` that `reuse` does not hold, several at a time, into `reuse`.
+///
+/// Opening a table reads and checks its index, filter and properties, and the tables of a
+/// database are independent files: a large database spent its whole open doing this one file
+/// after the other. Every table is still opened and checked before the database is; of several
+/// failures, the one of the first file in MANIFEST order is returned, as the sequential loop
+/// would.
+fn open_missing_in_parallel(
+    ctx: &Arc<TableCtx>,
+    state: &ManifestState,
+    reuse: &mut HashMap<u64, Arc<Table>>,
+) -> Result<()> {
+    let missing: Vec<_> = state.levels.iter().flatten().filter(|f| !reuse.contains_key(&f.number)).collect();
+    let workers = std::thread::available_parallelism().map_or(1, usize::from).min(8);
+    if missing.len() < PARALLEL_OPEN_MIN || workers < 2 {
+        return Ok(());
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let last_seq = state.last_seq;
+    let mut opened: Vec<(usize, Result<Table>)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut out = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(f) = missing.get(i) else { break };
+                        out.push((i, Table::open(ctx, f, last_seq)));
+                    }
+                    out
+                })
+            })
+            .collect();
+        handles.into_iter().flat_map(|h| h.join().expect("a table open panicked")).collect()
+    });
+    opened.sort_by_key(|(i, _)| *i);
+    for (i, table) in opened {
+        reuse.insert(missing[i].number, Arc::new(table?));
+    }
+    Ok(())
 }
 
 /// Why a database opens read-only despite a read-write request: the first
