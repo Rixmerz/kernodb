@@ -71,7 +71,7 @@ mod tokenize;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::ops::Bound;
 
 use kerno_core::contract::{Engine, Snapshot, Txn, TxnEngine};
@@ -230,6 +230,7 @@ impl crate::blocks::Block for Postings {
     type Val = Posting;
     const MAX: usize = BLOCK_MAX;
     const WHAT: &'static str = "POSTING";
+    const ENTRY: usize = ENTRY_LEN;
 
     fn decode(v: &[u8]) -> Result<Vec<(crate::blocks::Id, Posting)>, DecodeError> {
         let e = |rule, m: &str| DecodeError::new(rule, format!("posting block: {m}"));
@@ -263,6 +264,16 @@ impl crate::blocks::Block for Postings {
             v.extend_from_slice(&p.dl.to_be_bytes());
         }
         v
+    }
+
+    fn put_val(out: &mut Vec<u8>, p: &Posting) {
+        out.extend_from_slice(&p.tf.to_be_bytes());
+        out.extend_from_slice(&p.dl.to_be_bytes());
+    }
+
+    fn val_ok(b: &[u8]) -> bool {
+        let (tf, dl) = (be32(&b[..4]), be32(&b[4..]));
+        tf != 0 && dl >= tf
     }
 }
 
@@ -373,7 +384,8 @@ pub(crate) fn next_of(unit: UnitId, writes: &[Write]) -> Result<Next<'_>, UnitEr
 /// What a change set will change in the posting lists: per term, the postings
 /// to put (`Some`) or remove (`None`) by unit, the last operation of a unit
 /// winning.
-pub(crate) type PendingPostings = BTreeMap<String, BTreeMap<crate::blocks::Id, Option<Posting>>>;
+pub(crate) type PendingPostings =
+    HashMap<String, Vec<(crate::blocks::Id, Option<Posting>)>, std::hash::BuildHasherDefault<tokenize::TermHasher>>;
 
 /// The index change of one operation that is not a record of its own: the
 /// postings the unit gives up and gains, and what its document does to the
@@ -429,6 +441,10 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         if old.is_none() && new.is_none() {
             return Ok(TextPlan::default());
         }
+        if old.is_none() {
+            // A unit the index takes in for the first time: maybe a new unit of a bulk load.
+            self.learn_fresh(unit)?;
+        }
         // Only the postings the new text no longer has go; the others are overwritten.
         let gone = old
             .iter()
@@ -474,8 +490,22 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
     /// written once, and the statistics record is written once. Called by
     /// `commit`.
     pub(crate) fn flush_fulltext(&mut self) -> Result<(), UnitError> {
-        for (term, ops) in std::mem::take(&mut self.text_pending) {
-            crate::blocks::flush::<Postings, E>(self, &list_key(&term), ops, false)?;
+        // Terms in ascending order, as the probe needs: a term's list key is the term and a
+        // NUL, and a term has no NUL, so the keys order like the terms and none is a prefix of
+        // another.
+        let mut probe = crate::blocks::Probe::new(vec![TAG_POSTING + 1]);
+        let above = self.fresh_from().map(|u| u.0);
+        let mut lists: Vec<_> = std::mem::take(&mut self.text_pending).into_iter().collect();
+        lists.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        for (term, mut ops) in lists {
+            // Ascending by unit; of several operations on a unit the last wins. A batch of
+            // new units stages them in id order already: nothing to sort then.
+            if !ops.windows(2).all(|w| w[0].0 < w[1].0) {
+                ops.reverse();
+                ops.sort_by_key(|(u, _)| *u);
+                ops.dedup_by_key(|(u, _)| *u);
+            }
+            crate::blocks::flush::<Postings, E>(self, &list_key(&term), ops, false, Some(&mut probe), above)?;
         }
         let Some((docs, len)) = self.text_stats.take() else {
             return Ok(());
@@ -497,7 +527,7 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
 
 /// Records that `unit` has `value` (`None`: no posting) in the list of `term`.
 fn stage(pending: &mut PendingPostings, term: String, unit: UnitId, value: Option<Posting>) {
-    pending.entry(term).or_default().insert(unit.0, value);
+    pending.entry(term).or_default().push((unit.0, value));
 }
 
 // --------------------------------------------------------------- query

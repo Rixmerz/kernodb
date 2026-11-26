@@ -122,15 +122,57 @@ fn indexed(payload: &[u8]) -> &[u8] {
 /// The distinct trigrams of the indexed part of `payload`, sorted: the three
 /// folded bytes at each position, the payload followed by two `0x00`.
 pub(crate) fn grams(payload: &[u8]) -> Vec<Gram> {
-    let text = indexed(payload);
-    let at = |i: usize| text.get(i).map_or(0, u8::to_ascii_lowercase);
-    // Sorted as integers: a big-endian packing orders like the three bytes do, and sorting
-    // machine words is several times faster than comparing 3-byte arrays.
-    let mut packed: Vec<u32> =
-        (0..text.len()).map(|i| u32::from(at(i)) << 16 | u32::from(at(i + 1)) << 8 | u32::from(at(i + 2))).collect();
+    let mut packed = distinct(payload);
     packed.sort_unstable();
-    packed.dedup();
-    packed.into_iter().map(|g| [(g >> 16) as u8, (g >> 8) as u8, g as u8]).collect()
+    packed.into_iter().map(unpack).collect()
+}
+
+/// The distinct trigrams of the indexed part of `payload`, packed ([`pack`]), in no order.
+fn distinct(payload: &[u8]) -> Vec<u32> {
+    let text = indexed(payload);
+    if text.is_empty() {
+        return Vec::new();
+    }
+    // A text repeats most of its trigrams, so they are made distinct first, in a small
+    // open-addressing set, and only the distinct ones are sorted: sorting every position and
+    // then dropping the repeats cost several times more. A gram is packed big-endian in 24
+    // bits, which orders like its three bytes; a slot holds the gram plus one (0: empty).
+    let bits = (text.len() * 2).next_power_of_two().trailing_zeros().max(4);
+    let mut seen = vec![0u32; 1 << bits];
+    let mask = seen.len() - 1;
+    let mut packed: Vec<u32> = Vec::with_capacity(text.len().min(1 << 12));
+    // The gram of a position is the gram before it shifted by the byte two places on; the
+    // two `0x00` after the text end the last two.
+    let fold = |i: usize| text.get(i).map_or(0, |b| u32::from(b.to_ascii_lowercase()));
+    let mut gram = fold(0) << 8 | fold(1);
+    // The text, then the two `0x00` (one after a text of one byte). `for_each`, not `for`: a
+    // chained iterator is walked part by part that way, without a test per byte.
+    let body = text.get(2..).unwrap_or_default().iter().map(|b| u32::from(b.to_ascii_lowercase()));
+    body.chain(std::iter::repeat_n(0, text.len().min(2))).for_each(|next| {
+        gram = (gram << 8 | next) & 0x00FF_FFFF;
+        let mut slot = (gram.wrapping_mul(0x9E37_79B1) >> (32 - bits)) as usize;
+        loop {
+            match seen[slot] {
+                0 => {
+                    seen[slot] = gram + 1;
+                    packed.push(gram);
+                    break;
+                }
+                g if g == gram + 1 => break,
+                _ => slot = (slot + 1) & mask,
+            }
+        }
+    });
+    packed
+}
+
+/// A trigram as an integer that orders like its three bytes, and back.
+fn pack(g: Gram) -> u32 {
+    u32::from(g[0]) << 16 | u32::from(g[1]) << 8 | u32::from(g[2])
+}
+
+fn unpack(g: u32) -> Gram {
+    [(g >> 16) as u8, (g >> 8) as u8, g as u8]
 }
 
 /// Whether the indexed part of `payload` holds `needle` (already folded).
@@ -224,6 +266,7 @@ impl crate::blocks::Block for Trigrams {
     type Val = ();
     const MAX: usize = BLOCK_MAX;
     const WHAT: &'static str = "TRIGRAM";
+    const ENTRY: usize = 16;
 
     fn decode(v: &[u8]) -> Result<Vec<(crate::blocks::Id, ())>, DecodeError> {
         Ok(decode_block(v)?.into_iter().map(|u| (u.0, ())).collect())
@@ -237,24 +280,57 @@ impl crate::blocks::Block for Trigrams {
         }
         v
     }
+
+    fn put_val(_: &mut Vec<u8>, (): &()) {}
 }
 
 // --------------------------------------------------------------- writer
 
 /// The index change of one operation: its type prefix, the grams the unit no
-/// longer has and those it gains.
+/// longer has and those it gains (packed, in no order).
 pub(crate) struct GramChange {
     prefix: Vec<u8>,
-    gone: Vec<Gram>,
-    added: Vec<Gram>,
+    gone: Vec<u32>,
+    added: Vec<u32>,
 }
 
-/// What a change set will change in the index: per list key, the operations
-/// in the order they came, each a unit to add (`true`) or remove (`false`).
-/// [`ChangeSet::flush_substring`] keeps the last operation of a unit. A hash
-/// map and a plain vector per list: a batch stages one entry per trigram of
-/// every unit, so the lookup must not allocate a key or order a tree.
-pub(crate) type PendingGrams = std::collections::HashMap<Vec<u8>, Vec<(UnitId, bool)>>;
+/// What a change set will change in the index: per unit type (by its key
+/// prefix) and trigram, the operations in the order they came, each a unit to
+/// add (`true`) or remove (`false`). [`ChangeSet::flush_substring`] keeps the
+/// last operation of a unit.
+///
+/// A batch stages one entry per trigram of every unit, so the lookup is the
+/// hot path: the trigram is the map key, as an integer hashed by one
+/// multiplication (the keys are the change set's own, not chosen by a
+/// stranger to collide), and the type is found first, once per unit.
+#[derive(Default)]
+pub(crate) struct PendingGrams {
+    types: Vec<(Vec<u8>, GramOps)>,
+}
+
+type GramOps = std::collections::HashMap<u32, Vec<(UnitId, bool)>, std::hash::BuildHasherDefault<GramHasher>>;
+
+/// Hashes a packed trigram (one `u32`) by a multiplication.
+#[derive(Default)]
+pub(crate) struct GramHasher(u64);
+
+impl std::hash::Hasher for GramHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.0 = (self.0 ^ u64::from(*b)).wrapping_mul(0x0100_0000_01B3);
+        }
+    }
+
+    fn write_u32(&mut self, g: u32) {
+        // The table takes its index from the low bits and its tag from the high ones.
+        let h = u64::from(g).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        self.0 = h ^ (h >> 32);
+    }
+}
 
 impl<E: TxnEngine> ChangeSet<'_, E> {
     /// Whether the payloads of `unit_type` go in the trigram index, as this
@@ -289,8 +365,16 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         if !self.substring_enabled(&unit_type)? {
             return Ok(None);
         }
-        let (old, new) = (self.indexed_grams(unit)?, payload.map(grams).unwrap_or_default());
-        // Both lists are sorted, so a binary search tells what the other lacks.
+        let (old, mut new) = (self.indexed_grams(unit)?, payload.map(distinct).unwrap_or_default());
+        if old.is_empty() {
+            self.learn_fresh(unit)?;
+            // A unit the index does not hold yet (every unit of a bulk load): all its grams
+            // are added, and nothing needs them in order.
+            return Ok(Some(GramChange { prefix: type_prefix(&unit_type), gone: Vec::new(), added: new }));
+        }
+        // Both lists sorted, so a binary search tells what the other lacks.
+        new.sort_unstable();
+        let old: Vec<u32> = old.into_iter().map(pack).collect();
         let gone = old.iter().filter(|g| new.binary_search(g).is_err()).copied().collect();
         let added = new.iter().filter(|g| old.binary_search(g).is_err()).copied().collect();
         Ok(Some(GramChange { prefix: type_prefix(&unit_type), gone, added }))
@@ -300,18 +384,17 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
     /// [`flush_substring`](Self::flush_substring).
     pub(crate) fn stage_substring(&mut self, unit: UnitId, change: Option<GramChange>) {
         let Some(c) = change else { return };
-        // One key buffer for every gram: a list that already exists is found without allocating.
-        let mut k = c.prefix.clone();
-        k.extend_from_slice(&[0; 3]);
-        let at = c.prefix.len();
-        for (gram, add) in c.gone.iter().map(|g| (g, false)).chain(c.added.iter().map(|g| (g, true))) {
-            k[at..].copy_from_slice(gram);
-            match self.substring_pending.get_mut(k.as_slice()) {
-                Some(ops) => ops.push((unit, add)),
-                None => {
-                    self.substring_pending.insert(k.clone(), vec![(unit, add)]);
-                }
+        let types = &mut self.substring_pending.types;
+        let at = match types.iter().position(|(p, _)| *p == c.prefix) {
+            Some(at) => at,
+            None => {
+                types.push((c.prefix, GramOps::default()));
+                types.len() - 1
             }
+        };
+        let ops = &mut types[at].1;
+        for (gram, add) in c.gone.iter().map(|g| (g, false)).chain(c.added.iter().map(|g| (g, true))) {
+            ops.entry(*gram).or_default().push((unit, add));
         }
     }
 
@@ -320,15 +403,31 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
     /// the change set in it, then written back (cut when over [`BLOCK_MAX`],
     /// deleted when emptied). Called by `commit`.
     pub(crate) fn flush_substring(&mut self) -> Result<(), UnitError> {
-        let mut lists: Vec<_> = std::mem::take(&mut self.substring_pending).into_iter().collect();
-        lists.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-        for (list, mut ops) in lists {
-            // Ascending by unit; of several operations on a unit the last wins.
-            ops.reverse();
-            ops.sort_by_key(|(u, _)| *u);
-            ops.dedup_by_key(|(u, _)| *u);
-            let ops = ops.into_iter().map(|(u, add)| (u.0, add.then_some(())));
-            crate::blocks::flush::<Trigrams, E>(self, &list, ops, false)?;
+        let mut types = std::mem::take(&mut self.substring_pending).types;
+        // Lists in ascending key order, as the probe needs: by type prefix, then by trigram
+        // (packed big-endian, so the integers order like the key bytes). A prefix starts with
+        // the length of its type, so none is the prefix of another.
+        types.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        let mut probe = crate::blocks::Probe::new(vec![TAG_TRIGRAM + 1]);
+        let above = self.fresh_from().map(|u| u.0);
+        for (prefix, ops) in types {
+            let mut lists: Vec<(u32, Vec<(UnitId, bool)>)> = ops.into_iter().collect();
+            lists.sort_unstable_by_key(|l| l.0);
+            let mut list = prefix;
+            let at = list.len();
+            list.extend_from_slice(&[0; 3]);
+            for (gram, mut ops) in lists {
+                list[at..].copy_from_slice(&unpack(gram));
+                // Ascending by unit; of several operations on a unit the last wins. A batch
+                // of new units stages them in id order already: nothing to sort then.
+                if !ops.windows(2).all(|w| w[0].0 < w[1].0) {
+                    ops.reverse();
+                    ops.sort_by_key(|(u, _)| *u);
+                    ops.dedup_by_key(|(u, _)| *u);
+                }
+                let ops = ops.into_iter().map(|(u, add)| (u.0, add.then_some(())));
+                crate::blocks::flush::<Trigrams, E>(self, &list, ops, false, Some(&mut probe), above)?;
+            }
         }
         Ok(())
     }
@@ -352,12 +451,12 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
             let (start, end) = prefix_bounds(&prefix);
             if !enabled {
                 // What this change set kept for the type goes with its blocks.
-                cs.substring_pending.retain(|k, _| !k.starts_with(&prefix));
+                cs.substring_pending.types.retain(|(p, _)| *p != prefix);
                 return cs.write_owned(Write::DeleteRange(start, end));
             }
             for (unit, payload_key) in units {
                 let Some(payload) = cs.txn()?.get(&payload_key)? else { continue };
-                let added = grams(&payload);
+                let added = distinct(&payload);
                 cs.stage_substring(unit, Some(GramChange { prefix: prefix.clone(), gone: Vec::new(), added }));
             }
             Ok(())

@@ -552,7 +552,11 @@ struct Writer(Vec<u8>);
 
 impl Writer {
     fn envelope() -> Self {
-        Writer(vec![ENVELOPE_VERSION, 0])
+        // Room for a typical record up front: growing from two bytes costs a
+        // reallocation per doubling on every record written.
+        let mut v = Vec::with_capacity(96);
+        v.extend_from_slice(&[ENVELOPE_VERSION, 0]);
+        Writer(v)
     }
 
     fn u8(&mut self, v: u8) {
@@ -1175,6 +1179,7 @@ pub struct AdjBlock {
 impl AdjBlock {
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer::envelope();
+        w.0.reserve(32 * self.entries.len());
         for (edge, other) in &self.entries {
             w.0.extend_from_slice(&edge.0);
             w.0.extend_from_slice(&other.0);

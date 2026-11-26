@@ -82,6 +82,7 @@ impl Block for Adjacency {
     type Val = UnitId;
     const MAX: usize = ADJ_BLOCK_MAX;
     const WHAT: &'static str = "REL_ADJ";
+    const ENTRY: usize = 32;
 
     fn decode(v: &[u8]) -> Result<Vec<(Id, UnitId)>, DecodeError> {
         Ok(AdjBlock::decode(v)?.entries.into_iter().map(|(e, o)| (e.0, o)).collect())
@@ -89,6 +90,10 @@ impl Block for Adjacency {
 
     fn encode(entries: &[(Id, UnitId)]) -> Vec<u8> {
         AdjBlock { entries: entries.iter().map(|(e, o)| (RelationId(*e), *o)).collect() }.encode()
+    }
+
+    fn put_val(out: &mut Vec<u8>, other: &UnitId) {
+        out.extend_from_slice(&other.0);
     }
 }
 
@@ -148,7 +153,7 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
                 let k = count_key_of_list(&list);
                 self.write_owned(if l.count == 0 { Write::Delete(k) } else { Write::Put(k, encode_value(l.count)) })?;
             }
-            blocks::flush::<Adjacency, E>(self, &list, l.ops, l.fresh)?;
+            blocks::flush::<Adjacency, E>(self, &list, l.ops, l.fresh, None, None)?;
         }
         Ok(())
     }

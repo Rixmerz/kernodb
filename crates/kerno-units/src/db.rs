@@ -681,6 +681,8 @@ impl<E: TxnEngine> UnitDb<E> {
             derived_ops: 0,
             token_ops: 0,
             active_known: std::collections::HashSet::new(),
+            rel_ceiling: RelCeiling::Unknown,
+            fresh: std::cell::Cell::new(Fresh::Unknown),
             schema_ops: 0,
             type_option_ops: 0,
             substring_pending: Default::default(),
@@ -1176,6 +1178,13 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     /// it writes or deletes its `UNIT_HEAD` (and clears it on a range
     /// delete), so an entry is never stale.
     active_known: std::collections::HashSet<UnitId>,
+    /// A relation id at or above every `REL` record this change set sees (the
+    /// transaction's view, its own writes included), once one is known: see
+    /// [`ChangeSet::relation_id_is_free`].
+    rel_ceiling: RelCeiling,
+    /// Whether the units this change set creates have ids above every unit
+    /// the database held: see [`ChangeSet::learn_fresh`].
+    fresh: std::cell::Cell<Fresh>,
     /// Schema and index definitions written so far (ADR-0021): they make the
     /// change set non-empty and, with no member, give it the purpose `Index`.
     pub(crate) schema_ops: usize,
@@ -1219,6 +1228,31 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     /// first asked (`None`: not asked yet). Without one, and while the change
     /// set writes no derived record itself, no unit has derived data to follow.
     no_derived: std::cell::Cell<Option<bool>>,
+}
+
+/// What a change set knows about the ids of the units it creates.
+#[derive(Clone, Copy)]
+enum Fresh {
+    /// Not asked yet.
+    Unknown,
+    /// When asked, the transaction held no `UNIT_HEAD` with this id or a
+    /// higher one: a unit with such an id is created by this change set,
+    /// after every unit that existed.
+    From(UnitId),
+    /// Asked about a unit that exists, or one below a stored unit.
+    No,
+}
+
+/// What a change set knows about the highest `REL` record it sees.
+#[derive(Clone, Copy)]
+enum RelCeiling {
+    /// Not asked yet.
+    Unknown,
+    /// No `REL` record of the transaction's view has an id above this one.
+    At(RelationId),
+    /// A fresh id was minted below a stored one (a clock set back, an import
+    /// of later ids): every id is checked by a point read.
+    Unordered,
 }
 
 /// One engine write of a planned operation.
@@ -1325,6 +1359,17 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         };
         if options_stale {
             self.options_cache.get_mut().clear();
+        }
+        // A `REL` record above the ceiling raises it, whoever writes it (a
+        // relation created here, one imported with its own id).
+        if let (RelCeiling::At(top), Write::Put(k, _)) = (self.rel_ceiling, &w)
+            && k.len() == 17
+            && k[0] == crate::codec::TAG_REL
+            && k[1..] > top.0[..]
+        {
+            let mut id = [0u8; 16];
+            id.copy_from_slice(&k[1..]);
+            self.rel_ceiling = RelCeiling::At(RelationId(id));
         }
         if !self.active_known.is_empty() {
             match &w {
@@ -1838,7 +1883,8 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         self.require_active(from)?;
         self.require_active(to)?;
         let edge = RelationId(self.db.cfg.ids.next_id().0);
-        if self.txn()?.get(&key(Key::Relation { edge })?)?.is_some() {
+        let rel_key = key(Key::Relation { edge })?;
+        if !self.relation_id_is_free(edge, &rel_key)? {
             return Err(UnitError::InvalidArgument(format!("relation id {edge} already exists")));
         }
         let record =
@@ -1846,7 +1892,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         // Everything that can refuse the relation (the record's encode, the
         // key) runs before a count is touched: an error after the counts
         // would leave them in the open change set without their entries.
-        let write = Write::Put(key(Key::Relation { edge })?, record.encode()?);
+        let write = Write::Put(rel_key, record.encode()?);
         // Counts before the entries: the count tells whether the lists have a block.
         let plans = self.plan_relation(from, to, relation_type, 1)?;
         self.apply_relation(write, edge, (from, to), plans, true)?;
@@ -1870,6 +1916,69 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         let write = Write::Delete(key(Key::Relation { edge })?);
         let plans = self.plan_relation(r.from, r.to, &r.relation_type, -1)?;
         self.apply_relation(write, edge, (r.from, r.to), plans, false)
+    }
+
+    /// Whether no `REL` record with the id `edge` (key `rel_key`) exists as
+    /// this change set sees it.
+    ///
+    /// Ids are minted in ascending order, so the id of a new relation is
+    /// almost always above every stored one. The change set learns that once,
+    /// with one seek from the first id it mints to the end of the `REL`
+    /// records: nothing there means no record has that id or a higher one.
+    /// From then on it keeps the highest id it knows of (`rel_ceiling`, which
+    /// [`write_owned`](Self::write_owned) raises with every `REL` record
+    /// written through this change set), and an id above it cannot exist: no
+    /// read at all. An id at or below the ceiling, or a database that holds
+    /// ids above the fresh ones, is answered by the point read, as before.
+    /// A deletion only removes records, so it never invalidates the ceiling.
+    fn relation_id_is_free(&mut self, edge: RelationId, rel_key: &[u8]) -> Result<bool, UnitError> {
+        match self.rel_ceiling {
+            RelCeiling::At(top) if edge > top => return Ok(true),
+            RelCeiling::Unknown => {
+                let (_, end) = Key::tag_range(crate::codec::TAG_REL);
+                if self.txn()?.scan(Bound::Included(rel_key), Bound::Excluded(&end), 1)?.is_empty() {
+                    // No record has an id above `edge` (nor `edge` itself,
+                    // which the ceiling does not claim: an id equal to it
+                    // is read again).
+                    self.rel_ceiling = RelCeiling::At(edge);
+                    return Ok(true);
+                }
+                self.rel_ceiling = RelCeiling::Unordered;
+            }
+            _ => {}
+        }
+        Ok(self.txn()?.get(rel_key)?.is_none())
+    }
+
+    /// Told of a unit an index is about to take in for the first time, before
+    /// the unit's `UNIT_HEAD` is written: learns, once per change set and with
+    /// one seek, whether the units created from here on are above every unit
+    /// the database holds (ids are minted in ascending order, so a bulk load
+    /// creates nothing else).
+    ///
+    /// [`fresh_from`](Self::fresh_from) is what the index flushes use it for:
+    /// an id at or above it belongs to a unit this change set created, so no
+    /// stored posting block holds it or a higher id, and its entries go after
+    /// every entry of their list. A list with no tail block then needs no
+    /// seek to find its other blocks (`blocks::flush`).
+    pub(crate) fn learn_fresh(&self, unit: UnitId) -> Result<(), UnitError> {
+        if !matches!(self.fresh.get(), Fresh::Unknown) {
+            return Ok(());
+        }
+        let (_, end) = Key::tag_range(crate::codec::TAG_UNIT_HEAD);
+        let from = key(Key::UnitHead { unit })?;
+        let none = self.txn()?.scan(Bound::Included(&from), Bound::Excluded(&end), 1)?.is_empty();
+        self.fresh.set(if none { Fresh::From(unit) } else { Fresh::No });
+        Ok(())
+    }
+
+    /// The id from which every unit is one this change set created, above
+    /// every unit that existed before it, when [`learn_fresh`](Self::learn_fresh) found one.
+    pub(crate) fn fresh_from(&self) -> Option<UnitId> {
+        match self.fresh.get() {
+            Fresh::From(unit) => Some(unit),
+            _ => None,
+        }
     }
 
     fn admit_relation(&self) -> Result<(), UnitError> {
@@ -1908,8 +2017,11 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
     pub fn commit(mut self) -> Result<CommitInfo, UnitError> {
         self.txn()?;
         self.flush_adjacency()?;
-        self.flush_substring()?;
+        // The keyword index before the trigram index: their keys ascend in that order, and a
+        // flush that only writes above what was written so far lets the transaction answer its
+        // seeks without ordering those writes first (the two do not read each other's keys).
         self.flush_fulltext()?;
+        self.flush_substring()?;
         let durable = self.db.cfg.engine.durability == Durability::Sync;
         if self.members.is_empty()
             && !self.maintenance

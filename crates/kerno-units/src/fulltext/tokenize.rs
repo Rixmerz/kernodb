@@ -63,12 +63,82 @@ pub(crate) fn analyze(payload: &[u8]) -> Option<Doc> {
     while !text.is_char_boundary(end) {
         end -= 1;
     }
-    let mut doc = Doc { len: 0, terms: BTreeMap::new() };
-    for t in tokens(&text[..end]) {
-        doc.len += 1;
-        *doc.terms.entry(t).or_insert(0) += 1;
+    // Counted in a hash map and ordered once at the end: a text repeats most of its terms, so
+    // a term is allocated and ordered once, not per occurrence. A word of ASCII letters and
+    // digits (most words) is lower-cased in a reused buffer, which is what `tokens` does to
+    // it; any other word goes through `tokens` itself, so the terms are the same.
+    let mut counts: std::collections::HashMap<String, u32, std::hash::BuildHasherDefault<TermHasher>> =
+        std::collections::HashMap::default();
+    let mut len = 0u32;
+    let mut lower = String::new();
+    let text = &text[..end];
+    let bytes = text.as_bytes();
+    let mut count = |word: &str, ascii: bool| {
+        lower.clear();
+        if ascii {
+            lower.push_str(&word[..word.len().min(MAX_TERM_LEN)]);
+            lower.make_ascii_lowercase();
+        } else {
+            lower.extend(tokens(word));
+        }
+        len += 1;
+        match counts.get_mut(lower.as_str()) {
+            Some(n) => *n += 1,
+            None => {
+                counts.insert(lower.clone(), 1);
+            }
+        }
+    };
+    // The words are the maximal runs of alphanumeric characters, as in `tokens`. An ASCII
+    // byte is judged as a byte (for ASCII, `char::is_alphanumeric` is `is_ascii_alphanumeric`);
+    // any other character is decoded and judged as `tokens` judges it.
+    let (mut i, mut start, mut ascii) = (0, None, true);
+    while i < bytes.len() {
+        let (alnum, width) = if bytes[i] < 0x80 {
+            (bytes[i].is_ascii_alphanumeric(), 1)
+        } else {
+            let c = text[i..].chars().next().unwrap_or(' ');
+            (c.is_alphanumeric(), c.len_utf8())
+        };
+        match (alnum, start) {
+            (true, None) => (start, ascii) = (Some(i), width == 1),
+            (true, Some(_)) => ascii &= width == 1,
+            (false, Some(from)) => {
+                count(&text[from..i], ascii);
+                start = None;
+            }
+            (false, None) => {}
+        }
+        i += width;
     }
+    if let Some(from) = start {
+        count(&text[from..], ascii);
+    }
+    let doc = Doc { len, terms: counts.into_iter().collect() };
     (doc.len > 0).then_some(doc)
+}
+
+/// FNV-1a: the terms are short and the map is the document's own.
+#[derive(Clone, Copy)]
+pub(crate) struct TermHasher(u64);
+
+impl Default for TermHasher {
+    fn default() -> Self {
+        TermHasher(0xCBF2_9CE4_8422_2325)
+    }
+}
+
+impl std::hash::Hasher for TermHasher {
+    fn finish(&self) -> u64 {
+        // The table takes its index from the low bits and its tag from the high ones.
+        self.0 ^ (self.0 >> 32)
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.0 = (self.0 ^ u64::from(*b)).wrapping_mul(0x0100_0000_01B3);
+        }
+    }
 }
 
 /// The Text field values of a canonical record, joined by a newline, or
