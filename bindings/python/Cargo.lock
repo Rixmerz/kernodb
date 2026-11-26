@@ -143,7 +143,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "kerno-python"
-version = "1.0.0-alpha.3"
+version = "1.0.0-alpha.4"
 dependencies = [
  "kernodb",
  "pyo3",
@@ -151,7 +151,7 @@ dependencies = [
 
 [[package]]
 name = "kernodb"
-version = "1.0.0-alpha.3"
+version = "1.0.0-alpha.4"
 dependencies = [
  "kernodb-core",
  "kernodb-storage",
@@ -160,11 +160,11 @@ dependencies = [
 
 [[package]]
 name = "kernodb-core"
-version = "1.0.0-alpha.3"
+version = "1.0.0-alpha.4"
 
 [[package]]
 name = "kernodb-storage"
-version = "1.0.0-alpha.3"
+version = "1.0.0-alpha.4"
 dependencies = [
  "crc32c",
  "crossbeam-skiplist",
@@ -176,7 +176,7 @@ dependencies = [
 
 [[package]]
 name = "kernodb-units"
-version = "1.0.0-alpha.3"
+version = "1.0.0-alpha.4"
 dependencies = [
  "blake3",
  "crc32c",

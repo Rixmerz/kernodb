@@ -243,7 +243,7 @@ checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 
 [[package]]
 name = "kernodb"
-version = "1.0.0-alpha.3"
+version = "1.0.0-alpha.4"
 dependencies = [
  "kernodb-core",
  "kernodb-storage",
@@ -252,11 +252,11 @@ dependencies = [
 
 [[package]]
 name = "kernodb-core"
-version = "1.0.0-alpha.3"
+version = "1.0.0-alpha.4"
 
 [[package]]
 name = "kernodb-node"
-version = "1.0.0-alpha.3"
+version = "1.0.0-alpha.4"
 dependencies = [
  "kernodb",
  "napi",
@@ -266,7 +266,7 @@ dependencies = [
 
 [[package]]
 name = "kernodb-storage"
-version = "1.0.0-alpha.3"
+version = "1.0.0-alpha.4"
 dependencies = [
  "crc32c",
  "crossbeam-skiplist",
@@ -278,7 +278,7 @@ dependencies = [
 
 [[package]]
 name = "kernodb-units"
-version = "1.0.0-alpha.3"
+version = "1.0.0-alpha.4"
 dependencies = [
  "blake3",
  "crc32c",
