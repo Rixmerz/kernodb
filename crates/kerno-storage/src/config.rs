@@ -226,6 +226,12 @@ pub struct Config {
     /// and checked, against a sample of 64 of the table's index keys where an eager open
     /// checks them all (SST-V3). Such a handle opens no table on other threads either.
     pub lazy_tables: bool,
+    /// Whether the unit layer's normal reads (a unit by id, `find`, queries, neighbours, search
+    /// hits) check each payload against its content hash (default `false`). The engine itself
+    /// ignores it; `kernodb::Db` hands it to the unit layer. The payload bytes come out of SST
+    /// blocks whose checksum is always checked; `verify`, history reads, export and import
+    /// always check the hash.
+    pub verify_payload_on_read: bool,
     /// Size of the active memtable that triggers a switch to a new one and a
     /// flush of the old one to L0 (default 8 MiB; at least 4 KiB is used).
     /// Unless [`CompactionConfig`] sets them explicitly, the SST target size
@@ -577,6 +583,7 @@ impl Default for Config {
             durability: Durability::Sync,
             cache_bytes: 64 << 20,
             lazy_tables: false,
+            verify_payload_on_read: false,
             write_buffer_bytes: 8 << 20,
             max_immutable_memtables: MAX_IMMUTABLE,
             limits: Limits::default(),

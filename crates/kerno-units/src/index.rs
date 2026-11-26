@@ -380,7 +380,7 @@ impl<E: Engine> UnitSnapshot<E> {
         };
         let mut out = Vec::new();
         let mut seen = 0u64;
-        let pages = crate::db::UnitPages::new(&self.snap, self.checked_reads);
+        let pages = crate::db::UnitPages::new(&self.snap, self.checked_reads, self.verify_payload_on_read);
         scan_all(&self.snap, start, end, |k, v| {
             let Key::IndexType { unit_type: t, schema_version: sv, unit } = Key::decode(k)? else {
                 return Err(corruption("a key in the IDX_TYPE range is not an IDX_TYPE".into()));

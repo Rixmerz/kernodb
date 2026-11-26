@@ -80,7 +80,7 @@ use crate::codec::{
     RelationRecord, RevisionMeta, TAG_UNIT_HEAD, UnitHead, valid_relation_type,
 };
 use crate::error::{DecodeError, UnitError};
-use crate::payload::{ContentHash, MAX_PAYLOAD_LEN, PAYLOAD_CODEC_OPAQUE, verify_payload};
+use crate::payload::{ContentHash, MAX_PAYLOAD_LEN, PAYLOAD_CODEC_OPAQUE, verify_payload_with};
 use crate::types::{
     ChangeSetId, CommitSeq, Direction, HistoryPolicy, Lifecycle, Purpose, RelationId, RelationProvenance, RevNo,
     RevisionId, RevisionKind, Timestamp, UnitId,
@@ -115,6 +115,13 @@ pub struct UnitConfig {
     pub ids: Arc<dyn UnitIdSource>,
     /// How [`UnitDb::run_retention`] shares the write slot (E3-09b).
     pub retention_pacing: crate::retention::RetentionPacing,
+    /// Whether the normal reads (a unit by id, `find`, queries, neighbours, search hits) check
+    /// each payload they load against its content hash (UNIT-28). Default `false`: the bytes
+    /// come out of SST blocks whose checksum the engine already checked. The length and
+    /// presence rules are checked either way; `verify_units`, history reads, export, import,
+    /// checked reads ([`UnitDb::set_checked_reads`]) and the reads a write builds on always
+    /// check the hash.
+    pub verify_payload_on_read: bool,
 }
 
 impl UnitConfig {
@@ -129,6 +136,7 @@ impl UnitConfig {
             clock,
             ids,
             retention_pacing: crate::retention::RetentionPacing::default(),
+            verify_payload_on_read: false,
         }
     }
 
@@ -424,15 +432,18 @@ type Loaded = (UnitHead, Option<Vec<u8>>);
 /// same bytes, is what `verify_units` checks, and what [`load_unit_checked`], the
 /// read every write builds on, still checks. Any other head is read as [`load_unit_checked`]
 /// reads it.
-pub(crate) fn load_unit(get: &GetFn<'_>, id: UnitId) -> Result<Option<Loaded>, UnitError> {
+///
+/// `hash`: whether the payload's content hash is checked (UNIT-28); the normal reads pass
+/// [`UnitConfig::verify_payload_on_read`], every read a write builds on passes `true`.
+pub(crate) fn load_unit(get: &GetFn<'_>, id: UnitId, hash: bool) -> Result<Option<Loaded>, UnitError> {
     let Some(raw) = get(&key(Key::UnitHead { unit: id })?)? else {
         return Ok(None);
     };
     let mut head = UnitHead::decode(&raw).map_err(|e| context(e, &format!("UNIT_HEAD of unit {id}")))?;
     let Some(inline) = head.inline_payload.take() else {
-        return load_revision(get, id, head, None).map(Some);
+        return load_revision(get, id, head, None, hash).map(Some);
     };
-    check_inline(id, &head, &inline)?;
+    check_inline(id, &head, &inline, hash)?;
     Ok(Some((head, Some(inline))))
 }
 
@@ -473,19 +484,25 @@ pub(crate) fn load_unit_checked(get: &GetFn<'_>, id: UnitId) -> Result<Option<Lo
     // The copy is held to the REV_PAYLOAD, which is held to the REV_META, which the head must
     // mirror: in that order, so a head that disagrees with its revision is named as such.
     let inline = head.inline_payload.take();
-    load_revision(get, id, head, inline).map(Some)
+    load_revision(get, id, head, inline, true).map(Some)
 }
 
 /// UNIT-27 and UNIT-28 for a payload stored in the head, against the head's own declaration.
-fn check_inline(id: UnitId, head: &UnitHead, inline: &[u8]) -> Result<(), UnitError> {
-    verify_payload(&head.inline_decl(), Some(inline))
+fn check_inline(id: UnitId, head: &UnitHead, inline: &[u8], hash: bool) -> Result<(), UnitError> {
+    verify_payload_with(&head.inline_decl(), Some(inline), hash)
         .map_err(|e| crate::PayloadError { detail: format!("unit {id} rev {}: {}", head.head_rev, e.detail), ..e })?;
     Ok(())
 }
 
 /// The head revision of `head`: its `REV_META`, which the head must mirror (IU-2), and its
 /// verified `REV_PAYLOAD`, which must be `inline` when the head carried one.
-fn load_revision(get: &GetFn<'_>, id: UnitId, head: UnitHead, inline: Option<Vec<u8>>) -> Result<Loaded, UnitError> {
+fn load_revision(
+    get: &GetFn<'_>,
+    id: UnitId,
+    head: UnitHead,
+    inline: Option<Vec<u8>>,
+    hash: bool,
+) -> Result<Loaded, UnitError> {
     let rev = head.head_rev;
     let Some(raw_meta) = get(&key(Key::RevMeta { unit: id, rev })?)? else {
         return Err(corruption(format!("unit {id}: UNIT_HEAD names revision {rev} but its REV_META is missing")));
@@ -513,7 +530,7 @@ fn load_revision(get: &GetFn<'_>, id: UnitId, head: UnitHead, inline: Option<Vec
         Some(p) => Some(p),
         None => inline.clone(),
     };
-    let verified = verify_payload(&meta.payload_decl(), stored.as_deref())
+    let verified = verify_payload_with(&meta.payload_decl(), stored.as_deref(), hash)
         .map_err(|e| crate::PayloadError { detail: format!("unit {id} rev {rev}: {}", e.detail), ..e })?;
     if inline.is_some() && inline.as_deref() != verified.bytes() {
         return Err(corruption(format!(
@@ -602,16 +619,19 @@ pub(crate) struct UnitPages<'a, S: Snapshot> {
     metas: PagedGets<'a, S>,
     payloads: PagedGets<'a, S>,
     checked: bool,
+    hash: bool,
 }
 
 impl<'a, S: Snapshot> UnitPages<'a, S> {
     /// `checked`: read as [`load_unit_checked`] does ([`UnitDb::set_checked_reads`]).
-    pub(crate) fn new(snap: &'a S, checked: bool) -> Self {
+    /// `hash`: check payload hashes ([`UnitConfig::verify_payload_on_read`]).
+    pub(crate) fn new(snap: &'a S, checked: bool, hash: bool) -> Self {
         UnitPages {
             heads: PagedGets::new(snap, TAG_UNIT_HEAD),
             metas: PagedGets::new(snap, crate::codec::TAG_REV_META),
             payloads: PagedGets::new(snap, crate::codec::TAG_REV_PAYLOAD),
             checked,
+            hash,
         }
     }
 
@@ -625,7 +645,7 @@ impl<'a, S: Snapshot> UnitPages<'a, S> {
                 _ => self.heads.get(k),
             },
         };
-        if self.checked { load_unit_checked(&get, id) } else { load_unit(&get, id) }
+        if self.checked { load_unit_checked(&get, id) } else { load_unit(&get, id, self.hash) }
     }
 }
 
@@ -826,6 +846,7 @@ impl<E: TxnEngine> UnitDb<E> {
             cache: self.cache.clone(),
             read_cache: self.read_cache.clone(),
             checked_reads: self.checked_reads.load(Ordering::Relaxed),
+            verify_payload_on_read: self.cfg.verify_payload_on_read,
         })
     }
 
@@ -1028,6 +1049,8 @@ pub struct UnitSnapshot<E: Engine> {
     pub(crate) read_cache: Arc<crate::read_cache::ReadCache>,
     /// [`UnitDb::set_checked_reads`] when the snapshot was taken.
     pub(crate) checked_reads: bool,
+    /// [`UnitConfig::verify_payload_on_read`].
+    pub(crate) verify_payload_on_read: bool,
 }
 
 impl<E: Engine> UnitSnapshot<E> {
@@ -1078,7 +1101,7 @@ impl<E: Engine> UnitSnapshot<E> {
             return Ok(Some((*hit).clone()));
         }
         let get = |k: &[u8]| self.snap.get(k);
-        let loaded = if self.checked_reads { load_unit_checked(&get, id)? } else { load_unit(&get, id)? };
+        let loaded = if self.checked_reads { load_unit_checked(&get, id)? } else { load_unit(&get, id, self.verify_payload_on_read)? };
         let unit = loaded.map(|(head, payload)| to_unit(id, head, payload));
         if let Some(u) = &unit {
             self.read_cache.put_unit(seq, u);
@@ -1116,7 +1139,7 @@ impl<E: Engine> UnitSnapshot<E> {
                     self.snap.get(q)
                 }
             };
-            let loaded = if self.checked_reads { load_unit_checked(&get, id)? } else { load_unit(&get, id)? };
+            let loaded = if self.checked_reads { load_unit_checked(&get, id)? } else { load_unit(&get, id, self.verify_payload_on_read)? };
             let unit = loaded.map(|(head, payload)| to_unit(id, head, payload));
             if let Some(u) = &unit {
                 self.read_cache.put_unit(seq, u);
@@ -2329,7 +2352,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
     /// The unit as this change set sees it, its own writes included.
     pub fn get_unit(&self, id: UnitId) -> Result<Option<Unit>, UnitError> {
         let txn = self.txn()?;
-        Ok(load_unit(&|k| txn.get(k), id)?.map(|(head, payload)| to_unit(id, head, payload)))
+        Ok(load_unit(&|k| txn.get(k), id, true)?.map(|(head, payload)| to_unit(id, head, payload)))
     }
 
     /// Commits every operation as one engine commit (I-21). A change set

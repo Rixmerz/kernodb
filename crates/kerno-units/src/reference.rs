@@ -58,7 +58,7 @@ impl<E: Engine> UnitSnapshot<E> {
         let mut cursor = vec![TAG_UNIT_HEAD];
         let mut inclusive = true;
         let mut out = Vec::new();
-        let pages = UnitPages::new(&self.snap, self.checked_reads);
+        let pages = UnitPages::new(&self.snap, self.checked_reads, self.verify_payload_on_read);
         loop {
             let start = if inclusive { Bound::Included(cursor.as_slice()) } else { Bound::Excluded(cursor.as_slice()) };
             let page = self.snap.scan(start, Bound::Excluded(&end), PAGE)?;

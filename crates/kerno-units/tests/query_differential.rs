@@ -23,8 +23,14 @@ use kerno_units::*;
 const T0: Timestamp = Timestamp(1_700_000_000_000_000);
 
 fn open<E: Target>() -> UnitDb<E> {
+    open_checking::<E>(false)
+}
+
+/// `verify_payload_on_read`: whether a read checks each payload's hash.
+fn open_checking<E: Target>(verify_payload_on_read: bool) -> UnitDb<E> {
     let mut c = UnitConfig::with_sources(Arc::new(FixedClock::new(T0)), Arc::new(CounterIds::new(1)));
     c.engine = Options::small_for_tests();
+    c.verify_payload_on_read = verify_payload_on_read;
     open_units::<E>(SimVfs::new(5).as_vfs(), &c).expect("open")
 }
 
@@ -470,7 +476,11 @@ fn generated_queries_match_the_model<E: Target>() {
 // ---------------------------------------------------------- hand-written
 
 fn account_db<E: Target>() -> (UnitDb<E>, Vec<UnitId>) {
-    let db = open::<E>();
+    account_db_checking::<E>(false)
+}
+
+fn account_db_checking<E: Target>(verify_payload_on_read: bool) -> (UnitDb<E>, Vec<UnitId>) {
+    let db = open_checking::<E>(verify_payload_on_read);
     db.define_schema(
         "acct",
         vec![
@@ -757,7 +767,8 @@ mod early_stop {
     use kerno_units::codec::Key;
 
     fn limited_queries_do_not_read_past_their_last_row<E: Target>() {
-        let (db, id) = account_db::<E>();
+        // The damage is a payload hash mismatch: only a read that checks hashes sees it.
+        let (db, id) = account_db_checking::<E>(true);
         let mut ghosts = Vec::new();
         for owner in [id[0], id[2]] {
             let g = commit(&db, |cs| {

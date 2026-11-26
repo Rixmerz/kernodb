@@ -26,8 +26,14 @@ type EmuLog = kerno_testkit::emulated::Emulated<kerno_testkit::reference::LogEng
 const T0: Timestamp = Timestamp(1_700_000_000_000_000);
 
 fn open<E: Target>() -> UnitDb<E> {
+    open_checking::<E>(false)
+}
+
+/// `verify_payload_on_read`: whether a read checks the payload's hash.
+fn open_checking<E: Target>(verify_payload_on_read: bool) -> UnitDb<E> {
     let mut c = UnitConfig::with_sources(Arc::new(FixedClock::new(T0)), Arc::new(CounterIds::new(1)));
     c.engine = Options::small_for_tests();
+    c.verify_payload_on_read = verify_payload_on_read;
     open_units::<E>(SimVfs::new(5).as_vfs(), &c).expect("open")
 }
 
@@ -112,10 +118,21 @@ fn a_writer_stores_small_payloads_in_the_head<E: Target>() {
     assert!(report.is_clean(), "{:?}", report.findings);
 }
 
-/// The copy in the head is checked on every read against the head's hash and
-/// length, and by `verify_units`.
+/// The copy in the head is checked on every read against the head's length, against its hash
+/// with `verify_payload_on_read`, and by `verify_units` and every write.
 fn a_damaged_inline_payload_is_refused<E: Target>() {
-    let db = open::<E>();
+    // Without `verify_payload_on_read` a plain read does not hash the payload; a write and
+    // `verify_units` still refuse it.
+    let plain = open::<E>();
+    let u = create(&plain, b"content".to_vec());
+    let mut flipped = plain.raw_get(&head_key(u)).unwrap().unwrap();
+    *flipped.last_mut().unwrap() ^= 0x01;
+    plain.raw_commit(vec![(head_key(u), Some(flipped))]).unwrap();
+    assert!(plain.get_unit(u).is_ok());
+    assert!(is_corruption(&update(&plain, u, b"next".to_vec())));
+    assert_eq!(rules(&plain.verify_units().unwrap()), ["UNIT-28"]);
+
+    let db = open_checking::<E>(true);
     let u = create(&db, b"content".to_vec());
     let good = db.raw_get(&head_key(u)).unwrap().unwrap();
 

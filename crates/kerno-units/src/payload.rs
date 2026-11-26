@@ -158,6 +158,17 @@ fn err(rule: PayloadRule, detail: String) -> PayloadError {
 /// The length is compared before hashing, so a truncated or oversized value
 /// is never hashed.
 pub fn verify_payload<'a>(decl: &PayloadDecl, stored: Option<&'a [u8]>) -> Result<VerifiedPayload<'a>, PayloadError> {
+    verify_payload_with(decl, stored, true)
+}
+
+/// [`verify_payload`], with UNIT-28 (the content hash) checked only when `hash` is true: the
+/// normal reads skip it unless `verify_payload_on_read` is set, the bytes having come out of a
+/// block the engine's block checksum covers. Every other rule is always checked.
+pub(crate) fn verify_payload_with<'a>(
+    decl: &PayloadDecl,
+    stored: Option<&'a [u8]>,
+    hash: bool,
+) -> Result<VerifiedPayload<'a>, PayloadError> {
     if decl.payload_codec != PAYLOAD_CODEC_OPAQUE {
         return Err(err(PayloadRule::Unit13Codec, format!("payload_codec {} is not 0", decl.payload_codec)));
     }
@@ -182,6 +193,9 @@ pub fn verify_payload<'a>(decl: &PayloadDecl, stored: Option<&'a [u8]>) -> Resul
             PayloadRule::Unit27,
             format!("REV_PAYLOAD holds {} bytes, payload_len declares {}", bytes.len(), decl.payload_len),
         ));
+    }
+    if !hash {
+        return Ok(VerifiedPayload { bytes: Some(bytes) });
     }
     let actual = ContentHash::compute(decl.content_hash.alg, decl.payload_codec, bytes);
     if actual != decl.content_hash {

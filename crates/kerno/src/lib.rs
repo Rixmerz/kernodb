@@ -533,6 +533,7 @@ impl Db {
         let mut layer = UnitConfig { max_changeset_ops, ..UnitConfig::default() };
         // The layer reports `CommitInfo::durable` from this, so it must match the engine's.
         layer.engine.durability = config.durability;
+        layer.verify_payload_on_read = config.verify_payload_on_read;
         let engine = KernoDb::open(StdVfs::shared(), path.as_ref(), &config)?;
         Ok(Db { units: UnitDb::from_engine(engine, &layer)? })
     }

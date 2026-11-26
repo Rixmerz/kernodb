@@ -368,8 +368,10 @@ fn damage_detected<E: TxnEngine>() {
         raw_engine.close().unwrap();
 
         // The layer: a damaged mark refuses to open; otherwise the reads that
-        // touch the damage fail with a damage class, never wrong data.
-        match UnitDb::<E>::open(disk.as_vfs(), Path::new(DIR), &cfg()) {
+        // touch the damage fail with a damage class, never wrong data. A plain read checks a
+        // payload against its hash only with `verify_payload_on_read`.
+        let checking = UnitConfig { verify_payload_on_read: true, ..cfg() };
+        match UnitDb::<E>::open(disk.as_vfs(), Path::new(DIR), &checking) {
             Err(e) => {
                 assert!(name.starts_with("mark"), "{name}: open refused: {e}");
                 assert!(is_damage_error(&e), "{name}: {e}");

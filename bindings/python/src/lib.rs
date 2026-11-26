@@ -1682,14 +1682,18 @@ impl Database {
 /// read-only handle reads the commits made up to the moment it opened; call `refresh()` to see
 /// later ones. It raises `ReadOnlyError` on a write and `DatabaseNotFoundError` when the
 /// directory holds no database (it never creates one). `max_batch_ops` raises (or lowers) the
-/// most operations one `commit` may hold (default 10,000).
+/// most operations one `commit` may hold (default 10,000). `verify_payload_on_read=True` makes
+/// every read (get, find, query, neighbors, search hits) also check each payload against its
+/// content hash; off by default, since the bytes come from blocks whose checksum is always
+/// checked. `verify()`, history reads, export and import always check it.
 #[pyfunction]
-#[pyo3(signature = (path, read_only=false, max_batch_ops=None))]
+#[pyo3(signature = (path, read_only=false, max_batch_ops=None, verify_payload_on_read=false))]
 fn open(
     py: Python<'_>,
     path: PathBuf,
     read_only: bool,
     #[pyo3(from_py_with = max_batch_ops_arg)] max_batch_ops: Option<usize>,
+    verify_payload_on_read: bool,
 ) -> PyResult<Database> {
     let db = py
         .detach(|| {
@@ -1701,10 +1705,11 @@ fn open(
                     // A reader opens beside a writer and often for one question: load each
                     // table when a read first needs it, not all of them up front.
                     lazy_tables: true,
+                    verify_payload_on_read,
                     ..Config::default()
                 }
             } else {
-                Config { allow_unverified_platform: true, ..Config::default() }
+                Config { allow_unverified_platform: true, verify_payload_on_read, ..Config::default() }
             };
             Db::open_with_limits(path, config, max_batch_ops.unwrap_or(kerno::units::DEFAULT_MAX_CHANGESET_OPS))
         })
