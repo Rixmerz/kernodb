@@ -198,7 +198,7 @@ pub struct Memtable {
 }
 
 /// A point of a frozen memtable: a key and its value (`None`: a tombstone).
-type FrozenPoint = (Vec<u8>, Option<Vec<u8>>);
+pub type FrozenPoint = (Vec<u8>, Option<Vec<u8>>);
 
 /// The one commit of a frozen memtable: its sequence and its canonical form, whose points are
 /// sorted by key, each key once (WAL-C1).
@@ -442,6 +442,14 @@ impl Memtable {
             }
         };
         (!list.is_empty()).then_some(list)
+    }
+
+    /// The points of a frozen memtable without range tombstones, sorted by key, each key once,
+    /// all under the returned sequence (`None` for any other memtable). The flush walks them
+    /// directly: no tombstone can hide one and no other version of a key exists.
+    pub fn frozen_points(&self) -> Option<(u64, &[FrozenPoint])> {
+        let f = self.frozen.as_ref()?;
+        (f.commit.ranges.is_empty() && self.range_count() == 0).then_some((f.seq, &f.commit.points[..]))
     }
 
     /// Iterator over every version visible at `seq` (several per key,

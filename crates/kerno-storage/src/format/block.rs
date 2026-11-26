@@ -139,7 +139,10 @@ impl DataBlockBuilder {
 
     /// The payload; the builder is empty afterwards.
     pub fn finish(&mut self) -> Vec<u8> {
-        let mut out = std::mem::take(&mut self.buf);
+        // The next block grows to about this one's size: one allocation
+        // instead of a doubling chain per block.
+        let cap = self.buf.capacity();
+        let mut out = std::mem::replace(&mut self.buf, Vec::with_capacity(cap));
         out.reserve(4 * self.offsets.len() + 4);
         for &o in &self.offsets {
             put_u32(&mut out, o);

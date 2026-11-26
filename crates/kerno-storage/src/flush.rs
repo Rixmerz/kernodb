@@ -107,6 +107,27 @@ fn fill(
     builder: &mut Option<TableBuilder>,
 ) -> Result<()> {
     let lz4 = !closing || mem.approx_bytes() <= CLOSE_LZ4_MAX_BYTES;
+    if let Some((seq, points)) = mem.frozen_points() {
+        // One commit, sorted, each key once, no tombstone: the points are the
+        // output as they are (same tables as the merge path below gives).
+        let mut split = SplitPoints::new(l1);
+        let mut prev: &[u8] = &[];
+        for (key, value) in points {
+            let key = key.as_slice();
+            if builder.is_some() && split.cut_between(prev, key) {
+                tables.push(builder.take().expect("checked above").finish_with(&[])?);
+            }
+            if builder.is_none() {
+                *builder = Some(create(ctx, next_number(), reason, closing, lz4)?);
+            }
+            builder.as_mut().expect("just created").add(key, seq, value.as_deref())?;
+            prev = key;
+        }
+        if let Some(b) = builder.take() {
+            tables.push(b.finish_with(&[])?);
+        }
+        return Ok(());
+    }
     let fragments = mem.fragments(u64::MAX).unwrap_or_default();
     let mut cover = CoverCursor::new(vec![Cow::Borrowed(&fragments[..])]);
     cover.seek(&[]);
@@ -206,5 +227,50 @@ mod tests {
         // c..d and g..h both lie between a and k: one cut. w..x is past the
         // last key: no empty table.
         assert_eq!(ranges(&write(&ctx, &mem, &l1)), [("a".into(), "a".into()), ("k".into(), "l".into())]);
+    }
+
+    type Entry = (Vec<u8>, u64, Option<Vec<u8>>);
+
+    fn contents(tables: &[Table]) -> Vec<Vec<Entry>> {
+        tables
+            .iter()
+            .map(|t| {
+                let mut it = t.iter(false);
+                it.seek_to_first().unwrap();
+                let mut out = Vec::new();
+                while it.valid() {
+                    out.push((it.key().to_vec(), it.seq(), it.value().map(<[u8]>::to_vec)));
+                    it.next().unwrap();
+                }
+                out
+            })
+            .collect()
+    }
+
+    #[test]
+    fn frozen_fast_path_writes_what_the_merge_path_writes() {
+        let ctx = ctx();
+        let l1 = [l1_table(&ctx, 1, "c", "d"), l1_table(&ctx, 2, "m", "p")];
+        let commit = Arc::new(
+            canonicalize([
+                CommitOp::Put { key: b"z", value: b"9" },
+                CommitOp::Put { key: b"a", value: b"1" },
+                CommitOp::Delete { key: b"b" },
+                CommitOp::Put { key: b"e", value: b"" },
+                CommitOp::Put { key: b"n", value: b"5" },
+                CommitOp::Put { key: b"a", value: b"2" },
+            ])
+            .to_owned_commit(),
+        );
+        let normal = Memtable::new(0);
+        normal.apply_commit(7, &commit);
+        let frozen = Memtable::frozen(0, 7, commit.clone());
+        assert!(frozen.frozen_points().is_some() && normal.frozen_points().is_none());
+        for l1 in [&l1[..], &[][..]] {
+            let (a, b) = (write(&ctx, &normal, l1), write(&ctx, &frozen, l1));
+            assert_eq!(ranges(&a), ranges(&b));
+            assert_eq!(contents(&a), contents(&b));
+            assert_eq!(a.iter().map(Table::entries).collect::<Vec<_>>(), b.iter().map(Table::entries).collect::<Vec<_>>());
+        }
     }
 }
