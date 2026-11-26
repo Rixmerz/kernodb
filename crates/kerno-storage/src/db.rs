@@ -301,9 +301,18 @@ enum Work {
     /// `Sync` mode; it becomes durable with the next `fsync` of the WAL
     /// (another commit's, a `sync()` or a log rotation). See
     /// [`WriteTxn::commit_deferred`](crate::WriteTxn::commit_deferred).
-    Commit { commit: CanonicalCommit<Vec<u8>>, started: Instant, deferred: bool },
+    Commit { commit: Arc<CanonicalCommit<Vec<u8>>>, started: Instant, deferred: bool },
     /// `sync()`: make everything acknowledged so far durable.
     Sync,
+}
+
+/// A commit kept in a memtable of its own instead of applied to the skip list: at least this
+/// many points, or this many encoded bytes.
+const FROZEN_MIN_POINTS: usize = 32 * 1024;
+const FROZEN_MIN_BYTES: usize = 4 << 20;
+
+fn is_large(commit: &CanonicalCommit<Vec<u8>>) -> bool {
+    commit.points.len() >= FROZEN_MIN_POINTS || commit.encoded_len() >= FROZEN_MIN_BYTES
 }
 
 /// The format-level form of one operation of a batch.
@@ -536,7 +545,7 @@ impl Inner {
         // ponytail: the commit is copied into the request so the leader can
         // read it while this thread waits; borrow it for a leader's own
         // commit if profiling ever shows the copy.
-        Ok(Some((Work::Commit { commit: commit.to_owned_commit(), started, deferred }, bytes)))
+        Ok(Some((Work::Commit { commit: Arc::new(commit.to_owned_commit()), started, deferred }, bytes)))
     }
 
     /// Takes the write slot. A wait that finds it taken is timed
@@ -613,7 +622,7 @@ impl Inner {
         if !wrote {
             return Ok(self.state.lock().last_seq);
         }
-        self.submit_gated(gate, Work::Commit { commit, started, deferred }, bytes)
+        self.submit_gated(gate, Work::Commit { commit: Arc::new(commit), started, deferred }, bytes)
     }
 
     pub(crate) fn limits(&self) -> &Limits {
@@ -704,7 +713,7 @@ impl Inner {
         let s = &*self.stats;
         let started = Instant::now();
         let fail_all = |e: Error, poison: Option<String>| (group.iter().map(|_| Err(replicate(&e))).collect(), poison);
-        let commits: Vec<&CanonicalCommit<Vec<u8>>> = group
+        let commits: Vec<&Arc<CanonicalCommit<Vec<u8>>>> = group
             .iter()
             .filter_map(|r| match r.payload() {
                 Work::Commit { commit, .. } => Some(commit),
@@ -741,6 +750,11 @@ impl Inner {
         // A group with no accepted commit makes nothing durable unless it syncs
         // (deferred frames may be unsynced; the `sync()` branch below).
         let mut synced = self.durability == Durability::Sync && accepted > 0 && own_sync(accepted);
+        // A large commit alone in its group is kept as it is, in a memtable of its own (see
+        // `Memtable::frozen`): the active memtable is switched first if it holds anything, so
+        // the commit's frame is the only one of its log, and the memtable is switched again
+        // after it (the flush of the frozen one retires that log with it).
+        let frozen = accepted == 1 && group.len() == 1 && is_large(commits[0]);
         if accepted > 0 {
             let room_start = Instant::now();
             // The rate slowdown charges the group's encoded bytes.
@@ -748,8 +762,15 @@ impl Inner {
             if let Err(e) = self.make_room(w, group_bytes) {
                 return fail_all(e, None);
             }
+            if frozen
+                && !w.mem.is_empty()
+                && let Err(e) = self.or_poison("memtable switch failed", || self.rotate(w))
+            {
+                return fail_all(e, None);
+            }
+            let commit_refs: Vec<&CanonicalCommit<Vec<u8>>> = commits[..accepted].iter().map(|c| &***c).collect();
             let write_start = Instant::now();
-            let io = w.wal.append_group(first, &commits[..accepted]);
+            let io = w.wal.append_group(first, &commit_refs);
             let sync_start = Instant::now();
             // Whether a flush or compaction was writing during the sync (H3).
             let background = || s.background_active.load(Ordering::Relaxed) > 0;
@@ -767,8 +788,19 @@ impl Inner {
             synced |= wants_sync;
             let apply_start = Instant::now();
             let busy = busy || (fsync && background());
-            for (i, commit) in commits[..accepted].iter().enumerate() {
-                w.mem.apply_commit(first + i as u64, commit);
+            if frozen {
+                let mem = Arc::new(Memtable::frozen(w.mem.wal_number(), first, commits[0].clone()));
+                let mut st = self.state.lock();
+                let v = &st.version;
+                let next = Arc::new(Version { mem: mem.clone(), imms: v.imms.clone(), levels: v.levels.clone() });
+                let old = std::mem::replace(&mut st.version, next);
+                drop(st);
+                drop(old);
+                w.mem = mem;
+            } else {
+                for (i, commit) in commits[..accepted].iter().enumerate() {
+                    w.mem.apply_commit(first + i as u64, commit);
+                }
             }
             s.commit_make_room.record_single_writer(nanos(room_start, write_start));
             s.commit_wal_write.record_single_writer(nanos(write_start, sync_start));
@@ -795,6 +827,12 @@ impl Inner {
         }
         let last = first - 1 + accepted as u64;
         w.last_seq = last;
+        // The frozen memtable goes to the flush now rather than at the next commit, so the flush
+        // overlaps whatever the caller does next. Its commit is durable already: a failed switch
+        // poisons the handle for what follows, not this commit.
+        if frozen && !self.inline() {
+            let _ = self.or_poison("memtable switch failed", || self.rotate(w));
+        }
         {
             // Published together, once: in Sync mode a reader never sees a
             // sequence that a power loss could take back, except a deferred

@@ -192,6 +192,19 @@ pub struct Memtable {
     /// after its commit was applied, so a clear bit means the key is not
     /// among the entries the reader may see. A set bit means nothing.
     filter: OnceLock<Box<[AtomicU64]>>,
+    /// A memtable that holds one large commit as it came, already sorted (see
+    /// [`Memtable::frozen`]): its points are read by binary search, `map` stays empty.
+    frozen: Option<Frozen>,
+}
+
+/// A point of a frozen memtable: a key and its value (`None`: a tombstone).
+type FrozenPoint = (Vec<u8>, Option<Vec<u8>>);
+
+/// The one commit of a frozen memtable: its sequence and its canonical form, whose points are
+/// sorted by key, each key once (WAL-C1).
+struct Frozen {
+    seq: u64,
+    commit: Arc<CanonicalCommit<Vec<u8>>>,
 }
 
 /// A memtable's bytes counted in `snapshot_retained_bytes`.
@@ -223,7 +236,29 @@ impl Memtable {
             wal_len: AtomicU64::new(0),
             retired: OnceLock::new(),
             filter: OnceLock::new(),
+            frozen: None,
         }
+    }
+
+    /// A memtable that holds only the commit `commit` under sequence `seq`, kept as it is: no
+    /// skip-list node, no copy of a key or value, reads by binary search. It is full from the
+    /// start, so the writer switches to a new memtable for the next commit. Same answers as a
+    /// memtable the commit was applied to (recovery replays the commit into an ordinary one).
+    pub fn frozen(wal_number: u64, seq: u64, commit: Arc<CanonicalCommit<Vec<u8>>>) -> Self {
+        let mut m = Memtable::new(wal_number);
+        if !commit.ranges.is_empty() {
+            let ranges = m.ranges.get_mut();
+            for (start, end) in &commit.ranges {
+                ranges.insert(start, end, seq);
+            }
+            m.range_count.store(ranges.count, Relaxed);
+        }
+        let bytes = commit.points.iter().map(|(k, v)| k.len() + v.as_ref().map_or(0, Vec::len) + 16).sum::<usize>()
+            + commit.ranges.iter().map(|(s, e)| s.len() + e.len() + ENTRY_OVERHEAD).sum::<usize>();
+        m.bytes.store(bytes, Relaxed);
+        m.max_seq.store(seq, Relaxed);
+        m.frozen = Some(Frozen { seq, commit });
+        m
     }
 
     /// A memtable that recovery replays into (see `recovery::apply`).
@@ -294,7 +329,7 @@ impl Memtable {
 
     /// Whether nothing, points or range tombstones, was applied.
     pub fn is_empty(&self) -> bool {
-        self.map.is_empty() && self.range_count() == 0
+        self.map.is_empty() && self.range_count() == 0 && self.frozen.as_ref().is_none_or(|f| f.commit.points.is_empty())
     }
 
     /// Range tombstones applied so far.
@@ -305,7 +340,7 @@ impl Memtable {
     /// Whether the memtable takes no more commits: it holds `write_buffer`
     /// bytes or [`MAX_RANGE_TOMBSTONES`] range tombstones.
     pub fn is_full(&self, write_buffer: usize) -> bool {
-        self.approx_bytes() >= write_buffer || self.range_count() >= MAX_RANGE_TOMBSTONES
+        self.frozen.is_some() || self.approx_bytes() >= write_buffer || self.range_count() >= MAX_RANGE_TOMBSTONES
     }
 
     /// Applies a commit, in canonical form (WAL-C1), under sequence `seq`:
@@ -314,6 +349,7 @@ impl Memtable {
     /// points, as the canonical form orders them (WAL-C2): a point of the
     /// same commit survives a range of it (SEM-3).
     pub fn apply_commit<B: AsRef<[u8]>>(&self, seq: u64, commit: &CanonicalCommit<B>) {
+        debug_assert!(self.frozen.is_none(), "a frozen memtable takes no commit");
         if !commit.ranges.is_empty() {
             let mut ranges = self.ranges.write();
             for (start, end) in &commit.ranges {
@@ -344,6 +380,13 @@ impl Memtable {
     /// `None` not present. Range tombstones are not consulted: see
     /// [`Memtable::covering_seq`].
     pub fn get(&self, probe: &InternalKey) -> Option<(u64, Value)> {
+        if let Some(f) = &self.frozen {
+            if f.seq > probe.seq {
+                return None;
+            }
+            let at = f.commit.points.binary_search_by(|(k, _)| k.as_slice().cmp(&probe.user_key)).ok()?;
+            return Some((f.seq, f.commit.points[at].1.clone()));
+        }
         let e = self.map.lower_bound(Bound::Included(probe))?;
         (e.key().user_key == probe.user_key).then(|| (e.key().seq, e.value().clone()))
     }
@@ -352,6 +395,10 @@ impl Memtable {
     /// hash `hash` (`format::bloom::hash`): `false` only when it holds none
     /// that a reader may see (see the `filter` field).
     pub fn may_hold(&self, hash: u64) -> bool {
+        if self.frozen.is_some() {
+            // No filter: the binary search is the check.
+            return true;
+        }
         match self.filter.get() {
             Some(words) => {
                 filter_bits(hash).iter().all(|bit| words[(bit / 64) as usize].load(Relaxed) & 1 << (bit % 64) != 0)
@@ -398,7 +445,9 @@ impl Memtable {
     /// Iterator over every version visible at `seq` (several per key,
     /// newest first).
     pub fn iter(&self, seq: u64) -> MemIter<'_> {
-        MemIter { map: &self.map, cur: None, seq }
+        // A reader before the frozen commit sees none of it.
+        let frozen = self.frozen.as_ref().map(|f| (f.seq, if f.seq <= seq { &f.commit.points[..] } else { &[][..] }));
+        MemIter { map: &self.map, cur: None, seq, frozen, at: 0, positioned: false }
     }
 }
 
@@ -406,6 +455,11 @@ pub struct MemIter<'a> {
     map: &'a SkipMap<InternalKey, Value>,
     cur: Option<Entry<'a, InternalKey, Value>>,
     seq: u64,
+    /// A frozen memtable's sequence and the points the reader sees, walked by `at`.
+    frozen: Option<(u64, &'a [FrozenPoint])>,
+    at: usize,
+    /// Set by the first seek (a frozen iterator is not valid before one, as a skip list's).
+    positioned: bool,
 }
 
 impl<'a> MemIter<'a> {
@@ -426,16 +480,27 @@ impl<'a> MemIter<'a> {
 
 impl InternalIterator for MemIter<'_> {
     fn valid(&self) -> bool {
-        self.cur.is_some()
+        match self.frozen {
+            Some((_, points)) => self.positioned && self.at < points.len(),
+            None => self.cur.is_some(),
+        }
     }
 
     fn seek_to_first(&mut self) -> Result<()> {
+        if self.frozen.is_some() {
+            (self.at, self.positioned) = (0, true);
+            return Ok(());
+        }
         self.cur = self.map.front();
         self.skip_invisible();
         Ok(())
     }
 
     fn seek(&mut self, target: &[u8]) -> Result<()> {
+        if let Some((_, points)) = self.frozen {
+            (self.at, self.positioned) = (points.partition_point(|(k, _)| k.as_slice() < target), true);
+            return Ok(());
+        }
         let probe = InternalKey { user_key: target.to_vec(), seq: u64::MAX };
         self.cur = self.map.lower_bound(Bound::Included(&probe));
         self.skip_invisible();
@@ -443,6 +508,10 @@ impl InternalIterator for MemIter<'_> {
     }
 
     fn next(&mut self) -> Result<()> {
+        if self.frozen.is_some() {
+            self.at += 1;
+            return Ok(());
+        }
         let next = self.entry().next();
         self.cur = next;
         self.skip_invisible();
@@ -450,15 +519,24 @@ impl InternalIterator for MemIter<'_> {
     }
 
     fn key(&self) -> &[u8] {
-        &self.entry().key().user_key
+        match self.frozen {
+            Some((_, points)) => &points[self.at].0,
+            None => &self.entry().key().user_key,
+        }
     }
 
     fn seq(&self) -> u64 {
-        self.entry().key().seq
+        match self.frozen {
+            Some((seq, _)) => seq,
+            None => self.entry().key().seq,
+        }
     }
 
     fn value(&self) -> Option<&[u8]> {
-        self.entry().value().as_deref()
+        match self.frozen {
+            Some((_, points)) => points[self.at].1.as_deref(),
+            None => self.entry().value().as_deref(),
+        }
     }
 }
 

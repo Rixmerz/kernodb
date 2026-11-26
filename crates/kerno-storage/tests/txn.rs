@@ -446,3 +446,90 @@ fn a_commit_over_64_mib_is_atomic_across_a_power_loss() {
     }
     assert!(crashed >= 1, "the commit writes and syncs the WAL");
 }
+
+/// A large commit (32Ki points or more, alone in its group) is kept in a memtable of its own,
+/// read by binary search: it reads like any commit (read-your-commit, a snapshot taken before
+/// it sees none of it, small commits before and after keep their order and their values over
+/// it), and a power loss at any write or sync of its commit leaves all of it or none.
+#[test]
+fn a_large_commit_in_a_memtable_of_its_own_reads_and_recovers_like_any() {
+    use kerno_testkit::vfs::OpKind;
+    let cfg = config(Durability::Sync);
+    let n = 40_000;
+    let key = |i: usize| format!("k{i:06}");
+    let mut big = WriteBatch::new();
+    for i in 0..n {
+        big.put(key(i).as_str(), format!("big{i}").as_str());
+    }
+    big.delete("gone");
+    // Reads, interleaving: a small commit before, a snapshot before, the big one, a small one after.
+    let disk = SimVfs::new(7);
+    let db = open(&disk, &cfg);
+    let mut before = WriteBatch::new();
+    before.put("k000005", "small-before");
+    before.put("gone", "x");
+    before.put("zz", "before");
+    db.commit(&before).unwrap();
+    let old = db.snapshot().unwrap();
+    db.commit(&big).unwrap();
+    let mut after = WriteBatch::new();
+    after.put("k000007", "small-after");
+    db.commit(&after).unwrap();
+    let now = db.snapshot().unwrap();
+    assert_eq!(old.get(b"k000005").unwrap().as_deref(), Some(&b"small-before"[..]));
+    assert_eq!(old.get(b"k000006").unwrap(), None, "a snapshot before the commit sees none of it");
+    assert_eq!(old.get(b"gone").unwrap().as_deref(), Some(&b"x"[..]));
+    assert_eq!(now.get(b"k000005").unwrap().as_deref(), Some(&b"big5"[..]), "the large commit is newer");
+    assert_eq!(now.get(b"k000007").unwrap().as_deref(), Some(&b"small-after"[..]), "and older than the next");
+    assert_eq!(now.get(b"gone").unwrap(), None, "its deletion hides the older value");
+    assert_eq!(now.get(b"zz").unwrap().as_deref(), Some(&b"before"[..]));
+    let all = now.scan(Bound::Included(&b"k"[..]), Bound::Excluded(&b"l"[..]), usize::MAX).unwrap();
+    assert_eq!(all.len(), n);
+    assert_eq!(all[7].1, b"small-after");
+    assert_eq!(all[n - 1], (key(n - 1).into_bytes(), format!("big{}", n - 1).into_bytes()));
+    let old_scan = old.scan(Bound::Included(&b"k"[..]), Bound::Excluded(&b"l"[..]), usize::MAX).unwrap();
+    assert_eq!(old_scan.len(), 1);
+    drop((old, now));
+    db.close().unwrap();
+    let db = open(&disk, &cfg);
+    let snap = db.snapshot().unwrap();
+    assert_eq!(snap.get(b"k039999").unwrap().as_deref(), Some(&b"big39999"[..]), "after a close and reopen");
+    assert_eq!(snap.get(b"k000007").unwrap().as_deref(), Some(&b"small-after"[..]));
+    drop(snap);
+    db.close().unwrap();
+    // Power loss at every write and sync of the large commit.
+    let count = |disk: &SimVfs| {
+        let db = open(disk, &cfg);
+        let snap = db.snapshot().unwrap();
+        let got = snap.scan(Bound::Included(&b"k"[..]), Bound::Excluded(&b"l"[..]), usize::MAX).unwrap();
+        let small = snap.get(b"zz").unwrap();
+        drop(snap);
+        db.close().unwrap();
+        (got.len(), small)
+    };
+    let mut crashed = 0;
+    for nth in 1.. {
+        let disk = SimVfs::new(100 + nth);
+        disk.set_tear_unit(4096);
+        let db = open(&disk, &cfg);
+        db.commit(&before).unwrap();
+        disk.crash_when(
+            |op| op.phase == "commit" && matches!(op.kind, OpKind::WriteAt | OpKind::SyncData),
+            nth,
+            CrashKind::PowerLoss,
+        );
+        let done = db.commit(&big);
+        let Some(image) = disk.take_crash_image() else {
+            assert!(done.is_ok(), "{done:?}");
+            drop(db);
+            assert_eq!(count(&disk.crash_now(CrashKind::PowerLoss)).0, n, "a commit that returned is whole");
+            break;
+        };
+        drop(db);
+        let (got, small) = count(&image);
+        assert!(got == 1 || got == n, "crash at commit op #{nth}: {got} keys");
+        assert_eq!(small.as_deref(), Some(&b"before"[..]), "the commit before it survives");
+        crashed += 1;
+    }
+    assert!(crashed >= 2, "the commit switches the memtable, writes and syncs the WAL");
+}
