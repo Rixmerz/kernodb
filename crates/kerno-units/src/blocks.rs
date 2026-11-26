@@ -204,7 +204,6 @@ pub(crate) fn flush<B: Block, E: TxnEngine>(
     // below walks the engine's levels. Ids are minted in ascending order, so the entries a change
     // set adds are almost always in the tail.
     let stored_tail = cs.txn()?.get(&tail_key)?;
-    let (_, end) = prefix_bounds(list);
     let mut tail = match stored_tail {
         // Every id to change is above the last entry of the tail (the ids ascend), so above
         // every entry of the list: the puts are appended to the tail's bytes and a removal
@@ -223,7 +222,7 @@ pub(crate) fn flush<B: Block, E: TxnEngine>(
             // range: nothing to read.
             if above.is_some_and(|a| a <= first)
                 || match probe {
-                    Some(p) => p.is_empty(cs, list, &end)?,
+                    Some(p) => p.is_empty(cs, list, &prefix_bounds(list).1)?,
                     None => false,
                 }
             {
@@ -233,6 +232,7 @@ pub(crate) fn flush<B: Block, E: TxnEngine>(
             None
         }
     };
+    let (_, end) = prefix_bounds(list);
     while let Some((first, _)) = ops.peek() {
         let (block, mut units, bound) = match tail.take_if(|u| u.first().is_some_and(|e| e.0 <= *first)) {
             Some(units) => (Some(tail_key.clone()), units, None),

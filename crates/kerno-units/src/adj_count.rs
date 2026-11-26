@@ -59,7 +59,7 @@ use std::ops::Bound;
 
 use kerno_core::contract::{Snapshot, Txn, TxnEngine};
 
-use crate::adjacency::{list_key, tag_of};
+use crate::adjacency::{ListId, list_key, tag_of};
 use crate::codec::{AdjBlock, ENVELOPE_VERSION, MAX_RELATION_TYPE_LEN, valid_relation_type};
 use crate::db::{ChangeSet, scan_all};
 use crate::error::{DecodeError, UnitError, UnitRule};
@@ -96,6 +96,18 @@ pub(crate) fn count_key(unit: UnitId, dir: Direction, relation_type: &str) -> Ve
     k.extend_from_slice(relation_type.as_bytes());
     k.push(0);
     k
+}
+
+/// The key of the count record of `(unit, dir, relation_type)`, built in `buf` (no allocation);
+/// `relation_type` is 1..=64 bytes, else the key is cut to the buffer (and is then no record's).
+fn count_key_in<'a>(buf: &'a mut [u8; KEY_MAX], unit: UnitId, dir: Direction, relation_type: &str) -> &'a [u8] {
+    let t = &relation_type.as_bytes()[..relation_type.len().min(KEY_MAX - 19)];
+    buf[0] = TAG_REL_COUNT;
+    buf[1..17].copy_from_slice(&unit.0);
+    buf[17] = dir_byte(dir);
+    buf[18..18 + t.len()].copy_from_slice(t);
+    buf[18 + t.len()] = 0;
+    &buf[..19 + t.len()]
 }
 
 /// Scan bounds `[start, end)` of every count record of `unit` in `dir`.
@@ -228,8 +240,8 @@ pub(crate) fn decode_record(key: &[u8], value: &[u8]) -> Result<CountRecord, Dec
 /// One adjacency list a relation change touches, planned by reads alone: what
 /// [`ChangeSet::stage_adjacency`] applies once the change cannot fail.
 pub(crate) struct ListPlan {
-    /// The key of the list ([`list_key`]), under which the change set keeps its changes.
-    pub(crate) key: Vec<u8>,
+    /// The list, under which the change set keeps its changes.
+    pub(crate) id: ListId,
     /// The count of the list before the change.
     pub(crate) before: u64,
     /// The count after it.
@@ -238,33 +250,28 @@ pub(crate) struct ListPlan {
     pub(crate) dirty: bool,
 }
 
-/// The count record key of the list `list` (`tag ‖ unit ‖ type ‖ 0x00`): the same unit, direction
-/// and type, which is what the record is keyed by.
-pub(crate) fn count_key_of_list(list: &[u8]) -> Vec<u8> {
-    let dir = if list[0] == crate::codec::TAG_REL_OUT { Direction::Out } else { Direction::In };
-    let mut k = Vec::with_capacity(list.len() + 1);
-    k.push(TAG_REL_COUNT);
-    k.extend_from_slice(&list[1..17]);
-    k.push(dir_byte(dir));
-    k.extend_from_slice(&list[17..]);
-    k
-}
-
 impl<E: TxnEngine> ChangeSet<'_, E> {
     /// Plans the change of `delta` (`+1` or `-1`) to the count of the list `(unit, dir,
     /// relation_type)` as this change set sees it, without writing. Call it **before** the entry
     /// is written or removed: a missing record is first built by counting the entries that exist
     /// (a new list, or a record that was lost), and that count must not include the entry being
     /// changed. A count that reaches zero removes its record.
-    fn plan_list(&self, unit: UnitId, dir: Direction, relation_type: &str, delta: i64) -> Result<ListPlan, UnitError> {
-        let key = list_key(tag_of(dir), unit, relation_type);
+    fn plan_list(
+        &mut self,
+        unit: UnitId,
+        dir: Direction,
+        relation_type: &str,
+        delta: i64,
+    ) -> Result<ListPlan, UnitError> {
+        let id = self.adj_pending.list_id(unit, dir, relation_type);
         // The change set keeps the count of a list it changed: within it that is the count. Its
         // record is marked for writing by the first change (`existing` there), so a later one only
         // adds to the mark.
-        let (existing, before) = if let Some(l) = self.adj_pending.get(&key) {
+        let (existing, before) = if let Some(l) = self.adj_pending.get(&id) {
             (false, l.count)
         } else {
-            match self.txn()?.get(&count_key(unit, dir, relation_type))? {
+            let mut buf = [0u8; KEY_MAX];
+            match self.txn()?.get(count_key_in(&mut buf, unit, dir, relation_type))? {
                 Some(raw) => {
                     let n =
                         decode_value(&raw).map_err(|e| crate::db::context(e, &format!("REL_COUNT of unit {unit}")))?;
@@ -279,14 +286,14 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         };
         let next =
             if delta >= 0 { before.saturating_add(delta as u64) } else { before.saturating_sub(delta.unsigned_abs()) };
-        Ok(ListPlan { key, before, next, dirty: next > 0 || existing })
+        Ok(ListPlan { id, before, next, dirty: next > 0 || existing })
     }
 
     /// Plans the counts of `(from, Out)` and of `(to, In)` after `delta` (`+1` or `-1`).
     /// Both are read before either is applied, so a read that fails (a damaged record, an engine
     /// error) leaves the change set untouched.
     pub(crate) fn plan_relation(
-        &self,
+        &mut self,
         from: UnitId,
         to: UnitId,
         relation_type: &str,

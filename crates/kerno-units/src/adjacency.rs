@@ -39,15 +39,14 @@
 //! A read inside the change set ([`ChangeSet::relation_of_unit`]) sees both:
 //! the blocks of the transaction and what the change set keeps.
 
-use std::collections::BTreeMap;
 use std::ops::Bound;
 
 use kerno_core::contract::{Snapshot, Txn, TxnEngine};
 
-use crate::adj_count::{ListPlan, count_key_of_list, encode_value};
+use crate::adj_count::{ListPlan, count_key, encode_value};
 use crate::blocks::{self, Block, Id};
 use crate::codec::{ADJ_BLOCK_MAX, AdjBlock, Key, TAG_REL_IN, TAG_REL_OUT};
-use crate::db::{ChangeSet, UnitSnapshot, Write, context};
+use crate::db::{ChangeSet, IdHasher, UnitSnapshot, Write, context};
 use crate::error::{DecodeError, UnitError};
 use crate::types::{Direction, RelationId, UnitId};
 
@@ -72,8 +71,108 @@ pub(crate) struct AdjList {
     ops: Vec<(Id, Option<UnitId>)>,
 }
 
-/// The adjacency changes of a change set, by list key.
-pub(crate) type PendingAdjacency = BTreeMap<Vec<u8>, AdjList>;
+/// One adjacency list of a change set: the unit, the key tag of its direction and its relation
+/// type, interned in [`PendingAdjacency`]. Hashed and compared without building the list key.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ListId {
+    unit: UnitId,
+    tag: u8,
+    ty: u32,
+}
+
+impl std::hash::Hash for ListId {
+    /// One word: the two halves of the unit id (random or a counter in their low bytes) and the
+    /// list's tag and type, folded. [`IdHasher`] mixes it.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        let (hi, lo) = self.unit.0.split_at(8);
+        let hi = u64::from_le_bytes(hi.try_into().unwrap_or_default());
+        let lo = u64::from_le_bytes(lo.try_into().unwrap_or_default());
+        state.write_u64(lo ^ hi.rotate_left(23) ^ (u64::from(self.tag) << 56) ^ u64::from(self.ty));
+    }
+}
+
+/// The adjacency changes of a change set, by list (the staging area of the relations, as
+/// `substring_pending` / `text_pending` are for the text indexes): a relation reads the count of
+/// a list once, from the transaction, and every later one of the same list in the change set
+/// finds it here. Nothing is written before [`ChangeSet::flush_adjacency`], which builds the
+/// list keys once and writes the lists in key order.
+#[derive(Default)]
+pub(crate) struct PendingAdjacency {
+    /// The relation types the change set touched, by their interned number.
+    types: Vec<Box<str>>,
+    type_ids: std::collections::HashMap<Box<str>, u32>,
+    /// The type interned last: a bulk load relates with one type over and over.
+    last_type: u32,
+    /// Position in `lists` of each list.
+    index: std::collections::HashMap<ListId, usize, std::hash::BuildHasherDefault<IdHasher>>,
+    lists: Vec<(ListId, AdjList)>,
+}
+
+impl PendingAdjacency {
+    /// The number of the relation type `t`, once it was interned.
+    fn type_id(&self, t: &str) -> Option<u32> {
+        match self.types.get(self.last_type as usize) {
+            Some(last) if **last == *t => Some(self.last_type),
+            _ => self.type_ids.get(t).copied(),
+        }
+    }
+
+    /// The number of the relation type `t`, interning it the first time.
+    fn intern(&mut self, t: &str) -> u32 {
+        let id = match self.type_id(t) {
+            Some(id) => id,
+            None => {
+                let id = self.types.len() as u32;
+                self.types.push(t.into());
+                self.type_ids.insert(t.into(), id);
+                id
+            }
+        };
+        self.last_type = id;
+        id
+    }
+
+    /// The list `(unit, dir, relation_type)`, interning the type.
+    pub(crate) fn list_id(&mut self, unit: UnitId, dir: Direction, relation_type: &str) -> ListId {
+        ListId { unit, tag: tag_of(dir), ty: self.intern(relation_type) }
+    }
+
+    /// What the change set keeps of the list `id`, if anything.
+    pub(crate) fn get(&self, id: &ListId) -> Option<&AdjList> {
+        self.index.get(id).map(|&at| &self.lists[at].1)
+    }
+
+    /// What the change set keeps of the list `(unit, tag, relation_type)`, if anything.
+    fn find(&self, unit: UnitId, tag: u8, relation_type: &str) -> Option<&AdjList> {
+        self.get(&ListId { unit, tag, ty: self.type_id(relation_type)? })
+    }
+
+    /// The list `id`, made by `make` when the change set does not keep it yet.
+    fn entry(&mut self, id: ListId, make: impl FnOnce() -> AdjList) -> &mut AdjList {
+        let lists = &mut self.lists;
+        let at = *self.index.entry(id).or_insert_with(|| {
+            lists.push((id, make()));
+            lists.len() - 1
+        });
+        &mut self.lists[at].1
+    }
+
+    /// The interned types in ascending order of their bytes: the order of their list keys.
+    fn types_ascending(&self) -> Vec<u32> {
+        let mut order: Vec<u32> = (0..self.types.len() as u32).collect();
+        order.sort_unstable_by(|a, b| self.types[*a as usize].cmp(&self.types[*b as usize]));
+        order
+    }
+
+    /// The rank of each interned type in [`types_ascending`](Self::types_ascending), by number.
+    fn type_ranks(&self) -> Vec<u32> {
+        let mut rank = vec![0u32; self.types.len()];
+        for (r, ty) in self.types_ascending().into_iter().enumerate() {
+            rank[ty as usize] = r as u32;
+        }
+        rank
+    }
+}
 
 /// The adjacency blocks as [`crate::blocks`] stores them.
 struct Adjacency;
@@ -129,7 +228,7 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
     ) {
         let [out, inn] = plans;
         for (plan, other) in [(out, to), (inn, from)] {
-            let list = self.adj_pending.entry(plan.key).or_insert_with(|| AdjList {
+            let list = self.adj_pending.entry(plan.id, || AdjList {
                 fresh: add && plan.before == 0,
                 count: plan.before,
                 dirty: false,
@@ -138,22 +237,58 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
             list.count = plan.next;
             list.dirty |= plan.dirty;
             let op = (edge.0, add.then_some(other));
-            match list.ops.binary_search_by_key(&edge.0, |o| o.0) {
-                Ok(at) => list.ops[at] = op,
-                Err(at) => list.ops.insert(at, op),
+            // Ids are minted ascending: almost always an append.
+            match list.ops.last() {
+                Some(last) if last.0 >= edge.0 => match list.ops.binary_search_by_key(&edge.0, |o| o.0) {
+                    Ok(at) => list.ops[at] = op,
+                    Err(at) => list.ops.insert(at, op),
+                },
+                _ => list.ops.push(op),
             }
         }
     }
 
     /// Writes the adjacency changes and the counts the change set kept, once per list. Called by
     /// `commit`.
+    ///
+    /// The blocks first, every list in ascending key order, then the count records in ascending
+    /// key order: the transaction gets its writes as a few sorted runs, and a seek of the block
+    /// flush never lands below a write of this flush (the counts, tag `0x72`, sort after every
+    /// block), so it never has to order the writes before it.
     pub(crate) fn flush_adjacency(&mut self) -> Result<(), UnitError> {
-        for (list, l) in std::mem::take(&mut self.adj_pending) {
+        let pending = std::mem::take(&mut self.adj_pending);
+        if pending.lists.is_empty() {
+            return Ok(());
+        }
+        // A list key is `tag ‖ unit ‖ type ‖ 0x00` and a type has no NUL, so the keys sort as
+        // `(tag, unit, type)` and the count keys (`0x72 ‖ unit ‖ direction ‖ type ‖ 0x00`) as
+        // `(unit, direction, type)`: both orders come from the ids, without comparing keys.
+        let rank = pending.type_ranks();
+        let (types, mut lists) = (pending.types, pending.lists);
+        // Sorted as small keys, the lists staying where they are (`at`): the blocks by
+        // `(tag, unit, type rank)`, the counts by `(unit, tag, type rank)`.
+        let mut blocks_order: Vec<(u8, u128, u32, u32)> = Vec::with_capacity(lists.len());
+        let mut counts_order: Vec<(u128, u8, u32, u32)> = Vec::with_capacity(lists.len());
+        for (at, (id, l)) in lists.iter().enumerate() {
+            let (unit, ty, at) = (u128::from_be_bytes(id.unit.0), rank[id.ty as usize], at as u32);
+            blocks_order.push((id.tag, unit, ty, at));
             if l.dirty {
-                let k = count_key_of_list(&list);
-                self.write_owned(if l.count == 0 { Write::Delete(k) } else { Write::Put(k, encode_value(l.count)) })?;
+                counts_order.push((unit, id.tag, ty, at));
             }
-            blocks::flush::<Adjacency, E>(self, &list, l.ops, l.fresh, None, None)?;
+        }
+        blocks_order.sort_unstable();
+        counts_order.sort_unstable();
+        for (.., at) in blocks_order {
+            let (id, l) = &mut lists[at as usize];
+            let list = list_key(id.tag, id.unit, &types[id.ty as usize]);
+            let ops = std::mem::take(&mut l.ops);
+            blocks::flush::<Adjacency, E>(self, &list, ops, l.fresh, None, None)?;
+        }
+        for (.., at) in counts_order {
+            let (id, l) = &lists[at as usize];
+            let dir = if id.tag == TAG_REL_OUT { Direction::Out } else { Direction::In };
+            let k = count_key(id.unit, dir, &types[id.ty as usize]);
+            self.write_owned(if l.count == 0 { Write::Delete(k) } else { Write::Put(k, encode_value(l.count)) })?;
         }
         Ok(())
     }
@@ -168,11 +303,16 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
             let Some((start, end)) = Key::adjacency_range(tag, unit, None) else {
                 continue;
             };
-            // An entry the change set adds is a relation, whatever the blocks say.
-            let added = self
-                .adj_pending
-                .range(start.clone()..end.clone())
-                .find_map(|(_, l)| l.ops.iter().find_map(|(edge, other)| other.map(|_| RelationId(*edge))));
+            // An entry the change set adds is a relation, whatever the blocks say (the lists in
+            // key order, which is the order of their types).
+            let pending = &self.adj_pending;
+            let added = pending.types_ascending().into_iter().find_map(|ty| {
+                pending
+                    .get(&ListId { unit, tag, ty })?
+                    .ops
+                    .iter()
+                    .find_map(|(edge, other)| other.map(|_| RelationId(*edge)))
+            });
             if added.is_some() {
                 return Ok(added);
             }
@@ -190,7 +330,7 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
                             "a key in an adjacency range is not an adjacency key".into(),
                         ));
                     };
-                    let removed = self.adj_pending.get(&list_key(tag, unit, &relation_type));
+                    let removed = self.adj_pending.find(unit, tag, &relation_type);
                     let block = AdjBlock::decode(v).map_err(|e| context(e, "REL_ADJ"))?;
                     if let Some((edge, _)) = block
                         .entries
@@ -266,7 +406,7 @@ impl<E: TxnEngine> crate::db::UnitDb<E> {
     #[doc(hidden)]
     pub fn adjacency_patch(&self, edits: &[AdjEdit<'_>]) -> Result<Vec<RawWrite>, UnitError> {
         let snap = self.raw_snapshot()?;
-        let mut blocks_by_key: BTreeMap<Vec<u8>, Vec<(RelationId, UnitId)>> = BTreeMap::new();
+        let mut blocks_by_key: std::collections::BTreeMap<Vec<u8>, Vec<(RelationId, UnitId)>> = Default::default();
         for (dir, unit, relation_type, edge, other) in edits {
             let list = list_key(tag_of(*dir), *unit, relation_type);
             let (_, end) = crate::schema::prefix_bounds(&list);

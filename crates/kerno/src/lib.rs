@@ -676,7 +676,7 @@ impl Db {
         let mut changes = self.units.begin_changeset(change_meta)?;
         let mut out = Committed::default();
         let mut unrelated: HashSet<RelationId> = HashSet::new();
-        let mut related: Vec<(UnitId, UnitId, String, RelationId)> = Vec::new();
+        let mut related: Vec<(UnitId, UnitId, &str, RelationId)> = Vec::new();
         let mut wrote = false;
         // The unit each operation created (a store, or an upsert whatever its outcome), by the
         // operation's position: what `Endpoint::Op` indexes.
@@ -764,7 +764,7 @@ impl Db {
                         }
                     }
                     let edge = changes.create_relation(from, to, relation_type, RelationProvenance::Declared)?;
-                    related.push((from, to, relation_type.clone(), edge));
+                    related.push((from, to, relation_type.as_str(), edge));
                     out.relations.push(edge);
                     wrote = true;
                 }

@@ -1926,11 +1926,17 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
             return Ok(());
         }
         let txn = self.txn()?;
-        let Some(raw) = txn.get(&key(Key::UnitHead { unit })?)? else {
+        // `UNIT_HEAD` is `tag ‖ unit`: built on the stack, and only the lifecycle is read (the
+        // head carries the payload of a small unit, which a relation does not need).
+        let mut head_key = [0u8; 17];
+        head_key[0] = crate::codec::TAG_UNIT_HEAD;
+        head_key[1..].copy_from_slice(&unit.0);
+        let Some(raw) = txn.get(&head_key)? else {
             return Err(UnitError::NotFound { unit });
         };
-        let head = UnitHead::decode(&raw).map_err(|e| context(e, &format!("UNIT_HEAD of unit {unit}")))?;
-        match head.lifecycle {
+        let lifecycle =
+            UnitHead::decode_lifecycle(&raw).map_err(|e| context(e, &format!("UNIT_HEAD of unit {unit}")))?;
+        match lifecycle {
             Lifecycle::Active => {
                 self.active_known.insert(unit);
                 Ok(())
