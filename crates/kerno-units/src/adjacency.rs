@@ -153,7 +153,7 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
                 let k = count_key_of_list(&list);
                 self.write_owned(if l.count == 0 { Write::Delete(k) } else { Write::Put(k, encode_value(l.count)) })?;
             }
-            blocks::flush::<Adjacency, E>(self, &list, l.ops, l.fresh, None, None)?;
+            blocks::flush::<Adjacency, E>(self, &list, l.ops, l.fresh)?;
         }
         Ok(())
     }

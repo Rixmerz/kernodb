@@ -346,11 +346,7 @@ fn the_index_follows_update_archive_restore_and_delete() {
     assert_eq!(found(&db, "beta"), vec![b]);
     assert!(found(&db, "alpha").is_empty());
     assert_eq!(found(&db, "delta"), vec![a]);
-    assert_eq!(
-        db.raw_get(&block_key("alpha", None)).unwrap(),
-        None,
-        "the old posting, and its emptied block, are gone"
-    );
+    assert!(!index(&db).contains_key("alpha"), "the old posting is not read any more");
     assert_clean(&db);
     // A snapshot keeps the index it was taken at.
     assert_eq!(before.search_text("alpha", 5, None).unwrap().len(), 1);
@@ -494,18 +490,52 @@ fn export_and_import_rebuild_the_index() {
 
 // --------------------------------------------------------------- verify
 
-/// The raw write that gives `unit` the posting `p` in the list of `term` (`None`: takes it out),
-/// for a list of one block, the tail: the damage the verifier must see.
-fn posting_patch(db: &UnitDb<E>, term: &str, unit: UnitId, p: Option<Posting>) -> (Vec<u8>, Option<Vec<u8>>) {
-    use crate::blocks::Block;
-    let key = block_key(term, None);
-    let mut entries = db.raw_get(&key).unwrap().map(|v| Postings::decode(&v).unwrap()).unwrap_or_default();
-    entries.retain(|e| e.0 != unit.0);
-    if let Some(p) = p {
-        entries.push((unit.0, p));
-        entries.sort_by_key(|e| e.0);
-    }
-    (key, (!entries.is_empty()).then(|| Postings::encode(&entries)))
+/// The index as a search reads it: the units of each term with their postings, in id order.
+fn index(db: &UnitDb<E>) -> BTreeMap<String, Vec<(UnitId, Posting)>> {
+    let snap = db.raw_snapshot().unwrap();
+    runs::dump_units::<_, Postings>(&snap, &PREFIX)
+        .into_iter()
+        .map(|(list, units)| {
+            let term = String::from_utf8(list[..list.len() - 1].to_vec()).unwrap();
+            (term, units.into_iter().map(|(u, tf, dl)| (u, Posting { tf, dl })).collect())
+        })
+        .collect()
+}
+
+fn manifest(db: &UnitDb<E>) -> runs::Manifest {
+    use kerno_core::contract::Snapshot;
+    let snap = db.raw_snapshot().unwrap();
+    runs::read_manifest::<Postings>(&|k| snap.get(k), &PREFIX).unwrap()
+}
+
+/// The number and the document length of `unit` in the index.
+fn number_of(db: &UnitDb<E>, unit: UnitId) -> (u64, u32) {
+    runs::decode_doc(&db.raw_get(&doc_key(unit)).unwrap().expect("a document record"), "DOC").unwrap()
+}
+
+/// Every run page of the index, as `(key, value)`.
+fn pages(db: &UnitDb<E>) -> Vec<(Vec<u8>, Vec<u8>)> {
+    use kerno_core::contract::Snapshot;
+    let snap = db.raw_snapshot().unwrap();
+    let (from, to) = (runs::kind_key(&PREFIX, runs::KIND_RUN), runs::kind_key(&PREFIX, runs::KIND_RUN + 1));
+    snap.scan(Bound::Included(&from), Bound::Excluded(&to), 100_000).unwrap()
+}
+
+/// The raw writes that give `unit` the posting `p` in the list of `term` (`None`: take it out),
+/// in pages the manifest agrees with: the damage only a comparison with the text can see.
+fn posting_patch(db: &UnitDb<E>, term: &str, unit: UnitId, p: Option<Posting>) -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
+    let (num, _) = number_of(db, unit);
+    runs::forge::<_, Postings>(&db.raw_snapshot().unwrap(), &PREFIX, |lists| {
+        let list = lists.entry(list_key(term)).or_default();
+        list.retain(|e| e.0 != num);
+        if let Some(p) = p {
+            list.push((num, p.tf, p.dl));
+            list.sort_unstable();
+        }
+        if list.is_empty() {
+            lists.remove(&list_key(term));
+        }
+    })
 }
 
 fn corpus_db(seed: u64) -> (UnitDb<E>, Vec<UnitId>) {
@@ -519,14 +549,14 @@ fn corpus_db(seed: u64) -> (UnitDb<E>, Vec<UnitId>) {
 #[test]
 fn verify_sees_a_lost_posting() {
     let (db, ids) = corpus_db(20);
-    db.raw_commit(vec![posting_patch(&db, "gamma", ids[1], None)]).unwrap();
-    assert!(rules(&db).contains(&"UNIT-49".to_string()), "{:?}", db.verify_units().unwrap().findings);
+    db.raw_commit(posting_patch(&db, "gamma", ids[1], None)).unwrap();
+    assert_eq!(rules(&db), ["UNIT-49"], "{:?}", db.verify_units().unwrap().findings);
 }
 
 #[test]
 fn verify_sees_a_changed_term_frequency() {
     let (db, ids) = corpus_db(21);
-    db.raw_commit(vec![posting_patch(&db, "gamma", ids[1], Some(Posting { tf: 1, dl: 3 }))]).unwrap();
+    db.raw_commit(posting_patch(&db, "gamma", ids[1], Some(Posting { tf: 1, dl: 3 }))).unwrap();
     assert_eq!(rules(&db), ["UNIT-49"]);
 }
 
@@ -537,8 +567,7 @@ fn verify_sees_a_lost_doc_and_a_foreign_doc() {
     assert!(rules(&db).contains(&"UNIT-49".to_string()));
     let (db, _) = corpus_db(23);
     let ghost = UnitId([9; 16]);
-    let doc = analyze(b"ghost").unwrap();
-    db.raw_commit(vec![(doc_key(ghost), Some(encode_doc(&doc)))]).unwrap();
+    db.raw_commit(vec![(doc_key(ghost), Some(runs::encode_doc(0, 1)))]).unwrap();
     assert!(rules(&db).contains(&"UNIT-49".to_string()));
 }
 
@@ -557,7 +586,8 @@ fn verify_sees_wrong_statistics() {
 #[test]
 fn a_record_that_does_not_decode_is_a_structure_finding_alone() {
     let (db, _) = corpus_db(25);
-    db.raw_commit(vec![(block_key("delta", None), Some(vec![1, 0, 0]))]).unwrap();
+    let (key, _) = pages(&db).pop().unwrap();
+    db.raw_commit(vec![(key, Some(vec![1, 0, 0]))]).unwrap();
     let r = rules(&db);
     assert!(!r.is_empty() && !r.contains(&"UNIT-49".to_string()), "{r:?}");
 }
@@ -565,11 +595,8 @@ fn a_record_that_does_not_decode_is_a_structure_finding_alone() {
 #[test]
 fn verify_names_no_term() {
     let (db, ids) = corpus_db(26);
-    db.raw_commit(vec![
-        posting_patch(&db, "gamma", ids[1], None),
-        (doc_key(UnitId([7; 16])), Some(encode_doc(&analyze(b"zeta").unwrap()))),
-    ])
-    .unwrap();
+    db.raw_commit(posting_patch(&db, "gamma", ids[1], None)).unwrap();
+    db.raw_commit(vec![(doc_key(UnitId([7; 16])), Some(runs::encode_doc(9, 1)))]).unwrap();
     let report = db.verify_units().unwrap();
     assert!(!report.findings.is_empty());
     for f in &report.findings {
@@ -582,22 +609,29 @@ fn verify_names_no_term() {
 
 #[test]
 fn a_unit_older_than_the_index_is_not_a_finding() {
-    // Written before the first statistic: the writer of an older build left
-    // no entries. Simulated by removing every full-text record of the first
-    // unit and rewriting the statistics to start after it.
+    // Written before the first statistic: nothing indexed it. Simulated by taking the first
+    // unit out of the index as the writer would (its number dead, no document record, no
+    // posting) and rewriting the statistics to start after it.
     let (db, ids) = corpus_db(27);
-    let (first_doc, _) = decode_doc(&db.raw_get(&doc_key(ids[0])).unwrap().unwrap()).unwrap();
+    let (num, first_doc) = number_of(&db, ids[0]);
     let mut s = decode_stats(&db.raw_get(&STATS_KEY).unwrap().unwrap()).unwrap();
     s.since = db.snapshot().unwrap().get_unit(ids[0]).unwrap().unwrap().updated_seq.0 + 1;
     s.docs -= 1;
     s.total_len -= u64::from(first_doc);
+    let page = runs::num_key(&PREFIX, 0);
+    let mut slots = runs::decode_num(&db.raw_get(&page).unwrap().unwrap(), "POSTING").unwrap();
+    slots[num as usize].0 = false;
     db.raw_commit(vec![
         (doc_key(ids[0]), None),
-        posting_patch(&db, "alpha", ids[0], None),
-        posting_patch(&db, "beta", ids[0], None),
+        (page, Some(runs::encode_num(&slots))),
         (STATS_KEY.to_vec(), Some(encode_stats(s))),
     ])
     .unwrap();
+    let forged = runs::forge::<_, Postings>(&db.raw_snapshot().unwrap(), &PREFIX, |lists| {
+        lists.values_mut().for_each(|l| l.retain(|p| p.0 != num));
+        lists.retain(|_, l| !l.is_empty());
+    });
+    db.raw_commit(forged).unwrap();
     assert_eq!(rules(&db), Vec::<String>::new());
     assert!(!found(&db, "beta").contains(&ids[0]), "a legacy unit is not found until rewritten");
     update(&db, ids[0], "alpha beta");
@@ -605,24 +639,7 @@ fn a_unit_older_than_the_index_is_not_a_finding() {
     assert_clean(&db);
 }
 
-// ---------------------------------------------------------- posting blocks
-
-/// A raw `POSTING` record: its key and its decoded entries.
-type PostingBlock = (Vec<u8>, Vec<(UnitId, Posting)>);
-
-/// Every raw `POSTING` record of the store.
-fn posting_blocks(db: &UnitDb<E>) -> Vec<PostingBlock> {
-    use kerno_core::contract::Snapshot;
-    let snap = db.raw_snapshot().unwrap();
-    let all = snap.scan(Bound::Included(&[TAG_POSTING][..]), Bound::Excluded(&[TAG_DOC][..]), 100_000).unwrap();
-    all.into_iter().map(|(k, v)| (k, decode_block(&v).unwrap())).collect()
-}
-
-/// The blocks of one term, in key order.
-fn blocks_of(db: &UnitDb<E>, term: &str) -> Vec<PostingBlock> {
-    let list = list_key(term);
-    posting_blocks(db).into_iter().filter(|(k, _)| k.starts_with(&list)).collect()
-}
+// ------------------------------------------------------------ posting runs
 
 /// 300 units that hold "common", written in one change set, and one more that holds "rare".
 fn long_list(seed: u64) -> (UnitDb<E>, Vec<UnitId>) {
@@ -639,46 +656,72 @@ fn long_list(seed: u64) -> (UnitDb<E>, Vec<UnitId>) {
 }
 
 #[test]
-fn a_batch_writes_one_record_per_block_not_one_per_posting() {
+fn a_batch_writes_one_run_of_pages_not_one_record_per_posting() {
     let (db, ids) = long_list(40);
-    let blocks = blocks_of(&db, "common");
-    // 300 postings in blocks of at most 128, cut from the low end: 128 + 128 + 44.
-    assert_eq!(blocks.iter().map(|(_, e)| e.len()).collect::<Vec<_>>(), [128, 128, 44]);
-    let units: Vec<UnitId> = blocks.iter().flat_map(|(_, e)| e.iter().map(|(u, _)| *u)).collect();
-    assert_eq!(units, ids, "ascending across the blocks");
-    // The first two blocks are bounded by their last unit, the third is the tail.
-    assert_eq!(blocks[0].0, block_key("common", Some(ids[127])));
-    assert_eq!(blocks[1].0, block_key("common", Some(ids[255])));
-    assert_eq!(blocks[2].0, block_key("common", None));
-    // Each `unitN` term is its own list of one posting: 300 + 1 + 2 lists in all.
-    assert_eq!(posting_blocks(&db).len(), 3 + 300 + 1);
+    let m = manifest(&db);
+    // Two change sets, two runs: 300 numbers and then one.
+    assert_eq!(m.next, 301);
+    assert_eq!(m.runs.iter().map(|r| (r.min, r.max, r.level, r.dead)).collect::<Vec<_>>(), [(0, 299, 0, 0), (300, 300, 0, 0)]);
+    assert_eq!(m.runs.iter().map(|r| r.postings).collect::<Vec<_>>(), [600, 1]);
+    let all = pages(&db);
+    assert_eq!(all.len() as u64, m.runs.iter().map(|r| r.pages).sum::<u64>());
+    assert!(all.len() < 150, "{} pages for 601 postings", all.len());
+    // The list of "common" is cut across several pages of the first run, each keyed by the
+    // list and the number of its last posting.
+    let common: Vec<&(Vec<u8>, Vec<u8>)> = all.iter().filter(|(k, _)| k[10..].starts_with(b"common\0")).collect();
+    assert!(common.len() > 2);
+    let run = [&[TAG_POSTING, 3][..], &m.runs[0].id.to_be_bytes()].concat();
+    assert!(common.iter().all(|(k, _)| k.len() == 2 + 8 + 7 + 8 && k[..10] == run[..]));
+    let units: Vec<UnitId> = index(&db)["common"].iter().map(|(u, _)| *u).collect();
+    assert_eq!(units, ids);
     assert_eq!(found(&db, "common").len(), 100, "a search is limited, the list is read whole");
     assert_eq!(db.search_text("common", 1000, None).unwrap().len(), 300);
     assert_clean(&db);
 }
 
 #[test]
-fn a_posting_changes_and_leaves_a_middle_block_of_a_long_list() {
+fn a_posting_changes_and_leaves_the_middle_of_a_long_list() {
     let (db, ids) = long_list(41);
-    // A unit in the middle block loses the term and another gains a repeat of it.
+    // A unit in the middle of the list loses the term: it gets a new number in a new run,
+    // and the old one dies where it is.
     update(&db, ids[130], "other");
-    update(&db, ids[200], "common common");
-    let blocks = blocks_of(&db, "common");
-    assert_eq!(blocks.iter().map(|(_, e)| e.len()).collect::<Vec<_>>(), [128, 127, 44]);
-    let tf = blocks[1].1.iter().find(|(u, _)| *u == ids[200]).map(|(_, p)| p.tf);
-    assert_eq!(tf, Some(2), "a posting is replaced in place");
-    assert!(blocks.iter().all(|(_, e)| e.iter().all(|(u, _)| *u != ids[130])));
+    let m = manifest(&db);
+    assert_eq!((m.next, m.live, m.runs.len(), m.runs[0].dead), (302, 301, 3, 1));
     assert_eq!(db.search_text("common", 1000, None).unwrap().len(), 299);
     assert_clean(&db);
-    // Emptying a block deletes its record: every unit of the first block goes.
+    // Another gains a repeat of it. That change set is the fourth run: the tier is full, so
+    // it writes the four as one run of the next level, without the dead numbers.
+    assert_eq!(runs::MERGE_FANOUT, 4);
+    update(&db, ids[200], "common common");
+    let m = manifest(&db);
+    assert_eq!((m.next, m.live, m.runs.len()), (303, 301, 1));
+    assert_eq!((m.runs[0].level, m.runs[0].dead, m.runs[0].min, m.runs[0].max), (1, 0, 0, 302));
+    let common = &index(&db)["common"];
+    assert_eq!(common.len(), 299);
+    assert_eq!(common.iter().find(|(u, _)| *u == ids[200]).map(|(_, p)| p.tf), Some(2));
+    assert!(common.iter().all(|(u, _)| *u != ids[130]));
+    assert_eq!(number_of(&db, ids[200]), (302, 2));
+    assert_eq!(db.search_text("common", 1000, None).unwrap().len(), 299);
+    assert_clean(&db);
+    // Units that leave only mark their numbers dead: no run is written.
     change(&db, |cs| {
         for id in &ids[..128] {
             cs.delete(*id, None).unwrap();
         }
     });
-    let blocks = blocks_of(&db, "common");
-    assert_eq!(blocks.iter().map(|(_, e)| e.len()).collect::<Vec<_>>(), [127, 44]);
+    let m = manifest(&db);
+    assert_eq!((m.live, m.runs.len(), m.runs[0].dead), (173, 1, 128));
     assert_eq!(db.search_text("common", 1000, None).unwrap().len(), 171);
+    assert_clean(&db);
+    // A merge drops the postings of the dead numbers; the answer is the same.
+    let before = index(&db);
+    assert_eq!(db.merge_posting_runs().unwrap(), 1);
+    let m = manifest(&db);
+    assert_eq!((m.runs.len(), m.runs[0].dead, m.runs[0].min, m.runs[0].max), (1, 0, 0, 302));
+    assert_eq!(m.runs[0].postings as usize, before.values().map(Vec::len).sum::<usize>());
+    assert_eq!(index(&db), before);
+    assert_eq!(db.search_text("common", 1000, None).unwrap().len(), 171);
+    assert_eq!(db.merge_posting_runs().unwrap(), 0, "nothing left to merge");
     assert_clean(&db);
 }
 
@@ -695,49 +738,99 @@ fn a_create_and_an_update_that_share_a_list_in_one_change_set_both_land() {
     });
     let hits = db.search_text("alpha", 5, None).unwrap();
     assert_eq!(hits.iter().map(|h| h.unit).collect::<std::collections::BTreeSet<_>>(), [a, b].into());
-    let blocks = blocks_of(&db, "alpha");
-    assert_eq!(blocks.len(), 1, "one block, written once");
-    assert_eq!(blocks[0].1.iter().map(|(_, p)| p.tf).collect::<Vec<_>>(), [2, 1]);
+    assert_eq!(index(&db)["alpha"].iter().map(|(u, p)| (*u, p.tf)).collect::<Vec<_>>(), [(a, 2), (b, 1)]);
+    assert_clean(&db);
+    // A unit indexed twice in one change set (its type turns the index on, then it is
+    // rewritten): its first number is dead before it is stored, and its postings are not
+    // written.
+    let memo = NewUnit { unit_type: "memo".into(), schema_version: 1, metadata: vec![], payload: b"alpha first".to_vec() };
+    let c = change_with(&db, |cs| cs.create(memo).unwrap());
+    change(&db, |cs| {
+        cs.set_fulltext("memo", true).unwrap();
+        cs.update(c, UnitUpdate { payload: b"alpha second".to_vec(), schema_version: None, metadata: None }, None)
+            .unwrap();
+    });
+    assert!(!index(&db).contains_key("first"));
+    assert_eq!(found(&db, "second"), [c]);
+    let m = manifest(&db);
+    assert_eq!((m.next, m.live), (5, 3));
+    assert!(m.runs.iter().all(|r| r.dead <= 1), "{m:?}");
     assert_clean(&db);
 }
 
 #[test]
-fn turning_the_index_off_removes_every_block_and_on_writes_them_again() {
+fn turning_the_index_off_removes_every_record_and_on_writes_them_again() {
+    use kerno_core::contract::Snapshot;
     let (db, _) = long_list(43);
     db.set_fulltext("note", false, ChangeMeta::default()).unwrap();
-    assert!(posting_blocks(&db).is_empty());
+    let snap = db.raw_snapshot().unwrap();
+    let left = snap.scan(Bound::Included(&[TAG_POSTING][..]), Bound::Excluded(&[TAG_STATS][..]), 10).unwrap();
+    assert!(left.is_empty(), "an index that holds nothing has no record: {left:?}");
     assert_clean(&db);
     db.set_fulltext("note", true, ChangeMeta::default()).unwrap();
-    assert_eq!(blocks_of(&db, "common").len(), 3);
+    assert_eq!(manifest(&db).runs.len(), 1);
     assert_eq!(db.search_text("common", 1000, None).unwrap().len(), 300);
     assert_clean(&db);
 }
 
+/// Each record of the index lost alone: the verifier reports it, and a search that needs a
+/// lost page is refused instead of answering short.
 #[test]
-fn verify_sees_a_block_that_holds_a_unit_outside_its_range() {
+fn verify_and_a_search_see_a_lost_record() {
     let (db, ids) = long_list(44);
-    let blocks = blocks_of(&db, "common");
-    // The first block, bounded by its 128th unit, swaps that unit for the 129th.
-    let (key, mut entries) = blocks[0].clone();
-    entries.pop();
-    entries.push(blocks[1].1[0]);
-    use crate::blocks::Block;
-    let raw: Vec<_> = entries.iter().map(|(u, p)| (u.0, *p)).collect();
-    db.raw_commit(vec![(key, Some(Postings::encode(&raw)))]).unwrap();
-    assert!(rules(&db).contains(&"UNIT-49".to_string()), "{:?} {}", db.verify_units().unwrap().findings, ids.len());
+    update(&db, ids[7], "common again");
+    let corrupt = |r: &Result<Vec<TextHit>, UnitError>| matches!(r, Err(UnitError::Storage(kerno_core::Error::Corruption(_))));
+    let mut refused = 0;
+    for (k, v) in pages(&db) {
+        db.raw_commit(vec![(k.clone(), None)]).unwrap();
+        assert_eq!(rules(&db), ["UNIT-49"], "page {k:?}");
+        for (query, want) in [("common", 300), ("unit150", 1), ("rare", 1), ("again", 1), ("unit0", 1), ("unit99", 1)] {
+            let r = db.search_text(query, 1000, None);
+            if corrupt(&r) {
+                refused += 1;
+            } else {
+                assert_eq!(r.unwrap().len(), want, "page {k:?}, query {query:?}: a short answer");
+            }
+        }
+        db.raw_commit(vec![(k, Some(v))]).unwrap();
+        assert_clean(&db);
+    }
+    assert!(refused > 0, "a search that needs a lost page is refused");
+    for k in [runs::manifest_key(&PREFIX), doc_key(ids[5]), runs::num_key(&PREFIX, 0), runs::num_key(&PREFIX, 1)] {
+        let v = db.raw_get(&k).unwrap().expect("the record exists");
+        db.raw_commit(vec![(k.clone(), None)]).unwrap();
+        assert!(rules(&db).contains(&"UNIT-49".to_string()), "key {k:?}");
+        db.raw_commit(vec![(k, Some(v))]).unwrap();
+        assert_clean(&db);
+    }
+    // A page of a run the manifest does not list.
+    let (k, v) = pages(&db).remove(0);
+    let mut stray = k.clone();
+    stray[2..10].copy_from_slice(&9_999u64.to_be_bytes());
+    db.raw_commit(vec![(stray, Some(v))]).unwrap();
+    assert_eq!(rules(&db), ["UNIT-49"]);
 }
 
 #[test]
-fn verify_sees_block_values_that_do_not_decode() {
+fn verify_sees_values_that_do_not_decode() {
     let (db, _) = long_list(45);
-    let key = block_key("rare", None);
-    let good = db.raw_get(&key).unwrap().unwrap();
+    // The page of the run of one posting: "rare", number 300, frequency 1, length 1.
+    let (key, good) = pages(&db).pop().unwrap();
+    assert_eq!(key, [&[TAG_POSTING, 3][..], &manifest(&db).runs[1].id.to_be_bytes(), b"rare\0", &300u64.to_be_bytes()].concat());
+    // envelope, base 300 (two bytes), no previous key, the list, one posting of three bytes.
+    assert_eq!(good, [&[1u8, 0, 0xAC, 0x02, 0][..], b"rare\0", &[1, 3, 0, 1, 1]].concat());
+    let n = good.len();
     for (name, bad, rule) in [
-        ("no unit", vec![1, 0], "UNIT-9"),
-        ("a partial posting", [&good[..], &[7][..]].concat(), "UNIT-9"),
+        ("no header", vec![1, 0], "UNIT-9"),
+        ("no item", good[..5].to_vec(), "UNIT-9"),
+        ("a cut item", good[..n - 1].to_vec(), "UNIT-9"),
+        ("a trailing byte in an item", [&good[..n - 4], &[4, 0, 1, 1, 0][..]].concat(), "UNIT-10"),
         ("a newer envelope", [&[2u8][..], &good[1..]].concat(), "UNIT-7"),
         ("reserved flags", [&[1u8, 1][..], &good[2..]].concat(), "UNIT-8"),
-        ("a zero frequency", [&good[..18], &[0, 0, 0, 0][..], &good[22..]].concat(), "UNIT-12"),
+        ("a zero frequency", [&good[..n - 2], &[0, 1][..]].concat(), "UNIT-12"),
+        ("a frequency above the length", [&good[..n - 2], &[2, 1][..]].concat(), "UNIT-12"),
+        ("an integer not in its shortest form", [&good[..n - 3], &[0x80, 0, 1, 1][..]].concat(), "UNIT-9"),
+        ("a number that is not the key's", [&good[..n - 3], &[1, 1, 1][..]].concat(), "UNIT-12"),
     ] {
         db.raw_commit(vec![(key.clone(), Some(bad))]).unwrap();
         let r = rules(&db);
@@ -745,7 +838,28 @@ fn verify_sees_block_values_that_do_not_decode() {
         db.raw_commit(vec![(key.clone(), Some(good.clone()))]).unwrap();
     }
     assert_clean(&db);
-    // A key that is not tag, term, NUL, bound.
-    db.raw_commit(vec![([&[TAG_POSTING][..], b"rare", &[0, 7]].concat(), Some(good))]).unwrap();
-    assert!(rules(&db).contains(&"UNIT-3".to_string()));
+    // Keys that are no record of the index: an unknown kind, a run page with no number, a
+    // term with no NUL.
+    for bad_key in [
+        vec![TAG_POSTING, 9],
+        [&[TAG_POSTING, 3][..], &[0u8; 8], b"rare\0", &[0u8; 7]].concat(),
+        [&[TAG_POSTING, 3][..], &[0u8; 8], b"rare", &[1u8; 8]].concat(),
+    ] {
+        db.raw_commit(vec![(bad_key.clone(), Some(good.clone()))]).unwrap();
+        assert!(rules(&db).contains(&"UNIT-3".to_string()), "key {bad_key:?}");
+        db.raw_commit(vec![(bad_key, None)]).unwrap();
+    }
+    assert_clean(&db);
+    // The manifest, a document record and a number page, each damaged alone.
+    let unit = found(&db, "rare")[0];
+    for key in [runs::manifest_key(&PREFIX), doc_key(unit), runs::num_key(&PREFIX, 1)] {
+        let good = db.raw_get(&key).unwrap().unwrap();
+        for bad in [vec![1, 0], vec![2, 0], [&good[..], &[0u8]].concat(), good[..good.len() - 1].to_vec()] {
+            db.raw_commit(vec![(key.clone(), Some(bad.clone()))]).unwrap();
+            let r = rules(&db);
+            assert!(!r.is_empty() && !r.contains(&"UNIT-49".to_string()), "key {key:?} value {bad:?}: {r:?}");
+        }
+        db.raw_commit(vec![(key, Some(good))]).unwrap();
+        assert_clean(&db);
+    }
 }

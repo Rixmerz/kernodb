@@ -77,8 +77,9 @@ use std::ops::Bound;
 use kerno_core::contract::{Engine, Snapshot, Txn, TxnEngine};
 
 use crate::codec::{Key, UnitHead};
-use crate::db::{ChangeSet, UnitDb, UnitSnapshot, Write, context, scan_all};
+use crate::db::{ChangeSet, UnitDb, UnitSnapshot, Write, context};
 use crate::error::{DecodeError, UnitError, UnitRule};
+use crate::runs::{self, Family, Pending, Slots, Staged};
 use crate::type_options::TAG_TYPE_OPTIONS;
 use crate::types::{Lifecycle, UnitId};
 use tokenize::{Doc, analyze};
@@ -98,10 +99,6 @@ pub const B: f64 = 0.75;
 
 const RECORD_VERSION: u8 = 1;
 
-/// Most postings in one block.
-pub const BLOCK_MAX: usize = 128;
-/// `unit[16] ‖ tf ‖ dl`.
-const ENTRY_LEN: usize = 24;
 
 /// A unit a query found and its BM25 score (higher is a better match).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -112,68 +109,26 @@ pub struct TextHit {
 
 // ---------------------------------------------------------------- keys
 
-/// `0x74 ‖ term ‖ 0x00`: the prefix of the blocks of one term's posting list.
+/// The prefix of the records of the keyword index ([`crate::runs`]).
+pub(crate) const PREFIX: [u8; 1] = [TAG_POSTING];
+
+/// `term ‖ 0x00`: the key of the list of one term in a run.
 pub(crate) fn list_key(term: &str) -> Vec<u8> {
-    let mut k = Vec::with_capacity(term.len() + 2);
-    k.push(TAG_POSTING);
+    let mut k = Vec::with_capacity(term.len() + 1);
     k.extend_from_slice(term.as_bytes());
     k.push(0);
     k
 }
 
-/// The key of the block of `term`'s list with the bound `bound` (`None`: the tail).
-#[cfg(test)]
-pub(crate) fn block_key(term: &str, bound: Option<UnitId>) -> Vec<u8> {
-    crate::blocks::block_key(&list_key(term), bound.as_ref().map(|u| &u.0))
-}
-
-/// Scan bounds `[start, end)` of the blocks of one term.
-fn posting_range(term: &str) -> (Vec<u8>, Vec<u8>) {
-    let mut start = vec![TAG_POSTING];
-    start.extend_from_slice(term.as_bytes());
-    let mut end = start.clone();
-    start.push(0);
-    end.push(1);
-    (start, end)
-}
-
+/// The key of the document record of `unit`.
 pub(crate) fn doc_key(unit: UnitId) -> Vec<u8> {
-    let mut k = vec![TAG_DOC];
-    k.extend_from_slice(&unit.0);
-    k
+    runs::doc_key(&PREFIX, unit)
 }
 
 pub(crate) const STATS_KEY: [u8; 1] = [TAG_STATS];
 
 fn valid_term(t: &[u8]) -> bool {
     (1..=MAX_TERM_LEN).contains(&t.len()) && !t.contains(&0) && std::str::from_utf8(t).is_ok()
-}
-
-/// The term and bound (`None`: the tail) of a posting block key.
-pub(crate) fn decode_posting_key(key: &[u8]) -> Result<(String, Option<UnitId>), DecodeError> {
-    let n = key.len();
-    let shape = || DecodeError::new(UnitRule::Unit3, format!("posting key of {n} bytes is not tag, term, NUL, bound"));
-    let nul = key.iter().skip(1).position(|b| *b == 0).map(|p| p + 1).ok_or_else(shape)?;
-    if key[0] != TAG_POSTING {
-        return Err(shape());
-    }
-    let term = &key[1..nul];
-    if !valid_term(term) {
-        return Err(DecodeError::new(
-            UnitRule::Unit12,
-            "posting key term is empty, over 64 bytes, has a NUL or is not UTF-8",
-        ));
-    }
-    let bound = crate::blocks::bound_of(&key[..=nul], key).map_err(|_| shape())?;
-    Ok((String::from_utf8_lossy(term).into_owned(), bound.map(UnitId)))
-}
-
-/// The unit of a `DOC` key.
-pub(crate) fn decode_doc_key(key: &[u8]) -> Result<UnitId, DecodeError> {
-    match key.get(1..).and_then(|b| <[u8; 16]>::try_from(b).ok()) {
-        Some(unit) if key[0] == TAG_DOC => Ok(UnitId(unit)),
-        _ => Err(DecodeError::new(UnitRule::Unit3, format!("doc key of {} bytes is not tag, unit", key.len()))),
-    }
 }
 
 // -------------------------------------------------------------- values
@@ -207,10 +162,6 @@ fn fixed<'a, const N: usize>(v: &'a [u8], what: &str) -> Result<&'a [u8; N], Dec
     })
 }
 
-fn be32(b: &[u8]) -> u32 {
-    u32::from_be_bytes([b[0], b[1], b[2], b[3]])
-}
-
 fn be64(b: &[u8]) -> u64 {
     let mut a = [0u8; 8];
     a.copy_from_slice(&b[..8]);
@@ -223,110 +174,18 @@ pub(crate) struct Posting {
     pub dl: u32,
 }
 
-/// The posting blocks as [`crate::blocks`] stores them.
+/// The keyword index as [`crate::runs`] stores it: a list per term (`term ‖ 0x00`, a term
+/// has no NUL), postings with the frequency of the term and the length of the document.
 pub(crate) struct Postings;
 
-impl crate::blocks::Block for Postings {
-    type Val = Posting;
-    const MAX: usize = BLOCK_MAX;
+impl Family for Postings {
     const WHAT: &'static str = "POSTING";
-    const ENTRY: usize = ENTRY_LEN;
+    const VALUES: bool = true;
 
-    fn decode(v: &[u8]) -> Result<Vec<(crate::blocks::Id, Posting)>, DecodeError> {
-        let e = |rule, m: &str| DecodeError::new(rule, format!("posting block: {m}"));
-        let body = crate::blocks::body(v, "posting block")?;
-        if body.is_empty() || !body.len().is_multiple_of(ENTRY_LEN) {
-            return Err(e(UnitRule::Unit9, "no whole posting, or a partial one"));
-        }
-        if body.len() / ENTRY_LEN > BLOCK_MAX {
-            return Err(e(UnitRule::Unit11, "more postings than a block holds"));
-        }
-        let mut out = Vec::with_capacity(body.len() / ENTRY_LEN);
-        for c in body.as_chunks::<ENTRY_LEN>().0 {
-            let mut unit = [0u8; 16];
-            unit.copy_from_slice(&c[..16]);
-            let p = Posting { tf: be32(&c[16..20]), dl: be32(&c[20..]) };
-            if p.tf == 0 || p.dl < p.tf {
-                return Err(e(UnitRule::Unit12, &format!("tf {} in a document of {} terms", p.tf, p.dl)));
-            }
-            out.push((unit, p));
-        }
-        crate::blocks::ascending(&out, "posting block")?;
-        Ok(out)
+    fn list_len(rest: &[u8]) -> Option<usize> {
+        let nul = rest.iter().take(MAX_TERM_LEN + 1).position(|b| *b == 0)?;
+        valid_term(&rest[..nul]).then_some(nul + 1)
     }
-
-    fn encode(entries: &[(crate::blocks::Id, Posting)]) -> Vec<u8> {
-        let mut v = Vec::with_capacity(2 + ENTRY_LEN * entries.len());
-        v.extend_from_slice(&[RECORD_VERSION, 0]);
-        for (unit, p) in entries {
-            v.extend_from_slice(unit);
-            v.extend_from_slice(&p.tf.to_be_bytes());
-            v.extend_from_slice(&p.dl.to_be_bytes());
-        }
-        v
-    }
-
-    fn put_val(out: &mut Vec<u8>, p: &Posting) {
-        out.extend_from_slice(&p.tf.to_be_bytes());
-        out.extend_from_slice(&p.dl.to_be_bytes());
-    }
-
-    fn val_ok(b: &[u8]) -> bool {
-        let (tf, dl) = (be32(&b[..4]), be32(&b[4..]));
-        tf != 0 && dl >= tf
-    }
-}
-
-/// The postings of a block value.
-pub(crate) fn decode_block(v: &[u8]) -> Result<Vec<(UnitId, Posting)>, DecodeError> {
-    Ok(<Postings as crate::blocks::Block>::decode(v)?.into_iter().map(|(u, p)| (UnitId(u), p)).collect())
-}
-
-fn encode_doc(doc: &Doc) -> Vec<u8> {
-    let mut v = vec![RECORD_VERSION, 0];
-    v.extend_from_slice(&doc.len.to_be_bytes());
-    v.extend_from_slice(&(doc.terms.len() as u32).to_be_bytes());
-    for t in doc.terms.keys() {
-        v.push(t.len() as u8);
-        v.extend_from_slice(t.as_bytes());
-    }
-    v
-}
-
-/// The length and the distinct terms of a `DOC` value.
-pub(crate) fn decode_doc(v: &[u8]) -> Result<(u32, BTreeSet<String>), DecodeError> {
-    let b = body(v, "doc record")?;
-    if b.len() < 8 {
-        return Err(DecodeError::new(UnitRule::Unit9, format!("doc record has {} bytes after its envelope", b.len())));
-    }
-    let (dl, n) = (be32(&b[..4]), be32(&b[4..8]));
-    let mut rest = &b[8..];
-    let mut terms = BTreeSet::new();
-    for _ in 0..n {
-        let Some((&len, tail)) = rest.split_first() else {
-            return Err(DecodeError::new(UnitRule::Unit9, "doc record ends before its last term"));
-        };
-        let len = usize::from(len);
-        if tail.len() < len {
-            return Err(DecodeError::new(UnitRule::Unit9, "doc record ends inside a term"));
-        }
-        let (term, tail) = tail.split_at(len);
-        if !valid_term(term) {
-            return Err(DecodeError::new(
-                UnitRule::Unit12,
-                "doc record term is empty, over 64 bytes, has a NUL or is not UTF-8",
-            ));
-        }
-        terms.insert(String::from_utf8_lossy(term).into_owned());
-        rest = tail;
-    }
-    if !rest.is_empty() {
-        return Err(DecodeError::new(UnitRule::Unit10, format!("doc record has {} trailing bytes", rest.len())));
-    }
-    if terms.len() != n as usize {
-        return Err(DecodeError::new(UnitRule::Unit12, "doc record repeats a term"));
-    }
-    Ok((dl, terms))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -381,22 +240,41 @@ pub(crate) fn next_of(unit: UnitId, writes: &[Write]) -> Result<Next<'_>, UnitEr
         .map_or(Next::Unchanged, |p| Next::Content(head.unit_type, Some(p))))
 }
 
-/// What a change set will change in the posting lists: per term, the postings
-/// to put (`Some`) or remove (`None`) by unit, the last operation of a unit
-/// winning.
-pub(crate) type PendingPostings =
-    HashMap<String, Vec<(crate::blocks::Id, Option<Posting>)>, std::hash::BuildHasherDefault<tokenize::TermHasher>>;
+/// What a change set will change in the index: the numbers it gives and those that die
+/// ([`runs::Pending`]) and, per term, the postings of the new numbers (the number less the
+/// first one the change set gives, the frequency, the document length), ascending.
+pub(crate) type PendingPostings = Option<(Pending, TermLists)>;
 
-/// The index change of one operation that is not a record of its own: the
-/// postings the unit gives up and gains, and what its document does to the
-/// statistics.
+type TermLists = HashMap<String, Vec<(u32, u32, u32)>, std::hash::BuildHasherDefault<tokenize::TermHasher>>;
+
+/// The index change of one operation: the number and the length the unit's document had
+/// (`None`: it had none) and its new document (`None`: it has none any more).
 pub(crate) struct TextChange {
     unit: UnitId,
-    gone: Vec<String>,
-    put: Vec<(String, Posting)>,
-    /// The change of the number of documents and of their summed length.
-    docs: i64,
-    len: i64,
+    old: Option<(u64, u32)>,
+    new: Option<Doc>,
+}
+
+/// The staged lists of a change set, in term order, for [`runs::flush`].
+struct StagedTerms {
+    lists: Vec<(Vec<u8>, Vec<(u32, u32, u32)>)>,
+    at: usize,
+    base: u64,
+}
+
+impl Staged for StagedTerms {
+    fn peek(&mut self) -> Option<&[u8]> {
+        self.lists.get(self.at).map(|(k, _)| k.as_slice())
+    }
+
+    fn take(&mut self, emit: &mut dyn FnMut(runs::Posting)) {
+        if let Some((_, postings)) = self.lists.get(self.at) {
+            for (off, tf, dl) in postings {
+                emit((self.base + u64::from(*off), *tf, *dl));
+            }
+        }
+        self.at += 1;
+    }
 }
 
 /// What an operation does to the full-text index: the records it writes with
@@ -434,78 +312,73 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
     /// clear the units a type already has.
     pub(crate) fn plan_document(&self, unit: UnitId, payload: Option<&[u8]>) -> Result<TextPlan, UnitError> {
         let new = payload.and_then(analyze);
+        // The document record says whether the index holds the unit, under which number and
+        // with which length: the text it had is not read.
         let old = match self.txn()?.get(&doc_key(unit))? {
-            Some(raw) => Some(decode_doc(&raw).map_err(|e| context(e, &format!("DOC of unit {unit}")))?),
+            Some(raw) => Some(runs::decode_doc(&raw, "DOC").map_err(|e| context(e, &format!("DOC of unit {unit}")))?),
             None => None,
         };
         if old.is_none() && new.is_none() {
             return Ok(TextPlan::default());
         }
-        if old.is_none() {
-            // A unit the index takes in for the first time: maybe a new unit of a bulk load.
-            self.learn_fresh(unit)?;
-        }
-        // Only the postings the new text no longer has go; the others are overwritten.
-        let gone = old
-            .iter()
-            .flat_map(|(_, terms)| terms)
-            .filter(|t| !new.as_ref().is_some_and(|d| d.terms.contains_key(*t)))
-            .cloned()
-            .collect();
-        let (mut docs, mut len) = (0i64, 0i64);
-        if let Some((dl, _)) = &old {
-            docs -= 1;
-            len -= i64::from(*dl);
-        }
-        let (write, put) = match new {
-            Some(doc) => {
-                docs += 1;
-                len += i64::from(doc.len);
-                let write = Write::Put(doc_key(unit), encode_doc(&doc));
-                let put = doc.terms.into_iter().map(|(t, tf)| (t, Posting { tf, dl: doc.len })).collect();
-                (write, put)
-            }
-            None => (Write::Delete(doc_key(unit)), Vec::new()),
-        };
-        Ok(TextPlan { writes: vec![write], change: Some(TextChange { unit, gone, put, docs, len }) })
+        Ok(TextPlan { writes: Vec::new(), change: Some(TextChange { unit, old, new }) })
     }
 
     /// Keeps the posting and statistics changes of an operation planned by
-    /// [`plan_document`](Self::plan_document), for [`flush_fulltext`](Self::flush_fulltext).
-    pub(crate) fn stage_fulltext(&mut self, change: Option<TextChange>) {
-        let Some(c) = change else { return };
-        for term in c.gone {
-            stage(&mut self.text_pending, term, c.unit, None);
+    /// [`plan_document`](Self::plan_document), for [`flush_fulltext`](Self::flush_fulltext),
+    /// and writes the unit's document record: the number the unit had dies, and its new
+    /// document, if it has one, gets the next.
+    pub(crate) fn stage_fulltext(&mut self, change: Option<TextChange>) -> Result<(), UnitError> {
+        let Some(c) = change else { return Ok(()) };
+        if self.text_pending.is_none() {
+            let pending = Pending::load::<_, Postings>(self.txn()?, PREFIX.to_vec())?;
+            self.text_pending = Some((pending, TermLists::default()));
         }
-        for (term, p) in c.put {
-            stage(&mut self.text_pending, term, c.unit, Some(p));
+        let Some((pending, lists)) = self.text_pending.as_mut() else { return Ok(()) };
+        let (mut docs, mut len) = (0i64, 0i64);
+        if let Some((num, dl)) = c.old {
+            pending.kill(num);
+            docs -= 1;
+            len -= i64::from(dl);
         }
-        let (docs, len) = self.text_stats.get_or_insert((0, 0));
-        *docs += c.docs;
-        *len += c.len;
+        let write = match c.new {
+            Some(doc) => {
+                let num = pending.alloc(c.unit);
+                let off = u32::try_from(num - pending.base())
+                    .map_err(|_| UnitError::InvalidArgument("a change set indexes at most 2^32 units".into()))?;
+                docs += 1;
+                len += i64::from(doc.len);
+                for (term, tf) in doc.terms {
+                    lists.entry(term).or_default().push((off, tf, doc.len));
+                }
+                Write::Put(doc_key(c.unit), runs::encode_doc(num, doc.len))
+            }
+            None => Write::Delete(doc_key(c.unit)),
+        };
+        let stats = self.text_stats.get_or_insert((0, 0));
+        stats.0 += docs;
+        stats.1 += len;
+        self.write_owned(write)
     }
 
     /// Writes the posting changes and the statistics delta the change set
-    /// kept: each posting block a changed unit falls in is read once and
-    /// written once, and the statistics record is written once. Called by
-    /// `commit`.
+    /// kept: the postings of its new numbers as one run, the number pages and the manifest
+    /// ([`runs::flush`]), and the statistics record once. Called by `commit`.
     pub(crate) fn flush_fulltext(&mut self) -> Result<(), UnitError> {
-        // Terms in ascending order, as the probe needs: a term's list key is the term and a
-        // NUL, and a term has no NUL, so the keys order like the terms and none is a prefix of
-        // another.
-        let mut probe = crate::blocks::Probe::new(vec![TAG_POSTING + 1]);
-        let above = self.fresh_from().map(|u| u.0);
-        let mut lists: Vec<_> = std::mem::take(&mut self.text_pending).into_iter().collect();
-        lists.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-        for (term, mut ops) in lists {
-            // Ascending by unit; of several operations on a unit the last wins. A batch of
-            // new units stages them in id order already: nothing to sort then.
-            if !ops.windows(2).all(|w| w[0].0 < w[1].0) {
-                ops.reverse();
-                ops.sort_by_key(|(u, _)| *u);
-                ops.dedup_by_key(|(u, _)| *u);
-            }
-            crate::blocks::flush::<Postings, E>(self, &list_key(&term), ops, false, Some(&mut probe), above)?;
+        if let Some((pending, lists)) = self.text_pending.take() {
+            // Terms in ascending order: a term's list key is the term and a NUL, and a term
+            // has no NUL, so the keys order like the terms.
+            let mut lists: Vec<(Vec<u8>, Vec<(u32, u32, u32)>)> = lists
+                .into_iter()
+                .map(|(term, postings)| {
+                    let mut k = term.into_bytes();
+                    k.push(0);
+                    (k, postings)
+                })
+                .collect();
+            lists.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            let mut staged = StagedTerms { lists, at: 0, base: pending.base() };
+            runs::flush::<E, Postings>(self, pending, &mut staged, false)?;
         }
         let Some((docs, len)) = self.text_stats.take() else {
             return Ok(());
@@ -523,11 +396,6 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         stats.total_len = add(stats.total_len, len);
         self.write_owned(Write::Put(STATS_KEY.to_vec(), encode_stats(stats)))
     }
-}
-
-/// Records that `unit` has `value` (`None`: no posting) in the list of `term`.
-fn stage(pending: &mut PendingPostings, term: String, unit: UnitId, value: Option<Posting>) {
-    pending.entry(term).or_default().push((unit.0, value));
 }
 
 // --------------------------------------------------------------- query
@@ -611,22 +479,45 @@ impl<E: Engine> UnitSnapshot<E> {
         }
         let n_docs = stats.docs as f64;
         let avg_len = (stats.total_len as f64 / n_docs).max(1.0);
-        let mut scores: HashMap<UnitId, f64> = HashMap::new();
+        let get = |k: &[u8]| self.snap.get(k);
+        let scan = |lo: Bound<&[u8]>, hi: Bound<&[u8]>, n: usize| self.snap.scan(lo, hi, n);
+        let manifest = runs::read_manifest::<Postings>(&get, &PREFIX)?;
+        let mut slots = Slots::default();
+        // Scored by document number; a number is one unit's.
+        let mut scores: HashMap<u64, f64> = HashMap::new();
+        let mut postings: Vec<runs::Posting> = Vec::new();
         for term in &terms {
-            let (start, end) = posting_range(term);
-            let mut postings = Vec::new();
-            scan_all(&self.snap, start, end, |_, v| {
-                postings.extend(decode_block(v).map_err(|e| context(e, "POSTING"))?);
-                Ok(())
-            })?;
+            let list = list_key(term);
+            postings.clear();
+            for run in &manifest.runs {
+                let from = postings.len();
+                runs::read_list::<Postings>(&scan, &PREFIX, run, &list, 0, None, usize::MAX, &mut |p| {
+                    postings.push(p);
+                })?;
+                if run.dead > 0 {
+                    // A number that died since the run was written is no posting any more.
+                    let mut kept = from;
+                    for at in from..postings.len() {
+                        if slots.slot(&get, &PREFIX, postings[at].0)?.0 {
+                            postings[kept] = postings[at];
+                            kept += 1;
+                        }
+                    }
+                    postings.truncate(kept);
+                }
+            }
             let df = postings.len() as f64;
             let idf = (1.0 + ((n_docs - df).max(0.0) + 0.5) / (df + 0.5)).ln();
-            for (unit, p) in postings {
-                let (tf, dl) = (f64::from(p.tf), f64::from(p.dl));
-                *scores.entry(unit).or_insert(0.0) += idf * tf * (K1 + 1.0) / (tf + K1 * (1.0 - B + B * dl / avg_len));
+            for (num, tf, dl) in &postings {
+                let (tf, dl) = (f64::from(*tf), f64::from(*dl));
+                *scores.entry(*num).or_insert(0.0) += idf * tf * (K1 + 1.0) / (tf + K1 * (1.0 - B + B * dl / avg_len));
             }
         }
-        let mut hits: Vec<TextHit> = scores.into_iter().map(|(unit, score)| TextHit { unit, score }).collect();
+        // Hits are best first, ties in unit id order. A number is mapped to its unit (a read of
+        // its number page) only when it is among the best, or ties with the last of them: a
+        // search scores every unit that holds a term and answers a few.
+        let mut hits: Vec<(u64, f64)> = scores.into_iter().collect();
+        let by_score = |a: &(u64, f64), b: &(u64, f64)| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0));
         let best_first = |a: &TextHit, b: &TextHit| b.score.total_cmp(&a.score).then(a.unit.cmp(&b.unit));
         // The best hits are taken off the front a slice at a time, so a search sorts (and, with
         // `types`, reads the head of) about `limit` units, not every unit that holds a term.
@@ -634,12 +525,41 @@ impl<E: Engine> UnitSnapshot<E> {
         let mut from = 0;
         while out.len() < limit && from < hits.len() {
             let rest = &mut hits[from..];
-            let n = (limit - out.len()).min(rest.len());
+            let want = (limit - out.len()).min(rest.len());
+            let mut n = want;
             if n < rest.len() {
-                rest.select_nth_unstable_by(n - 1, best_first);
+                rest.select_nth_unstable_by(n - 1, by_score);
+                // Every hit that ties with the last one taken comes along, so that the order
+                // among them is decided by their unit ids, not by their numbers.
+                let edge = rest[n - 1].1;
+                let mut at = n;
+                while at < rest.len() {
+                    if rest[at].1.total_cmp(&edge).is_eq() {
+                        rest.swap(n, at);
+                        n += 1;
+                    }
+                    at += 1;
+                }
             }
-            rest[..n].sort_unstable_by(best_first);
-            for hit in &rest[..n] {
+            let mut slice = Vec::with_capacity(n);
+            for (num, score) in &rest[..n] {
+                let (_, unit) = slots.slot(&get, &PREFIX, *num)?;
+                slice.push(TextHit { unit, score: *score });
+            }
+            slice.sort_unstable_by(best_first);
+            // The ties past `want` go back: they are the best of what is left.
+            let taken = slice.len().min(want);
+            if taken < slice.len() {
+                let keep: std::collections::HashSet<UnitId> = slice[..taken].iter().map(|h| h.unit).collect();
+                let mut front = 0;
+                for at in 0..n {
+                    if keep.contains(&slots.slot(&get, &PREFIX, rest[at].0)?.1) {
+                        rest.swap(front, at);
+                        front += 1;
+                    }
+                }
+            }
+            for hit in &slice[..taken] {
                 if let Some(types) = types {
                     let Some(head) = crate::history::read_head(&|k| self.snap.get(k), hit.unit)? else {
                         return Err(UnitError::Storage(kerno_core::Error::Corruption(format!(
@@ -653,7 +573,7 @@ impl<E: Engine> UnitSnapshot<E> {
                 }
                 out.push(*hit);
             }
-            from += n;
+            from += taken;
         }
         Ok(out)
     }

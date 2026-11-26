@@ -857,6 +857,9 @@ impl<E: TxnEngine + Reclaim> UnitDb<E> {
             }
             resume = stop;
         }
+        // The runs of the text indexes become one run each, as far as a transaction allows
+        // (ADR-0027): a search then reads one run, not one per tier.
+        self.merge_posting_runs()?;
         Reclaim::compact_range(
             self.inner_engine(),
             Bound::Included(&[TAG_REV_META]),

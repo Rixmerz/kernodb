@@ -178,7 +178,7 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
             for w in plan.writes {
                 self.write_owned(w)?;
             }
-            self.stage_fulltext(plan.change);
+            self.stage_fulltext(plan.change)?;
         }
         Ok(())
     }

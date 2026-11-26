@@ -733,12 +733,11 @@ impl<E: TxnEngine> UnitDb<E> {
             token_ops: 0,
             active_known: std::collections::HashSet::default(),
             rel_ceiling: RelCeiling::Unknown,
-            fresh: std::cell::Cell::new(Fresh::Unknown),
             schema_ops: 0,
             type_option_ops: 0,
             substring_pending: Default::default(),
             adj_pending: Default::default(),
-            text_pending: Default::default(),
+            text_pending: None,
             text_stats: None,
             members: Vec::new(),
             relation_ops: 0,
@@ -1254,9 +1253,6 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     /// transaction's view, its own writes included), once one is known: see
     /// [`ChangeSet::relation_id_is_free`].
     rel_ceiling: RelCeiling,
-    /// Whether the units this change set creates have ids above every unit
-    /// the database held: see [`ChangeSet::learn_fresh`].
-    fresh: std::cell::Cell<Fresh>,
     /// Schema and index definitions written so far (ADR-0021): they make the
     /// change set non-empty and, with no member, give it the purpose `Index`.
     pub(crate) schema_ops: usize,
@@ -1322,19 +1318,6 @@ impl std::hash::Hasher for IdHasher {
         // The table takes its index from the low bits and its tag from the high ones.
         self.0 ^= self.0 >> 32;
     }
-}
-
-/// What a change set knows about the ids of the units it creates.
-#[derive(Clone, Copy)]
-enum Fresh {
-    /// Not asked yet.
-    Unknown,
-    /// When asked, the transaction held no `UNIT_HEAD` with this id or a
-    /// higher one: a unit with such an id is created by this change set,
-    /// after every unit that existed.
-    From(UnitId),
-    /// Asked about a unit that exists, or one below a stored unit.
-    No,
 }
 
 /// What a change set knows about the highest `REL` record it sees.
@@ -1502,6 +1485,11 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         }
     }
 
+    /// Key and value bytes written so far.
+    pub(crate) fn bytes_so_far(&self) -> usize {
+        self.bytes
+    }
+
     /// Runs one public operation and closes the change set when it fails after writing.
     /// A write error already breaks it; this also covers an error from any later step, so an
     /// operation that left part of its effect in the transaction cannot be committed (TXN-01).
@@ -1558,8 +1546,8 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         for w in plan.writes.into_iter().chain(derived).chain(text.writes).chain(fields) {
             self.write_owned(w)?;
         }
-        self.stage_fulltext(text.change);
-        self.stage_substring(unit, grams);
+        self.stage_fulltext(text.change)?;
+        self.stage_substring(unit, grams)?;
         self.touched.insert(plan.rev.unit);
         self.members.push((plan.rev, plan.kind));
         Ok(plan.rev.rev)
@@ -2048,37 +2036,6 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         Ok(self.txn()?.get(rel_key)?.is_none())
     }
 
-    /// Told of a unit an index is about to take in for the first time, before
-    /// the unit's `UNIT_HEAD` is written: learns, once per change set and with
-    /// one seek, whether the units created from here on are above every unit
-    /// the database holds (ids are minted in ascending order, so a bulk load
-    /// creates nothing else).
-    ///
-    /// [`fresh_from`](Self::fresh_from) is what the index flushes use it for:
-    /// an id at or above it belongs to a unit this change set created, so no
-    /// stored posting block holds it or a higher id, and its entries go after
-    /// every entry of their list. A list with no tail block then needs no
-    /// seek to find its other blocks (`blocks::flush`).
-    pub(crate) fn learn_fresh(&self, unit: UnitId) -> Result<(), UnitError> {
-        if !matches!(self.fresh.get(), Fresh::Unknown) {
-            return Ok(());
-        }
-        let (_, end) = Key::tag_range(crate::codec::TAG_UNIT_HEAD);
-        let from = key(Key::UnitHead { unit })?;
-        let none = self.txn()?.scan(Bound::Included(&from), Bound::Excluded(&end), 1)?.is_empty();
-        self.fresh.set(if none { Fresh::From(unit) } else { Fresh::No });
-        Ok(())
-    }
-
-    /// The id from which every unit is one this change set created, above
-    /// every unit that existed before it, when [`learn_fresh`](Self::learn_fresh) found one.
-    pub(crate) fn fresh_from(&self) -> Option<UnitId> {
-        match self.fresh.get() {
-            Fresh::From(unit) => Some(unit),
-            _ => None,
-        }
-    }
-
     fn admit_relation(&self) -> Result<(), UnitError> {
         self.txn()?;
         let ops = self.members.len() + self.relation_ops;
@@ -2277,7 +2234,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         let text = self.plan_fulltext(unit, &writes)?;
         writes.extend(text.writes);
         self.apply_planned_only(Planned { writes, rev: RevisionId { unit, rev }, kind, live: None }, live)?;
-        self.stage_fulltext(text.change);
+        self.stage_fulltext(text.change)?;
         Ok(())
     }
 

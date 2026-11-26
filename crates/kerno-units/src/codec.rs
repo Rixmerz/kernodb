@@ -82,13 +82,20 @@ pub const LAYER_VERSION_BLOCKS: u32 = 9;
 /// A database created by this build starts here, and a build that reads up
 /// to 9 refuses it.
 pub const LAYER_VERSION_INLINE_PAYLOAD: u32 = 10;
+/// `layer_version` of the format cut of ADR-0027
+/// (`docs/file-format/units-v11.md`): the keyword index (`0x74`) and the
+/// trigram index (`0x7a`) are posting runs ([`crate::runs`]) over dense
+/// document numbers, and the `DOC` records (`0x75`) are gone. A database
+/// created by this build starts here, and a build that reads up to 10
+/// refuses it.
+pub const LAYER_VERSION_POSTING_RUNS: u32 = 11;
 /// The newest `layer_version` this build reads and writes.
-pub const MAX_LAYER_VERSION: u32 = LAYER_VERSION_INLINE_PAYLOAD;
+pub const MAX_LAYER_VERSION: u32 = LAYER_VERSION_POSTING_RUNS;
 /// The lowest `layer_version` this build opens: the format cut of
-/// `units-v10.md`, which supersedes the cuts of ADR-0026 and of
-/// 1.0.0-alpha.2 (ADR-0023). Every database it creates starts here. A
+/// `units-v11.md`, which supersedes the cuts of `units-v10.md`, of ADR-0026
+/// and of 1.0.0-alpha.2 (ADR-0023). Every database it creates starts here. A
 /// database below it is exported with the build that wrote it and imported.
-pub const MIN_LAYER_VERSION: u32 = LAYER_VERSION_INLINE_PAYLOAD;
+pub const MIN_LAYER_VERSION: u32 = LAYER_VERSION_POSTING_RUNS;
 /// The longest payload a writer of this layer stores in the `UNIT_HEAD` of
 /// its unit as well as in its `REV_PAYLOAD` (`units-v10.md` §2), and the
 /// longest a reader accepts there.

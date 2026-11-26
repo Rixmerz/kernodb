@@ -9,6 +9,8 @@ use kerno_testkit::emulated::Emulated;
 use kerno_testkit::reference::LogEngine;
 use kerno_testkit::vfs::SimVfs;
 
+use std::collections::BTreeMap;
+
 use super::*;
 use crate::{ChangeMeta, CounterIds, FixedClock, NewUnit, Timestamp, UnitConfig, UnitUpdate};
 
@@ -60,34 +62,48 @@ fn entries(db: &UnitDb<E>) -> Vec<(Vec<u8>, Vec<u8>)> {
     snap.scan(Bound::Included(&[TAG_TRIGRAM][..]), Bound::Excluded(&[TAG_TRIGRAM + 1][..]), usize::MAX).unwrap()
 }
 
-/// Every trigram block of the store, decoded: `(key, units)`.
-fn blocks(db: &UnitDb<E>) -> Vec<(Vec<u8>, Vec<UnitId>)> {
-    entries(db).into_iter().map(|(k, v)| (k, decode_block(&v).unwrap())).collect()
+/// The index of `unit_type` as a search reads it: the units of each trigram, in id order.
+fn index_of(db: &UnitDb<E>, unit_type: &str) -> BTreeMap<Vec<u8>, Vec<UnitId>> {
+    let snap = db.raw_snapshot().unwrap();
+    runs::dump_units::<_, Trigrams>(&snap, &type_prefix(unit_type))
+        .into_iter()
+        .map(|(gram, units)| (gram, units.into_iter().map(|u| u.0).collect()))
+        .collect()
 }
 
-/// The units the index holds, each once, in id order.
+/// The units the index of `sym` holds, each once, in id order.
 fn indexed_units(db: &UnitDb<E>) -> Vec<UnitId> {
-    let mut out: Vec<UnitId> = blocks(db).into_iter().flat_map(|(_, u)| u).collect();
+    let mut out: Vec<UnitId> = index_of(db, "sym").into_values().flatten().collect();
     out.sort_unstable();
     out.dedup();
     out
 }
 
-/// The raw writes that take `unit` out of every block that holds it.
-fn without(db: &UnitDb<E>, unit: UnitId) -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
-    blocks(db)
-        .into_iter()
-        .filter(|(_, units)| units.contains(&unit))
-        .map(|(k, units)| {
-            let rest: Vec<UnitId> = units.into_iter().filter(|u| *u != unit).collect();
-            (k, (!rest.is_empty()).then(|| encode_block(&rest)))
-        })
-        .collect()
+/// The manifest of the index of `sym`.
+fn manifest(db: &UnitDb<E>) -> Manifest {
+    let snap = db.raw_snapshot().unwrap();
+    runs::read_manifest::<Trigrams>(&|k| snap.get(k), &type_prefix("sym")).unwrap()
 }
 
-/// The key of the tail block of the list of `gram` in `unit_type`.
-fn tail(unit_type: &str, gram: Gram) -> Vec<u8> {
-    block_key(&list_key(&type_prefix(unit_type), gram), None)
+/// The number of `unit` in the index of `sym`.
+fn number_of(db: &UnitDb<E>, unit: UnitId) -> u64 {
+    let raw = db.raw_get(&runs::doc_key(&type_prefix("sym"), unit)).unwrap().expect("a document record");
+    runs::decode_doc(&raw, "TRIGRAM").unwrap().0
+}
+
+/// The raw writes that leave the postings of `sym` as `edit` makes them, in one run whose
+/// manifest agrees with its pages.
+fn forged(
+    db: &UnitDb<E>,
+    edit: impl FnOnce(&mut BTreeMap<Vec<u8>, Vec<runs::Posting>>),
+) -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
+    runs::forge::<_, Trigrams>(&db.raw_snapshot().unwrap(), &type_prefix("sym"), edit)
+}
+
+/// The run pages of the index of `sym`, as `(key, value)`.
+fn pages(db: &UnitDb<E>) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let from = runs::kind_key(&type_prefix("sym"), runs::KIND_RUN);
+    entries(db).into_iter().filter(|(k, _)| k.starts_with(&from)).collect()
 }
 
 fn rules(db: &UnitDb<E>) -> Vec<String> {
@@ -358,7 +374,7 @@ fn the_option_does_not_move_the_layer_mark_and_survives_a_reopen() {
 // ------------------------------------------------------------ long lists
 
 /// 300 units hold "common", 100 of them also "middle", and one holds "rare": the list of
-/// "com" is three blocks, more than a page in the tests.
+/// "com" is more pages of a merged run than a search reads at first.
 #[test]
 fn lists_longer_than_a_page_are_read_whole_probed_or_merged() {
     let disk = SimVfs::new(14);
@@ -375,15 +391,17 @@ fn lists_longer_than_a_page_are_read_whole_probed_or_merged() {
     }
     let rare = store(&db, b"common rare");
     all.push(rare);
-    assert!(all.len() > PAGE * BLOCK_MAX && middle.len() > PROBE_MAX && middle.len() <= BLOCK_MAX);
-    // One long list, read past its first page: a three-byte needle and a two-byte one.
+    let m = manifest(&db);
+    assert!(m.runs.len() > 1 && m.runs.len() < 3 * runs::MERGE_FANOUT, "the runs were merged in tiers: {m:?}");
+    assert!(all.len() > PAGE * runs::PAGE_TARGET && middle.len() > PROBE_MAX);
+    // One long list, read past its first pages: a three-byte needle and a two-byte one.
     assert_eq!(found(&db, b"com"), all);
     assert_eq!(found(&db, b"co"), all);
     assert_eq!(found(&db, b"c"), all);
     // Few candidates ("rar" is one unit) against the long lists of "common": probes.
     assert_eq!(found(&db, b"common rare"), [rare]);
     assert_eq!(found(&db, b"mon r"), [rare]);
-    // A probe that finds the block of a candidate without the candidate in it.
+    // A probe that finds the page of a candidate without the candidate in it.
     assert!(found(&db, b"rare 1").is_empty());
     // More candidates than probes are worth ("mid" is 100 units): the long lists are read.
     assert_eq!(found(&db, b"common middle"), middle);
@@ -395,42 +413,47 @@ fn lists_longer_than_a_page_are_read_whole_probed_or_merged() {
 }
 
 #[test]
-fn blocks_are_cut_at_their_limit_and_deleted_when_emptied() {
+fn a_change_set_writes_one_run_and_dead_numbers_leave_at_a_merge() {
     let disk = SimVfs::new(20);
     let db = open(&disk);
     let new =
         |p: String| NewUnit { unit_type: "sym".into(), schema_version: 1, metadata: vec![], payload: p.into_bytes() };
-    // One change set of 300 units: the tail of each list is cut as it is written.
+    // One change set of 300 units: one run, its lists cut in pages.
     let ids: Vec<UnitId> = change(&db, |cs| {
         (0..300).map(|i| cs.create(new(if i == 50 { "other".into() } else { format!("word {i}") })).unwrap()).collect()
     });
-    let list = list_key(&type_prefix("sym"), *b"wor");
-    let wor: Vec<(Vec<u8>, Vec<UnitId>)> = blocks(&db).into_iter().filter(|(k, _)| k.starts_with(&list)).collect();
-    assert_eq!(wor.iter().map(|(_, u)| u.len()).collect::<Vec<_>>(), [BLOCK_MAX, BLOCK_MAX, 299 - 2 * BLOCK_MAX]);
-    assert_eq!(
-        decode_key(&wor[0].0).unwrap().2,
-        Some(wor[0].1[BLOCK_MAX - 1]),
-        "a cut block is bounded by its last unit"
-    );
-    assert_eq!(decode_key(&wor[2].0).unwrap().2, None, "the rest is the tail");
+    let m = manifest(&db);
+    assert_eq!((m.next, m.live, m.runs.len()), (300, 300, 1));
+    assert_eq!((m.runs[0].min, m.runs[0].max, m.runs[0].level, m.runs[0].dead), (0, 299, 0, 0));
+    assert_eq!(m.runs[0].pages as usize, pages(&db).len());
+    assert!(m.runs[0].pages > 3, "the run is several pages");
+    assert_eq!(index_of(&db, "sym")[&b"wor"[..]].len(), 299);
     assert_clean(&db);
-    // A unit that joins a full bounded block cuts it in two.
+    // An update gives the unit a new number in a new run; the old number dies in its run.
     update(&db, ids[50], b"word 50");
     assert_eq!(found(&db, b"word"), ids);
-    let sizes: Vec<usize> =
-        blocks(&db).into_iter().filter(|(k, _)| k.starts_with(&list)).map(|(_, u)| u.len()).collect();
-    assert_eq!(sizes, [BLOCK_MAX, 1, BLOCK_MAX, 300 - 2 * BLOCK_MAX - 1]);
+    let m = manifest(&db);
+    assert_eq!((m.next, m.runs.len(), m.runs[0].dead, m.runs[1].dead), (301, 2, 1, 0));
+    assert_eq!(number_of(&db, ids[50]), 300);
+    assert!(found(&db, b"other").is_empty(), "the postings of a dead number are not read");
     assert_clean(&db);
-    // Emptying a bounded block deletes it; the others keep their units.
+    // Deletes only mark numbers dead: no run is written, and the postings stay until a merge.
     change(&db, |cs| {
-        for id in &ids[..BLOCK_MAX] {
+        for id in &ids[..100] {
             cs.delete(*id, None).unwrap();
         }
     });
-    let sizes: Vec<usize> =
-        blocks(&db).into_iter().filter(|(k, _)| k.starts_with(&list)).map(|(_, u)| u.len()).collect();
-    assert_eq!(sizes, [1, BLOCK_MAX, 300 - 2 * BLOCK_MAX - 1]);
-    assert_eq!(found(&db, b"word"), ids[BLOCK_MAX..]);
+    let m = manifest(&db);
+    assert_eq!((m.runs.len(), m.runs[0].dead, m.runs[1].dead), (2, 100, 1));
+    assert_eq!(found(&db, b"word"), ids[100..]);
+    assert_clean(&db);
+    // Enough change sets to fill a tier: the runs are merged and the dead numbers dropped.
+    let more: Vec<UnitId> =
+        (0..runs::MERGE_FANOUT).map(|i| store(&db, format!("word more {i}").as_bytes())).collect();
+    let m = manifest(&db);
+    assert!(m.runs.iter().all(|r| r.dead == 0), "{m:?}");
+    assert_eq!(m.runs.iter().map(|r| r.postings).sum::<u64>() as usize, index_of(&db, "sym").values().map(Vec::len).sum());
+    assert_eq!(found(&db, b"word"), [&ids[100..], &more[..]].concat());
     assert_clean(&db);
     // Turning the option off and on in one change set drops what it kept, then indexes
     // every active unit again, the one it created included.
@@ -445,6 +468,19 @@ fn blocks_are_cut_at_their_limit_and_deleted_when_emptied() {
     assert_eq!(found(&db, b"word fresh"), [fresh]);
     assert_eq!(found(&db, b"gone"), [moved]);
     assert!(!found(&db, b"word").contains(&moved));
+    let m = manifest(&db);
+    assert_eq!((m.runs.len(), m.runs[0].min), (1, 0), "the index was written again from nothing");
+    assert_clean(&db);
+    // The last unit leaving takes the index back to no record at all.
+    change(&db, |cs| {
+        for id in indexed_units(&db) {
+            cs.delete(id, None).unwrap();
+        }
+    });
+    assert!(entries(&db).is_empty(), "an index that holds nothing has no record");
+    assert_clean(&db);
+    let again = store(&db, b"word again");
+    assert_eq!((found(&db, b"again"), number_of(&db, again)), (vec![again], 0));
     assert_clean(&db);
 }
 
@@ -463,12 +499,22 @@ fn the_index_answers_what_a_scan_of_the_payloads_answers() {
     };
     let alphabet = b"abAB. ";
     let mut text = |len: u64| -> Vec<u8> { (0..len).map(|_| alphabet[next(6) as usize]).collect() };
-    let units: Vec<(UnitId, Vec<u8>)> = (0..120)
+    let mut units: Vec<(UnitId, Vec<u8>)> = (0..120)
         .map(|i| {
             let payload = text(3 + i % 23);
             (store(&db, &payload), payload)
         })
         .collect();
+    // Some are rewritten and some deleted, so runs hold dead numbers.
+    for i in (0..120).step_by(7) {
+        let payload = text(5 + (i as u64) % 11);
+        update(&db, units[i].0, &payload);
+        units[i].1 = payload;
+    }
+    for i in (3..120).step_by(11).rev() {
+        let (id, _) = units.remove(i);
+        change(&db, |cs| cs.delete(id, None).unwrap());
+    }
     for len in 1..=7u64 {
         for _ in 0..25 {
             let needle = text(len);
@@ -501,90 +547,169 @@ fn verify_reports_a_missing_an_extra_and_a_misplaced_entry() {
         db.raw_commit(before.iter().map(|(k, v)| (k.clone(), Some(v.clone()))).collect()).unwrap();
         assert_clean(db);
     };
+    let (num, other_num) = (number_of(&db, id), number_of(&db, other));
 
-    // The unit is gone from one block of a list it is in.
-    let first = without(&db, id).into_iter().next().unwrap();
-    db.raw_commit(vec![first]).unwrap();
+    // The unit is gone from one list it is in, in pages the manifest agrees with.
+    db.raw_commit(forged(&db, |lists| lists.get_mut(&b"wor"[..]).unwrap().retain(|p| p.0 != num))).unwrap();
     assert_eq!(rules(&db), ["UNIT-52"]);
     restore(&db);
 
-    // The unit is in no block.
-    db.raw_commit(without(&db, id)).unwrap();
+    // The unit is in no list.
+    db.raw_commit(forged(&db, |lists| lists.values_mut().for_each(|l| l.retain(|p| p.0 != num)))).unwrap();
     assert_eq!(rules(&db), ["UNIT-52"]);
     restore(&db);
 
     // A trigram the payload does not call for.
-    db.raw_commit(vec![(tail("sym", *b"zzz"), Some(encode_block(&[id])))]).unwrap();
+    db.raw_commit(forged(&db, |lists| lists.entry(b"zzz".to_vec()).or_default().push((num, 0, 0)))).unwrap();
     assert_eq!(rules(&db), ["UNIT-52"]);
     restore(&db);
 
-    // A unit whose type has no index, and one that does not exist.
+    // A posting of a number that was never given.
+    db.raw_commit(forged(&db, |lists| lists.entry(b"qqq".to_vec()).or_default().push((7, 0, 0)))).unwrap();
+    assert_eq!(rules(&db), ["UNIT-52"]);
+    restore(&db);
+
+    // A number whose slot names a unit whose type has no index, and one that does not exist.
+    let page = runs::num_key(&type_prefix("sym"), 0);
     for unit in [note, UnitId([0xEE; 16])] {
-        db.raw_commit(vec![(tail("sym", *b"qqq"), Some(encode_block(&[unit])))]).unwrap();
+        let slots = vec![(true, unit), (true, other)];
+        db.raw_commit(vec![(page.clone(), Some(runs::encode_num(&slots)))]).unwrap();
         assert_eq!(rules(&db), ["UNIT-52"]);
         restore(&db);
     }
 
-    // The right trigrams under another type.
-    let mut swap = without(&db, id);
-    for (k, _) in blocks(&db).into_iter().filter(|(_, u)| u.contains(&id)) {
-        let gram = decode_key(&k).unwrap().1;
-        swap.push((tail("doc", gram), Some(encode_block(&[id]))));
-    }
-    db.raw_commit(swap).unwrap();
+    // The slots of two units swapped: each has the trigrams of the other.
+    db.raw_commit(vec![(page.clone(), Some(runs::encode_num(&[(true, other), (true, id)])))]).unwrap();
+    assert_eq!(rules(&db), ["UNIT-52"]);
+    restore(&db);
+    // Swapped with their document records too: only the payloads tell.
+    let swapped = vec![
+        (page.clone(), Some(runs::encode_num(&[(true, other), (true, id)]))),
+        (runs::doc_key(&type_prefix("sym"), id), Some(runs::encode_doc(other_num, 0))),
+        (runs::doc_key(&type_prefix("sym"), other), Some(runs::encode_doc(num, 0))),
+    ];
+    db.raw_commit(swapped).unwrap();
     assert_eq!(rules(&db), ["UNIT-52"]);
     restore(&db);
 
-    // A bounded block with a unit above its bound, and blocks whose ranges overlap.
-    let hel = list_key(&type_prefix("sym"), *b"hel");
-    let (lo, hi) = (id.min(other), id.max(other));
-    let low_bound = vec![(tail("sym", *b"hel"), None), (block_key(&hel, Some(lo)), Some(encode_block(&[lo, hi])))];
-    db.raw_commit(low_bound).unwrap();
+    // The whole index under another type.
+    let moved: Vec<_> = before
+        .iter()
+        .map(|(k, v)| ([&type_prefix("doc")[..], &k[type_prefix("sym").len()..]].concat(), Some(v.clone())))
+        .collect();
+    db.raw_commit(moved).unwrap();
     assert_eq!(rules(&db), ["UNIT-52"]);
     restore(&db);
-    // Each unit once, but the tail holds a unit below the bound of the block before it.
-    let overlap =
-        vec![(tail("sym", *b"hel"), Some(encode_block(&[lo]))), (block_key(&hel, Some(hi)), Some(encode_block(&[hi])))];
-    db.raw_commit(overlap).unwrap();
+}
+
+/// Each record of the index lost alone, and a record that was not written by the index.
+#[test]
+fn verify_and_a_search_see_a_lost_record() {
+    let disk = SimVfs::new(21);
+    let db = open(&disk);
+    let ids: Vec<UnitId> = (0..40).map(|i| store(&db, format!("hello number {i}").as_bytes())).collect();
+    update(&db, ids[0], b"hello again");
+    assert_clean(&db);
+    let m = manifest(&db);
+    assert!(m.runs.len() > 1 && m.runs.iter().any(|r| r.pages > 1), "{m:?}");
+    let corrupt = |r: &Result<Vec<UnitId>, UnitError>| matches!(r, Err(UnitError::Storage(kerno_core::Error::Corruption(_))));
+    let all = entries(&db);
+    let mut refused = 0;
+    // Any run page: verify sees the run disagree with the manifest, and a search of a list
+    // the page held, or that begins after it, is refused instead of answering short.
+    for (k, v) in pages(&db) {
+        db.raw_commit(vec![(k.clone(), None)]).unwrap();
+        assert_eq!(rules(&db), ["UNIT-52"], "page {k:?}");
+        for needle in [&b"hel"[..], b"llo", b"num", b"ber", b"hello number", b"o n", b"aga"] {
+            let r = db.search_substring(needle, None, None);
+            refused += usize::from(corrupt(&r));
+            assert!(corrupt(&r) || r.unwrap() == found_in(&ids, needle), "page {k:?}, needle {needle:?}");
+        }
+        db.raw_commit(vec![(k, Some(v))]).unwrap();
+        assert_clean(&db);
+    }
+    assert!(refused > 0, "a search that needs a lost page is refused");
+    // The manifest, a document record, a number page.
+    let prefix = type_prefix("sym");
+    let lost = [runs::manifest_key(&prefix), runs::doc_key(&prefix, ids[5]), runs::num_key(&prefix, 0)];
+    for k in lost {
+        let v = all.iter().find(|(key, _)| *key == k).map(|(_, v)| v.clone()).expect("the record exists");
+        db.raw_commit(vec![(k.clone(), None)]).unwrap();
+        assert_eq!(rules(&db), ["UNIT-52"], "key {k:?}");
+        db.raw_commit(vec![(k, Some(v))]).unwrap();
+        assert_clean(&db);
+    }
+    // A page of a run the manifest does not list, and a page added to a run it lists.
+    let (k, v) = pages(&db).into_iter().next().unwrap();
+    let at = prefix.len() + 1;
+    let mut stray = k.clone();
+    stray[at..at + 8].copy_from_slice(&9_999u64.to_be_bytes());
+    db.raw_commit(vec![(stray.clone(), Some(v.clone()))]).unwrap();
     assert_eq!(rules(&db), ["UNIT-52"]);
-    restore(&db);
+    db.raw_commit(vec![(stray, None)]).unwrap();
+    assert_clean(&db);
+    // A page added after the last page of a run the manifest lists, naming that page.
+    let last = pages(&db).into_iter().rfind(|(key, _)| key[..at + 8] == k[..at + 8]).unwrap();
+    let mut builder = runs::RunBuilder::new::<Trigrams>(0).after(&last.0[at + 8..]);
+    builder.begin(&[0xFF, 0xFF, 0xFF]);
+    builder.push((0, 0, 0));
+    let (suffix, value) = builder.finish().unwrap().pages.pop().unwrap();
+    let extra = [&k[..at + 8], &suffix[..]].concat();
+    db.raw_commit(vec![(extra, Some(value))]).unwrap();
+    assert_eq!(rules(&db), ["UNIT-52"]);
+}
+
+/// The units among `ids` (the first rewritten to "hello again") that hold `needle`.
+fn found_in(ids: &[UnitId], needle: &[u8]) -> Vec<UnitId> {
+    let text = |i: usize| if i == 0 { "hello again".to_string() } else { format!("hello number {i}") };
+    ids.iter()
+        .enumerate()
+        .filter(|(i, _)| text(*i).as_bytes().windows(needle.len()).any(|w| w == needle))
+        .map(|(_, id)| *id)
+        .collect()
 }
 
 #[test]
 fn verify_reports_an_entry_that_does_not_decode() {
     let disk = SimVfs::new(17);
     let db = open(&disk);
-    let id = store(&db, b"hello");
-    let (k, v) = entries(&db).into_iter().next().unwrap();
-    let ascending = encode_block(&[UnitId([1; 16]), UnitId([2; 16])]);
-    let descending = encode_block(&[UnitId([2; 16]), UnitId([1; 16])]);
-    let over = encode_block(&vec![id; BLOCK_MAX + 1]);
+    store(&db, b"hello");
+    let (k, v) = pages(&db).into_iter().next().unwrap();
     let partial = [&v[..], &[0u8; 5]].concat();
-    for bad in [vec![], vec![0, 0], vec![1, 1], vec![1, 0], vec![2, 0], partial, descending, over] {
+    // No envelope, version 0, flags, no header, a newer version, trailing bytes, a page cut
+    // inside an item, and numbers that do not ascend.
+    let mut descending = v.clone();
+    let n = descending.len();
+    descending[n - 1] = 0;
+    for bad in [vec![], vec![0, 0], vec![1, 1], vec![1, 0], vec![2, 0], partial, v[..v.len() - 1].to_vec()] {
         db.raw_commit(vec![(k.clone(), Some(bad.clone()))]).unwrap();
         assert!(!db.verify_units().unwrap().is_clean(), "value {bad:?}");
     }
-    assert!(decode_block(&ascending).is_ok());
     db.raw_commit(vec![(k.clone(), Some(v.clone()))]).unwrap();
     assert_clean(&db);
-    // A key one byte short, one with an empty type, and one with neither a bound nor the tail mark.
-    let unmarked = [&k[..k.len() - 1], &[7u8][..]].concat();
-    for bad_key in [k[..k.len() - 1].to_vec(), [&[TAG_TRIGRAM, 0][..], &[b'a'; 20]].concat(), unmarked] {
+    // A key one byte short, one with an empty type, and one of no kind of record.
+    let unknown = [&type_prefix("sym")[..], &[7u8][..]].concat();
+    for bad_key in [k[..k.len() - 1].to_vec(), [&[TAG_TRIGRAM, 0][..], &[b'a'; 20]].concat(), unknown] {
         db.raw_commit(vec![(bad_key.clone(), Some(v.clone()))]).unwrap();
         assert!(!db.verify_units().unwrap().is_clean(), "key {bad_key:?}");
         db.raw_commit(vec![(bad_key, None)]).unwrap();
         assert_clean(&db);
     }
-    assert!(decode_key(&[TAG_TRIGRAM]).is_err());
-    assert!(decode_key(&[&[TAG_TRIGRAM, 1, 0xFF][..], &[b'a'; 4]].concat()).is_err(), "a type that is not UTF-8");
-    assert!(
-        decode_key(&[&[TAG_TRIGRAM, 1, b's'][..], b"abc", &[BOUNDED], &[1; 15]].concat()).is_err(),
-        "a short bound"
-    );
-    assert_eq!(
-        decode_key(&[&[TAG_TRIGRAM, 1, b's'][..], b"abc", &[TAIL]].concat()).unwrap(),
-        ("s".into(), *b"abc", None)
-    );
+    assert!(decode_prefix(&[TAG_TRIGRAM]).is_err());
+    assert!(decode_prefix(&[&[TAG_TRIGRAM, 1, 0xFF][..], &[b'a'; 4]].concat()).is_err(), "a type that is not UTF-8");
+    assert_eq!(decode_prefix(&[&[TAG_TRIGRAM, 1, b's'][..], &[0]].concat()).unwrap(), ("s", 3));
+    // The other records of the index: each damaged alone.
+    let prefix = type_prefix("sym");
+    for key in [runs::manifest_key(&prefix), runs::doc_key(&prefix, found(&db, b"hello")[0]), runs::num_key(&prefix, 0)]
+    {
+        let good = db.raw_get(&key).unwrap().unwrap();
+        for bad in [vec![1, 0], vec![2, 0], [&good[..], &[0u8]].concat(), good[..good.len() - 1].to_vec()] {
+            db.raw_commit(vec![(key.clone(), Some(bad.clone()))]).unwrap();
+            assert!(!db.verify_units().unwrap().is_clean(), "key {key:?} value {bad:?}");
+        }
+        db.raw_commit(vec![(key, Some(good))]).unwrap();
+        assert_clean(&db);
+    }
 }
 
 #[test]
@@ -609,14 +734,20 @@ fn a_search_refuses_an_entry_of_a_unit_that_does_not_exist() {
     let db = open(&disk);
     store(&db, b"hello world");
     let ghost = UnitId([0xEE; 16]);
-    let stray: Vec<_> = grams(b"ghost").into_iter().map(|g| (tail("sym", g), Some(encode_block(&[ghost])))).collect();
-    db.raw_commit(stray).unwrap();
+    db.raw_commit(vec![(runs::num_key(&type_prefix("sym"), 0), Some(runs::encode_num(&[(true, ghost)])))]).unwrap();
     assert!(matches!(
-        db.search_substring(b"ghost", None, None),
+        db.search_substring(b"hello", None, None),
         Err(UnitError::Storage(kerno_core::Error::Corruption(m))) if m.contains("no UNIT_HEAD")
     ));
-    // A block that does not decode in a list a search reads.
-    db.raw_commit(vec![(tail("sym", *b"hel"), Some(vec![1, 0, 1]))]).unwrap();
+    // A posting of a number that has no slot.
+    db.raw_commit(vec![(runs::num_key(&type_prefix("sym"), 0), None)]).unwrap();
+    assert!(matches!(
+        db.search_substring(b"hel", None, None),
+        Err(UnitError::Storage(kerno_core::Error::Corruption(_)))
+    ));
+    // A page that does not decode in a list a search reads.
+    let (k, _) = pages(&db).into_iter().next().unwrap();
+    db.raw_commit(vec![(k, Some(vec![1, 0, 1]))]).unwrap();
     assert!(matches!(
         db.search_substring(b"hel", None, None),
         Err(UnitError::Storage(kerno_core::Error::Corruption(_)))
@@ -624,7 +755,7 @@ fn a_search_refuses_an_entry_of_a_unit_that_does_not_exist() {
 }
 
 #[test]
-fn a_batch_of_units_writes_the_same_blocks_as_one_commit_each() {
+fn a_batch_of_units_indexes_what_one_commit_each_indexes() {
     let payloads: Vec<Vec<u8>> = (0..300).map(|i| format!("symbol_{i}_{}", i % 7).into_bytes()).collect();
     let (batch, single) = (SimVfs::new(22), SimVfs::new(23));
     let (one, many) = (open(&batch), open(&single));
@@ -637,16 +768,20 @@ fn a_batch_of_units_writes_the_same_blocks_as_one_commit_each() {
     for p in &payloads {
         store(&many, p);
     }
-    assert_eq!(blocks(&one), blocks(&many));
+    // The same ids (the id source counts), so the same units by trigram, in one run or in
+    // the runs of 300 change sets merged in tiers.
+    assert_eq!(index_of(&one, "sym"), index_of(&many, "sym"));
+    assert_eq!(manifest(&one).runs.len(), 1);
+    assert!(manifest(&many).runs.len() < 3 * runs::MERGE_FANOUT);
     assert_clean(&one);
+    assert_clean(&many);
 }
 
-/// The shortcuts of a flush (appending to the tail's bytes, writing a list of new units without
-/// looking for its blocks) write what the general path writes: the same units committed in
-/// batches of any size, with an update of an old unit among them, give the same blocks, and a
-/// list left with bounded blocks and no tail takes new units in a new tail.
+/// The same units committed in batches of any size, with an update of an old unit among
+/// them, are the same index to a reader, and `compact` leaves it in one run without the
+/// postings of dead numbers.
 #[test]
-fn appends_in_batches_of_any_size_write_the_same_blocks() {
+fn batches_of_any_size_are_the_same_index_and_compact_merges_them() {
     let new = |p: &str| NewUnit {
         unit_type: "sym".into(),
         schema_version: 1,
@@ -659,8 +794,6 @@ fn appends_in_batches_of_any_size_write_the_same_blocks() {
     for p in &payloads {
         store(&one, p.as_bytes());
     }
-    // Batches of 1, 7, 150 (over a block) and 300 (over two): appends that stay in the tail,
-    // fill it exactly, and cut it once or more.
     let mut rest = payloads.as_slice();
     for size in [1usize, 7, 150, 300, 1, 128, 113] {
         let (now, later) = rest.split_at(size.min(rest.len()));
@@ -672,11 +805,9 @@ fn appends_in_batches_of_any_size_write_the_same_blocks() {
         });
     }
     assert!(rest.is_empty());
-    assert_eq!(blocks(&one), blocks(&many));
+    assert_eq!(index_of(&one, "sym"), index_of(&many, "sym"));
     assert_clean(&many);
 
-    // An update of an old unit before the creations of its change set: the change set does
-    // not learn that its new units are above the stored ones, and writes the same blocks.
     let ids = found(&one, b"token_");
     assert_eq!(ids.len(), 700);
     for db in [&one, &many] {
@@ -686,31 +817,22 @@ fn appends_in_batches_of_any_size_write_the_same_blocks() {
             cs.create(new("token_9_fresh zzq")).unwrap();
         });
     }
-    assert_eq!(blocks(&one), blocks(&many));
+    assert_eq!(index_of(&one, "sym"), index_of(&many, "sym"));
     assert_eq!(found(&many, b"zzq").len(), 2);
     assert_clean(&many);
 
-    // Empty the tail of a list that has bounded blocks: it is deleted and the bounded blocks
-    // stay. New units then go to a new tail, above every bound.
-    let list = list_key(&type_prefix("sym"), *b"tok");
-    let of_list = |db: &UnitDb<E>| -> Vec<(Vec<u8>, Vec<UnitId>)> {
-        blocks(db).into_iter().filter(|(k, _)| k.starts_with(&list)).collect()
-    };
-    let before = of_list(&many);
-    let (tail_key, tail_units) = before.last().cloned().unwrap();
-    assert_eq!(decode_key(&tail_key).unwrap().2, None);
-    assert!(before.len() > 1, "the list has bounded blocks");
-    change(&many, |cs| {
-        for id in &tail_units {
-            cs.delete(*id, None).unwrap();
-        }
-    });
-    assert!(of_list(&many).iter().all(|(k, _)| decode_key(k).unwrap().2.is_some()), "no tail is left");
-    let added: Vec<UnitId> =
-        change(&many, |cs| (0..3).map(|i| cs.create(new(&format!("token_x_{i}"))).unwrap()).collect());
-    let after = of_list(&many);
-    assert_eq!(after.len(), before.len());
-    assert_eq!(after.last().map(|(k, u)| (decode_key(k).unwrap().2, u.clone())), Some((None, added.clone())));
-    assert_eq!(found(&many, b"token_x"), added);
-    assert_clean(&many);
+    for db in [&one, &many] {
+        let before = index_of(db, "sym");
+        assert!(manifest(db).runs.iter().map(|r| r.dead).sum::<u64>() > 0);
+        db.merge_posting_runs().unwrap();
+        let m = manifest(db);
+        assert_eq!((m.runs.len(), m.runs[0].dead), (1, 0), "{m:?}");
+        assert_eq!(index_of(db, "sym"), before);
+        assert_eq!(found(db, b"zzq").len(), 2);
+        assert_clean(db);
+        // Nothing left to merge: nothing is committed.
+        let seq = db.snapshot().unwrap().seq();
+        db.merge_posting_runs().unwrap();
+        assert_eq!(db.snapshot().unwrap().seq(), seq);
+    }
 }

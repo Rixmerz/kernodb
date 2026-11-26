@@ -1,6 +1,6 @@
-//! Posting blocks, the mechanics shared by the trigram index
-//! ([`crate::substring`], ADR-0025), the keyword index ([`crate::fulltext`])
-//! and the adjacency index ([`crate::codec`], `REL_OUT` / `REL_IN`), ADR-0026.
+//! Posting blocks, the mechanics of the adjacency index ([`crate::codec`], `REL_OUT` /
+//! `REL_IN`, ADR-0026). The trigram index and the keyword index shared them until layer
+//! version 11, where they became posting runs ([`crate::runs`], ADR-0027).
 //!
 //! A *list* is a sorted run of entries `(id, value)` kept under one key
 //! prefix (the list key), cut in blocks of at most [`Block::MAX`] entries, one
@@ -77,51 +77,6 @@ fn last_id_if_valid<B: Block>(v: &[u8]) -> Option<Id> {
     prev.and_then(|id| id.try_into().ok())
 }
 
-/// Tells which lists have no block at all, for a flush of many lists of one key family: a
-/// list the index does not hold yet (a new term, a new trigram) is then written without the
-/// seek that looks for its blocks, one seek serving every new list up to the next stored key.
-///
-/// The caller asks about each list once, in ascending key order, and no list key is a prefix
-/// of another. So what the flush writes between two questions lies in lists below the one
-/// asked about, and the key the last seek found is still the first one at or after it.
-pub(crate) struct Probe {
-    /// The end of the family's keys: no seek looks past it.
-    end: Vec<u8>,
-    /// The list last asked about, and the first stored key at or after it (`None`: none).
-    last: Option<(Vec<u8>, Option<Vec<u8>>)>,
-}
-
-impl Probe {
-    pub(crate) fn new(end: Vec<u8>) -> Self {
-        Probe { end, last: None }
-    }
-
-    /// Whether the transaction holds no key in `[list, list_end)`.
-    fn is_empty<E: TxnEngine>(
-        &mut self,
-        cs: &ChangeSet<'_, E>,
-        list: &[u8],
-        list_end: &[u8],
-    ) -> Result<bool, UnitError> {
-        let known = match &self.last {
-            // The first key at or after an earlier list is also the first at or after this
-            // one when it is not below it.
-            Some((asked, next)) if asked.as_slice() < list && next.as_deref().is_none_or(|k| k >= list) => true,
-            _ => false,
-        };
-        if known {
-            if let Some((asked, _)) = &mut self.last {
-                asked.clear();
-                asked.extend_from_slice(list);
-            }
-        } else {
-            let page = cs.txn()?.scan(Bound::Included(list), Bound::Excluded(&self.end), 1)?;
-            self.last = Some((list.to_vec(), page.into_iter().next().map(|(k, _)| k)));
-        }
-        Ok(self.last.as_ref().is_none_or(|(_, next)| next.as_deref().is_none_or(|k| k >= list_end)))
-    }
-}
-
 /// The key of the block of `list` with the bound `bound` (`None`: the tail).
 pub(crate) fn block_key(list: &[u8], bound: Option<&Id>) -> Vec<u8> {
     let mut k = Vec::with_capacity(list.len() + 17);
@@ -163,14 +118,6 @@ pub(crate) fn body<'a>(v: &'a [u8], what: &str) -> Result<&'a [u8], DecodeError>
     }
 }
 
-/// Checks that `ids` are strictly ascending.
-pub(crate) fn ascending<T>(entries: &[(Id, T)], what: &str) -> Result<(), DecodeError> {
-    if entries.windows(2).any(|w| w[0].0 >= w[1].0) {
-        return Err(DecodeError::new(UnitRule::Unit13, format!("{what}: ids not strictly ascending")));
-    }
-    Ok(())
-}
-
 /// Writes the changes `ops` to the list `list`: per id, `Some(value)` puts the
 /// entry (or replaces its value) and `None` removes it. Each block an id
 /// falls in is read once, changed for every id of `ops` in it, then written
@@ -178,17 +125,12 @@ pub(crate) fn ascending<T>(entries: &[(Id, T)], what: &str) -> Result<(), Decode
 /// by its last id; the rest keeps the key it had) and deleted when emptied.
 ///
 /// `ops` are ascending by id, one per id. `fresh`: the caller knows the list
-/// has no block, so none is read. `probe`: asked when the list has no tail
-/// block, to learn the same without a seek of its own (see [`Probe`]).
-/// `above`: every id at or above it is above every entry the list holds (see
-/// [`ChangeSet::fresh_from`]).
+/// has no block, so none is read.
 pub(crate) fn flush<B: Block, E: TxnEngine>(
     cs: &mut ChangeSet<'_, E>,
     list: &[u8],
     ops: impl IntoIterator<Item = (Id, Option<B::Val>)>,
     fresh: bool,
-    probe: Option<&mut Probe>,
-    above: Option<Id>,
 ) -> Result<(), UnitError> {
     if fresh {
         let units: Vec<(Id, B::Val)> = ops.into_iter().filter_map(|(id, v)| v.map(|v| (id, v))).collect();
@@ -216,22 +158,7 @@ pub(crate) fn flush<B: Block, E: TxnEngine>(
         // A tail that does not decode is not used here: the seek reads it if the change needs
         // it, and reports it then.
         Some(v) => B::decode(&v).ok(),
-        None => {
-            // No tail: the list is new unless it kept only bounded blocks. Ids above every
-            // entry of the list go to a new tail either way (the tail holds the ids above
-            // the last bound), and so do any ids when the list has no key at all in its
-            // range: nothing to read.
-            if above.is_some_and(|a| a <= first)
-                || match probe {
-                    Some(p) => p.is_empty(cs, list, &end)?,
-                    None => false,
-                }
-            {
-                let units: Vec<(Id, B::Val)> = ops.filter_map(|(id, v)| v.map(|v| (id, v))).collect();
-                return write_chunks::<B, E>(cs, list, units, tail_key);
-            }
-            None
-        }
+        None => None,
     };
     while let Some((first, _)) = ops.peek() {
         let (block, mut units, bound) = match tail.take_if(|u| u.first().is_some_and(|e| e.0 <= *first)) {

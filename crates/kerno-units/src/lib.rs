@@ -35,6 +35,7 @@ pub mod ann;
 pub mod assoc;
 pub mod assoc_rank;
 pub(crate) mod blocks;
+pub(crate) mod runs;
 pub mod cache;
 mod read_cache;
 pub use read_cache::DEFAULT_READ_CACHE_BYTES;
