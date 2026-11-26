@@ -398,3 +398,51 @@ fn scenario_b_with_transactions_crash_at_every_point() {
         every_point_steps::<ViaTxn>(kind, durability, &|_| {}, &steps);
     }
 }
+
+/// A commit over 64 MiB (the default limit before 1 GiB) goes through with the default limits,
+/// and it is one WAL frame: a power loss at any write or sync of its commit (torn writes
+/// included) leaves all of it or none of it after a reopen, and all of it once it returned.
+#[test]
+fn a_commit_over_64_mib_is_atomic_across_a_power_loss() {
+    use kerno_testkit::vfs::OpKind;
+    let cfg = Config { limits: Limits::default(), ..config(Durability::Sync) };
+    let value = vec![7u8; (1 << 20) - 64];
+    let mut batch = WriteBatch::new();
+    let keys: Vec<String> = (0..70).map(|i| format!("big{i:03}")).collect();
+    for k in &keys {
+        batch.put(k.as_str(), value.as_slice());
+    }
+    let present = |disk: &SimVfs| {
+        let db = open(disk, &cfg);
+        let snap = db.snapshot().unwrap();
+        let n = keys.iter().filter(|k| snap.get(k.as_bytes()).unwrap().is_some_and(|v| v == value)).count();
+        drop(snap);
+        db.close().unwrap();
+        n
+    };
+    let mut crashed = 0;
+    for nth in 1.. {
+        let disk = SimVfs::new(nth);
+        disk.set_tear_unit(4096);
+        let db = open(&disk, &cfg);
+        disk.crash_when(
+            |op| op.phase == "commit" && matches!(op.kind, OpKind::WriteAt | OpKind::SyncData),
+            nth,
+            CrashKind::PowerLoss,
+        );
+        let done = db.commit(&batch);
+        let Some(image) = disk.take_crash_image() else {
+            // Past the last operation of the commit: it returned, and it is all there.
+            assert!(done.is_ok(), "{done:?}");
+            drop(db);
+            let image = disk.crash_now(CrashKind::PowerLoss);
+            assert_eq!(present(&image), keys.len(), "a commit that returned is whole");
+            break;
+        };
+        drop(db);
+        let n = present(&image);
+        assert!(n == 0 || n == keys.len(), "crash at commit op #{nth}: {n} of {} keys", keys.len());
+        crashed += 1;
+    }
+    assert!(crashed >= 1, "the commit writes and syncs the WAL");
+}

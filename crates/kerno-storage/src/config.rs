@@ -108,16 +108,23 @@ pub struct Limits {
     pub max_key_len: usize,
     /// Longest value (default 1 MiB; format limit 64 MiB).
     pub max_value_len: usize,
-    /// Most bytes a commit encodes to, in its WAL form (default 64 MiB; a
-    /// frame holds up to 1 GiB).
+    /// Most bytes a commit encodes to, in its WAL form (default 1 GiB, the
+    /// most one WAL frame holds: a commit is always one frame, so a crash
+    /// keeps all of it or none of it whatever its size; the memory it takes
+    /// is the caller's to bound).
     pub max_batch_bytes: usize,
-    /// Most operations in one batch (default 2^20; format limit 2^24).
+    /// Most operations in one batch (default and format limit 2^24).
     pub max_batch_ops: usize,
 }
 
 impl Default for Limits {
     fn default() -> Self {
-        Limits { max_key_len: 512, max_value_len: 1 << 20, max_batch_bytes: 64 << 20, max_batch_ops: 1 << 20 }
+        Limits {
+            max_key_len: 512,
+            max_value_len: 1 << 20,
+            max_batch_bytes: limits::MAX_FRAME_PAYLOAD as usize,
+            max_batch_ops: limits::MAX_COMMIT_OPS as usize,
+        }
     }
 }
 
