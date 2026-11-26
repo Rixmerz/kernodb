@@ -243,7 +243,15 @@ impl Key {
 
     /// The key bytes, unchecked.
     fn raw(&self) -> Vec<u8> {
-        let mut out = vec![self.tag()];
+        // Room for the longest fixed part (a bounded adjacency key) and the variable one.
+        let var = match self {
+            Key::LayerMeta { name } => name.len(),
+            Key::IndexType { unit_type, .. } => unit_type.len(),
+            Key::RelationOut { relation_type, .. } | Key::RelationIn { relation_type, .. } => relation_type.len(),
+            _ => 0,
+        };
+        let mut out = Vec::with_capacity(36 + var);
+        out.push(self.tag());
         match self {
             Key::LayerMeta { name } => out.extend_from_slice(name.as_bytes()),
             Key::UnitHead { unit } | Key::IndexPrimary { unit } => out.extend_from_slice(&unit.0),

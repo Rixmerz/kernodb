@@ -275,7 +275,7 @@
 //! choose otherwise.
 
 use std::borrow::Borrow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::Bound;
 use std::path::Path;
 
@@ -647,7 +647,8 @@ impl Db {
             return Ok(Committed::default());
         }
         // Upserts of one key become one: the first one's place, the last one's payload.
-        let mut upsert_at: Vec<(String, String, Vec<u8>)> = Vec::new();
+        // A hash map, not a scan of the keys seen so far: a batch of many upserts stays linear.
+        let mut upsert_at: HashMap<(&str, &str, Vec<u8>), usize> = HashMap::new();
         let mut upsert_last: Vec<&[u8]> = Vec::new();
         let mut upsert_slot = vec![usize::MAX; ops.len()];
         for (i, op) in ops.iter().enumerate() {
@@ -655,17 +656,16 @@ impl Db {
                 // A payload without a key is left to `ChangeSet::upsert`, which names the first
                 // problem (a field that is not unique comes before a missing value).
                 let Ok(key) = upsert_key(payload, field) else { continue };
-                let key = (unit_type.clone(), field.clone(), key);
-                let slot = upsert_at.iter().position(|k| *k == key).unwrap_or_else(|| {
-                    upsert_at.push(key);
+                let next = upsert_last.len();
+                let slot = *upsert_at.entry((unit_type.as_str(), field.as_str(), key)).or_insert(next);
+                if slot == next {
                     upsert_last.push(payload);
-                    upsert_at.len() - 1
-                });
+                }
                 upsert_last[slot] = payload;
                 upsert_slot[i] = slot;
             }
         }
-        let mut upserted: Vec<Option<Upserted>> = vec![None; upsert_at.len()];
+        let mut upserted: Vec<Option<Upserted>> = vec![None; upsert_last.len()];
         let snap = self.units.snapshot()?;
         let change_meta = ChangeMeta {
             reason: meta.reason.clone(),

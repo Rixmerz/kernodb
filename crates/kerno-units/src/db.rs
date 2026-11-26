@@ -750,6 +750,8 @@ impl<E: TxnEngine> UnitDb<E> {
             bytes: 0,
             deferred: false,
             options_cache: std::cell::RefCell::default(),
+            schema_cache: std::cell::RefCell::default(),
+            unique_free: std::cell::RefCell::default(),
             no_derived: std::cell::Cell::new(None),
         })
     }
@@ -1296,6 +1298,13 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     /// record), so a batch reads a type's options once. [`ChangeSet::write_owned`]
     /// empties it when a type-options record is written.
     pub(crate) options_cache: std::cell::RefCell<std::collections::HashMap<String, u8>>,
+    /// The schemas this change set read, by unit type (`None`: no schema), so a batch decodes a
+    /// type's schema once. [`ChangeSet::write_owned`] empties it when a schema record is written.
+    /// The unique-field prefix (`field_prefix ‖ value`) an `upsert` just found held by no unit,
+    /// while it creates the unit; cleared by any write.
+    pub(crate) unique_free: std::cell::RefCell<Option<Vec<u8>>>,
+    pub(crate) schema_cache:
+        std::cell::RefCell<std::collections::HashMap<String, Option<std::sync::Arc<crate::schema::Schema>>>>,
     /// Whether the database held no `DERIVED_SRC` record when this change set
     /// first asked (`None`: not asked yet). Without one, and while the change
     /// set writes no derived record itself, no unit has derived data to follow.
@@ -1454,6 +1463,14 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         if options_stale {
             self.options_cache.get_mut().clear();
         }
+        let schema_stale = match &w {
+            Write::Put(k, _) | Write::Delete(k) => k.first() == Some(&crate::schema::TAG_SCHEMA),
+            Write::DeleteRange(..) => true,
+        };
+        if schema_stale {
+            self.schema_cache.get_mut().clear();
+        }
+        *self.unique_free.get_mut() = None;
         // A `REL` record above the ceiling raises it, whoever writes it (a
         // relation created here, one imported with its own id).
         if let (RelCeiling::At(top), Write::Put(k, _)) = (self.rel_ceiling, &w)

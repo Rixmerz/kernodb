@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::ops::Bound;
+use std::sync::Arc;
 
 use kerno_core::contract::{Txn, TxnEngine};
 
@@ -78,11 +79,19 @@ struct Typed {
 
 impl<E: TxnEngine> ChangeSet<'_, E> {
     /// The schema of `unit_type` as this change set sees it.
-    pub(crate) fn read_schema(&self, unit_type: &str) -> Result<Option<Schema>, UnitError> {
-        match self.txn()?.get(&schema_key(unit_type))? {
-            Some(raw) => Ok(Some(Schema::decode(&raw).map_err(|e| context(e, "SCHEMA"))?)),
-            None => Ok(None),
+    ///
+    /// Read once per type and change set: [`ChangeSet::write_owned`] forgets what was read when
+    /// it writes a schema record (or deletes a range).
+    pub(crate) fn read_schema(&self, unit_type: &str) -> Result<Option<Arc<Schema>>, UnitError> {
+        if let Some(known) = self.schema_cache.borrow().get(unit_type) {
+            return Ok(known.clone());
         }
+        let schema = match self.txn()?.get(&schema_key(unit_type))? {
+            Some(raw) => Some(Arc::new(Schema::decode(&raw).map_err(|e| context(e, "SCHEMA"))?)),
+            None => None,
+        };
+        self.schema_cache.borrow_mut().insert(unit_type.to_owned(), schema.clone());
+        Ok(schema)
     }
 
     /// The writes that keep the entries of a unit in step with the operation
@@ -179,7 +188,12 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         let (start, end) = prefix_bounds(&prefix);
         let held = self.txn()?.scan(Bound::Included(&start), Bound::Excluded(&end), 1)?;
         let Some((k, _)) = held.first() else {
-            let id = self.create(new)?;
+            // No unit holds the value: the create's own uniqueness check of this field would scan
+            // the same range again, with no write in between (see `ensure_unique`).
+            *self.unique_free.get_mut() = Some(prefix);
+            let created = self.create(new);
+            *self.unique_free.get_mut() = None;
+            let id = created?;
             return Ok(Upserted { id, outcome: UpsertOutcome::Created });
         };
         let (_, _, _, id) = decode_entry_key(k).map_err(|e| context(e, "FIELD_INDEX"))?;
@@ -195,6 +209,10 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
     fn ensure_unique(&self, unit_type: &str, field: &str, value: &[u8], unit: UnitId) -> Result<(), UnitError> {
         let mut prefix = field_prefix(unit_type, field);
         prefix.extend_from_slice(value);
+        // `upsert` found no holder of this value just before, and nothing was written since.
+        if self.unique_free.borrow().as_deref() == Some(prefix.as_slice()) {
+            return Ok(());
+        }
         let (start, end) = prefix_bounds(&prefix);
         for (k, _) in self.txn()?.scan(Bound::Included(&start), Bound::Excluded(&end), 2)? {
             let (_, _, _, holder) = decode_entry_key(&k).map_err(|e| context(e, "FIELD_INDEX"))?;
@@ -306,7 +324,7 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         let schema = Schema::new(fields)?;
         if let Some(have) = self.read_schema(unit_type)? {
             // The same schema again changes nothing, so a caller can define on every start.
-            return if have == schema { Ok(()) } else { Err(UnitError::SchemaExists { unit_type: unit_type.into() }) };
+            return if *have == schema { Ok(()) } else { Err(UnitError::SchemaExists { unit_type: unit_type.into() }) };
         }
         let units = self.typed_units(unit_type, &schema)?;
         let entries = self.backfill(unit_type, &schema, &units, None)?;
@@ -369,7 +387,7 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
             return Err(UnitError::InvalidArgument("the unit type has no schema".into()));
         };
         match schema.fields().iter().position(|f| f.name == field) {
-            Some(at) => Ok((schema, at)),
+            Some(at) => Ok((Schema::clone(&schema), at)),
             None => Err(UnitError::InvalidArgument(format!("the schema has no field {field:?}"))),
         }
     }
