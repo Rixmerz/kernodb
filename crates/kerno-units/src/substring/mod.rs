@@ -133,9 +133,9 @@ fn distinct(payload: &[u8]) -> Vec<u32> {
     if text.is_empty() {
         return Vec::new();
     }
-    // A text repeats most of its trigrams, so they are made distinct first, in a small
-    // open-addressing set, and only the distinct ones are sorted: sorting every position and
-    // then dropping the repeats cost several times more. A gram is packed big-endian in 24
+    // A text repeats most of its trigrams, so they are made distinct here, in a small
+    // open-addressing set, and a caller that needs them in order sorts only the distinct
+    // ones: sorting every position and then dropping the repeats cost several times more. A gram is packed big-endian in 24
     // bits, which orders like its three bytes; a slot holds the gram plus one (0: empty).
     let bits = (text.len() * 2).next_power_of_two().trailing_zeros().max(4);
     let mut seen = vec![0u32; 1 << bits];
