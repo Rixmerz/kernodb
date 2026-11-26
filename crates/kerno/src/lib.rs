@@ -655,6 +655,8 @@ impl Db {
         // A hash map, not a scan of the keys seen so far: a batch of many upserts stays linear.
         let mut upsert_at: HashMap<(&str, &str, Vec<u8>), usize> = HashMap::new();
         let mut upsert_last: Vec<&[u8]> = Vec::new();
+        // Per slot, its key: `ChangeSet::upsert_keyed` does not parse the payload for it again.
+        let mut upsert_keys: Vec<Vec<u8>> = Vec::new();
         let mut upsert_slot = vec![usize::MAX; ops.len()];
         for (i, op) in ops.iter().enumerate() {
             if let Op::Upsert { unit_type, field, payload } = op {
@@ -662,10 +664,14 @@ impl Db {
                 // problem (a field that is not unique comes before a missing value).
                 let Ok(key) = upsert_key(payload, field) else { continue };
                 let next = upsert_last.len();
-                let slot = *upsert_at.entry((unit_type.as_str(), field.as_str(), key)).or_insert(next);
-                if slot == next {
-                    upsert_last.push(payload);
-                }
+                let slot = match upsert_at.entry((unit_type.as_str(), field.as_str(), key)) {
+                    std::collections::hash_map::Entry::Occupied(e) => *e.get(),
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        upsert_keys.push(e.key().2.clone());
+                        upsert_last.push(payload);
+                        *e.insert(next)
+                    }
+                };
                 upsert_last[slot] = payload;
                 upsert_slot[i] = slot;
             }
@@ -825,7 +831,12 @@ impl Db {
                                 metadata: Vec::new(),
                                 payload: payload.to_vec(),
                             };
-                            let done = changes.upsert_prepared(new, field, upsert_hash.get(slot).copied().flatten())?;
+                            let done = changes.upsert_keyed(
+                                new,
+                                field,
+                                upsert_hash.get(slot).copied().flatten(),
+                                upsert_keys.get(slot).map(Vec::as_slice),
+                            )?;
                             match done.outcome {
                                 UpsertOutcome::Unchanged => out.unchanged += 1,
                                 UpsertOutcome::Created | UpsertOutcome::Updated => wrote = true,

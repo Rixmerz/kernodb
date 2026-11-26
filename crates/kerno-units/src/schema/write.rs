@@ -186,13 +186,29 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         field: &str,
         hash: Option<crate::payload::ContentHash>,
     ) -> Result<Upserted, UnitError> {
+        self.upsert_keyed(new, field, hash, None)
+    }
+
+    /// [`upsert_prepared`](Self::upsert_prepared), with `key` what [`upsert_key`] gives for
+    /// `new.payload` and `field`, computed ahead (`None`: computed here).
+    ///
+    /// # Errors
+    ///
+    /// As [`upsert`](Self::upsert).
+    pub fn upsert_keyed(
+        &mut self,
+        new: NewUnit,
+        field: &str,
+        hash: Option<crate::payload::ContentHash>,
+        key: Option<&[u8]>,
+    ) -> Result<Upserted, UnitError> {
         self.prepared_hash.set(hash.map(|h| (new.payload.len(), h)));
-        let done = self.upsert_inner(new, field);
+        let done = self.upsert_inner(new, field, key);
         self.prepared_hash.set(None);
         done
     }
 
-    fn upsert_inner(&mut self, new: NewUnit, field: &str) -> Result<Upserted, UnitError> {
+    fn upsert_inner(&mut self, new: NewUnit, field: &str, key: Option<&[u8]>) -> Result<Upserted, UnitError> {
         check_type(&new.unit_type)?;
         let not_unique = |detail: String| UnitError::NotUnique { detail };
         let Some(schema) = self.read_schema(&new.unit_type)? else {
@@ -209,8 +225,12 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
             None => return Err(not_unique(format!("the schema of {:?} has no field {field:?}", new.unit_type))),
         }
         let mut prefix = field_prefix(&new.unit_type, field);
-        prefix.extend_from_slice(&upsert_key(&new.payload, field)?);
-        let held = self.unique_holders(&prefix)?;
+        let field_len = prefix.len();
+        match key {
+            Some(key) => prefix.extend_from_slice(key),
+            None => prefix.extend_from_slice(&upsert_key(&new.payload, field)?),
+        }
+        let held = self.unique_holders(&prefix, field_len)?;
         let Some(&id) = held.first() else {
             // No unit holds the value: the create's own uniqueness check of this field would scan
             // the same range again, with no write in between (see `ensure_unique`).
@@ -231,12 +251,13 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
     /// Refuses when an `Active` unit other than `unit` already holds `value`.
     fn ensure_unique(&self, unit_type: &str, field: &str, value: &[u8], unit: UnitId) -> Result<(), UnitError> {
         let mut prefix = field_prefix(unit_type, field);
+        let field_len = prefix.len();
         prefix.extend_from_slice(value);
         // `upsert` found no holder of this value just before, and nothing was written since.
         if self.unique_free.borrow().as_deref() == Some(prefix.as_slice()) {
             return Ok(());
         }
-        for holder in self.unique_holders(&prefix)? {
+        for holder in self.unique_holders(&prefix, field_len)? {
             if holder != unit {
                 return Err(violation(format!(
                     "unit {unit}: another unit already holds the unique value of {field:?}"
@@ -251,8 +272,10 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
     /// holder is the rule, a second one the violation). The stored entries come from the state
     /// the transaction began on, with one bounded seek, and this change set's own entries of
     /// unique fields from `unique_staged`: the transaction never folds its buffer of writes
-    /// for it. Without that state (a range deletion), the transaction is scanned.
-    fn unique_holders(&self, prefix: &[u8]) -> Result<Vec<UnitId>, UnitError> {
+    /// for it. Without that state (a range deletion), the transaction is scanned. `field_len`
+    /// is the length of the `field_prefix` part: a field the snapshot holds no entry of at all
+    /// (learned once per change set) is not read from it again.
+    fn unique_holders(&self, prefix: &[u8], field_len: usize) -> Result<Vec<UnitId>, UnitError> {
         let (start, end) = prefix_bounds(prefix);
         let unit_of = |k: &[u8]| -> Result<UnitId, UnitError> {
             Ok(entry_key_parts(k).map_err(|e| context(e, "FIELD_INDEX"))?.3)
@@ -263,9 +286,22 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         };
         let staged = self.unique_staged.get(prefix).map_or(&[][..], Vec::as_slice);
         let removed = staged.iter().filter(|(_, put)| !put).count();
+        let field = &prefix[..field_len];
+        let known = self.base_field_empty.borrow().get(field).copied();
+        let field_empty = match known {
+            Some(empty) => empty,
+            None => {
+                let (fs, fe) = prefix_bounds(field);
+                let empty = base.scan(Bound::Included(&fs), Bound::Excluded(&fe), 1)?.is_empty();
+                self.base_field_empty.borrow_mut().insert(field.to_vec(), empty);
+                empty
+            }
+        };
         let mut held = Vec::new();
-        for (k, _) in base.scan(Bound::Included(&start), Bound::Excluded(&end), 2 + removed)? {
-            held.push(unit_of(&k)?);
+        if !field_empty {
+            for (k, _) in base.scan(Bound::Included(&start), Bound::Excluded(&end), 2 + removed)? {
+                held.push(unit_of(&k)?);
+            }
         }
         for (unit, put) in staged {
             if *put {

@@ -821,6 +821,7 @@ impl<E: TxnEngine> UnitDb<E> {
             options_cache: std::cell::RefCell::default(),
             schema_cache: std::cell::RefCell::default(),
             unique_free: std::cell::RefCell::default(),
+            base_field_empty: std::cell::RefCell::default(),
             prepared_text: std::cell::RefCell::default(),
             prepared_hash: std::cell::Cell::default(),
             base: std::cell::OnceCell::new(),
@@ -1446,6 +1447,10 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     /// The unique-field prefix (`field_prefix ‖ value`) an `upsert` just found held by no unit,
     /// while it creates the unit; cleared by any write.
     pub(crate) unique_free: std::cell::RefCell<Option<Vec<u8>>>,
+    /// Per unique field (`field_prefix`), whether the snapshot `base` holds no entry of it at
+    /// all, learned with one seek: then only this change set's own entries can hold a value.
+    /// Emptied with `schema_cache`.
+    pub(crate) base_field_empty: std::cell::RefCell<std::collections::HashMap<Vec<u8>, bool>>,
     /// A snapshot of the state the transaction began on, taken at its first use: what a read
     /// of keys this change set has not written answers from, without the transaction folding
     /// its buffer of writes for a scan (see [`ChangeSet::base`]).
@@ -1714,6 +1719,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         };
         if schema_stale {
             self.schema_cache.get_mut().clear();
+            self.base_field_empty.get_mut().clear();
         }
         *self.unique_free.get_mut() = None;
         // A `REL` record above the ceiling raises it, whoever writes it (a
