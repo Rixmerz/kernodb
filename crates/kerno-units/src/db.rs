@@ -436,7 +436,19 @@ type Loaded = (UnitHead, Option<Vec<u8>>);
 /// `hash`: whether the payload's content hash is checked (UNIT-28); the normal reads pass
 /// [`UnitConfig::verify_payload_on_read`], every read a write builds on passes `true`.
 pub(crate) fn load_unit(get: &GetFn<'_>, id: UnitId, hash: bool) -> Result<Option<Loaded>, UnitError> {
-    let Some(raw) = get(&key(Key::UnitHead { unit: id })?)? else {
+    let raw = get(&key(Key::UnitHead { unit: id })?)?;
+    load_unit_from_head(get, id, raw, hash)
+}
+
+/// [`load_unit`] for a caller that already read the unit's head record (`raw`, `None` when
+/// absent): `get` is asked only for the records after it.
+pub(crate) fn load_unit_from_head(
+    get: &GetFn<'_>,
+    id: UnitId,
+    raw: Option<Vec<u8>>,
+    hash: bool,
+) -> Result<Option<Loaded>, UnitError> {
+    let Some(raw) = raw else {
         return Ok(None);
     };
     let mut head = UnitHead::decode(&raw).map_err(|e| context(e, &format!("UNIT_HEAD of unit {id}")))?;
@@ -1143,28 +1155,31 @@ impl<E: Engine> UnitSnapshot<E> {
             missing.iter().map(|&i| key(Key::UnitHead { unit: ids[i] })).collect::<Result<_, _>>()?;
         let refs: Vec<&[u8]> = keys.iter().map(Vec::as_slice).collect();
         let heads = self.snap.multi_get(&refs)?;
+        let mut loaded_units: Vec<Arc<Unit>> = Vec::with_capacity(missing.len());
+        let snap_get = |q: &[u8]| self.snap.get(q);
         for ((&i, k), head) in missing.iter().zip(&keys).zip(heads) {
             let id = ids[i];
-            // The head comes from the batch, any other record from the snapshot.
-            let head = std::cell::Cell::new(Some(head));
-            let get = |q: &[u8]| match head.take() {
-                Some(h) if q == k.as_slice() => Ok(h),
-                h => {
-                    head.set(h);
-                    self.snap.get(q)
-                }
-            };
             let loaded = if self.checked_reads {
+                // The head comes from the batch, any other record from the snapshot.
+                let head = std::cell::Cell::new(Some(head));
+                let get = |q: &[u8]| match head.take() {
+                    Some(h) if q == k.as_slice() => Ok(h),
+                    h => {
+                        head.set(h);
+                        self.snap.get(q)
+                    }
+                };
                 load_unit_checked(&get, id)?
             } else {
-                load_unit(&get, id, self.verify_payload_on_read)?
+                load_unit_from_head(&snap_get, id, head, self.verify_payload_on_read)?
             };
             let unit = loaded.map(|(head, payload)| Arc::new(to_unit(id, head, payload)));
             if let Some(u) = &unit {
-                self.read_cache.put_unit(seq, u);
+                loaded_units.push(Arc::clone(u));
             }
             out[i] = Some(unit);
         }
+        self.read_cache.put_units(seq, &loaded_units);
         Ok(out.into_iter().map(|u| u.expect("every id is answered")).collect())
     }
 

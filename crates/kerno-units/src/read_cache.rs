@@ -161,6 +161,24 @@ impl ReadCache {
         }
     }
 
+    /// [`put_unit`](Self::put_unit) for a batch: one lock, the map grown once.
+    pub(crate) fn put_units(&self, seq: u64, units: &[Arc<Unit>]) {
+        if units.is_empty() {
+            return;
+        }
+        let mut c = self.lock();
+        if !c.at(seq) {
+            return;
+        }
+        c.units.reserve(units.len());
+        for unit in units {
+            let weight = UNIT_OVERHEAD + unit.payload.as_ref().map_or(0, Vec::len) + unit.metadata.len();
+            if !c.units.contains_key(&unit.id) && c.admit(weight) {
+                c.units.insert(unit.id, Arc::clone(unit));
+            }
+        }
+    }
+
     /// The unit ids an index range scan of `[start, end)` with `limit` returned.
     pub(crate) fn range(&self, seq: u64, key: &RangeKey) -> Option<Arc<Vec<UnitId>>> {
         let mut c = self.lock();
