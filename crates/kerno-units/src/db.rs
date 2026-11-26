@@ -767,6 +767,11 @@ impl<E: TxnEngine> UnitDb<E> {
         self.snapshot()?.get_unit(id)
     }
 
+    /// [`get_unit`](Self::get_unit) without a copy (see [`UnitSnapshot::get_unit_shared`]).
+    pub fn get_unit_shared(&self, id: UnitId) -> Result<Option<Arc<Unit>>, UnitError> {
+        self.snapshot()?.get_unit_shared(id)
+    }
+
     /// A consistent read view (I-05).
     pub fn snapshot(&self) -> Result<UnitSnapshot<E>, UnitError> {
         self.check_poisoned()?;
@@ -1039,6 +1044,23 @@ impl<E: Engine> UnitSnapshot<E> {
             self.read_cache.put_unit(seq, u);
         }
         Ok(unit)
+    }
+
+    /// [`get_unit`](Self::get_unit) without a copy: the unit as the read cache holds it, shared.
+    /// A caller that only looks at units (a binding that converts fields on access) pays no
+    /// allocation for one the cache already has.
+    pub fn get_unit_shared(&self, id: UnitId) -> Result<Option<Arc<Unit>>, UnitError> {
+        let seq = self.snap.seq();
+        if let Some(hit) = self.read_cache.unit(seq, id) {
+            return Ok(Some(hit));
+        }
+        let get = |k: &[u8]| self.snap.get(k);
+        let loaded = if self.checked_reads { load_unit_checked(&get, id)? } else { load_unit(&get, id)? };
+        Ok(loaded.map(|(head, payload)| {
+            let unit = Arc::new(to_unit(id, head, payload));
+            self.read_cache.put_shared(seq, &unit);
+            unit
+        }))
     }
 
     /// Whether a unit with this id ever existed at this snapshot (a deleted one did): one read of

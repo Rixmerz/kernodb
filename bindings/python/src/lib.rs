@@ -5,9 +5,10 @@
 //! a `kerno.KernoError`.
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::ops::Bound as Range;
 use std::path::PathBuf;
-use std::sync::RwLock;
+use std::sync::{Arc, Mutex, RwLock};
 
 use kerno::units::assoc_rank::{VectorMetric, VectorSet};
 use kerno::units::hybrid::RRF_SCALE;
@@ -22,7 +23,7 @@ use pyo3::exceptions::{PyException, PyValueError};
 use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedBytes;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString};
+use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
 
 create_exception!(_kerno, KernoError, PyException, "Any failure reported by the Kerno engine.");
 create_exception!(_kerno, NotFoundError, KernoError, "No unit, relation or revision with that id.");
@@ -497,32 +498,50 @@ fn encode_hex(bytes: &[u8]) -> String {
     out
 }
 
+/// The Python strings of document field names, made once: the documents of a type share their
+/// field names, so a caller that reads the documents of many units would otherwise build one
+/// `str` per field and per unit, and hash each of them again to store it in the `dict`. Slot `i`
+/// holds the names seen at field position `i` (a few per position: one per unit type in use).
+struct FieldNames {
+    slots: Vec<Vec<(Box<str>, Py<PyString>)>>,
+}
+
+/// Names kept per field position, and positions kept: beyond either, a name is built each time.
+const NAMES_PER_SLOT: usize = 8;
+const NAME_SLOTS: usize = 256;
+
+static FIELD_NAMES: Mutex<FieldNames> = Mutex::new(FieldNames { slots: Vec::new() });
+
+impl FieldNames {
+    fn get<'py>(&mut self, py: Python<'py>, position: usize, name: &str) -> Bound<'py, PyString> {
+        if position >= NAME_SLOTS {
+            return PyString::new(py, name);
+        }
+        if self.slots.len() <= position {
+            self.slots.resize_with(position + 1, Vec::new);
+        }
+        let slot = &mut self.slots[position];
+        if let Some((_, s)) = slot.iter().find(|(n, _)| &**n == name) {
+            return s.bind(py).clone();
+        }
+        let s = PyString::new(py, name);
+        if slot.len() < NAMES_PER_SLOT {
+            slot.push((name.into(), s.clone().unbind()));
+        }
+        s
+    }
+}
+
 /// A stored unit, as of its latest revision.
+///
+/// It holds the unit as the engine read it, shared with the engine's read cache: making one
+/// copies nothing, and each attribute is converted when it is read.
 #[pyclass(frozen, module = "kerno")]
 struct Unit {
-    id: UnitId,
+    unit: Arc<kerno::Unit>,
     /// The id as the Python string, made the first time it is asked for: a lookup that
     /// returns hundreds of units formats the ids of those the caller looks at.
     id_str: PyOnceLock<Py<PyString>>,
-    #[pyo3(get)]
-    unit_type: String,
-    #[pyo3(get)]
-    schema_version: u32,
-    #[pyo3(get)]
-    lifecycle: &'static str,
-    #[pyo3(get)]
-    revision: u64,
-    /// The oldest revision retention still keeps: `history(from_revision=...)` and `read_as_of`
-    /// fail with `PrunedError` below it. 1 until retention prunes the unit.
-    #[pyo3(get)]
-    oldest_revision: u64,
-    /// When the unit was created, in microseconds since the Unix epoch.
-    #[pyo3(get)]
-    created_at_us: i64,
-    /// When the unit's head revision was written, in microseconds since the Unix epoch.
-    #[pyo3(get)]
-    updated_at_us: i64,
-    payload: Option<Vec<u8>>,
 }
 
 #[pymethods]
@@ -530,29 +549,73 @@ impl Unit {
     /// The unit's id: 32 lower-case hex digits.
     #[getter]
     fn id<'py>(&self, py: Python<'py>) -> Bound<'py, PyString> {
-        self.id_str.get_or_init(py, || PyString::new(py, &self.id.to_string()).unbind()).bind(py).clone()
+        self.id_str.get_or_init(py, || PyString::new(py, &self.unit.id.to_string()).unbind()).bind(py).clone()
+    }
+
+    #[getter]
+    fn unit_type(&self) -> &str {
+        &self.unit.unit_type
+    }
+
+    #[getter]
+    fn schema_version(&self) -> u32 {
+        self.unit.schema_version
+    }
+
+    #[getter]
+    fn lifecycle(&self) -> &'static str {
+        lifecycle_name(self.unit.lifecycle)
+    }
+
+    #[getter]
+    fn revision(&self) -> u64 {
+        self.unit.head.0
+    }
+
+    /// The oldest revision retention still keeps: `history(from_revision=...)` and `read_as_of`
+    /// fail with `PrunedError` below it. 1 until retention prunes the unit.
+    #[getter]
+    fn oldest_revision(&self) -> u64 {
+        self.unit.oldest.0
+    }
+
+    /// When the unit was created, in microseconds since the Unix epoch.
+    #[getter]
+    fn created_at_us(&self) -> i64 {
+        self.unit.created_at.0
+    }
+
+    /// When the unit's head revision was written, in microseconds since the Unix epoch.
+    #[getter]
+    fn updated_at_us(&self) -> i64 {
+        self.unit.updated_at.0
     }
 
     /// The content, as `bytes`; `None` for a deleted unit.
     #[getter]
     fn payload<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyBytes>> {
-        self.payload.as_deref().map(|p| PyBytes::new(py, p))
+        self.unit.payload.as_deref().map(|p| PyBytes::new(py, p))
     }
 
     /// The payload decoded as a document (`dict`), without reading the database again; `None`
     /// for a deleted unit. Raises `SchemaError` when the payload is not a document.
     fn document<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
-        let Some(payload) = self.payload.as_deref() else { return Ok(None) };
+        let Some(payload) = self.unit.payload.as_deref() else { return Ok(None) };
         // Straight from the bytes into the dict: no intermediate document.
         let d = PyDict::new(py);
         let mut failed: Option<PyErr> = None;
+        let mut names = FIELD_NAMES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut position = 0;
         let walked = Document::visit(payload, |name, value| {
+            let key = names.get(py, position, name);
+            position += 1;
             if failed.is_none()
-                && let Err(e) = value_ref_to_py(py, value).and_then(|v| d.set_item(name, v))
+                && let Err(e) = value_ref_to_py(py, value).and_then(|v| d.set_item(key, v))
             {
                 failed = Some(e);
             }
         });
+        drop(names);
         if let Err(e) = walked {
             return Err(SchemaError::new_err(format!("the payload is not a document: {e}")));
         }
@@ -563,24 +626,24 @@ impl Unit {
     }
 
     fn __repr__(&self) -> String {
-        format!("Unit(id={:?}, unit_type={:?}, lifecycle={:?})", self.id.to_string(), self.unit_type, self.lifecycle)
+        format!(
+            "Unit(id={:?}, unit_type={:?}, lifecycle={:?})",
+            self.unit.id.to_string(),
+            self.unit.unit_type,
+            lifecycle_name(self.unit.lifecycle)
+        )
+    }
+}
+
+impl From<Arc<kerno::Unit>> for Unit {
+    fn from(unit: Arc<kerno::Unit>) -> Self {
+        Unit { unit, id_str: PyOnceLock::new() }
     }
 }
 
 impl From<kerno::Unit> for Unit {
     fn from(u: kerno::Unit) -> Self {
-        Unit {
-            id: u.id,
-            id_str: PyOnceLock::new(),
-            unit_type: u.unit_type,
-            schema_version: u.schema_version,
-            lifecycle: lifecycle_name(u.lifecycle),
-            revision: u.head.0,
-            oldest_revision: u.oldest.0,
-            created_at_us: u.created_at.0,
-            updated_at_us: u.updated_at.0,
-            payload: u.payload,
-        }
+        Unit::from(Arc::new(u))
     }
 }
 
@@ -590,8 +653,10 @@ impl From<kerno::Unit> for Unit {
 /// not build a new `str` (a scan of every relation reads three attributes per relation).
 #[pyclass(frozen, module = "kerno")]
 struct Relation {
-    #[pyo3(get)]
-    id: Py<PyString>,
+    rid: RelationId,
+    /// The id as the Python string, made the first time it is asked for: a scan of every
+    /// relation that reads their ends and types formats none.
+    id_str: PyOnceLock<Py<PyString>>,
     #[pyo3(get)]
     from_id: Py<PyString>,
     #[pyo3(get)]
@@ -602,6 +667,12 @@ struct Relation {
 
 #[pymethods]
 impl Relation {
+    /// The relation's id.
+    #[getter]
+    fn id<'py>(&self, py: Python<'py>) -> Bound<'py, PyString> {
+        self.id_str.get_or_init(py, || PyString::new(py, &RelationId::to_string(&self.rid)).unbind()).bind(py).clone()
+    }
+
     fn __repr__(&self, py: Python<'_>) -> String {
         format!(
             "Relation(from_id={:?}, to_id={:?}, relation_type={:?})",
@@ -619,12 +690,34 @@ struct RelationMaker<'py> {
     types: HashMap<String, Py<PyString>>,
     /// One `str` per unit id: the ends of a database's relations repeat (many relations, fewer
     /// units), and a caller that keys a dict by them hashes each `str` once.
-    units: HashMap<UnitId, Py<PyString>>,
+    units: HashMap<UnitId, Py<PyString>, BuildHasherDefault<IdHasher>>,
+}
+
+/// A hasher for unit ids as map keys within one call: an id is sixteen bytes that already
+/// differ from unit to unit, so folding them is enough, and a scan of every relation looks
+/// two of them up per relation.
+#[derive(Default)]
+struct IdHasher(u64);
+
+impl Hasher for IdHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            let mut word = [0u8; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            self.0 = (self.0.rotate_left(5) ^ u64::from_le_bytes(word)).wrapping_mul(0x517c_c1b7_2722_0a95);
+        }
+    }
+
+    fn write_usize(&mut self, _len: usize) {}
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
 }
 
 impl<'py> RelationMaker<'py> {
     fn new(py: Python<'py>) -> Self {
-        RelationMaker { py, types: HashMap::new(), units: HashMap::new() }
+        RelationMaker { py, types: HashMap::new(), units: HashMap::default() }
     }
 
     fn unit(&mut self, id: UnitId) -> Py<PyString> {
@@ -632,18 +725,23 @@ impl<'py> RelationMaker<'py> {
         self.units.entry(id).or_insert_with(|| PyString::new(py, &id.to_string()).unbind()).clone_ref(py)
     }
 
-    fn make(&mut self, r: kerno::Relation) -> Relation {
+    fn relation_type(&mut self, name: String) -> Py<PyString> {
         let py = self.py;
-        let relation_type = match self.types.get(&r.relation_type) {
+        match self.types.get(&name) {
             Some(t) => t.clone_ref(py),
             None => {
-                let t = PyString::new(py, &r.relation_type).unbind();
-                self.types.insert(r.relation_type, t.clone_ref(py));
+                let t = PyString::new(py, &name).unbind();
+                self.types.insert(name, t.clone_ref(py));
                 t
             }
-        };
+        }
+    }
+
+    fn make(&mut self, r: kerno::Relation) -> Relation {
+        let relation_type = self.relation_type(r.relation_type);
         Relation {
-            id: PyString::new(py, &RelationId::to_string(&r.id)).unbind(),
+            rid: r.id,
+            id_str: PyOnceLock::new(),
             from_id: self.unit(r.from),
             to_id: self.unit(r.to),
             relation_type,
@@ -742,7 +840,7 @@ impl Database {
     /// The unit `id`, or `None` when no such unit exists.
     fn read(&self, py: Python<'_>, id: &str) -> PyResult<Option<Unit>> {
         let id = UnitId(parse_id(id)?);
-        self.with_db(py, |db| Ok(db.get(id).map_err(engine_error)?.map(Unit::from)))
+        self.with_db(py, |db| Ok(db.get_shared(id).map_err(engine_error)?.map(Unit::from)))
     }
 
     /// Relates unit `from_id` to unit `to_id` with a relation of `relation_type`; returns the
@@ -803,6 +901,23 @@ impl Database {
         Ok(edges.into_iter().map(|r| maker.make(r)).collect())
     }
 
+    /// Every live relation as a `(from_id, to_id, relation_type)` tuple, optionally of one
+    /// `relation_type`, in the order of [`relations`](Self::relations): for a caller that loads
+    /// a whole graph and needs the two ends and the type, not `Relation` objects. The ids and
+    /// the types are shared strings, as in `relations`.
+    #[pyo3(signature = (relation_type=None))]
+    fn relation_edges<'py>(&self, py: Python<'py>, relation_type: Option<&str>) -> PyResult<Bound<'py, PyList>> {
+        let edges = self.with_db(py, |db| db.relations(relation_type).map_err(engine_error))?;
+        let mut maker = RelationMaker::new(py);
+        let out = PyList::empty(py);
+        for r in edges {
+            let (from, to) = (maker.unit(r.from), maker.unit(r.to));
+            let ty = maker.relation_type(r.relation_type);
+            out.append(PyTuple::new(py, [from, to, ty])?)?;
+        }
+        Ok(out)
+    }
+
     /// The relations of `id` like [`related`](Self::related), each with the unit at its other
     /// end, in one call: `[(Relation, Unit), ...]`. A relation whose other end no longer exists
     /// is left out.
@@ -827,7 +942,7 @@ impl Database {
             let mut out = Vec::with_capacity(edges.len());
             for r in edges {
                 let other = if matches!(direction, Direction::Out) { r.to } else { r.from };
-                let Some(unit) = db.get(other).map_err(engine_error)? else { continue };
+                let Some(unit) = db.get_shared(other).map_err(engine_error)? else { continue };
                 out.push((r, unit));
             }
             Ok(out)
@@ -1175,7 +1290,7 @@ impl Database {
     fn find(&self, py: Python<'_>, unit_type: &str, field: &str, value: Bound<'_, PyAny>) -> PyResult<Vec<Unit>> {
         let v = to_field(&value)?;
         self.with_db(py, |db| {
-            Ok(db.find(unit_type, field, &v).map_err(engine_error)?.into_iter().map(Unit::from).collect())
+            Ok(db.find_shared(unit_type, field, &v).map_err(engine_error)?.into_iter().map(Unit::from).collect())
         })
     }
 

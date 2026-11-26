@@ -278,6 +278,7 @@ use std::borrow::Borrow;
 use std::collections::HashSet;
 use std::ops::Bound;
 use std::path::Path;
+use std::sync::Arc;
 
 use kerno_core::vfs::StdVfs;
 use kerno_storage::KernoDb;
@@ -956,6 +957,12 @@ impl Db {
         self.units.snapshot()?.find_by_field(unit_type, field, value)
     }
 
+    /// [`find`](Self::find) without a copy of each unit: the units as the read cache holds
+    /// them, shared. For a caller that only reads the units it gets (a language binding).
+    pub fn find_shared(&self, unit_type: &str, field: &str, value: &FieldValue) -> Result<Vec<Arc<Unit>>> {
+        self.units.snapshot()?.find_by_field_shared(unit_type, field, value)
+    }
+
     /// The active units of `unit_type` whose indexed `field` lies between `lo` and `hi`,
     /// ordered by value then unit id, at most `limit`. Floats order as numbers, text and
     /// bytes as bytes.
@@ -982,6 +989,11 @@ impl Db {
     /// The engine fails or finds the unit corrupt.
     pub fn get(&self, id: UnitId) -> Result<Option<Unit>> {
         self.units.get_unit(id)
+    }
+
+    /// [`get`](Self::get) without a copy: the unit as the read cache holds it, shared.
+    pub fn get_shared(&self, id: UnitId) -> Result<Option<Arc<Unit>>> {
+        self.units.get_unit_shared(id)
     }
 
     /// Relates `from` to `to` with a declared relation of type `relation_type` (1 to 64 bytes,

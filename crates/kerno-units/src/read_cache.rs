@@ -129,6 +129,16 @@ impl ReadCache {
         }
     }
 
+    /// [`put_unit`](Self::put_unit) of a unit that is already shared: the cache keeps a
+    /// reference, not a copy.
+    pub(crate) fn put_shared(&self, seq: u64, unit: &Arc<Unit>) {
+        let weight = UNIT_OVERHEAD + unit.payload.as_ref().map_or(0, Vec::len) + unit.metadata.len();
+        let mut c = self.lock();
+        if c.at(seq) && !c.units.contains_key(&unit.id) && c.admit(weight) {
+            c.units.insert(unit.id, unit.clone());
+        }
+    }
+
     /// The unit ids an index range scan of `[start, end)` with `limit` returned.
     pub(crate) fn range(&self, seq: u64, key: &RangeKey) -> Option<Arc<Vec<UnitId>>> {
         let mut c = self.lock();

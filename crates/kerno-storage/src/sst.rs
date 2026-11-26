@@ -52,6 +52,14 @@ const LAZY_FILTER_SAMPLE: usize = 64;
 /// Output is handed to the file system in chunks of about this size.
 const WRITE_CHUNK: usize = 256 << 10;
 
+/// The largest stored block a thread keeps its read buffer for.
+const READ_SCRATCH_MAX: usize = 1 << 20;
+
+thread_local! {
+    /// Where a thread reads a stored data block before it is checked and its payload kept.
+    static READ_SCRATCH: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 pub fn sst_name(number: u64) -> String {
     format!("{number:06}.sst")
 }
@@ -729,13 +737,30 @@ impl Table {
         if fill_cache {
             bump(&stats.block_cache_misses, 1);
         }
-        let mut buf = vec![0u8; handle.len as usize];
-        self.file.read_at(&mut buf, handle.offset)?;
-        let payload = crate::format::block::data_block_payload(&buf, self.number, handle.offset, body.lz4)
-            .and_then(|p| {
-                check_data_block(&p, &block, usize::from(block.prev.is_some()), &body.props).map(|()| p.into_owned())
-            })
-            .map_err(|e| format_error(&sst_name(self.number), e))?;
+        // The stored block is read into a buffer the thread keeps: what is kept of it is the
+        // payload, decompressed or copied out, so the bytes as stored need no allocation (and
+        // no zeroing) of their own for every block read.
+        let len = handle.len as usize;
+        let payload = READ_SCRATCH.with(|scratch| {
+            let mut scratch = scratch.borrow_mut();
+            let mut large = Vec::new();
+            let buf: &mut [u8] = if len <= READ_SCRATCH_MAX {
+                if scratch.len() < len {
+                    scratch.resize(len, 0);
+                }
+                &mut scratch[..len]
+            } else {
+                large.resize(len, 0);
+                &mut large
+            };
+            self.file.read_at(buf, handle.offset)?;
+            crate::format::block::data_block_payload(buf, self.number, handle.offset, body.lz4)
+                .and_then(|p| {
+                    check_data_block(&p, &block, usize::from(block.prev.is_some()), &body.props)
+                        .map(|()| p.into_owned())
+                })
+                .map_err(|e| format_error(&sst_name(self.number), e))
+        })?;
         let block = Arc::new(Block::from_payload(payload));
         if fill_cache {
             self.ctx.cache.insert(key, block.clone());

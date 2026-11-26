@@ -2,6 +2,7 @@
 //! entries of an indexed field.
 
 use std::ops::Bound;
+use std::sync::Arc;
 
 use kerno_core::contract::{Engine, Snapshot};
 
@@ -11,7 +12,7 @@ use super::{
 };
 use crate::db::{Unit, UnitSnapshot, context, corruption};
 use crate::error::UnitError;
-use crate::types::Lifecycle;
+use crate::types::{Lifecycle, UnitId};
 
 /// Entries read per scan call by a lookup.
 const PAGE: usize = 256;
@@ -54,7 +55,25 @@ impl<E: Engine> UnitSnapshot<E> {
         }
         // The range of one value is never empty, and the schema was read once to bound it:
         // the scan `find_range` would run, without reading the schema a second time.
-        self.scan_range(unit_type, field, start, end, usize::MAX)
+        self.scan_range(unit_type, field, start, end, usize::MAX, &|id| self.get_unit(id))
+    }
+
+    /// [`find_by_field`](Self::find_by_field) without a copy of each unit: the units as the
+    /// read cache holds them, shared (see [`get_unit_shared`](Self::get_unit_shared)).
+    pub fn find_by_field_shared(
+        &self,
+        unit_type: &str,
+        field: &str,
+        value: &FieldValue,
+    ) -> Result<Vec<Arc<Unit>>, UnitError> {
+        let (start, end) = self.field_bounds(unit_type, field, Bound::Included(value), Bound::Included(value))?;
+        if value.index_bytes().is_some_and(|e| e.len() > MAX_INDEXED_VALUE_LEN) {
+            return Err(UnitError::InvalidArgument(format!(
+                "the value is too long to be indexed (at most {MAX_INDEXED_TEXT_LEN} bytes of text or bytes, each \
+                 0x00 byte counting twice), so no unit can hold it"
+            )));
+        }
+        self.scan_range(unit_type, field, start, end, usize::MAX, &|id| self.get_unit_shared(id))
     }
 
     /// The `Active` units of `unit_type` whose indexed `field` lies between
@@ -87,7 +106,7 @@ impl<E: Engine> UnitSnapshot<E> {
         if start >= end {
             return Err(UnitError::InvalidArgument("find_range: the range is empty (low is above high)".into()));
         }
-        self.scan_range(unit_type, field, start, end, limit)
+        self.scan_range(unit_type, field, start, end, limit, &|id| self.get_unit(id))
     }
 
     /// The scan behind [`find_range`](Self::find_range), without its refusal of an empty range: the
@@ -105,24 +124,27 @@ impl<E: Engine> UnitSnapshot<E> {
         if start >= end {
             return Ok(Vec::new());
         }
-        self.scan_range(unit_type, field, start, end, limit)
+        self.scan_range(unit_type, field, start, end, limit, &|id| self.get_unit(id))
     }
 
-    fn scan_range(
+    /// The units of the entries in `[start, end)`, each read with `get` (a copy of the unit or
+    /// the shared one) and checked against its entry.
+    fn scan_range<U: std::borrow::Borrow<Unit>>(
         &self,
         unit_type: &str,
         field: &str,
         start: Vec<u8>,
         end: Vec<u8>,
         limit: usize,
-    ) -> Result<Vec<Unit>, UnitError> {
+        get: &dyn Fn(UnitId) -> Result<Option<U>, UnitError>,
+    ) -> Result<Vec<U>, UnitError> {
         // A range this snapshot's sequence already scanned and checked: its units, as read then.
         let seq = self.snap.seq();
         let cache_key = (start, end, limit);
         if let Some(ids) = self.read_cache.range(seq, &cache_key) {
             let mut out = Vec::with_capacity(ids.len());
             for &id in ids.iter() {
-                let Some(u) = self.get_unit(id)? else {
+                let Some(u) = get(id)? else {
                     return Err(corruption(format!("a FIELD_INDEX entry of unit {id} has no UNIT_HEAD")));
                 };
                 out.push(u);
@@ -142,10 +164,10 @@ impl<E: Engine> UnitSnapshot<E> {
                     break;
                 }
                 let (_, _, enc, unit) = entry_key_parts(k).map_err(|e| context(e, "FIELD_INDEX"))?;
-                let Some(u) = self.get_unit(unit)? else {
+                let Some(u) = get(unit)? else {
                     return Err(corruption(format!("a FIELD_INDEX entry of unit {unit} has no UNIT_HEAD")));
                 };
-                if !self.entry_agrees(&u, field, enc, unit_type) {
+                if !self.entry_agrees(u.borrow(), field, enc, unit_type) {
                     return Err(corruption(format!("a FIELD_INDEX entry of unit {unit} disagrees with the unit")));
                 }
                 out.push(u);
@@ -158,7 +180,7 @@ impl<E: Engine> UnitSnapshot<E> {
                 _ => break,
             }
         }
-        let ids = out.iter().map(|u| u.id).collect();
+        let ids = out.iter().map(|u| u.borrow().id).collect();
         self.read_cache.put_range(seq, cache_key, ids);
         Ok(out)
     }
