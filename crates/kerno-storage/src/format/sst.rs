@@ -199,6 +199,12 @@ impl<B: AsRef<[u8]>> BlockIndex for Vec<IndexEntry<B>> {
 pub trait DecodeIndex: BlockIndex + Sized {
     /// As [`decode_index`]: the same checks, the same errors.
     fn decode(payload: Vec<u8>, base: u64) -> Result<Self>;
+
+    /// [`check_index`] of this index: the same rules in the same order, the same errors. An
+    /// index that walked its entries while decoding answers from that walk.
+    fn check(&self, data_end: u64, props: &Props, at: u64) -> Result<()> {
+        check_index(self, data_end, props, at)
+    }
 }
 
 impl DecodeIndex for Vec<IndexEntry> {
@@ -214,13 +220,16 @@ impl DecodeIndex for Vec<IndexEntry> {
 pub struct FlatIndex {
     payload: Vec<u8>,
     entries: Vec<FlatEntry>,
+    /// The first entry-level SST-O5 violation the decoding pass met, if any.
+    o5: Option<&'static str>,
+    /// The end of the last entry (`96` for none) when the walk met no violation.
+    end: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct FlatEntry {
     key_at: u32,
     key_len: u32,
-    handle: BlockHandle,
 }
 
 impl FlatIndex {
@@ -244,7 +253,12 @@ impl BlockIndex for FlatIndex {
     }
 
     fn handle(&self, i: usize) -> BlockHandle {
-        self.entries[i].handle
+        // The handle's two varints follow the key; the decoding pass accepted them.
+        let e = &self.entries[i];
+        let mut pos = (e.key_at + e.key_len) as usize;
+        let offset = flat_varint(&self.payload, &mut pos).expect("decoded index");
+        let len = flat_varint(&self.payload, &mut pos).expect("decoded index");
+        BlockHandle { offset, len }
     }
 }
 
@@ -253,18 +267,49 @@ impl DecodeIndex for FlatIndex {
         // A meta block payload is at most `MAX_META_PAYLOAD` long, so positions fit in 32 bits.
         debug_assert!(payload.len() as u64 <= MAX_META_PAYLOAD);
         match flat_entries(&payload) {
-            Some(entries) => Ok(FlatIndex { payload, entries }),
+            Some((entries, o5, end)) => Ok(FlatIndex { payload, entries, o5, end }),
             // Not a valid index: the checked parser names the rule and the offset.
             None => Err(decode_index(&payload, base)
                 .err()
                 .unwrap_or_else(|| FormatError::corruption("SST-O4", base, "index block does not parse"))),
         }
     }
+
+    fn check(&self, data_end: u64, props: &Props, at: u64) -> Result<()> {
+        let o5 = |detail| Err(FormatError::corruption("SST-O5", at, detail));
+        if let Some(detail) = self.o5 {
+            return o5(detail);
+        }
+        if self.end != data_end {
+            return o5("index does not cover the data blocks exactly");
+        }
+        if self.entries.len() as u64 != props.data_blocks {
+            return o5("index count differs from data_blocks");
+        }
+        if self.entries.is_empty() != (props.point_entries == 0) {
+            return o5("index count 0 does not match point_entries 0");
+        }
+        Ok(())
+    }
 }
 
 /// A varint of a valid index at `*pos`, or `None` for anything [`decode_varint`] refuses.
 #[inline(always)]
 fn flat_varint(buf: &[u8], pos: &mut usize) -> Option<u64> {
+    let first = *buf.get(*pos)?;
+    if first < 0x80 {
+        *pos += 1;
+        return Some(u64::from(first));
+    }
+    if let Some(&second) = buf.get(*pos + 1)
+        && second < 0x80
+    {
+        if second == 0 {
+            return None;
+        }
+        *pos += 2;
+        return Some(u64::from(first & 0x7f) | u64::from(second) << 7);
+    }
     let mut v = 0u64;
     for i in 0..10 {
         let b = *buf.get(*pos + i)?;
@@ -283,11 +328,19 @@ fn flat_varint(buf: &[u8], pos: &mut usize) -> Option<u64> {
 /// The entries of an index payload [`decode_index`] accepts, and `None` for one it does not:
 /// the same grammar, without building an error on the way (a table's index is decoded every
 /// time the table is loaded, and a large table has thousands of entries).
-fn flat_entries(payload: &[u8]) -> Option<Vec<FlatEntry>> {
+///
+/// The same pass walks the entry-level rules of [`check_index`] (contiguity, block length,
+/// key order, overflow) and returns the first one broken, with the end of the last entry; the
+/// caller reports them when [`check_index`] would, after the properties are decoded.
+#[allow(clippy::type_complexity)]
+fn flat_entries(payload: &[u8]) -> Option<(Vec<FlatEntry>, Option<&'static str>, u64)> {
     let mut pos = 0;
     let count = flat_varint(payload, &mut pos)?;
     let mut entries = Vec::with_capacity((count as usize).min(payload.len() / 3));
-    for _ in 0..count {
+    let mut o5: Option<&'static str> = None;
+    let mut next = HEADER_LEN as u64;
+    let mut prev: &[u8] = &[];
+    for i in 0..count {
         let key_len = flat_varint(payload, &mut pos)?;
         if key_len > MAX_KEY_LEN as u64 || key_len > (payload.len() - pos) as u64 {
             return None;
@@ -296,9 +349,26 @@ fn flat_entries(payload: &[u8]) -> Option<Vec<FlatEntry>> {
         pos += key_len as usize;
         let offset = flat_varint(payload, &mut pos)?;
         let len = flat_varint(payload, &mut pos)?;
-        entries.push(FlatEntry { key_at: key_at as u32, key_len: key_len as u32, handle: BlockHandle { offset, len } });
+        let handle = BlockHandle { offset, len };
+        if o5.is_none() {
+            let key = &payload[key_at..key_at + key_len as usize];
+            if offset != next {
+                o5 = Some("index entries are not contiguous from offset 96");
+            } else if len < MIN_DATA_BLOCK_LEN || len > super::block::MAX_STORED_DATA_PAYLOAD + BLOCK_TRAILER_LEN as u64 {
+                o5 = Some("data block length out of range");
+            } else if i > 0 && prev >= key {
+                o5 = Some("index keys not strictly increasing");
+            } else {
+                match handle.end() {
+                    Some(n) => next = n,
+                    None => o5 = Some("index offsets overflow"),
+                }
+            }
+            prev = key;
+        }
+        entries.push(FlatEntry { key_at: key_at as u32, key_len: key_len as u32 });
     }
-    (pos == payload.len()).then_some(entries)
+    (pos == payload.len()).then_some((entries, o5, next))
 }
 
 /// SST-O5: the entries cover exactly `[96, D)` in order, each length in
@@ -491,7 +561,7 @@ pub fn open_sst_as<S: ByteSource, I: DecodeIndex>(
     // The order of the two is the order of their errors (SST-O4 of the index first).
     let index = I::decode(index_payload, index_at)?;
     let props = decode_props(&props_payload, footer.props.offset)?;
-    check_index(&index, data_end, &props, footer.index.offset)?;
+    index.check(data_end, &props, footer.index.offset)?;
     check_props(&props, ex.meta, ex.last_seq, footer.props.offset)?;
     let filter = match &filter_payload {
         Some(p) => Some(decode_filter(p, footer.filter.offset)?.to_owned_filter()),
