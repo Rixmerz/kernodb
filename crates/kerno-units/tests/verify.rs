@@ -248,7 +248,7 @@ fn damages(b: &Base) -> Vec<(&'static str, Patch, &'static str)> {
     rev0[17..].fill(0);
     let newer = LayerMeta { layer_version: 1, history_policy: HistoryPolicy::Versioned }.encode().unwrap();
     let mut newer = newer;
-    newer[5] = 12; // layer_version = 12, above the newest, 11 (2 DERIVED_VECTORS, 3 public ids, 4 adjacency counts, 5 live-unit counts, 6 schemas, 7 type options, 8 substring index, 9 posting blocks, 10 payload in the head, 11 stored once)
+    newer[5] = 13; // layer_version = 13, above the newest, 12 (2 DERIVED_VECTORS, 3 public ids, 4 adjacency counts, 5 live-unit counts, 6 schemas, 7 type options, 8 substring index, 9 posting blocks, 10 payload in the head, 11 stored once, 12 keyword ordinals)
     // The head of `a` without the payload it carries: its revision then has none anywhere.
     let mut bare_a = UnitHead::decode(&raw[&head_key(a)]).unwrap();
     bare_a.inline_payload = None;
@@ -303,7 +303,7 @@ fn damages(b: &Base) -> Vec<(&'static str, Patch, &'static str)> {
             "UNIT-29",
         ),
         ("unknown tag in a known range", vec![(vec![0x05, 1, 2], Some(b"v".to_vec()))], "UNIT-1"),
-        ("tag of a newer layer", vec![(vec![0x7B, 1], Some(b"v".to_vec()))], "UNIT-2"),
+        ("tag of a newer layer", vec![(vec![0x7C, 1], Some(b"v".to_vec()))], "UNIT-2"),
         ("key length", vec![(bad_key, Some(b"v".to_vec()))], "UNIT-3"),
         ("rev_no 0", vec![(rev0, Some(raw[&k(Key::RevMeta { unit: a, rev: RevNo(1) })].clone()))], "UNIT-5"),
         ("envelope 0", vec![(head_key(a), Some(head_env))], "UNIT-6"),
@@ -374,7 +374,7 @@ fn damage_detected<E: TxnEngine>() {
                 assert!(name.starts_with("mark"), "{name}: open refused: {e}");
                 assert!(is_damage_error(&e), "{name}: {e}");
                 if rule == "UNIT-16" {
-                    assert!(matches!(e, UnitError::IncompatibleLayer { found: 12, supported: 11 }), "{e}");
+                    assert!(matches!(e, UnitError::IncompatibleLayer { found: 13, supported: 12 }), "{e}");
                 }
                 if name == "mark missing" {
                     assert!(matches!(e, UnitError::NotAUnitDatabase), "{e}");
@@ -523,7 +523,7 @@ fn verify_writes_nothing<E: TxnEngine>() {
     let b = base::<E>(73);
     let mark = k(Key::LayerMeta { name: "layer".into() });
     let mut newer = LayerMeta { layer_version: 1, history_policy: HistoryPolicy::Versioned }.encode().unwrap();
-    newer[5] = 12;
+    newer[5] = 13;
     let variants: Vec<Patch> = vec![
         vec![],
         vec![(mark.clone(), None)],
@@ -569,7 +569,7 @@ fn kerno_read_only_untouched() {
     let b = base::<KernoDb>(74);
     let mark = k(Key::LayerMeta { name: "layer".into() });
     let mut newer = LayerMeta { layer_version: 1, history_policy: HistoryPolicy::Versioned }.encode().unwrap();
-    newer[5] = 12;
+    newer[5] = 13;
     for patch in [vec![], vec![(mark.clone(), None)], vec![(mark, Some(newer))]] {
         let disk = SimVfs::restore(&b.image);
         if !patch.is_empty() {

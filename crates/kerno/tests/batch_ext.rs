@@ -234,9 +234,10 @@ fn a_database_from_before_the_cut_is_refused() {
     // The marks of 1.0.0-alpha.1 (6), of the alpha.2 cut (7) and of the trigram index (8): their
     // adjacency and keyword postings are one record per entry, which this build does not read.
     // The mark of the posting-block cut (9), whose heads do not carry their payloads, and of the
-    // head-payload cut (10), whose head revisions store a small payload twice: this build opens
-    // one layer, the one it writes (`units-v11.md` §1).
-    for old in [6u8, 7, 8, 9, 10] {
+    // head-payload cut (10), whose head revisions store a small payload twice, and of the cut that
+    // stored a payload once (11), whose keyword postings name unit ids: this build opens one
+    // layer, the one it writes (`units-v12.md` §1).
+    for old in [6u8, 7, 8, 9, 10, 11] {
         let dir = TempDir::new();
         let db = Db::open(&dir.0).unwrap();
         db.store("n", "a").unwrap();
@@ -245,7 +246,7 @@ fn a_database_from_before_the_cut_is_refused() {
         db.unit_db().raw_commit(vec![(b"\x01layer".to_vec(), Some(mark))]).unwrap();
         db.close().unwrap();
         match Db::open(&dir.0) {
-            Err(kerno::Error::LayerTooOld { found, minimum: 11 }) if found == u32::from(old) => {}
+            Err(kerno::Error::LayerTooOld { found, minimum: 12 }) if found == u32::from(old) => {}
             Err(e) => panic!("layer {old}: wrong error: {e}"),
             Ok(_) => panic!("a database of layer {old} must be refused"),
         }

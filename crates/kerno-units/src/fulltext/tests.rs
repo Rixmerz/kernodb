@@ -127,7 +127,8 @@ fn analyze_counts_what_tokens_cut() {
         state ^= state << 17;
         state % n
     };
-    let pieces = ["foo", "Foo", "BAR", "x1", "Ünïcode", "ÉTÉ", "日本語", "a", "ß", "İstanbul", "_", " ", ".", "\n", "-", "€"];
+    let pieces =
+        ["foo", "Foo", "BAR", "x1", "Ünïcode", "ÉTÉ", "日本語", "a", "ß", "İstanbul", "_", " ", ".", "\n", "-", "€"];
     for round in 0..40 {
         let mut text = String::new();
         for _ in 0..(1 + round * 40) {
@@ -274,13 +275,29 @@ fn limit_ties_and_empty_queries() {
     store(&db, b"other");
     let all = db.search_text("same", 10, None).unwrap();
     assert_eq!(all.len(), 3);
-    // Equal scores come in unit id order.
-    let at = |u: UnitId| all.iter().position(|h| h.unit == u).unwrap();
-    assert_eq!(all[at(a)].score, all[at(b)].score);
-    assert!(at(a) < at(b), "equal scores: lower unit id first");
-    assert!(at(c) < at(a), "a higher tf in a text of the same size ranks first");
-    assert_eq!(db.search_text("same", 1, None).unwrap().len(), 1);
     assert_eq!(db.search_text("same", 2, None).unwrap(), all[..2]);
+    // Equal scores come in ordinal order: the order the units entered the index.
+    let at = |all: &[TextHit], u: UnitId| all.iter().position(|h| h.unit == u).unwrap();
+    assert_eq!(all[at(&all, a)].score, all[at(&all, b)].score);
+    assert!(at(&all, a) < at(&all, b), "equal scores: the unit indexed first comes first");
+    // An update keeps the ordinal; leaving the index and coming back takes a new one.
+    update(&db, a, "same words");
+    let again = db.search_text("same", 10, None).unwrap();
+    assert!(at(&again, a) < at(&again, b), "an update keeps the ordinal");
+    let before = ord_of(&db, a);
+    change(&db, |cs| {
+        cs.archive(a, None).unwrap();
+    });
+    assert!(db.raw_get(&ord_key(before)).unwrap().is_none(), "the ordinal leaves with the unit");
+    change(&db, |cs| {
+        cs.unarchive(a, None).unwrap();
+    });
+    assert!(ord_of(&db, a) > ord_of(&db, c), "coming back gives a new ordinal");
+    let again = db.search_text("same", 10, None).unwrap();
+    assert!(at(&again, b) < at(&again, a), "ties now put the unit that came back last");
+    assert_clean(&db);
+    assert!(at(&all, c) < at(&all, a), "a higher tf in a text of the same size ranks first");
+    assert_eq!(db.search_text("same", 1, None).unwrap().len(), 1);
     assert!(db.search_text("missing", 10, None).unwrap().is_empty());
     // A search that could never match is refused, not answered with nothing.
     for (query, limit) in [("same", 0), ("", 10), ("  ,, ", 10)] {
@@ -533,18 +550,23 @@ fn export_and_import_rebuild_the_index() {
 
 // --------------------------------------------------------------- verify
 
+/// The ordinal of an indexed unit, from its `DOC`.
+fn ord_of(db: &UnitDb<E>, unit: UnitId) -> Ord {
+    decode_doc(&db.raw_get(&doc_key(unit)).unwrap().unwrap()).unwrap().ord
+}
+
 /// The raw write that gives `unit` the posting `p` in the list of `term` (`None`: takes it out),
 /// for a list of one block, the tail: the damage the verifier must see.
 fn posting_patch(db: &UnitDb<E>, term: &str, unit: UnitId, p: Option<Posting>) -> (Vec<u8>, Option<Vec<u8>>) {
-    use crate::blocks::Block;
+    let ord = ord_of(db, unit);
     let key = block_key(term, None);
-    let mut entries = db.raw_get(&key).unwrap().map(|v| Postings::decode(&v).unwrap()).unwrap_or_default();
-    entries.retain(|e| e.0 != unit.0);
+    let mut entries = db.raw_get(&key).unwrap().map(|v| decode_block(&v).unwrap()).unwrap_or_default();
+    entries.retain(|e| e.0 != ord);
     if let Some(p) = p {
-        entries.push((unit.0, p));
+        entries.push((ord, p));
         entries.sort_by_key(|e| e.0);
     }
-    (key, (!entries.is_empty()).then(|| Postings::encode(&entries)))
+    (key, (!entries.is_empty()).then(|| encode_block(&entries)))
 }
 
 fn corpus_db(seed: u64) -> (UnitDb<E>, Vec<UnitId>) {
@@ -577,7 +599,7 @@ fn verify_sees_a_lost_doc_and_a_foreign_doc() {
     let (db, _) = corpus_db(23);
     let ghost = UnitId([9; 16]);
     let doc = analyze(b"ghost").unwrap();
-    db.raw_commit(vec![(doc_key(ghost), Some(encode_doc(&doc)))]).unwrap();
+    db.raw_commit(vec![(doc_key(ghost), Some(encode_doc(0, &doc)))]).unwrap();
     assert!(rules(&db).contains(&"UNIT-49".to_string()));
 }
 
@@ -606,7 +628,7 @@ fn verify_names_no_term() {
     let (db, ids) = corpus_db(26);
     db.raw_commit(vec![
         posting_patch(&db, "gamma", ids[1], None),
-        (doc_key(UnitId([7; 16])), Some(encode_doc(&analyze(b"zeta").unwrap()))),
+        (doc_key(UnitId([7; 16])), Some(encode_doc(9, &analyze(b"zeta").unwrap()))),
     ])
     .unwrap();
     let report = db.verify_units().unwrap();
@@ -625,13 +647,14 @@ fn a_unit_older_than_the_index_is_not_a_finding() {
     // no entries. Simulated by removing every full-text record of the first
     // unit and rewriting the statistics to start after it.
     let (db, ids) = corpus_db(27);
-    let (first_doc, _) = decode_doc(&db.raw_get(&doc_key(ids[0])).unwrap().unwrap()).unwrap();
+    let first_doc = decode_doc(&db.raw_get(&doc_key(ids[0])).unwrap().unwrap()).unwrap();
     let mut s = decode_stats(&db.raw_get(&STATS_KEY).unwrap().unwrap()).unwrap();
     s.since = db.snapshot().unwrap().get_unit(ids[0]).unwrap().unwrap().updated_seq.0 + 1;
     s.docs -= 1;
-    s.total_len -= u64::from(first_doc);
+    s.total_len -= u64::from(first_doc.dl);
     db.raw_commit(vec![
         (doc_key(ids[0]), None),
+        (ord_key(first_doc.ord).to_vec(), None),
         posting_patch(&db, "alpha", ids[0], None),
         posting_patch(&db, "beta", ids[0], None),
         (STATS_KEY.to_vec(), Some(encode_stats(s))),
@@ -647,7 +670,7 @@ fn a_unit_older_than_the_index_is_not_a_finding() {
 // ---------------------------------------------------------- posting blocks
 
 /// A raw `POSTING` record: its key and its decoded entries.
-type PostingBlock = (Vec<u8>, Vec<(UnitId, Posting)>);
+type PostingBlock = (Vec<u8>, Vec<(Ord, Posting)>);
 
 /// Every raw `POSTING` record of the store.
 fn posting_blocks(db: &UnitDb<E>) -> Vec<PostingBlock> {
@@ -683,11 +706,12 @@ fn a_batch_writes_one_record_per_block_not_one_per_posting() {
     let blocks = blocks_of(&db, "common");
     // 300 postings in blocks of at most 128, cut from the low end: 128 + 128 + 44.
     assert_eq!(blocks.iter().map(|(_, e)| e.len()).collect::<Vec<_>>(), [128, 128, 44]);
-    let units: Vec<UnitId> = blocks.iter().flat_map(|(_, e)| e.iter().map(|(u, _)| *u)).collect();
-    assert_eq!(units, ids, "ascending across the blocks");
-    // The first two blocks are bounded by their last unit, the third is the tail.
-    assert_eq!(blocks[0].0, block_key("common", Some(ids[127])));
-    assert_eq!(blocks[1].0, block_key("common", Some(ids[255])));
+    let ords: Vec<Ord> = blocks.iter().flat_map(|(_, e)| e.iter().map(|(o, _)| *o)).collect();
+    assert_eq!(ords, ids.iter().map(|u| ord_of(&db, *u)).collect::<Vec<_>>(), "ascending across the blocks");
+    assert_eq!(ords, (0..300).collect::<Vec<Ord>>(), "dense ordinals in indexing order");
+    // The first two blocks are bounded by their last ordinal, the third is the tail.
+    assert_eq!(blocks[0].0, block_key("common", Some(127)));
+    assert_eq!(blocks[1].0, block_key("common", Some(255)));
     assert_eq!(blocks[2].0, block_key("common", None));
     // Each `unitN` term is its own list of one posting: 300 + 1 + 2 lists in all.
     assert_eq!(posting_blocks(&db).len(), 3 + 300 + 1);
@@ -704,9 +728,10 @@ fn a_posting_changes_and_leaves_a_middle_block_of_a_long_list() {
     update(&db, ids[200], "common common");
     let blocks = blocks_of(&db, "common");
     assert_eq!(blocks.iter().map(|(_, e)| e.len()).collect::<Vec<_>>(), [128, 127, 44]);
-    let tf = blocks[1].1.iter().find(|(u, _)| *u == ids[200]).map(|(_, p)| p.tf);
+    let (o200, o130) = (ord_of(&db, ids[200]), 130);
+    let tf = blocks[1].1.iter().find(|(o, _)| *o == o200).map(|(_, p)| p.tf);
     assert_eq!(tf, Some(2), "a posting is replaced in place");
-    assert!(blocks.iter().all(|(_, e)| e.iter().all(|(u, _)| *u != ids[130])));
+    assert!(blocks.iter().all(|(_, e)| e.iter().all(|(o, _)| *o != o130)));
     assert_eq!(db.search_text("common", 1000, None).unwrap().len(), 299);
     assert_clean(&db);
     // Emptying a block deletes its record: every unit of the first block goes.
@@ -760,9 +785,7 @@ fn verify_sees_a_block_that_holds_a_unit_outside_its_range() {
     let (key, mut entries) = blocks[0].clone();
     entries.pop();
     entries.push(blocks[1].1[0]);
-    use crate::blocks::Block;
-    let raw: Vec<_> = entries.iter().map(|(u, p)| (u.0, *p)).collect();
-    db.raw_commit(vec![(key, Some(Postings::encode(&raw)))]).unwrap();
+    db.raw_commit(vec![(key, Some(encode_block(&entries)))]).unwrap();
     assert!(rules(&db).contains(&"UNIT-49".to_string()), "{:?} {}", db.verify_units().unwrap().findings, ids.len());
 }
 
@@ -776,7 +799,10 @@ fn verify_sees_block_values_that_do_not_decode() {
         ("a partial posting", [&good[..], &[7][..]].concat(), "UNIT-9"),
         ("a newer envelope", [&[2u8][..], &good[1..]].concat(), "UNIT-7"),
         ("reserved flags", [&[1u8, 1][..], &good[2..]].concat(), "UNIT-8"),
-        ("a zero frequency", [&good[..18], &[0, 0, 0, 0][..], &good[22..]].concat(), "UNIT-12"),
+        // "rare" is ordinal 300, two varint bytes; its frequency follows.
+        ("a zero frequency", [&good[..4], &[0][..], &good[5..]].concat(), "UNIT-12"),
+        ("ordinals not ascending", [&good[..], &[0, 1, 1][..]].concat(), "UNIT-13"),
+        ("a varint not in its shortest form", [&good[..4], &[0x81, 0x00][..], &good[5..]].concat(), "UNIT-9"),
     ] {
         db.raw_commit(vec![(key.clone(), Some(bad))]).unwrap();
         let r = rules(&db);
@@ -787,4 +813,43 @@ fn verify_sees_block_values_that_do_not_decode() {
     // A key that is not tag, term, NUL, bound.
     db.raw_commit(vec![([&[TAG_POSTING][..], b"rare", &[0, 7]].concat(), Some(good))]).unwrap();
     assert!(rules(&db).contains(&"UNIT-3".to_string()));
+}
+
+#[test]
+fn verify_sees_ordinals_without_their_records() {
+    // A posting of an ordinal with no ORD record.
+    let (db, ids) = corpus_db(46);
+    let ord = ord_of(&db, ids[2]);
+    db.raw_commit(vec![(ord_key(ord).to_vec(), None)]).unwrap();
+    assert_eq!(rules(&db), ["UNIT-49"]);
+    // An ORD record whose unit has no DOC.
+    let (db, _) = corpus_db(47);
+    db.raw_commit(vec![(ord_key(2).to_vec(), None), (ord_key(1000).to_vec(), Some(encode_ord(UnitId([5; 16]))))])
+        .unwrap();
+    assert!(rules(&db).contains(&"UNIT-49".to_string()));
+    // An ordinal at or above next_ord.
+    let (db, _) = corpus_db(48);
+    let mut s = decode_stats(&db.raw_get(&STATS_KEY).unwrap().unwrap()).unwrap();
+    assert_eq!(s.next_ord, 3);
+    s.next_ord = 2;
+    db.raw_commit(vec![(STATS_KEY.to_vec(), Some(encode_stats(s)))]).unwrap();
+    assert_eq!(rules(&db), ["UNIT-49"]);
+}
+
+#[test]
+fn the_last_ordinal_is_given_and_the_one_after_is_refused() {
+    let (db, _) = corpus_db(49);
+    let mut s = decode_stats(&db.raw_get(&STATS_KEY).unwrap().unwrap()).unwrap();
+    s.next_ord = u64::from(u32::MAX);
+    db.raw_commit(vec![(STATS_KEY.to_vec(), Some(encode_stats(s)))]).unwrap();
+    let last = store(&db, b"omega");
+    assert_eq!(ord_of(&db, last), u32::MAX);
+    assert_eq!(found(&db, "omega"), vec![last]);
+    let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
+    let e = cs.create(new_unit(b"psi")).unwrap_err();
+    assert!(matches!(&e, UnitError::InvalidArgument(m) if m.contains("ordinal")), "{e}");
+    drop(cs);
+    // Text without a term needs no ordinal.
+    store(&db, b"..");
+    assert_clean(&db);
 }

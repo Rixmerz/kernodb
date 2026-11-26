@@ -9,30 +9,38 @@
 //!
 //! # Design
 //!
-//! Three record families, written by the same engine transaction that writes
+//! Four record families, written by the same engine transaction that writes
 //! the unit's head (the path of [`crate::type_count`]), so an index never
-//! disagrees with the unit it describes, across a crash or a reopen:
+//! disagrees with the unit it describes, across a crash or a reopen. Every
+//! indexed document has a dense *ordinal* (`ord: u32`), given in ascending
+//! order from the `next_ord` of `STATS` and never given again: a unit keeps it
+//! while it stays in the index (an update re-indexes it under the same one),
+//! drops it when it leaves (delete, archive, text without a term) and gets a
+//! new one when it comes back. The postings name the ordinal, as SQLite FTS5
+//! names a rowid: a unit id is 16 bytes of which ~9 are random, an ordinal
+//! delta is one or two (`docs/file-format/units-v12.md`).
 //!
 //! * `POSTING` the posting list of a term, cut in blocks of at most
-//!   [`BLOCK_MAX`] postings (ADR-0026, the design of [`crate::substring`]):
-//!   `0x74 ‖ term ‖ 0x00 ‖ 0x00 ‖ bound[16]` or `0x74 ‖ term ‖ 0x00 ‖ 0x01`
-//!   (the tail block) → `envelope[2] ‖ (unit[16] ‖ tf: u32 BE ‖ dl: u32 BE) × n`,
-//!   ascending by unit: the frequency of `term` in the unit and the unit's
-//!   length in terms. A term has no NUL, so the range of one term is
-//!   `[tag ‖ term ‖ 0x00, tag ‖ term ‖ 0x01)`, and the block of a unit is the
-//!   first key at or after `… ‖ 0x00 ‖ unit`. A query reads that range and
-//!   nothing else per term. One record per term and unit, the first design
-//!   (ADR-0023), made a batch of units write one record per distinct term of
-//!   each: the per-record cost of the engine was the top of the profile of the
-//!   keyword-indexed store (ADR-0026).
-//! * `DOC` `0x75 ‖ unit[16]` → `envelope[2] ‖ dl: u32 BE ‖ n: u32 BE ‖ n ×
-//!   (len: u8 ‖ term)`: the length and the distinct terms the unit has in the
+//!   [`BLOCK_MAX`] postings (ADR-0026, the design of [`crate::blocks`]):
+//!   `0x74 ‖ term ‖ 0x00 ‖ 0x00 ‖ bound_ord: u32 BE` or `0x74 ‖ term ‖ 0x00 ‖ 0x01`
+//!   (the tail block) → `envelope[2] ‖ n × (varint(ord delta) ‖ varint(tf) ‖
+//!   varint(dl))`, strictly ascending by ordinal, the first delta from 0: the
+//!   frequency of `term` in the document and its length in terms (LEB128, in
+//!   the shortest form). A term has no NUL, so the range of one term is
+//!   `[tag ‖ term ‖ 0x00, tag ‖ term ‖ 0x01)`, and the block of an ordinal is
+//!   the first key at or after `… ‖ 0x00 ‖ ord`. A query reads that range and
+//!   nothing else per term.
+//! * `DOC` `0x75 ‖ unit[16]` → `envelope[2] ‖ ord: u32 BE ‖ dl: u32 BE ‖ n: u32 BE ‖ n ×
+//!   (len: u8 ‖ term)`: the ordinal, the length and the distinct terms the unit has in the
 //!   index. A change reads it to know which postings to remove, so it never
 //!   re-reads the old payload.
+//! * `ORD` `0x7b ‖ ord: u32 BE` → `envelope[2] ‖ unit[16]`: the unit of an ordinal, written
+//!   and deleted with the `DOC`.
 //! * `STATS` `0x76` → `envelope[2] ‖ since: u64 BE ‖ docs: u64 BE ‖
-//!   total_len: u64 BE`: the documents indexed and their summed length (the
-//!   `N` and the average length of BM25), and the commit sequence of the
-//!   change set that wrote the record first.
+//!   total_len: u64 BE ‖ next_ord: u64 BE`: the documents indexed and their summed length (the
+//!   `N` and the average length of BM25), the commit sequence of the
+//!   change set that wrote the record first, and the next ordinal to give. An
+//!   ordinal past `u32::MAX` is refused (`InvalidArgument`), never wrapped.
 //!
 //! A unit without a term has no record at all, so a database that holds no
 //! text is byte-for-byte what it was before this module.
@@ -42,7 +50,10 @@
 //! BM25 with `k1 = 1.2`, `b = 0.75` and the non-negative idf
 //! `ln(1 + (N - n + 0.5) / (n + 0.5))`. A query is cut by the same tokenizer
 //! as the text; a unit's score is the sum over the distinct query terms it
-//! holds (OR semantics). Hits come in descending score, ties by unit id.
+//! holds (OR semantics). Hits come in descending score, ties by ascending
+//! ordinal (the order the documents entered the index). Only the ordinals
+//! returned (and, in a search restricted to types, those whose head is read)
+//! are resolved to units, with one `multi_get` of their `ORD` records.
 //!
 //! # A write
 //!
@@ -56,7 +67,7 @@
 //!
 //! # The layer mark
 //!
-//! The posting blocks are layer version 9 (`docs/file-format/units-v9.md`),
+//! The ordinal postings are layer version 12 (`docs/file-format/units-v12.md`),
 //! the version every database starts at: a build refuses a database below it.
 //!
 //! `ponytail:` a query reads the whole posting list of each of its terms and
@@ -90,6 +101,8 @@ pub use tokenize::{MAX_INDEXED_BYTES, MAX_TERM_LEN, tokens};
 pub const TAG_POSTING: u8 = 0x74;
 pub const TAG_DOC: u8 = 0x75;
 pub const TAG_STATS: u8 = 0x76;
+/// `ORD` `0x7b ‖ ord: u32 BE` → `envelope[2] ‖ unit[16]`: the unit of an ordinal.
+pub const TAG_ORD: u8 = 0x7b;
 
 /// BM25 term-frequency saturation.
 pub const K1: f64 = 1.2;
@@ -100,8 +113,9 @@ const RECORD_VERSION: u8 = 1;
 
 /// Most postings in one block.
 pub const BLOCK_MAX: usize = 128;
-/// `unit[16] ‖ tf ‖ dl`.
-const ENTRY_LEN: usize = 24;
+
+/// The dense number of an indexed document (`units-v12.md`).
+pub(crate) type Ord = u32;
 
 /// A unit a query found and its BM25 score (higher is a better match).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -112,6 +126,9 @@ pub struct TextHit {
 
 // ---------------------------------------------------------------- keys
 
+const BOUNDED: u8 = 0x00;
+const TAIL: u8 = 0x01;
+
 /// `0x74 ‖ term ‖ 0x00`: the prefix of the blocks of one term's posting list.
 pub(crate) fn list_key(term: &str) -> Vec<u8> {
     let mut k = Vec::with_capacity(term.len() + 2);
@@ -121,10 +138,24 @@ pub(crate) fn list_key(term: &str) -> Vec<u8> {
     k
 }
 
+/// The key of the block of `list` with the bound `bound` (`None`: the tail).
+fn list_block_key(list: &[u8], bound: Option<Ord>) -> Vec<u8> {
+    let mut k = Vec::with_capacity(list.len() + 5);
+    k.extend_from_slice(list);
+    match bound {
+        Some(o) => {
+            k.push(BOUNDED);
+            k.extend_from_slice(&o.to_be_bytes());
+        }
+        None => k.push(TAIL),
+    }
+    k
+}
+
 /// The key of the block of `term`'s list with the bound `bound` (`None`: the tail).
 #[cfg(test)]
-pub(crate) fn block_key(term: &str, bound: Option<UnitId>) -> Vec<u8> {
-    crate::blocks::block_key(&list_key(term), bound.as_ref().map(|u| &u.0))
+pub(crate) fn block_key(term: &str, bound: Option<Ord>) -> Vec<u8> {
+    list_block_key(&list_key(term), bound)
 }
 
 /// Scan bounds `[start, end)` of the blocks of one term.
@@ -144,6 +175,12 @@ pub(crate) fn doc_key(unit: UnitId) -> Vec<u8> {
     k
 }
 
+/// `0x7b ‖ ord: u32 BE`.
+pub(crate) fn ord_key(ord: Ord) -> [u8; 5] {
+    let b = ord.to_be_bytes();
+    [TAG_ORD, b[0], b[1], b[2], b[3]]
+}
+
 pub(crate) const STATS_KEY: [u8; 1] = [TAG_STATS];
 
 fn valid_term(t: &[u8]) -> bool {
@@ -151,7 +188,7 @@ fn valid_term(t: &[u8]) -> bool {
 }
 
 /// The term and bound (`None`: the tail) of a posting block key.
-pub(crate) fn decode_posting_key(key: &[u8]) -> Result<(String, Option<UnitId>), DecodeError> {
+pub(crate) fn decode_posting_key(key: &[u8]) -> Result<(String, Option<Ord>), DecodeError> {
     let n = key.len();
     let shape = || DecodeError::new(UnitRule::Unit3, format!("posting key of {n} bytes is not tag, term, NUL, bound"));
     let nul = key.iter().skip(1).position(|b| *b == 0).map(|p| p + 1).ok_or_else(shape)?;
@@ -165,8 +202,12 @@ pub(crate) fn decode_posting_key(key: &[u8]) -> Result<(String, Option<UnitId>),
             "posting key term is empty, over 64 bytes, has a NUL or is not UTF-8",
         ));
     }
-    let bound = crate::blocks::bound_of(&key[..=nul], key).map_err(|_| shape())?;
-    Ok((String::from_utf8_lossy(term).into_owned(), bound.map(UnitId)))
+    let bound = match &key[nul + 1..] {
+        [TAIL] => None,
+        [BOUNDED, a, b, c, d] => Some(u32::from_be_bytes([*a, *b, *c, *d])),
+        _ => return Err(shape()),
+    };
+    Ok((String::from_utf8_lossy(term).into_owned(), bound))
 }
 
 /// The unit of a `DOC` key.
@@ -174,6 +215,14 @@ pub(crate) fn decode_doc_key(key: &[u8]) -> Result<UnitId, DecodeError> {
     match key.get(1..).and_then(|b| <[u8; 16]>::try_from(b).ok()) {
         Some(unit) if key[0] == TAG_DOC => Ok(UnitId(unit)),
         _ => Err(DecodeError::new(UnitRule::Unit3, format!("doc key of {} bytes is not tag, unit", key.len()))),
+    }
+}
+
+/// The ordinal of an `ORD` key.
+pub(crate) fn decode_ord_key(key: &[u8]) -> Result<Ord, DecodeError> {
+    match key {
+        [TAG_ORD, a, b, c, d] => Ok(u32::from_be_bytes([*a, *b, *c, *d])),
+        _ => Err(DecodeError::new(UnitRule::Unit3, format!("ord key of {} bytes is not tag, ord", key.len()))),
     }
 }
 
@@ -224,68 +273,78 @@ pub(crate) struct Posting {
     pub dl: u32,
 }
 
-/// The posting blocks as [`crate::blocks`] stores them.
-pub(crate) struct Postings;
+fn put_varint(out: &mut Vec<u8>, mut n: u32) {
+    while n >= 0x80 {
+        out.push((n as u8) | 0x80);
+        n >>= 7;
+    }
+    out.push(n as u8);
+}
 
-impl crate::blocks::Block for Postings {
-    type Val = Posting;
-    const MAX: usize = BLOCK_MAX;
-    const WHAT: &'static str = "POSTING";
-    const ENTRY: usize = ENTRY_LEN;
-
-    fn decode(v: &[u8]) -> Result<Vec<(crate::blocks::Id, Posting)>, DecodeError> {
-        let e = |rule, m: &str| DecodeError::new(rule, format!("posting block: {m}"));
-        let body = crate::blocks::body(v, "posting block")?;
-        if body.is_empty() || !body.len().is_multiple_of(ENTRY_LEN) {
-            return Err(e(UnitRule::Unit9, "no whole posting, or a partial one"));
+/// A LEB128 `u32` off the front of `b`, in its shortest form.
+fn take_varint(b: &mut &[u8]) -> Option<u32> {
+    let mut n: u64 = 0;
+    for i in 0..5 {
+        let (&byte, rest) = b.split_first()?;
+        *b = rest;
+        n |= u64::from(byte & 0x7f) << (7 * i);
+        if byte & 0x80 == 0 {
+            // Not the shortest form (a trailing zero group), or over u32.
+            if (i > 0 && byte == 0) || n > u64::from(u32::MAX) {
+                return None;
+            }
+            return Some(n as u32);
         }
-        if body.len() / ENTRY_LEN > BLOCK_MAX {
+    }
+    None
+}
+
+/// The postings of a block value: at least one, at most [`BLOCK_MAX`], strictly ascending by
+/// ordinal.
+pub(crate) fn decode_block(v: &[u8]) -> Result<Vec<(Ord, Posting)>, DecodeError> {
+    let e = |rule, m: &str| DecodeError::new(rule, format!("posting block: {m}"));
+    let mut b = crate::blocks::body(v, "posting block")?;
+    if b.is_empty() {
+        return Err(e(UnitRule::Unit9, "no posting"));
+    }
+    let mut out: Vec<(Ord, Posting)> = Vec::with_capacity(16);
+    while !b.is_empty() {
+        if out.len() == BLOCK_MAX {
             return Err(e(UnitRule::Unit11, "more postings than a block holds"));
         }
-        let mut out = Vec::with_capacity(body.len() / ENTRY_LEN);
-        for c in body.as_chunks::<ENTRY_LEN>().0 {
-            let mut unit = [0u8; 16];
-            unit.copy_from_slice(&c[..16]);
-            let p = Posting { tf: be32(&c[16..20]), dl: be32(&c[20..]) };
-            if p.tf == 0 || p.dl < p.tf {
-                return Err(e(UnitRule::Unit12, &format!("tf {} in a document of {} terms", p.tf, p.dl)));
-            }
-            out.push((unit, p));
+        let (Some(d), Some(tf), Some(dl)) = (take_varint(&mut b), take_varint(&mut b), take_varint(&mut b)) else {
+            return Err(e(UnitRule::Unit9, "a partial or malformed posting"));
+        };
+        let ord = match out.last() {
+            None => d,
+            Some(_) if d == 0 => return Err(e(UnitRule::Unit13, "ordinals not strictly ascending")),
+            Some((prev, _)) => prev.checked_add(d).ok_or_else(|| e(UnitRule::Unit12, "an ordinal over u32"))?,
+        };
+        if tf == 0 || dl < tf {
+            return Err(e(UnitRule::Unit12, &format!("tf {tf} in a document of {dl} terms")));
         }
-        crate::blocks::ascending(&out, "posting block")?;
-        Ok(out)
+        out.push((ord, Posting { tf, dl }));
     }
-
-    fn encode(entries: &[(crate::blocks::Id, Posting)]) -> Vec<u8> {
-        let mut v = Vec::with_capacity(2 + ENTRY_LEN * entries.len());
-        v.extend_from_slice(&[RECORD_VERSION, 0]);
-        for (unit, p) in entries {
-            v.extend_from_slice(unit);
-            v.extend_from_slice(&p.tf.to_be_bytes());
-            v.extend_from_slice(&p.dl.to_be_bytes());
-        }
-        v
-    }
-
-    fn put_val(out: &mut Vec<u8>, p: &Posting) {
-        out.extend_from_slice(&p.tf.to_be_bytes());
-        out.extend_from_slice(&p.dl.to_be_bytes());
-    }
-
-    fn val_ok(b: &[u8]) -> bool {
-        let (tf, dl) = (be32(&b[..4]), be32(&b[4..]));
-        tf != 0 && dl >= tf
-    }
+    Ok(out)
 }
 
-/// The postings of a block value.
-pub(crate) fn decode_block(v: &[u8]) -> Result<Vec<(UnitId, Posting)>, DecodeError> {
-    Ok(<Postings as crate::blocks::Block>::decode(v)?.into_iter().map(|(u, p)| (UnitId(u), p)).collect())
-}
-
-fn encode_doc(doc: &Doc) -> Vec<u8> {
-    let mut v = Vec::with_capacity(10 + doc.terms().map(|(t, _)| 1 + t.len()).sum::<usize>());
+fn encode_block(entries: &[(Ord, Posting)]) -> Vec<u8> {
+    let mut v = Vec::with_capacity(2 + 6 * entries.len());
     v.extend_from_slice(&[RECORD_VERSION, 0]);
+    let mut prev = None;
+    for (ord, p) in entries {
+        put_varint(&mut v, prev.map_or(*ord, |p| ord - p));
+        put_varint(&mut v, p.tf);
+        put_varint(&mut v, p.dl);
+        prev = Some(*ord);
+    }
+    v
+}
+
+fn encode_doc(ord: Ord, doc: &Doc) -> Vec<u8> {
+    let mut v = Vec::with_capacity(14 + doc.terms().map(|(t, _)| 1 + t.len()).sum::<usize>());
+    v.extend_from_slice(&[RECORD_VERSION, 0]);
+    v.extend_from_slice(&ord.to_be_bytes());
     v.extend_from_slice(&doc.len.to_be_bytes());
     v.extend_from_slice(&(doc.terms().len() as u32).to_be_bytes());
     for (t, _) in doc.terms() {
@@ -295,14 +354,22 @@ fn encode_doc(doc: &Doc) -> Vec<u8> {
     v
 }
 
-/// The length and the distinct terms of a `DOC` value.
-pub(crate) fn decode_doc(v: &[u8]) -> Result<(u32, BTreeSet<String>), DecodeError> {
+/// A decoded `DOC` value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DocRecord {
+    pub ord: Ord,
+    pub dl: u32,
+    pub terms: BTreeSet<String>,
+}
+
+/// The ordinal, the length and the distinct terms of a `DOC` value.
+pub(crate) fn decode_doc(v: &[u8]) -> Result<DocRecord, DecodeError> {
     let b = body(v, "doc record")?;
-    if b.len() < 8 {
+    if b.len() < 12 {
         return Err(DecodeError::new(UnitRule::Unit9, format!("doc record has {} bytes after its envelope", b.len())));
     }
-    let (dl, n) = (be32(&b[..4]), be32(&b[4..8]));
-    let mut rest = &b[8..];
+    let (ord, dl, n) = (be32(&b[..4]), be32(&b[4..8]), be32(&b[8..12]));
+    let mut rest = &b[12..];
     let mut terms = BTreeSet::new();
     for _ in 0..n {
         let Some((&len, tail)) = rest.split_first() else {
@@ -328,7 +395,19 @@ pub(crate) fn decode_doc(v: &[u8]) -> Result<(u32, BTreeSet<String>), DecodeErro
     if terms.len() != n as usize {
         return Err(DecodeError::new(UnitRule::Unit12, "doc record repeats a term"));
     }
-    Ok((dl, terms))
+    Ok(DocRecord { ord, dl, terms })
+}
+
+fn encode_ord(unit: UnitId) -> Vec<u8> {
+    let mut v = Vec::with_capacity(18);
+    v.extend_from_slice(&[RECORD_VERSION, 0]);
+    v.extend_from_slice(&unit.0);
+    v
+}
+
+/// The unit of an `ORD` value.
+pub(crate) fn decode_ord(v: &[u8]) -> Result<UnitId, DecodeError> {
+    Ok(UnitId(*fixed::<16>(v, "ord record")?))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -336,19 +415,21 @@ pub(crate) struct Stats {
     pub since: u64,
     pub docs: u64,
     pub total_len: u64,
+    /// The next ordinal to allocate: above every ordinal ever given.
+    pub next_ord: u64,
 }
 
 fn encode_stats(s: Stats) -> Vec<u8> {
     let mut v = vec![RECORD_VERSION, 0];
-    for n in [s.since, s.docs, s.total_len] {
+    for n in [s.since, s.docs, s.total_len, s.next_ord] {
         v.extend_from_slice(&n.to_be_bytes());
     }
     v
 }
 
 pub(crate) fn decode_stats(v: &[u8]) -> Result<Stats, DecodeError> {
-    let b = fixed::<24>(v, "stats record")?;
-    Ok(Stats { since: be64(&b[..8]), docs: be64(&b[8..16]), total_len: be64(&b[16..]) })
+    let b = fixed::<32>(v, "stats record")?;
+    Ok(Stats { since: be64(&b[..8]), docs: be64(&b[8..16]), total_len: be64(&b[16..24]), next_ord: be64(&b[24..]) })
 }
 
 // -------------------------------------------------------------- writer
@@ -382,14 +463,14 @@ pub(crate) struct PendingPostings {
     /// The terms staged, numbered.
     terms: tokenize::Interner,
     /// The operations by term number, in staging order.
-    lists: Vec<Vec<(crate::blocks::Id, Option<Posting>)>>,
+    lists: Vec<Vec<(Ord, Option<Posting>)>>,
 }
 
 /// The index change of one operation that is not a record of its own: the
 /// postings the unit gives up and gains, and what its document does to the
 /// statistics.
 pub(crate) struct TextChange {
-    unit: UnitId,
+    ord: Ord,
     gone: Vec<String>,
     /// The new document: a posting of each of its terms.
     put: Option<Doc>,
@@ -455,24 +536,63 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         // Only the postings the new text no longer has go; the others are overwritten.
         let gone = old
             .iter()
-            .flat_map(|(_, terms)| terms)
+            .flat_map(|o| &o.terms)
             .filter(|t| !new.as_ref().is_some_and(|d| d.get(t).is_some()))
             .cloned()
             .collect();
         let (mut docs, mut len) = (0i64, 0i64);
-        if let Some((dl, _)) = &old {
+        if let Some(o) = &old {
             docs -= 1;
-            len -= i64::from(*dl);
+            len -= i64::from(o.dl);
         }
-        let (write, put) = match new {
+        // A unit keeps its ordinal while it stays in the index; one that comes in gets the next.
+        let ord = match &old {
+            Some(o) => o.ord,
+            None => self.allocate_text_ord()?,
+        };
+        let mut writes = Vec::with_capacity(2);
+        let put = match new {
             Some(doc) => {
                 docs += 1;
                 len += i64::from(doc.len);
-                (Write::Put(doc_key(unit), encode_doc(&doc)), Some(doc))
+                writes.push(Write::Put(doc_key(unit), encode_doc(ord, &doc)));
+                if old.is_none() {
+                    writes.push(Write::Put(ord_key(ord).to_vec(), encode_ord(unit)));
+                }
+                Some(doc)
             }
-            None => (Write::Delete(doc_key(unit)), None),
+            None => {
+                writes.push(Write::Delete(doc_key(unit)));
+                writes.push(Write::Delete(ord_key(ord).to_vec()));
+                None
+            }
         };
-        Ok(TextPlan { writes: vec![write], change: Some(TextChange { unit, gone, put, docs, len }) })
+        Ok(TextPlan { writes, change: Some(TextChange { ord, gone, put, docs, len }) })
+    }
+
+    /// The next ordinal of the keyword index: the `next_ord` of `STATS` (read once per change
+    /// set), then counting up. A change set that is refused or aborted leaves a gap, never a
+    /// reuse. Past `u32::MAX` the write is refused.
+    fn allocate_text_ord(&self) -> Result<Ord, UnitError> {
+        let (base, next) = match self.text_ords.get() {
+            Some(c) => c,
+            None => {
+                let n = match self.txn()?.get(&STATS_KEY)? {
+                    Some(raw) => decode_stats(&raw).map_err(|e| context(e, "FULLTEXT_STATS"))?.next_ord,
+                    None => 0,
+                };
+                (n, n)
+            }
+        };
+        let ord = Ord::try_from(next).map_err(|_| {
+            UnitError::InvalidArgument(
+                "the keyword index has given out every document ordinal (2^32): export the database and \
+                 import it to number its documents again"
+                    .into(),
+            )
+        })?;
+        self.text_ords.set(Some((base, next + 1)));
+        Ok(ord)
     }
 
     /// Keeps the posting and statistics changes of an operation planned by
@@ -480,11 +600,11 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
     pub(crate) fn stage_fulltext(&mut self, change: Option<TextChange>) {
         let Some(c) = change else { return };
         for term in c.gone {
-            stage(&mut self.text_pending, &term, c.unit, None);
+            stage(&mut self.text_pending, &term, c.ord, None);
         }
         if let Some(doc) = &c.put {
             for (term, tf) in doc.terms() {
-                stage(&mut self.text_pending, term, c.unit, Some(Posting { tf, dl: doc.len }));
+                stage(&mut self.text_pending, term, c.ord, Some(Posting { tf, dl: doc.len }));
             }
         }
         let (docs, len) = self.text_stats.get_or_insert((0, 0));
@@ -501,26 +621,31 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         // NUL, and a term has no NUL, so the keys order like the terms and none is a prefix of
         // another.
         let mut probe = crate::blocks::Probe::new(vec![TAG_POSTING + 1]);
-        let above = self.fresh_from().map(|u| u.0);
+        let ords = self.text_ords.get();
+        // Every ordinal at or above the first this change set gave is above every stored posting.
+        let above = ords.map(|(base, _)| base);
         let PendingPostings { terms, mut lists } = std::mem::take(&mut self.text_pending);
         for i in terms.ascending() {
             let term = std::str::from_utf8(terms.get(i as usize)).unwrap_or_default();
             let mut ops = std::mem::take(&mut lists[i as usize]);
-            // Ascending by unit; of several operations on a unit the last wins. A batch of
-            // new units stages them in id order already: nothing to sort then.
+            // Ascending by ordinal; of several operations on one the last wins. New documents are
+            // staged in ordinal order already: nothing to sort then.
             if !ops.windows(2).all(|w| w[0].0 < w[1].0) {
                 ops.reverse();
-                ops.sort_by_key(|(u, _)| *u);
-                ops.dedup_by_key(|(u, _)| *u);
+                ops.sort_by_key(|(o, _)| *o);
+                ops.dedup_by_key(|(o, _)| *o);
             }
-            crate::blocks::flush::<Postings, E>(self, &list_key(term), ops, false, Some(&mut probe), above)?;
+            flush_postings(self, &list_key(term), ops, &mut probe, above)?;
         }
-        let Some((docs, len)) = self.text_stats.take() else {
-            return Ok(());
+        let gave = ords.is_some_and(|(base, next)| next > base);
+        let (docs, len) = match self.text_stats.take() {
+            Some(d) => d,
+            None if gave => (0, 0),
+            None => return Ok(()),
         };
         let mut stats = match self.txn()?.get(&STATS_KEY)? {
             Some(raw) => decode_stats(&raw).map_err(|e| context(e, "FULLTEXT_STATS"))?,
-            None => Stats { since: self.commit_seq().0, docs: 0, total_len: 0 },
+            None => Stats { since: self.commit_seq().0, docs: 0, total_len: 0, next_ord: 0 },
         };
         // ponytail: saturates like the counts of `type_count`; a statistic that
         // was already wrong stays wrong and `verify_units` reports it (UNIT-49).
@@ -529,8 +654,103 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         };
         stats.docs = add(stats.docs, docs);
         stats.total_len = add(stats.total_len, len);
+        if let Some((_, next)) = ords {
+            stats.next_ord = stats.next_ord.max(next);
+        }
         self.write_owned(Write::Put(STATS_KEY.to_vec(), encode_stats(stats)))
     }
+}
+
+/// Writes the changes `ops` (ascending by ordinal, one per ordinal: `Some` puts the posting,
+/// `None` removes it) to the posting list `list`, as [`crate::blocks::flush`] does for blocks
+/// keyed by a 16-byte id: each block an ordinal falls in is read once and written once, cut
+/// from the low end when over [`BLOCK_MAX`] and deleted when emptied. `above`: every ordinal at
+/// or above it is above every stored posting.
+fn flush_postings<E: TxnEngine>(
+    cs: &mut ChangeSet<'_, E>,
+    list: &[u8],
+    ops: Vec<(Ord, Option<Posting>)>,
+    probe: &mut crate::blocks::Probe,
+    above: Option<u64>,
+) -> Result<(), UnitError> {
+    let Some(&(first, _)) = ops.first() else {
+        return Ok(());
+    };
+    let tail_key = list_block_key(list, None);
+    let (_, end) = crate::schema::prefix_bounds(list);
+    // The tail holds every ordinal above the last bound, and ordinals are given in ascending
+    // order: the postings a change set adds are almost always in it, found by one point read.
+    let mut tail = match cs.txn()?.get(&tail_key)? {
+        // A tail that does not decode is not used here: the seek reads it if the change needs
+        // it, and reports it then.
+        Some(v) => decode_block(&v).ok(),
+        None => {
+            // No tail: postings above every stored one go to a new tail, and so do any when the
+            // list has no key at all.
+            if above.is_some_and(|a| a <= u64::from(first)) || probe.is_empty(cs, list, &end)? {
+                let puts = ops.into_iter().filter_map(|(o, v)| v.map(|v| (o, v))).collect();
+                return write_postings(cs, list, puts, tail_key);
+            }
+            None
+        }
+    };
+    let mut ops = ops.into_iter().peekable();
+    while let Some(&(first, _)) = ops.peek() {
+        let (block, mut entries, bound) = match tail.take_if(|t| t.first().is_some_and(|e| e.0 <= first)) {
+            Some(t) => (Some(tail_key.clone()), t, None),
+            None => {
+                let from = list_block_key(list, Some(first));
+                let page = cs.txn()?.scan(Bound::Included(&from), Bound::Excluded(&end), 1)?;
+                match page.into_iter().next() {
+                    Some((k, v)) => {
+                        let entries = decode_block(&v).map_err(|e| context(e, "POSTING"))?;
+                        let (_, bound) = decode_posting_key(&k).map_err(|e| context(e, "POSTING"))?;
+                        (Some(k), entries, bound)
+                    }
+                    None => (None, Vec::new(), None),
+                }
+            }
+        };
+        while let Some((ord, op)) = ops.next_if(|(o, _)| bound.is_none_or(|b| *o <= b)) {
+            match (entries.binary_search_by_key(&ord, |e| e.0), op) {
+                (Err(at), Some(p)) => entries.insert(at, (ord, p)),
+                (Ok(at), Some(p)) => entries[at].1 = p,
+                (Ok(at), None) => {
+                    entries.remove(at);
+                }
+                (Err(_), None) => {}
+            }
+        }
+        let key = block.clone().unwrap_or_else(|| list_block_key(list, bound));
+        if entries.is_empty() {
+            if block.is_some() {
+                cs.write_owned(Write::Delete(key))?;
+            }
+            continue;
+        }
+        write_postings(cs, list, entries, key)?;
+    }
+    Ok(())
+}
+
+/// Writes `entries` as blocks of at most [`BLOCK_MAX`]: full blocks from the low end, each
+/// bounded by its last ordinal, and the rest under `last_key`.
+fn write_postings<E: TxnEngine>(
+    cs: &mut ChangeSet<'_, E>,
+    list: &[u8],
+    entries: Vec<(Ord, Posting)>,
+    mut last_key: Vec<u8>,
+) -> Result<(), UnitError> {
+    let mut chunks = entries.chunks(BLOCK_MAX).peekable();
+    while let Some(chunk) = chunks.next() {
+        let k = if chunks.peek().is_some() {
+            list_block_key(list, chunk.last().map(|e| e.0))
+        } else {
+            std::mem::take(&mut last_key)
+        };
+        cs.write_owned(Write::Put(k, encode_block(chunk)))?;
+    }
+    Ok(())
 }
 
 /// A payload cut into terms ahead of the operation that writes it, by
@@ -592,10 +812,10 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
 
 /// Records that `unit` has `value` (`None`: no posting) in the list of `term`. The term is
 /// copied only the first time the change set stages it.
-fn stage(pending: &mut PendingPostings, term: &str, unit: UnitId, value: Option<Posting>) {
+fn stage(pending: &mut PendingPostings, term: &str, ord: Ord, value: Option<Posting>) {
     match pending.terms.intern(term.as_bytes()) {
-        (_, true) => pending.lists.push(vec![(unit.0, value)]),
-        (i, false) => pending.lists[i].push((unit.0, value)),
+        (_, true) => pending.lists.push(vec![(ord, value)]),
+        (i, false) => pending.lists[i].push((ord, value)),
     }
 }
 
@@ -624,9 +844,10 @@ impl<E: Engine> UnitSnapshot<E> {
     /// is the BM25 sum over the distinct terms it holds (see the [module
     /// documentation](self)); a unit with none of them is not a hit. The statistics behind the
     /// score (`N`, average length) are those of the whole index, so a unit scores the same with
-    /// or without `types`. Ties are in unit id order. Reads only the posting ranges of the query
-    /// terms, the statistics record and, with `types`, the heads of the best-scored units until
-    /// `limit` of them are of a wanted type.
+    /// or without `types`. Ties are in ascending ordinal: the order the units entered the index.
+    /// Reads only the posting ranges of the query terms, the statistics record, the `ORD` records
+    /// of the hits returned (one `multi_get`) and, with `types`, the heads of the best-scored
+    /// units until `limit` of them are of a wanted type.
     ///
     /// A search that could never match is an error, not an empty answer: see below. A database
     /// where the query simply finds nothing answers an empty list.
@@ -680,7 +901,7 @@ impl<E: Engine> UnitSnapshot<E> {
         }
         let n_docs = stats.docs as f64;
         let avg_len = (stats.total_len as f64 / n_docs).max(1.0);
-        let mut scores: HashMap<UnitId, f64> = HashMap::new();
+        let mut scores: HashMap<Ord, f64> = HashMap::new();
         for term in &terms {
             let (start, end) = posting_range(term);
             let mut postings = Vec::new();
@@ -690,15 +911,16 @@ impl<E: Engine> UnitSnapshot<E> {
             })?;
             let df = postings.len() as f64;
             let idf = (1.0 + ((n_docs - df).max(0.0) + 0.5) / (df + 0.5)).ln();
-            for (unit, p) in postings {
+            for (ord, p) in postings {
                 let (tf, dl) = (f64::from(p.tf), f64::from(p.dl));
-                *scores.entry(unit).or_insert(0.0) += idf * tf * (K1 + 1.0) / (tf + K1 * (1.0 - B + B * dl / avg_len));
+                *scores.entry(ord).or_insert(0.0) += idf * tf * (K1 + 1.0) / (tf + K1 * (1.0 - B + B * dl / avg_len));
             }
         }
-        let mut hits: Vec<TextHit> = scores.into_iter().map(|(unit, score)| TextHit { unit, score }).collect();
-        let best_first = |a: &TextHit, b: &TextHit| b.score.total_cmp(&a.score).then(a.unit.cmp(&b.unit));
-        // The best hits are taken off the front a slice at a time, so a search sorts (and, with
-        // `types`, reads the head of) about `limit` units, not every unit that holds a term.
+        let mut hits: Vec<(Ord, f64)> = scores.into_iter().collect();
+        let best_first = |a: &(Ord, f64), b: &(Ord, f64)| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0));
+        // The best hits are taken off the front a slice at a time, so a search sorts (and
+        // resolves to units, and with `types` reads the head of) about `limit` documents, not
+        // every one that holds a term.
         let mut out = Vec::with_capacity(limit.min(hits.len()));
         let mut from = 0;
         while out.len() < limit && from < hits.len() {
@@ -708,19 +930,27 @@ impl<E: Engine> UnitSnapshot<E> {
                 rest.select_nth_unstable_by(n - 1, best_first);
             }
             rest[..n].sort_unstable_by(best_first);
-            for hit in &rest[..n] {
+            let keys: Vec<[u8; 5]> = rest[..n].iter().map(|(o, _)| ord_key(*o)).collect();
+            let refs: Vec<&[u8]> = keys.iter().map(|k| &k[..]).collect();
+            let units = self.snap.multi_get(&refs)?;
+            for (&(ord, score), raw) in rest[..n].iter().zip(units) {
+                let Some(raw) = raw else {
+                    return Err(UnitError::Storage(kerno_core::Error::Corruption(format!(
+                        "a POSTING of ordinal {ord} has no ORD record"
+                    ))));
+                };
+                let unit = decode_ord(&raw).map_err(|e| context(e, "ORD"))?;
                 if let Some(types) = types {
-                    let Some(head) = crate::history::read_head(&|k| self.snap.get(k), hit.unit)? else {
+                    let Some(head) = crate::history::read_head(&|k| self.snap.get(k), unit)? else {
                         return Err(UnitError::Storage(kerno_core::Error::Corruption(format!(
-                            "a POSTING of unit {} has no UNIT_HEAD",
-                            hit.unit
+                            "a POSTING of unit {unit} has no UNIT_HEAD"
                         ))));
                     };
                     if !types.contains(&head.unit_type.as_str()) {
                         continue;
                     }
                 }
-                out.push(*hit);
+                out.push(TextHit { unit, score });
             }
             from += n;
         }

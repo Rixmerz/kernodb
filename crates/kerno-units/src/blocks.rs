@@ -97,7 +97,7 @@ impl Probe {
     }
 
     /// Whether the transaction holds no key in `[list, list_end)`.
-    fn is_empty<E: TxnEngine>(
+    pub(crate) fn is_empty<E: TxnEngine>(
         &mut self,
         cs: &ChangeSet<'_, E>,
         list: &[u8],
@@ -161,14 +161,6 @@ pub(crate) fn body<'a>(v: &'a [u8], what: &str) -> Result<&'a [u8], DecodeError>
         [1, _, ..] => Err(e(UnitRule::Unit8, "reserved_flags set")),
         [_, ..] => Err(e(UnitRule::Unit7, "a newer envelope_version")),
     }
-}
-
-/// Checks that `ids` are strictly ascending.
-pub(crate) fn ascending<T>(entries: &[(Id, T)], what: &str) -> Result<(), DecodeError> {
-    if entries.windows(2).any(|w| w[0].0 >= w[1].0) {
-        return Err(DecodeError::new(UnitRule::Unit13, format!("{what}: ids not strictly ascending")));
-    }
-    Ok(())
 }
 
 /// Writes the changes `ops` to the list `list`: per id, `Some(value)` puts the

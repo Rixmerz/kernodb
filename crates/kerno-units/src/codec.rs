@@ -88,13 +88,20 @@ pub const LAYER_VERSION_INLINE_PAYLOAD: u32 = 10;
 /// supersedes it and the history keeps its payload. A database created by
 /// this build starts here, and a build that reads up to 10 refuses it.
 pub const LAYER_VERSION_HEAD_PAYLOAD_ONCE: u32 = 11;
+/// `layer_version` of the format cut of `docs/file-format/units-v12.md`: every
+/// keyword-indexed document has a dense ordinal (`ORD`, `0x7b`), and the
+/// keyword postings (`0x74`) name it, delta and varint coded, instead of the
+/// unit id. A database created by this build starts here, and a build that
+/// reads up to 11 refuses it.
+pub const LAYER_VERSION_TEXT_ORDINALS: u32 = 12;
 /// The newest `layer_version` this build reads and writes.
-pub const MAX_LAYER_VERSION: u32 = LAYER_VERSION_HEAD_PAYLOAD_ONCE;
+pub const MAX_LAYER_VERSION: u32 = LAYER_VERSION_TEXT_ORDINALS;
 /// The lowest `layer_version` this build opens: the format cut of
-/// `units-v11.md`, which supersedes the cuts of `units-v10.md`, ADR-0026 and
-/// 1.0.0-alpha.2 (ADR-0023). Every database it creates starts here. A
-/// database below it is exported with the build that wrote it and imported.
-pub const MIN_LAYER_VERSION: u32 = LAYER_VERSION_HEAD_PAYLOAD_ONCE;
+/// `units-v12.md`, which supersedes the cuts of `units-v11.md`, `units-v10.md`,
+/// ADR-0026 and 1.0.0-alpha.2 (ADR-0023). Every database it creates starts
+/// here. A database below it is exported with the build that wrote it and
+/// imported.
+pub const MIN_LAYER_VERSION: u32 = LAYER_VERSION_TEXT_ORDINALS;
 /// The longest payload a writer of this layer stores in the `UNIT_HEAD` of
 /// its unit instead of in the `REV_PAYLOAD` of the head revision
 /// (`units-v11.md` §2), and the longest a reader accepts there.

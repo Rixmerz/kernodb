@@ -104,8 +104,8 @@ fn stored<E: TxnEngine>(db: &UnitDb<E>) -> Stored {
         let n = page.len();
         for (k, _) in &page {
             // Live-unit count records (`0x73`, units-v5) and the full-text
-            // index (`0x74`..=`0x76`) are outside `Key`.
-            if matches!(k.first(), Some(0x73..=0x76)) {
+            // index (`0x74`..=`0x76`, `0x7b`) are outside `Key`.
+            if matches!(k.first(), Some(0x73..=0x76 | 0x7b)) {
                 continue;
             }
             match Key::decode(k).expect("key") {

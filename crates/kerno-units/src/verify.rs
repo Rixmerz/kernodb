@@ -166,7 +166,7 @@ pub enum CrossRule {
     /// Live-unit count records in a database whose layer mark is below
     /// version 5.
     Unit48,
-    /// The full-text index (`0x74`..`0x76`, [`crate::fulltext`]) disagrees
+    /// The full-text index (`0x74`..`0x76` and `0x7b`, [`crate::fulltext`]) disagrees
     /// with the head payloads it indexes, or with its own statistics.
     Unit49,
     /// An entry of a user index (`0x79`, [`crate::schema`]) is missing, extra,

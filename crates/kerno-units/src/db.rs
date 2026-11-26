@@ -776,6 +776,7 @@ impl<E: TxnEngine> UnitDb<E> {
             adj_pending: Default::default(),
             text_pending: Default::default(),
             text_stats: None,
+            text_ords: std::cell::Cell::new(None),
             members: Vec::new(),
             relation_ops: 0,
             touched: BTreeSet::new(),
@@ -1359,6 +1360,9 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     /// commit by [`ChangeSet::flush_fulltext`] (ADR-0026).
     pub(crate) text_pending: crate::fulltext::PendingPostings,
     pub(crate) text_stats: Option<(i64, i64)>,
+    /// The keyword ordinals this change set gave out: the first (`next_ord` of `STATS` when it
+    /// began) and the next to give (`units-v12.md`). `None` until the first is given.
+    pub(crate) text_ords: std::cell::Cell<Option<(u64, u64)>>,
     members: Vec<(RevisionId, RevisionKind)>,
     /// Relations created or deleted so far (E4-02): they are not members, but
     /// they count against `max_changeset_ops` and make the change set non-empty.

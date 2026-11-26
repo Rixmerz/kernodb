@@ -11,12 +11,12 @@
 //! A finding names the `DOC` or `STATS` key and unit ids and counts, never a
 //! term: terms are the content of the payloads.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use super::tokenize::{Doc, analyze};
 use super::{
-    Posting, STATS_KEY, Stats, TAG_DOC, TAG_POSTING, TAG_STATS, decode_block, decode_doc, decode_doc_key,
-    decode_posting_key, decode_stats, doc_key, list_key,
+    DocRecord, Ord, Posting, STATS_KEY, Stats, TAG_DOC, TAG_ORD, TAG_POSTING, TAG_STATS, decode_block, decode_doc,
+    decode_doc_key, decode_ord, decode_ord_key, decode_posting_key, decode_stats, doc_key, list_key, ord_key,
 };
 use crate::error::{DecodeError, UnitRule};
 use crate::types::UnitId;
@@ -25,11 +25,13 @@ use crate::types::UnitId;
 pub(crate) struct Check {
     /// The document each `Active` text unit must have, with the commit of its head.
     expected: BTreeMap<UnitId, (u64, Doc)>,
-    docs: BTreeMap<UnitId, (u32, BTreeSet<String>)>,
-    postings: BTreeMap<UnitId, BTreeMap<String, Posting>>,
+    docs: BTreeMap<UnitId, DocRecord>,
+    /// The `ORD` records: the unit of each ordinal.
+    ords: BTreeMap<Ord, UnitId>,
+    postings: BTreeMap<Ord, BTreeMap<String, Posting>>,
     stats: Option<Stats>,
     /// The list key and bound of the last posting block recorded (`None`: the tail).
-    last: Option<(Vec<u8>, Option<UnitId>)>,
+    last: Option<(Vec<u8>, Option<Ord>)>,
     /// Blocks out of their range: `(key, detail)`.
     misplaced: Vec<(Vec<u8>, String)>,
     /// A record did not decode: that is a structure finding already, and the
@@ -40,7 +42,7 @@ pub(crate) struct Check {
 impl Check {
     /// Whether a key with this first byte is a full-text record.
     pub(crate) fn owns(tag: Option<&u8>) -> bool {
-        matches!(tag, Some(&(TAG_POSTING | TAG_DOC | TAG_STATS)))
+        matches!(tag, Some(&(TAG_POSTING | TAG_DOC | TAG_STATS | TAG_ORD)))
     }
 
     /// The head payload of an `Active` unit, whose head was written at
@@ -80,16 +82,20 @@ impl Check {
                 };
                 let (lowest, highest) = (entries[0].0, entries[entries.len() - 1].0);
                 if floor.is_some_and(|f| lowest <= f) || bound.is_some_and(|b| highest > b) {
-                    self.misplaced.push((k.to_vec(), "a posting block holds a unit outside its range".into()));
+                    self.misplaced.push((k.to_vec(), "a posting block holds a document outside its range".into()));
                 }
                 self.last = Some((list, bound));
-                for (unit, p) in entries {
-                    self.postings.entry(unit).or_default().insert(term.clone(), p);
+                for (ord, p) in entries {
+                    self.postings.entry(ord).or_default().insert(term.clone(), p);
                 }
             }
             Some(&TAG_DOC) => {
                 let unit = decode_doc_key(k)?;
                 self.docs.insert(unit, decode_doc(v)?);
+            }
+            Some(&TAG_ORD) => {
+                let ord = decode_ord_key(k)?;
+                self.ords.insert(ord, decode_ord(v)?);
             }
             _ => {
                 if k != STATS_KEY {
@@ -109,12 +115,14 @@ impl Check {
         }
         let Some(stats) = self.stats else {
             // Nothing wrote a statistic, so nothing may have written an entry.
-            if let Some(unit) = self.docs.keys().chain(self.postings.keys()).next() {
+            if let Some(unit) = self.docs.keys().next() {
                 out.push((doc_key(*unit), "full-text entries without a statistics record".into()));
+            } else if let Some(ord) = self.ords.keys().chain(self.postings.keys()).next() {
+                out.push((ord_key(*ord).to_vec(), "full-text entries without a statistics record".into()));
             }
             return out;
         };
-        let total: u64 = self.docs.values().map(|(dl, _)| u64::from(*dl)).sum();
+        let total: u64 = self.docs.values().map(|d| u64::from(d.dl)).sum();
         if stats.docs != self.docs.len() as u64 || stats.total_len != total {
             out.push((
                 STATS_KEY.to_vec(),
@@ -127,6 +135,19 @@ impl Check {
                 ),
             ));
         }
+        // The ordinals: each below `next_ord`, each `ORD` the ordinal of its unit's `DOC`, each
+        // posting of an ordinal that has its `ORD`.
+        for (ord, unit) in &self.ords {
+            if u64::from(*ord) >= stats.next_ord {
+                out.push((ord_key(*ord).to_vec(), format!("ordinal {ord} is not below next_ord {}", stats.next_ord)));
+            }
+            if self.docs.get(unit).is_none_or(|d| d.ord != *ord) {
+                out.push((ord_key(*ord).to_vec(), format!("ORD {ord} of unit {unit}, whose DOC has another or none")));
+            }
+        }
+        for ord in self.postings.keys().filter(|o| !self.ords.contains_key(o)) {
+            out.push((ord_key(*ord).to_vec(), format!("postings of ordinal {ord}, which has no ORD record")));
+        }
         // A unit written since the first statistic must be indexed; an older
         // one may predate the index (legacy), and is checked only if it is.
         for (unit, (seq, _)) in &self.expected {
@@ -134,22 +155,22 @@ impl Check {
                 out.push((doc_key(*unit), format!("unit {unit} has text but no DOC record")));
             }
         }
-        for (unit, (dl, terms)) in &self.docs {
+        for (unit, d) in &self.docs {
+            if self.ords.get(&d.ord) != Some(unit) {
+                out.push((doc_key(*unit), format!("DOC of unit {unit} has ordinal {}, whose ORD is not its", d.ord)));
+                continue;
+            }
             let Some((_, want)) = self.expected.get(unit) else {
                 out.push((doc_key(*unit), format!("DOC of unit {unit}, which is not an Active unit with text")));
                 continue;
             };
-            let same_terms = want.terms().map(|(t, _)| t).eq(terms.iter().map(String::as_str));
-            let same_postings = self.postings.get(unit).is_some_and(|p| {
-                p.len() == want.terms().len()
-                    && p.iter().all(|(t, p)| want.get(t) == Some(p.tf) && p.dl == want.len)
+            let same_terms = want.terms().map(|(t, _)| t).eq(d.terms.iter().map(String::as_str));
+            let same_postings = self.postings.get(&d.ord).is_some_and(|p| {
+                p.len() == want.terms().len() && p.iter().all(|(t, p)| want.get(t) == Some(p.tf) && p.dl == want.len)
             });
-            if *dl != want.len || !same_terms || !same_postings {
+            if d.dl != want.len || !same_terms || !same_postings {
                 out.push((doc_key(*unit), format!("unit {unit}: DOC and postings disagree with its payload")));
             }
-        }
-        for unit in self.postings.keys().filter(|u| !self.docs.contains_key(u)) {
-            out.push((doc_key(*unit), format!("postings of unit {unit}, which has no DOC record")));
         }
         out
     }
