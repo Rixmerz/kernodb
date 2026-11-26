@@ -209,6 +209,17 @@ class Database:
 
         With `type_prefix`, relations whose type does not start with it are skipped before the
         unit at their other end is loaded."""
+    def find_documents(self, unit_type: str, field: str, value: Any) -> list[dict[str, Any]]:
+        """`find`, with each hit as its document dict."""
+    def neighbor_documents(
+        self,
+        unit_type: str,
+        field: str,
+        value: Any,
+        direction: Literal["out", "in"] = "out",
+        type_prefix: str | None = None,
+    ) -> list[tuple[str, dict[str, Any]]]:
+        """`find`, then `neighbors` of each unit found, as `[(relation_type, other end's document)]`."""
     def query(
         self,
         unit_type: str | None = None,

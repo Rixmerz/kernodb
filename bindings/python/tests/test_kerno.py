@@ -1128,6 +1128,35 @@ def test_neighbors_type_prefix_filters_before_loading(tmp_path):
         assert [u.id for _, u in db.neighbors(c, "in", type_prefix="e:imp")] == [a]
 
 
+def test_find_documents(tmp_path):
+    with kerno.open(tmp_path / "db") as db:
+        db.define_schema("sym", [{"name": "sid", "type": "int", "unique": True}, {"name": "name", "type": "text", "indexed": True}])
+        db.store_document("sym", {"sid": 1, "name": "x"})
+        db.store_document("sym", {"sid": 2, "name": "x"})
+        db.store_document("sym", {"sid": 3, "name": "y"})
+        assert sorted(d["sid"] for d in db.find_documents("sym", "name", "x")) == [1, 2]
+        assert db.find_documents("sym", "sid", 3) == [{"sid": 3, "name": "y"}]
+        assert db.find_documents("sym", "sid", 9) == []
+        assert [d["sid"] for d in db.find_documents("sym", "sid", 1)] == [u.document()["sid"] for u in db.find("sym", "sid", 1)]
+
+
+def test_neighbor_documents(tmp_path):
+    with kerno.open(tmp_path / "db") as db:
+        db.define_schema("sym", [{"name": "sid", "type": "int", "unique": True}, {"name": "name", "type": "text"}])
+        a = db.store_document("sym", {"sid": 1, "name": "a"})
+        b = db.store_document("sym", {"sid": 2, "name": "b"})
+        c = db.store_document("sym", {"sid": 3, "name": "c"})
+        db.relate(a, b, "e:calls")
+        db.relate(a, c, "e:imports")
+        out = db.neighbor_documents("sym", "sid", 1)
+        assert sorted((t, d["name"]) for t, d in out) == [("e:calls", "b"), ("e:imports", "c")]
+        assert db.neighbor_documents("sym", "sid", 1, "out", "e:calls") == [("e:calls", {"sid": 2, "name": "b"})]
+        assert [t for t, _ in db.neighbor_documents("sym", "sid", 2, "in")] == ["e:calls"]
+        assert db.neighbor_documents("sym", "sid", 99) == []
+        with pytest.raises(kerno.InvalidArgumentError):
+            db.neighbor_documents("sym", "sid", 1, "sideways")
+
+
 def test_keyword_search_finds_documents_of_any_encoding(tmp_path):
     # Issue #12: an int >= 128 or a text of >= 128 bytes makes the record invalid UTF-8.
     with kerno.open(tmp_path / "db") as db:

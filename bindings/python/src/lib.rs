@@ -1197,6 +1197,71 @@ impl Database {
         Ok(d)
     }
 
+    /// `find`, but each hit as its document dict: no `Unit` objects, no per-unit `document()`
+    /// call. A hit whose payload is not a document raises `SchemaError`.
+    fn find_documents<'py>(
+        &self,
+        py: Python<'py>,
+        unit_type: &str,
+        field: &str,
+        value: Bound<'py, PyAny>,
+    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        let v = to_field(&value)?;
+        let units = self.with_db(py, |db| db.find(unit_type, field, &v).map_err(engine_error))?;
+        let mut out = Vec::with_capacity(units.len());
+        for u in units {
+            if let Some(d) = Unit::from(u).document(py)? {
+                out.push(d);
+            }
+        }
+        Ok(out)
+    }
+
+    /// `find(unit_type, field, value)` then `neighbors(unit, direction, type_prefix=...)` of every
+    /// unit found then `.document()` of each other end, in one call:
+    /// `[(relation_type, document), ...]`. An other end that is deleted or whose payload is not a
+    /// document is left out.
+    #[pyo3(signature = (unit_type, field, value, direction="out", type_prefix=None))]
+    fn neighbor_documents<'py>(
+        &self,
+        py: Python<'py>,
+        unit_type: &str,
+        field: &str,
+        value: Bound<'py, PyAny>,
+        direction: &str,
+        type_prefix: Option<&str>,
+    ) -> PyResult<Vec<(String, Bound<'py, PyDict>)>> {
+        let v = to_field(&value)?;
+        let dir = match direction {
+            "out" => Direction::Out,
+            "in" => Direction::In,
+            other => {
+                return Err(InvalidArgumentError::new_err(format!("direction must be 'out' or 'in', not {other:?}")));
+            }
+        };
+        let pairs = self.with_db(py, |db| {
+            let mut out = Vec::new();
+            for unit in db.find(unit_type, field, &v).map_err(engine_error)? {
+                for r in db.related(unit.id, dir, None).map_err(engine_error)? {
+                    if type_prefix.is_some_and(|p| !r.relation_type.starts_with(p)) {
+                        continue;
+                    }
+                    let other = if matches!(dir, Direction::Out) { r.to } else { r.from };
+                    let Some(u) = db.get(other).map_err(engine_error)? else { continue };
+                    out.push((r.relation_type, u));
+                }
+            }
+            Ok(out)
+        })?;
+        let mut out = Vec::with_capacity(pairs.len());
+        for (t, u) in pairs {
+            if let Some(d) = Unit::from(u).document(py)? {
+                out.push((t, d));
+            }
+        }
+        Ok(out)
+    }
+
     /// The active units of `unit_type` whose indexed `field` lies between `low` and `high`, both
     /// inclusive; `None` leaves that end open. Ordered by value, then id. `limit` caps the
     /// result (default: no cap; 0 is an `InvalidArgumentError`). Floats order as numbers, text and
