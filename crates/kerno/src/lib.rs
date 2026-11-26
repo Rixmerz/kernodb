@@ -292,7 +292,7 @@ pub use kerno_units as units;
 pub use kerno_units::{
     AssocDirection, AssocQuery, Direction, Document, FieldDef, FieldType, FieldValue, HybridHit, HybridQuery,
     HybridWeights, LegRanks, Lifecycle, NearestUnits, Query, QueryPlan, QueryResult, Relation, RelationId, Schema,
-    Unit, UnitError as Error, UnitFilter, UnitId, UnitVerifyReport as VerifyReport, VectorLeg,
+    Unit, UnitError as Error, UnitFilter, UnitId, UnitVerifyReport as VerifyReport, ValueRef, VectorLeg,
 };
 pub use kerno_units::{
     CompactReport, RetentionPolicy, RetentionReport, RetentionRule, TextHit, UpsertOutcome, Upserted,

@@ -15,12 +15,13 @@ use kerno::units::{Access, AsOf, CommitSeq, HistoryQuery, Order, RevNo, Revision
 use kerno::{
     AccessMode, AssocQuery, Batch, CommitMeta, Config, Db, Direction, Document, Endpoint, FieldDef, FieldType,
     FieldValue, HybridQuery, HybridWeights, Lifecycle, QueryPlan, RelationId, RetentionPolicy, RetentionRule,
-    UnitFilter, UnitId, UpsertOutcome, Upserted, VectorLeg,
+    UnitFilter, UnitId, UpsertOutcome, Upserted, ValueRef, VectorLeg,
 };
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyValueError};
 use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedBytes;
+use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString};
 
 create_exception!(_kerno, KernoError, PyException, "Any failure reported by the Kerno engine.");
@@ -301,6 +302,16 @@ fn field_to_py<'py>(py: Python<'py>, v: &FieldValue) -> PyResult<Bound<'py, PyAn
     })
 }
 
+fn value_ref_to_py<'py>(py: Python<'py>, v: ValueRef<'_>) -> PyResult<Bound<'py, PyAny>> {
+    Ok(match v {
+        ValueRef::Bool(b) => PyBool::new(py, b).to_owned().into_any(),
+        ValueRef::Int(i) => i.into_pyobject(py)?.into_any(),
+        ValueRef::Float(f) => f.into_pyobject(py)?.into_any(),
+        ValueRef::Text(t) => PyString::new(py, t).into_any(),
+        ValueRef::Bytes(b) => PyBytes::new(py, b).into_any(),
+    })
+}
+
 /// A retention rule from its dict: exactly one of `keep_last` (a whole number), `keep_for`
 /// (seconds) or `keep_since` (a whole number). Every bad rule is a `ValueError`, never a
 /// truncated or wrapped-around number.
@@ -489,8 +500,10 @@ fn encode_hex(bytes: &[u8]) -> String {
 /// A stored unit, as of its latest revision.
 #[pyclass(frozen, module = "kerno")]
 struct Unit {
-    #[pyo3(get)]
-    id: String,
+    id: UnitId,
+    /// The id as the Python string, made the first time it is asked for: a lookup that
+    /// returns hundreds of units formats the ids of those the caller looks at.
+    id_str: PyOnceLock<Py<PyString>>,
     #[pyo3(get)]
     unit_type: String,
     #[pyo3(get)]
@@ -514,6 +527,12 @@ struct Unit {
 
 #[pymethods]
 impl Unit {
+    /// The unit's id: 32 lower-case hex digits.
+    #[getter]
+    fn id<'py>(&self, py: Python<'py>) -> Bound<'py, PyString> {
+        self.id_str.get_or_init(py, || PyString::new(py, &self.id.to_string()).unbind()).bind(py).clone()
+    }
+
     /// The content, as `bytes`; `None` for a deleted unit.
     #[getter]
     fn payload<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyBytes>> {
@@ -524,24 +543,35 @@ impl Unit {
     /// for a deleted unit. Raises `SchemaError` when the payload is not a document.
     fn document<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
         let Some(payload) = self.payload.as_deref() else { return Ok(None) };
-        let doc = Document::decode(payload)
-            .map_err(|e| SchemaError::new_err(format!("the payload is not a document: {e}")))?;
+        // Straight from the bytes into the dict: no intermediate document.
         let d = PyDict::new(py);
-        for (k, v) in doc.iter() {
-            d.set_item(k, field_to_py(py, v)?)?;
+        let mut failed: Option<PyErr> = None;
+        let walked = Document::visit(payload, |name, value| {
+            if failed.is_none()
+                && let Err(e) = value_ref_to_py(py, value).and_then(|v| d.set_item(name, v))
+            {
+                failed = Some(e);
+            }
+        });
+        if let Err(e) = walked {
+            return Err(SchemaError::new_err(format!("the payload is not a document: {e}")));
         }
-        Ok(Some(d))
+        match failed {
+            Some(e) => Err(e),
+            None => Ok(Some(d)),
+        }
     }
 
     fn __repr__(&self) -> String {
-        format!("Unit(id={:?}, unit_type={:?}, lifecycle={:?})", self.id, self.unit_type, self.lifecycle)
+        format!("Unit(id={:?}, unit_type={:?}, lifecycle={:?})", self.id.to_string(), self.unit_type, self.lifecycle)
     }
 }
 
 impl From<kerno::Unit> for Unit {
     fn from(u: kerno::Unit) -> Self {
         Unit {
-            id: u.id.to_string(),
+            id: u.id,
+            id_str: PyOnceLock::new(),
             unit_type: u.unit_type,
             schema_version: u.schema_version,
             lifecycle: lifecycle_name(u.lifecycle),
@@ -972,6 +1002,16 @@ impl Database {
     /// `read_as_of` for "now".
     fn last_commit_seq(&self, py: Python<'_>) -> PyResult<u64> {
         self.with_db(py, |db| db.last_commit_seq().map_err(engine_error))
+    }
+
+    /// Sets how many bytes of units already read and checked the handle keeps in memory to
+    /// answer the same reads again until the next commit (32 MiB by default); 0 turns that
+    /// off, so every read goes to the files. The cache starts empty either way.
+    fn set_read_cache_bytes(&self, py: Python<'_>, bytes: usize) -> PyResult<()> {
+        self.with_db(py, |db| {
+            db.unit_db().set_read_cache_bytes(bytes);
+            Ok(())
+        })
     }
 
     /// Moves a database opened with `read_only=True` to the commits the writer made since it

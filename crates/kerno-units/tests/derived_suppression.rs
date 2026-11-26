@@ -374,10 +374,18 @@ fn an_unreadable_unit_is_reported_not_fatal<E: Target>() {
     edit(&dd, a, b"a3");
     let new_vec = vector(&dd, a);
     dd.close().unwrap();
-    // Break the note's head revision metadata behind the layer's back.
+    // Break the notes' payloads behind the layer's back: the copy each head carries
+    // (`units-v10.md`), which is what a read of the unit reads.
     let db = open_db::<E>(&disk);
-    let dels = [n, m].map(|u| (Key::RevMeta { unit: u, rev: RevNo(1) }.encode().unwrap(), None)).to_vec();
-    db.raw_commit(dels).unwrap();
+    let damaged = [n, m]
+        .map(|u| {
+            let k = Key::UnitHead { unit: u }.encode().unwrap();
+            let mut v = db.raw_get(&k).unwrap().unwrap();
+            *v.last_mut().unwrap() ^= 0xFF;
+            (k, Some(v))
+        })
+        .to_vec();
+    db.raw_commit(damaged).unwrap();
     db.close().unwrap();
     let dd = open_dd::<E>(&disk);
     let policy = RetentionPolicy::all(RetentionRule::KeepLast(1)).with_type("note", RetentionRule::KeepAll);

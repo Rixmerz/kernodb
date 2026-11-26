@@ -67,7 +67,35 @@ pub fn le_u64(buf: &[u8], at: usize) -> u64 {
 ///   is the structure's rule.
 /// * VAR-2: the encoding is minimal (no final `0x00` after a continuation
 ///   byte).
+#[inline]
 pub fn decode_varint(buf: &[u8]) -> Result<(u64, usize)> {
+    // One byte, the usual length of a length.
+    if let Some(&b) = buf.first()
+        && b < 0x80
+    {
+        return Ok((u64::from(b), 1));
+    }
+    decode_varint_long(buf)
+}
+
+fn decode_varint_long(buf: &[u8]) -> Result<(u64, usize)> {
+    // A valid varint, without building an error on the way; anything else is decoded again by
+    // the checked loop, which names what is wrong with it.
+    let mut v = 0u64;
+    for (i, &b) in buf.iter().take(10).enumerate() {
+        v |= u64::from(b & 0x7f) << (7 * i);
+        if b < 0x80 {
+            if (i == 9 && b > 1) || (b == 0 && i > 0) {
+                break;
+            }
+            return Ok((v, i + 1));
+        }
+    }
+    decode_varint_checked(buf)
+}
+
+#[cold]
+fn decode_varint_checked(buf: &[u8]) -> Result<(u64, usize)> {
     let mut v = 0u64;
     for i in 0..10 {
         let Some(&b) = buf.get(i) else {
@@ -131,6 +159,7 @@ impl<'a> Reader<'a> {
         FormatError::corruption(rule, self.offset(), detail)
     }
 
+    #[inline]
     pub fn take(&mut self, n: usize) -> Result<&'a [u8]> {
         if n > self.remaining() {
             return Err(self.error("structure cut short"));
@@ -158,6 +187,7 @@ impl<'a> Reader<'a> {
 
     /// A varint (VAR-1, VAR-2). A varint cut short by the end of the
     /// structure is the structure's rule, like any other truncated field.
+    #[inline]
     pub fn varint(&mut self) -> Result<u64> {
         let at = self.offset();
         let rest = &self.buf[self.pos..];
@@ -173,6 +203,7 @@ impl<'a> Reader<'a> {
 
     /// A varint length, checked against `limit` and the remaining bytes
     /// before anything is allocated (VAR-3).
+    #[inline]
     pub fn len(&mut self, limit: usize) -> Result<usize> {
         let at = self.offset();
         let v = self.varint()?;
@@ -186,6 +217,7 @@ impl<'a> Reader<'a> {
     }
 
     /// `bytes(x)` with a length limit (VAR-3).
+    #[inline]
     pub fn bytes(&mut self, limit: usize) -> Result<&'a [u8]> {
         let n = self.len(limit)?;
         self.take(n)

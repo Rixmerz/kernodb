@@ -474,6 +474,8 @@ struct State {
     policies: BTreeMap<String, HistoryPolicy>,
     heads: BTreeMap<UnitId, UnitHead>,
     bad_heads: BTreeSet<UnitId>,
+    /// Units whose head carries the payload of its head revision.
+    inline_heads: BTreeSet<UnitId>,
     metas: BTreeMap<(UnitId, RevNo), RevisionMeta>,
     bad_metas: BTreeSet<(UnitId, RevNo)>,
     payloads: BTreeSet<(UnitId, RevNo)>,
@@ -796,8 +798,22 @@ impl State {
                     );
                 }
             }
-            Record::UnitHead { unit, head } => {
+            Record::UnitHead { unit, mut head } => {
                 self.counts.units += 1;
+                // The payload a head carries (`units-v10.md` §2) is checked here against the
+                // head's own declaration, and not kept: `check_head` holds the head to its
+                // REV_META, whose REV_PAYLOAD is checked against the same hash, so the two
+                // copies are the same bytes when all three checks pass.
+                if let Some(inline) = head.inline_payload.take() {
+                    if let Err(e) = verify_payload(&head.inline_decl(), Some(&inline)) {
+                        self.push(
+                            VerifyRule::Payload(e.rule),
+                            key_of(Key::UnitHead { unit }),
+                            format!("unit {unit}: the payload in its UNIT_HEAD: {}", e.detail),
+                        );
+                    }
+                    self.inline_heads.insert(unit);
+                }
                 self.heads.insert(unit, head);
             }
             Record::RevMeta { unit, rev, meta } => {
@@ -1378,6 +1394,13 @@ impl State {
         }
         if m.kind != RevisionKind::Delete && !m.payload_present {
             self.cross(CrossRule::Unit31, hk.clone(), format!("unit {unit}: head revision {top} has no payload"));
+        }
+        if self.inline_heads.contains(&unit) && (!m.payload_present || !self.payloads.contains(&(unit, top))) {
+            self.cross(
+                CrossRule::Unit31,
+                hk.clone(),
+                format!("unit {unit}: UNIT_HEAD carries a payload that head revision {top} does not have"),
+            );
         }
         if let Some(first) = self.metas.get(&(unit, oldest)) {
             let ok =

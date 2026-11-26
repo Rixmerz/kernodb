@@ -489,6 +489,10 @@ fn changeset_every_point<E: TxnEngine>(kind: CrashKind, durability: Durability) 
     let config = || {
         let mut c = cfg();
         c.engine.durability = durability;
+        // The scenario must fit in one memtable: a background flush would add mutating
+        // operations at a moment that differs between two runs. Since layer 10 a head carries
+        // a copy of its payload, and the 16 KiB of `small_for_tests` no longer hold it.
+        c.engine.write_buffer_bytes = 32 << 10;
         c
     };
     let mut prefixes: Vec<Dump> = Vec::new();
@@ -817,8 +821,8 @@ fn open_and_mark<E: TxnEngine>() {
 
     // A newer layer, a damaged mark.
     let disk = SimVfs::new(12);
-    raw_commit::<E>(&disk, &[(&mark_key, &[1, 0, 0, 0, 0, 10, 2])]);
-    assert!(matches!(open::<E>(&disk, &cfg()), Err(UnitError::IncompatibleLayer { found: 10, supported: 9 })));
+    raw_commit::<E>(&disk, &[(&mark_key, &[1, 0, 0, 0, 0, 11, 2])]);
+    assert!(matches!(open::<E>(&disk, &cfg()), Err(UnitError::IncompatibleLayer { found: 11, supported: 10 })));
     let disk = SimVfs::new(13);
     raw_commit::<E>(&disk, &[(&mark_key, &[0, 0, 0, 0, 0, 1, 2])]);
     let e = open::<E>(&disk, &cfg()).err().expect("damaged mark");
@@ -858,6 +862,10 @@ type Damage<'a> = (&'a [u8], Option<Vec<u8>>, &'a str);
 fn corruption_detected<E: TxnEngine>() {
     let disk = SimVfs::new(17);
     let db = open::<E>(&disk, &cfg()).expect("open");
+    // The reads of this test are the reads of all three records of a unit, which a read makes
+    // when it is asked to (`set_checked_reads`), and which every write makes. What the
+    // default one-read path sees of each damage is pinned in `tests/inline_payload.rs`.
+    db.set_checked_reads(true);
     let (a, _) = db.create_unit(new_unit("doc", b"payload-bytes"), meta()).unwrap();
     let rp = Key::RevPayload { unit: a, rev: RevNo(1) }.encode().unwrap();
     let rm = Key::RevMeta { unit: a, rev: RevNo(1) }.encode().unwrap();

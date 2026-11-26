@@ -165,6 +165,20 @@ pub fn encode_data_block<B: AsRef<[u8]>>(entries: &[Entry<B>]) -> Vec<u8> {
 /// `kind` is PUT or DELETE; keys increase strictly. Lengths above the format
 /// limits or beyond the entry area are VAR-3. `base` is the payload's offset.
 pub fn parse_data_block(payload: &[u8], base: u64) -> Result<Vec<Entry<&[u8]>>> {
+    let mut entries: Vec<Entry<&[u8]>> = Vec::new();
+    walk_data_block(payload, base, |count, e| {
+        if entries.is_empty() {
+            entries.reserve_exact(count);
+        }
+        entries.push(e);
+    })?;
+    Ok(entries)
+}
+
+/// [`parse_data_block`] that hands each entry to `visit` (with the block's entry count, which
+/// the entry area was already found large enough for) instead of collecting them: the same
+/// checks, in the same order, with the same errors, and no allocation.
+pub fn walk_data_block<'a>(payload: &'a [u8], base: u64, mut visit: impl FnMut(usize, Entry<&'a [u8]>)) -> Result<()> {
     let r1 = |at: u64, detail| FormatError::corruption("SST-R1", base + at, detail);
     let n = payload.len();
     if n < 8 {
@@ -179,7 +193,9 @@ pub fn parse_data_block(payload: &[u8], base: u64) -> Result<Vec<Entry<&[u8]>>> 
         None => return Err(r1((n - 4) as u64, "offsets beyond the block")),
     };
     let mut r = Reader::new(&payload[..offsets_at], base, "SST-R1");
-    let mut entries: Vec<Entry<&[u8]>> = Vec::with_capacity(count.min(offsets_at / 3 + 1));
+    // What `visit` may reserve: never more entries than the entry area can hold.
+    let room = count.min(offsets_at / 3 + 1);
+    let mut prev: Option<&[u8]> = None;
     for i in 0..count {
         if le_u32(payload, offsets_at + 4 * i) as usize != r.pos() {
             return Err(r1((offsets_at + 4 * i) as u64, "offset is not the start of its entry"));
@@ -216,13 +232,14 @@ pub fn parse_data_block(payload: &[u8], base: u64) -> Result<Vec<Entry<&[u8]>>> 
             Some(v) => Some(r.take(v as usize)?),
             None => None,
         };
-        if entries.last().is_some_and(|prev| prev.key >= key) {
+        if prev.is_some_and(|prev| prev >= key) {
             return Err(r1(at - base, "keys not strictly increasing"));
         }
-        entries.push(Entry { key, seq, value });
+        prev = Some(key);
+        visit(room, Entry { key, seq, value });
     }
     r.finish()?;
-    Ok(entries)
+    Ok(())
 }
 
 /// Opens (SST-R1: length, limit, CRC; AEAD-1) and parses a whole data block.

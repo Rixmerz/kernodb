@@ -6,7 +6,7 @@ use std::ops::Bound;
 use kerno_core::contract::{Engine, Snapshot};
 
 use super::{
-    Document, FieldValue, MAX_INDEXED_TEXT_LEN, MAX_INDEXED_VALUE_LEN, Schema, decode_entry_key, field_prefix,
+    Document, FieldValue, MAX_INDEXED_TEXT_LEN, MAX_INDEXED_VALUE_LEN, Schema, entry_key_parts, field_prefix,
     prefix_bounds, schema_key,
 };
 use crate::db::{Unit, UnitSnapshot, context, corruption};
@@ -139,11 +139,11 @@ impl<E: Engine> UnitSnapshot<E> {
                 if out.len() == limit {
                     break;
                 }
-                let (_, _, enc, unit) = decode_entry_key(k).map_err(|e| context(e, "FIELD_INDEX"))?;
+                let (_, _, enc, unit) = entry_key_parts(k).map_err(|e| context(e, "FIELD_INDEX"))?;
                 let Some(u) = self.get_unit(unit)? else {
                     return Err(corruption(format!("a FIELD_INDEX entry of unit {unit} has no UNIT_HEAD")));
                 };
-                if !self.entry_agrees(&u, field, &enc, unit_type) {
+                if !self.entry_agrees(&u, field, enc, unit_type) {
                     return Err(corruption(format!("a FIELD_INDEX entry of unit {unit} disagrees with the unit")));
                 }
                 out.push(u);
@@ -213,11 +213,6 @@ impl<E: Engine> UnitSnapshot<E> {
     fn entry_agrees(&self, unit: &Unit, field: &str, enc: &[u8], unit_type: &str) -> bool {
         unit.lifecycle == Lifecycle::Active
             && unit.unit_type == unit_type
-            && unit
-                .payload
-                .as_deref()
-                .and_then(|p| Document::parse(p).ok())
-                .and_then(|r| r.get(field).and_then(FieldValue::index_bytes))
-                .is_some_and(|e| e == enc)
+            && unit.payload.as_deref().is_some_and(|p| Document::field_encodes_to(p, field, enc))
     }
 }

@@ -116,7 +116,7 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         };
         let txn = self.txn()?;
         let old = match load_unit(&|k| txn.get(k), unit)? {
-            Some((h, _, Some(payload))) if h.lifecycle == Lifecycle::Active => {
+            Some((h, Some(payload))) if h.lifecycle == Lifecycle::Active => {
                 let record = Document::parse(&payload)
                     .map_err(|m| corruption(format!("unit {unit}: its stored payload is not a record: {m}")))?;
                 Some(record)
@@ -227,7 +227,7 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
                 if head.unit_type != unit_type || head.lifecycle == Lifecycle::Deleted {
                     continue;
                 }
-                let Some((_, _, Some(payload))) = load_unit(&|k| txn.get(k), unit)? else {
+                let Some((_, Some(payload))) = load_unit(&|k| txn.get(k), unit)? else {
                     return Err(corruption(format!(
                         "unit {unit}: a {:?} head revision has no payload",
                         head.lifecycle

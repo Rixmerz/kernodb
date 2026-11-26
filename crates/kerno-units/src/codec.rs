@@ -76,13 +76,25 @@ pub const LAYER_VERSION_SUBSTRING: u32 = 8;
 /// adjacency entries (`0x41`, `0x42`) are posting blocks. A database created
 /// by this build starts here, and a build that reads up to 8 refuses it.
 pub const LAYER_VERSION_BLOCKS: u32 = 9;
+/// `layer_version` of the format cut of `docs/file-format/units-v10.md`: a
+/// `UNIT_HEAD` may end with the payload of its head revision
+/// ([`UnitHead::inline_payload`]), so that reading a unit is one point read.
+/// A database created by this build starts here, and a build that reads up
+/// to 9 refuses it.
+pub const LAYER_VERSION_INLINE_PAYLOAD: u32 = 10;
 /// The newest `layer_version` this build reads and writes.
-pub const MAX_LAYER_VERSION: u32 = LAYER_VERSION_BLOCKS;
-/// The lowest `layer_version` this build opens: the format cut of ADR-0026,
-/// which supersedes the cut of 1.0.0-alpha.2 (ADR-0023). Every database it
-/// creates starts here. A database below it is exported with the build that
-/// wrote it and imported.
-pub const MIN_LAYER_VERSION: u32 = LAYER_VERSION_BLOCKS;
+pub const MAX_LAYER_VERSION: u32 = LAYER_VERSION_INLINE_PAYLOAD;
+/// The lowest `layer_version` this build opens: the format cut of
+/// `units-v10.md`, which supersedes the cuts of ADR-0026 and of
+/// 1.0.0-alpha.2 (ADR-0023). Every database it creates starts here. A
+/// database below it is exported with the build that wrote it and imported.
+pub const MIN_LAYER_VERSION: u32 = LAYER_VERSION_INLINE_PAYLOAD;
+/// The longest payload a writer of this layer stores in the `UNIT_HEAD` of
+/// its unit as well as in its `REV_PAYLOAD` (`units-v10.md` §2), and the
+/// longest a reader accepts there.
+pub const INLINE_PAYLOAD_MAX: u32 = 2048;
+/// The byte that announces an inline payload at the end of a `UNIT_HEAD`.
+pub const HEAD_TRAILER_PAYLOAD: u8 = 1;
 /// The `LAYER_META` name of the layer mark (design §2.6).
 pub const LAYER_MARK_NAME: &str = "layer";
 /// Length limits of §1.2.
@@ -647,7 +659,8 @@ impl LayerMeta {
     }
 }
 
-/// `UNIT_HEAD` value (§3.2). `payload_codec` is always 0 and not stored here.
+/// `UNIT_HEAD` value (§3.2, and `units-v10.md` §2 for `inline_payload`).
+/// `payload_codec` is always 0 and not stored here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnitHead {
     pub unit_type: String,
@@ -662,9 +675,31 @@ pub struct UnitHead {
     pub content_hash: ContentHash,
     pub payload_len: u32,
     pub metadata: Vec<u8>,
+    /// The payload of the head revision, a copy of its `REV_PAYLOAD`, when
+    /// the writer stored one here: `payload_len` bytes, at most
+    /// [`INLINE_PAYLOAD_MAX`], never on a `Deleted` head. `None` says nothing
+    /// about the revision: its payload, if it has one, is in `REV_PAYLOAD`.
+    pub inline_payload: Option<Vec<u8>>,
 }
 
 impl UnitHead {
+    /// What a writer of this layer stores in the head for a head revision
+    /// with this payload: the payload when it is at most
+    /// [`INLINE_PAYLOAD_MAX`] bytes, nothing otherwise.
+    /// What the head declares about a payload it carries, for [`crate::verify_payload`].
+    pub fn inline_decl(&self) -> PayloadDecl {
+        PayloadDecl {
+            content_hash: self.content_hash,
+            payload_len: self.payload_len,
+            payload_codec: PAYLOAD_CODEC_OPAQUE,
+            payload_present: true,
+        }
+    }
+
+    pub fn inline_of(payload: Option<&[u8]>) -> Option<Vec<u8>> {
+        payload.filter(|p| p.len() <= INLINE_PAYLOAD_MAX as usize).map(<[u8]>::to_vec)
+    }
+
     pub fn encode(&self) -> Result<Vec<u8>, UnitError> {
         let mut w = Writer::envelope();
         w.bytes(self.unit_type.as_bytes(), MAX_UNIT_TYPE_LEN, "UNIT_HEAD.unit_type")?;
@@ -680,6 +715,10 @@ impl UnitHead {
         w.u32(self.payload_len);
         w.u8(PAYLOAD_CODEC_OPAQUE);
         w.bytes(&self.metadata, MAX_METADATA_LEN, "UNIT_HEAD.metadata")?;
+        if let Some(p) = &self.inline_payload {
+            w.u8(HEAD_TRAILER_PAYLOAD);
+            w.0.extend_from_slice(p);
+        }
         Self::decode(&w.0).map_err(|e| refuse("UNIT_HEAD", &e))?;
         Ok(w.0)
     }
@@ -696,7 +735,88 @@ impl UnitHead {
         r.enumeration("lifecycle", Lifecycle::from_byte)
     }
 
+    #[inline]
     pub fn decode(value: &[u8]) -> Res<Self> {
+        if let Some(h) = Self::decode_valid(value) {
+            return Ok(h);
+        }
+        Self::decode_checked(value)
+    }
+
+    /// The fast path of [`decode`](Self::decode) (every read of a unit decodes its head): fixed
+    /// offsets, no error values. It accepts only values
+    /// [`decode_checked`](Self::decode_checked) accepts, with the same result, and answers
+    /// `None` for anything else so that the checked decoder reports the exact rule.
+    fn decode_valid(v: &[u8]) -> Option<Self> {
+        // envelope_version, reserved_flags, then `unit_type` as `u32 ‖ bytes`.
+        if v.get(..2)? != [ENVELOPE_VERSION, 0] {
+            return None;
+        }
+        let type_len = u32::from_be_bytes(arr(v.get(2..6)?));
+        if type_len == 0 || type_len > MAX_UNIT_TYPE_LEN {
+            return None;
+        }
+        let type_end = 6 + type_len as usize;
+        let unit_type = std::str::from_utf8(v.get(6..type_end)?).ok()?;
+        // schema_version(4) lifecycle(1) four u64 (32) two i64 (16) alg(1) digest(32)
+        // payload_len(4) payload_codec(1) metadata length(4).
+        const FIXED: usize = 95;
+        let f: &[u8; FIXED] = v.get(type_end..type_end + FIXED)?.try_into().ok()?;
+        let u32_at = |at: usize| u32::from_be_bytes([f[at], f[at + 1], f[at + 2], f[at + 3]]);
+        let u64_at = |at: usize| u64::from_be_bytes(arr(&f[at..at + 8]));
+        let schema_version = u32_at(0);
+        let lifecycle = Lifecycle::from_byte(f[4])?;
+        let (head_rev, oldest_rev, created_seq, updated_seq) = (u64_at(5), u64_at(13), u64_at(21), u64_at(29));
+        let (created_at, updated_at) = (u64_at(37) as i64, u64_at(45) as i64);
+        let alg = HashAlg::from_byte(f[53])?;
+        let digest: [u8; 32] = arr(&f[54..86]);
+        let payload_len = u32_at(86);
+        let metadata_len = u32_at(91);
+        if (alg == HashAlg::Crc32cProvisional && digest[4..].iter().any(|b| *b != 0))
+            || payload_len > MAX_PAYLOAD_LEN
+            || f[90] != PAYLOAD_CODEC_OPAQUE
+            || metadata_len > MAX_METADATA_LEN
+            || oldest_rev < 1
+            || oldest_rev > head_rev
+            || created_seq < 1
+            || created_seq > updated_seq
+        {
+            return None;
+        }
+        let metadata_at = type_end + FIXED;
+        let metadata_end = metadata_at + metadata_len as usize;
+        let metadata = v.get(metadata_at..metadata_end)?;
+        let inline_payload = match &v[metadata_end..] {
+            [] => None,
+            [HEAD_TRAILER_PAYLOAD, payload @ ..]
+                if lifecycle != Lifecycle::Deleted
+                    && payload_len <= INLINE_PAYLOAD_MAX
+                    && payload.len() == payload_len as usize =>
+            {
+                Some(payload.to_vec())
+            }
+            _ => return None,
+        };
+        Some(UnitHead {
+            unit_type: unit_type.to_owned(),
+            schema_version,
+            lifecycle,
+            head_rev: RevNo(head_rev),
+            oldest_rev: RevNo(oldest_rev),
+            created_seq: CommitSeq(created_seq),
+            updated_seq: CommitSeq(updated_seq),
+            created_at: Timestamp(created_at),
+            updated_at: Timestamp(updated_at),
+            content_hash: ContentHash { alg, digest },
+            payload_len,
+            // An empty field (the common case) needs no allocator call.
+            metadata: if metadata.is_empty() { Vec::new() } else { metadata.to_vec() },
+            inline_payload,
+        })
+    }
+
+    /// The field-by-field decoder, which names the rule a value breaks.
+    fn decode_checked(value: &[u8]) -> Res<Self> {
         let mut r = Reader::new(value, "UNIT_HEAD");
         r.envelope()?;
         let unit_type = r.bytes(MAX_UNIT_TYPE_LEN, "unit_type")?;
@@ -717,6 +837,26 @@ impl UnitHead {
         let payload_len = r.payload_len()?;
         r.payload_codec()?;
         let metadata = r.bytes(MAX_METADATA_LEN, "metadata")?.to_vec();
+        // `units-v10.md` §2: nothing, or the trailer byte and exactly `payload_len` bytes.
+        let inline_payload = if r.pos == value.len() {
+            None
+        } else {
+            // Bytes after the metadata that do not start a trailer are trailing bytes.
+            if value[r.pos] != HEAD_TRAILER_PAYLOAD {
+                return r.finish().map(|()| unreachable!("bytes are left"));
+            }
+            r.pos += 1;
+            if lifecycle == Lifecycle::Deleted {
+                return reject(UnitRule::Unit12, "UNIT_HEAD of a Deleted unit with an inline payload");
+            }
+            if payload_len > INLINE_PAYLOAD_MAX {
+                return reject(
+                    UnitRule::Unit11,
+                    format!("UNIT_HEAD.inline_payload length {payload_len} exceeds {INLINE_PAYLOAD_MAX}"),
+                );
+            }
+            Some(r.take(payload_len as usize, "inline_payload")?.to_vec())
+        };
         r.finish()?;
         if oldest_rev < 1 || oldest_rev > head_rev {
             return reject(UnitRule::Unit17, format!("UNIT_HEAD oldest_rev {oldest_rev}, head_rev {head_rev}"));
@@ -737,6 +877,7 @@ impl UnitHead {
             content_hash,
             payload_len,
             metadata,
+            inline_payload,
         })
     }
 }
@@ -1492,5 +1633,74 @@ mod tests {
             }
         }
         assert!(accepted > 5_000);
+    }
+}
+
+#[cfg(test)]
+mod head_decoder_tests {
+    use super::*;
+
+    fn head(payload: Option<&[u8]>, metadata: &[u8], lifecycle: Lifecycle) -> UnitHead {
+        UnitHead {
+            unit_type: "note".into(),
+            schema_version: 3,
+            lifecycle,
+            head_rev: RevNo(7),
+            oldest_rev: RevNo(2),
+            created_seq: CommitSeq(4),
+            updated_seq: CommitSeq(9),
+            created_at: Timestamp(-5),
+            updated_at: Timestamp(11),
+            content_hash: ContentHash::blake3(PAYLOAD_CODEC_OPAQUE, payload.unwrap_or(b"")),
+            payload_len: payload.map_or(0, |p| p.len() as u32),
+            metadata: metadata.to_vec(),
+            inline_payload: payload.map(<[u8]>::to_vec),
+        }
+    }
+
+    /// The fast decoder answers for every head a writer makes, and whatever it answers is what
+    /// the checked decoder answers: over valid heads and over those heads with one byte changed,
+    /// one byte removed and one byte added, at every position.
+    #[test]
+    fn the_fast_head_decoder_agrees_with_the_checked_one() {
+        let heads = [
+            head(None, b"", Lifecycle::Active),
+            head(None, b"meta", Lifecycle::Deleted),
+            head(Some(b""), b"", Lifecycle::Active),
+            head(Some(b"payload"), b"m", Lifecycle::Archived),
+            head(Some(&[0xAB; 300]), b"", Lifecycle::Active),
+        ];
+        let mut tried = 0;
+        for h in &heads {
+            let good = h.encode().unwrap();
+            assert_eq!(UnitHead::decode_valid(&good).as_ref(), Some(h));
+            assert_eq!(UnitHead::decode_checked(&good).as_ref(), Ok(h));
+            let mut variants: Vec<Vec<u8>> = Vec::new();
+            for at in 0..good.len() {
+                for delta in [1u8, 0x80, 0xFF] {
+                    let mut v = good.clone();
+                    v[at] ^= delta;
+                    variants.push(v);
+                }
+                let mut cut = good.clone();
+                cut.remove(at);
+                variants.push(cut);
+                let mut grown = good.clone();
+                grown.insert(at, 1);
+                variants.push(grown);
+            }
+            variants.push(good[..good.len() - 1].to_vec());
+            variants.push([good.clone(), vec![1]].concat());
+            for v in variants {
+                tried += 1;
+                if let Some(fast) = UnitHead::decode_valid(&v) {
+                    assert_eq!(UnitHead::decode_checked(&v), Ok(fast), "the fast decoder accepted {v:02x?}");
+                } else {
+                    // Refused by the fast path: `decode` is the checked decoder's answer.
+                    assert_eq!(UnitHead::decode(&v), UnitHead::decode_checked(&v));
+                }
+            }
+        }
+        assert!(tried > 2000);
     }
 }

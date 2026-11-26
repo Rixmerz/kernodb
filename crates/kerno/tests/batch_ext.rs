@@ -233,7 +233,9 @@ fn switching_a_type_with_units_reindexes_them_in_one_commit() {
 fn a_database_from_before_the_cut_is_refused() {
     // The marks of 1.0.0-alpha.1 (6), of the alpha.2 cut (7) and of the trigram index (8): their
     // adjacency and keyword postings are one record per entry, which this build does not read.
-    for old in [6u8, 7, 8] {
+    // And the mark of the posting-block cut (9), whose heads do not carry their payloads: this
+    // build could read it, but it opens one layer, the one it writes (`units-v10.md` §1).
+    for old in [6u8, 7, 8, 9] {
         let dir = TempDir::new();
         let db = Db::open(&dir.0).unwrap();
         db.store("n", "a").unwrap();
@@ -242,7 +244,7 @@ fn a_database_from_before_the_cut_is_refused() {
         db.unit_db().raw_commit(vec![(b"\x01layer".to_vec(), Some(mark))]).unwrap();
         db.close().unwrap();
         match Db::open(&dir.0) {
-            Err(kerno::Error::LayerTooOld { found, minimum: 9 }) if found == u32::from(old) => {}
+            Err(kerno::Error::LayerTooOld { found, minimum: 10 }) if found == u32::from(old) => {}
             Err(e) => panic!("layer {old}: wrong error: {e}"),
             Ok(_) => panic!("a database of layer {old} must be refused"),
         }
