@@ -805,14 +805,16 @@ impl Database {
 
     /// The relations of `id` like [`related`](Self::related), each with the unit at its other
     /// end, in one call: `[(Relation, Unit), ...]`. A relation whose other end no longer exists
-    /// is left out.
-    #[pyo3(signature = (id, direction="out", relation_type=None))]
+    /// is left out. With `type_prefix`, relations whose type does not start with it are skipped
+    /// before the unit at their other end is loaded.
+    #[pyo3(signature = (id, direction="out", relation_type=None, type_prefix=None))]
     fn neighbors(
         &self,
         py: Python<'_>,
         id: &str,
         direction: &str,
         relation_type: Option<&str>,
+        type_prefix: Option<&str>,
     ) -> PyResult<Vec<(Relation, Unit)>> {
         let id = UnitId(parse_id(id)?);
         let direction = match direction {
@@ -826,6 +828,9 @@ impl Database {
             let edges = db.related(id, direction, relation_type).map_err(engine_error)?;
             let mut out = Vec::with_capacity(edges.len());
             for r in edges {
+                if type_prefix.is_some_and(|p| !r.relation_type.starts_with(p)) {
+                    continue;
+                }
                 let other = if matches!(direction, Direction::Out) { r.to } else { r.from };
                 let Some(unit) = db.get(other).map_err(engine_error)? else { continue };
                 out.push((r, unit));

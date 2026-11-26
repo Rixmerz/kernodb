@@ -203,8 +203,12 @@ class Database:
         id: str,
         direction: Literal["out", "in"] = "out",
         relation_type: str | None = None,
+        type_prefix: str | None = None,
     ) -> list[tuple[Relation, Unit]]:
-        """The relations of `id`, as `related`, each with the unit at its other end, in one call."""
+        """The relations of `id`, as `related`, each with the unit at its other end, in one call.
+
+        With `type_prefix`, relations whose type does not start with it are skipped before the
+        unit at their other end is loaded."""
     def query(
         self,
         unit_type: str | None = None,

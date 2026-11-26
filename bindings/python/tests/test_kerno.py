@@ -1115,6 +1115,19 @@ def test_unit_document_and_neighbors(tmp_path):
             db.neighbors(a, "sideways")
 
 
+def test_neighbors_type_prefix_filters_before_loading(tmp_path):
+    with kerno.open(tmp_path / "db") as db:
+        a, b, c = db.store("note", "a"), db.store("note", "b"), db.store("note", "c")
+        db.relate(a, b, "e:calls~1~x")
+        db.relate(a, c, "e:imports")
+        db.relate(a, c, "e:calls_x")
+        assert len(db.neighbors(a)) == 3
+        assert [u.id for _, u in db.neighbors(a, type_prefix="e:imports")] == [c]
+        assert sorted(r.relation_type for r, _ in db.neighbors(a, type_prefix="e:calls")) == ["e:calls_x", "e:calls~1~x"]
+        assert db.neighbors(a, type_prefix="zzz") == []
+        assert [u.id for _, u in db.neighbors(c, "in", type_prefix="e:imp")] == [a]
+
+
 def test_keyword_search_finds_documents_of_any_encoding(tmp_path):
     # Issue #12: an int >= 128 or a text of >= 128 bytes makes the record invalid UTF-8.
     with kerno.open(tmp_path / "db") as db:
