@@ -50,6 +50,11 @@ pub fn level_metas(levels: &Levels) -> Vec<Vec<FileMeta>> {
     levels.iter().enumerate().map(|(l, files)| files.iter().map(|t| t.meta(l as u8)).collect()).collect()
 }
 
+/// Keys above which [`Version::multi_get`] looks them up on several threads.
+pub const MULTI_GET_PARALLEL: usize = 64;
+/// Most threads of one [`Version::multi_get`].
+const MULTI_GET_THREADS: usize = 4;
+
 impl Version {
     /// Newest value of `key` visible at `seq`.
     ///
@@ -88,6 +93,43 @@ impl Version {
             }
         }
         Ok(None)
+    }
+
+    /// [`get`](Self::get) of each key, in the order of `keys`. The keys are looked up in key
+    /// order, so the keys of one data block follow each other and the block is read and
+    /// checked once (the block cache keeps it between them); past [`MULTI_GET_PARALLEL`] keys
+    /// the sorted keys are cut into contiguous runs looked up on a few threads. Each answer is
+    /// `get`'s; the first error in the order of `keys` is returned.
+    pub fn multi_get(&self, keys: &[&[u8]], seq: u64) -> Result<Vec<Option<Vec<u8>>>> {
+        let mut order: Vec<usize> = (0..keys.len()).collect();
+        order.sort_by(|&a, &b| keys[a].cmp(keys[b]));
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(MULTI_GET_THREADS);
+        let runs = if keys.len() > MULTI_GET_PARALLEL { threads.min(keys.len() / (MULTI_GET_PARALLEL / 2)) } else { 1 };
+        let mut found: Vec<Result<Option<Vec<u8>>>> = Vec::with_capacity(keys.len());
+        if runs <= 1 {
+            found.extend(order.iter().map(|&i| self.get(keys[i], seq)));
+        } else {
+            let per = order.len().div_ceil(runs);
+            let parts: Vec<Vec<Result<Option<Vec<u8>>>>> = std::thread::scope(|s| {
+                let handles: Vec<_> = order
+                    .chunks(per)
+                    .skip(1)
+                    .map(|run| s.spawn(move || run.iter().map(|&i| self.get(keys[i], seq)).collect::<Vec<_>>()))
+                    .collect();
+                // The first run on this thread, while the others work.
+                let first = order[..per.min(order.len())].iter().map(|&i| self.get(keys[i], seq)).collect();
+                std::iter::once(first)
+                    .chain(handles.into_iter().map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p))))
+                    .collect()
+            });
+            found.extend(parts.into_iter().flatten());
+        }
+        // Back to the order of `keys`, and the first error in that order.
+        let mut out: Vec<Option<Result<Option<Vec<u8>>>>> = (0..keys.len()).map(|_| None).collect();
+        for (&i, r) in order.iter().zip(found) {
+            out[i] = Some(r);
+        }
+        out.into_iter().map(|r| r.expect("every key is answered")).collect()
     }
 
     /// Up to `limit` live entries in `(start, end)` visible at `seq`.

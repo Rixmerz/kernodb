@@ -75,6 +75,15 @@ pub trait File: Send + Sync {
     fn wait_writeback(&self, _offset: u64, _len: u64) -> io::Result<()> {
         Ok(())
     }
+    /// The whole file mapped read-only, for reads without a system call or a copy, when the
+    /// platform can map it (`mmap` on Linux; `None` by default and wherever mapping fails, and
+    /// the caller then reads with [`read_at`](Self::read_at)). The mapping is made at the first
+    /// call, covers the length the file had then, and lives as long as the file. **Only for a
+    /// file that is never written or shortened again** (a finished table): bytes written later
+    /// may or may not show, and a file shortened under a mapping faults on access.
+    fn map_read_only(&self) -> Option<&[u8]> {
+        None
+    }
 }
 
 pub trait Vfs: Send + Sync + 'static {

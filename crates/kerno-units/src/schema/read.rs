@@ -119,8 +119,8 @@ impl<E: Engine> UnitSnapshot<E> {
         let cache_key = (start, end, limit);
         if let Some(ids) = self.read_cache.range(seq, &cache_key) {
             let mut out = Vec::with_capacity(ids.len());
-            for &id in ids.iter() {
-                let Some(u) = self.get_unit(id)? else {
+            for (&id, u) in ids.iter().zip(self.get_units(&ids)?) {
+                let Some(u) = u else {
                     return Err(corruption(format!("a FIELD_INDEX entry of unit {id} has no UNIT_HEAD")));
                 };
                 out.push(u);
@@ -128,25 +128,20 @@ impl<E: Engine> UnitSnapshot<E> {
             return Ok(out);
         }
         let (start, end) = (cache_key.0.clone(), &cache_key.1);
-        let mut out = Vec::new();
+        // The entries first (unit and encoded value), then their units in one batch.
+        let mut entries: Vec<(crate::types::UnitId, Vec<u8>)> = Vec::new();
         let mut cursor = start;
         let mut inclusive = true;
-        while out.len() < limit && &cursor < end {
+        while entries.len() < limit && &cursor < end {
             let from = if inclusive { Bound::Included(cursor.as_slice()) } else { Bound::Excluded(cursor.as_slice()) };
             let page = self.snap.scan(from, Bound::Excluded(end.as_slice()), PAGE)?;
             let n = page.len();
             for (k, _) in &page {
-                if out.len() == limit {
+                if entries.len() == limit {
                     break;
                 }
                 let (_, _, enc, unit) = entry_key_parts(k).map_err(|e| context(e, "FIELD_INDEX"))?;
-                let Some(u) = self.get_unit(unit)? else {
-                    return Err(corruption(format!("a FIELD_INDEX entry of unit {unit} has no UNIT_HEAD")));
-                };
-                if !self.entry_agrees(&u, field, enc, unit_type) {
-                    return Err(corruption(format!("a FIELD_INDEX entry of unit {unit} disagrees with the unit")));
-                }
-                out.push(u);
+                entries.push((unit, enc.to_vec()));
             }
             match page.into_iter().last() {
                 Some((k, _)) if n == PAGE => {
@@ -155,6 +150,17 @@ impl<E: Engine> UnitSnapshot<E> {
                 }
                 _ => break,
             }
+        }
+        let ids: Vec<crate::types::UnitId> = entries.iter().map(|(u, _)| *u).collect();
+        let mut out = Vec::with_capacity(entries.len());
+        for ((unit, enc), u) in entries.iter().zip(self.get_units(&ids)?) {
+            let Some(u) = u else {
+                return Err(corruption(format!("a FIELD_INDEX entry of unit {unit} has no UNIT_HEAD")));
+            };
+            if !self.entry_agrees(&u, field, enc, unit_type) {
+                return Err(corruption(format!("a FIELD_INDEX entry of unit {unit} disagrees with the unit")));
+            }
+            out.push(u);
         }
         let ids = out.iter().map(|u| u.id).collect();
         self.read_cache.put_range(seq, cache_key, ids);

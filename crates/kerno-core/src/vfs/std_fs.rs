@@ -22,7 +22,52 @@ impl StdVfs {
     }
 }
 
-struct StdFile(fs::File);
+struct StdFile(fs::File, std::sync::OnceLock<Option<Mapping>>);
+
+/// A read-only `mmap` of a whole file, unmapped on drop. Address and length as integers so
+/// the file stays `Send + Sync`: the mapping is never written through.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+struct Mapping {
+    addr: usize,
+    len: usize,
+}
+
+#[cfg(target_os = "linux")]
+impl Mapping {
+    fn new(file: &fs::File) -> Option<Mapping> {
+        use std::os::fd::AsRawFd;
+
+        let len = usize::try_from(file.metadata().ok()?.len()).ok()?;
+        if len == 0 {
+            return None;
+        }
+        // SAFETY: a fresh read-only shared mapping of `len` bytes of an open descriptor; the
+        // kernel picks the address. Nothing is read until the call returns.
+        let addr = unsafe {
+            linux::mmap(std::ptr::null_mut(), len, linux::PROT_READ, linux::MAP_SHARED, file.as_raw_fd(), 0)
+        };
+        if addr as isize == -1 {
+            return None;
+        }
+        Some(Mapping { addr: addr as usize, len })
+    }
+
+    fn bytes(&self) -> &[u8] {
+        // SAFETY: `addr..addr + len` is mapped readable for as long as `self` lives (it is
+        // unmapped in `drop`), and the files mapped are not written again (`File::map_read_only`).
+        unsafe { std::slice::from_raw_parts(self.addr as *const u8, self.len) }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for Mapping {
+    fn drop(&mut self) {
+        // SAFETY: unmaps exactly the mapping `new` made; no slice of it outlives `self`.
+        unsafe {
+            linux::munmap(self.addr as *mut std::ffi::c_void, self.len);
+        }
+    }
+}
 
 /// `read_exact_at` over a positional read that may return fewer bytes than
 /// asked (Windows `seek_read`): loops until `buf` is full, retries
@@ -106,6 +151,11 @@ impl File for StdFile {
     fn wait_writeback(&self, offset: u64, len: u64) -> io::Result<()> {
         self.sync_range(offset, len, linux::SYNC_FILE_RANGE_WAIT_BEFORE | linux::SYNC_FILE_RANGE_WAIT_AFTER)
     }
+
+    #[cfg(target_os = "linux")]
+    fn map_read_only(&self) -> Option<&[u8]> {
+        self.1.get_or_init(|| Mapping::new(&self.0)).as_ref().map(Mapping::bytes)
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -115,7 +165,18 @@ mod linux {
     // exports it.
     unsafe extern "C" {
         pub fn sync_file_range(fd: i32, offset: i64, nbytes: i64, flags: u32) -> i32;
+        pub fn mmap(
+            addr: *mut std::ffi::c_void,
+            len: usize,
+            prot: i32,
+            flags: i32,
+            fd: i32,
+            offset: i64,
+        ) -> *mut std::ffi::c_void;
+        pub fn munmap(addr: *mut std::ffi::c_void, len: usize) -> i32;
     }
+    pub const PROT_READ: i32 = 1;
+    pub const MAP_SHARED: i32 = 1;
     /// Wait for the writeback already under way in the range.
     pub const SYNC_FILE_RANGE_WAIT_BEFORE: u32 = 1;
     /// Start the writeback of the dirty pages of the range, without waiting.
@@ -158,7 +219,7 @@ impl Vfs for StdVfs {
                 o.create_new(true);
             }
         }
-        Ok(Arc::new(StdFile(o.open(path)?)))
+        Ok(Arc::new(StdFile(o.open(path)?, std::sync::OnceLock::new())))
     }
 
     fn exists(&self, path: &Path) -> io::Result<bool> {

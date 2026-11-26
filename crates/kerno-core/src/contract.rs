@@ -132,6 +132,14 @@ pub trait Snapshot: Send + 'static {
 
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>>;
 
+    /// [`get`](Self::get) of each key, answers in the order of `keys`. An engine may read the
+    /// keys in another order or on several threads (each block read once for all its keys);
+    /// the answers are those of `get`. The first error, in the order of `keys`, is returned.
+    /// The default implementation calls `get` per key.
+    fn multi_get(&self, keys: &[&[u8]]) -> Result<Vec<Option<Vec<u8>>>> {
+        keys.iter().map(|k| self.get(k)).collect()
+    }
+
     /// Up to `limit` entries with keys in `(start, end)`, in ascending key
     /// order. Pagination: call again with `Bound::Excluded(last_key)`.
     fn scan(&self, start: Bound<&[u8]>, end: Bound<&[u8]>, limit: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>>;

@@ -102,3 +102,65 @@ fn a_damaged_table_fails_the_eager_open_and_the_lazy_read() {
     let scan = snap.scan(Bound::Unbounded, Bound::Unbounded, usize::MAX);
     assert!(matches!(scan, Err(Error::Corruption(_))), "lazy: the read that needs the table reports it");
 }
+
+/// Keys in a scattered order, with duplicates and keys no table holds.
+fn scattered_keys() -> Vec<Vec<u8>> {
+    let mut keys: Vec<Vec<u8>> = (0..600u32).map(|i| format!("key-{:06}", (i * 7919) % 9000).into_bytes()).collect();
+    keys.extend([b"a".to_vec(), b"key-000000".to_vec(), b"zzz".to_vec(), b"key-000000".to_vec()]);
+    keys
+}
+
+#[test]
+fn multi_get_answers_what_get_answers_in_the_order_asked() {
+    let dir = Dir::new("multi");
+    fill(dir.path());
+    let keys = scattered_keys();
+    let refs: Vec<&[u8]> = keys.iter().map(Vec::as_slice).collect();
+    for lazy in [false, true] {
+        let db = read_only(dir.path(), lazy).unwrap();
+        let snap = db.snapshot().unwrap();
+        let one_by_one: Vec<_> = refs.iter().map(|k| snap.get(k).unwrap()).collect();
+        assert_eq!(snap.multi_get(&refs).unwrap(), one_by_one, "lazy {lazy}");
+        assert_eq!(snap.multi_get(&refs[..10]).unwrap(), one_by_one[..10], "lazy {lazy}, few keys");
+        assert!(snap.multi_get(&[]).unwrap().is_empty());
+    }
+    // A writer: memtable entries and deletions over the tables, at a snapshot.
+    let cfg = Config { allow_unverified_platform: true, ..Config::default() };
+    let db = KernoDb::open(StdVfs::shared(), dir.path(), &cfg).unwrap();
+    let before = db.snapshot().unwrap();
+    let mut wb = WriteBatch::new();
+    for i in (0..9000u32).step_by(3) {
+        let k = format!("key-{i:06}");
+        if i % 2 == 0 {
+            wb.delete(k);
+        } else {
+            wb.put(k, b"new".to_vec());
+        }
+    }
+    wb.delete_range(b"key-005000".to_vec(), b"key-005500".to_vec());
+    db.commit(&wb).unwrap();
+    for snap in [before, db.snapshot().unwrap()] {
+        let one_by_one: Vec<_> = refs.iter().map(|k| snap.get(k).unwrap()).collect();
+        assert_eq!(snap.multi_get(&refs).unwrap(), one_by_one);
+    }
+    db.close().unwrap();
+}
+
+#[test]
+fn a_damaged_data_block_read_through_the_mapping_is_corruption() {
+    let dir = Dir::new("mapped");
+    fill(dir.path());
+    // Damage the first data block of the first table, which holds the smallest keys.
+    let victim = tables(dir.path()).remove(0);
+    let mut bytes = std::fs::read(&victim).unwrap();
+    for b in &mut bytes[200..232] {
+        *b ^= 0x5a;
+    }
+    std::fs::write(&victim, bytes).unwrap();
+    let lazy = read_only(dir.path(), true).unwrap();
+    let snap = lazy.snapshot().unwrap();
+    assert!(matches!(snap.get(b"key-000000"), Err(Error::Corruption(_))));
+    let keys: Vec<Vec<u8>> = (0..200u32).map(|i| format!("key-{i:06}").into_bytes()).collect();
+    let refs: Vec<&[u8]> = keys.iter().map(Vec::as_slice).collect();
+    assert!(matches!(snap.multi_get(&refs), Err(Error::Corruption(_))));
+}

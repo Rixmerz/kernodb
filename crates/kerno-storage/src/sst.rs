@@ -586,9 +586,20 @@ impl Table {
         if fill_cache {
             bump(&stats.block_cache_misses, 1);
         }
-        let mut buf = vec![0u8; handle.len as usize];
-        self.file.read_at(&mut buf, handle.offset)?;
-        let payload = crate::format::block::data_block_payload(&buf, self.number, handle.offset, body.lz4)
+        // A read-only handle reads a block of a lazy table straight from a mapping of the file
+        // (tables are never written again): no system call and no copy before the checks.
+        let mapped = if self.ctx.lazy { self.file.map_read_only() } else { None };
+        let range = usize::try_from(handle.offset).ok().and_then(|o| Some(o..o.checked_add(handle.len as usize)?));
+        let mut buf = Vec::new();
+        let bytes: &[u8] = match (mapped, range) {
+            (Some(m), Some(r)) if r.end <= m.len() => &m[r],
+            _ => {
+                buf.resize(handle.len as usize, 0);
+                self.file.read_at(&mut buf, handle.offset)?;
+                &buf
+            }
+        };
+        let payload = crate::format::block::data_block_payload(bytes, self.number, handle.offset, body.lz4)
             .and_then(|p| check_data_block(&p, &body.index, i, &body.props).map(|()| p.into_owned()))
             .map_err(|e| format_error(&sst_name(self.number), e))?;
         let block = Arc::new(Block::from_payload(payload));

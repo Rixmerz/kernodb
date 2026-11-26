@@ -1048,6 +1048,45 @@ impl<E: Engine> UnitSnapshot<E> {
         Ok(unit)
     }
 
+    /// [`get_unit`](Self::get_unit) of each id, in the order of `ids`, with the heads of the
+    /// units the read cache does not hold read by one [`Snapshot::multi_get`] (each block once,
+    /// on a few threads when there are many). Each unit is then loaded and checked as
+    /// `get_unit` does; a head without its payload reads the rest as `get_unit` does.
+    pub fn get_units(&self, ids: &[UnitId]) -> Result<Vec<Option<Unit>>, UnitError> {
+        let seq = self.snap.seq();
+        let mut out: Vec<Option<Option<Unit>>> =
+            ids.iter().map(|&id| self.read_cache.unit(seq, id).map(|hit| Some((*hit).clone()))).collect();
+        let missing: Vec<usize> = (0..ids.len()).filter(|&i| out[i].is_none()).collect();
+        if missing.len() < 2 {
+            for &i in &missing {
+                out[i] = Some(self.get_unit(ids[i])?);
+            }
+            return Ok(out.into_iter().map(|u| u.expect("every id is answered")).collect());
+        }
+        let keys: Vec<Vec<u8>> = missing.iter().map(|&i| key(Key::UnitHead { unit: ids[i] })).collect::<Result<_, _>>()?;
+        let refs: Vec<&[u8]> = keys.iter().map(Vec::as_slice).collect();
+        let heads = self.snap.multi_get(&refs)?;
+        for ((&i, k), head) in missing.iter().zip(&keys).zip(heads) {
+            let id = ids[i];
+            // The head comes from the batch, any other record from the snapshot.
+            let head = std::cell::Cell::new(Some(head));
+            let get = |q: &[u8]| match head.take() {
+                Some(h) if q == k.as_slice() => Ok(h),
+                h => {
+                    head.set(h);
+                    self.snap.get(q)
+                }
+            };
+            let loaded = if self.checked_reads { load_unit_checked(&get, id)? } else { load_unit(&get, id)? };
+            let unit = loaded.map(|(head, payload)| to_unit(id, head, payload));
+            if let Some(u) = &unit {
+                self.read_cache.put_unit(seq, u);
+            }
+            out[i] = Some(unit);
+        }
+        Ok(out.into_iter().map(|u| u.expect("every id is answered")).collect())
+    }
+
     /// Whether a unit with this id ever existed at this snapshot (a deleted one did): one read of
     /// its head, without loading or checking its payload.
     pub fn unit_exists(&self, id: UnitId) -> Result<bool, UnitError> {

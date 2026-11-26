@@ -279,6 +279,10 @@ impl Snapshot for KernoSnapshot {
         self.version.get(key, self.seq)
     }
 
+    fn multi_get(&self, keys: &[&[u8]]) -> Result<Vec<Option<Vec<u8>>>> {
+        self.version.multi_get(keys, self.seq)
+    }
+
     fn scan(&self, start: Bound<&[u8]>, end: Bound<&[u8]>, limit: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         self.version.scan(self.seq, start, end, limit)
     }
