@@ -763,7 +763,12 @@ test('every call survives every odd string, with a documented code', () => {
     ['runRetention.byType', (v) => loose(db).runRetention({ byType: { [typeof v === 'symbol' ? 's' : String(v)]: { keepLast: 1 } } })],
     ['open.path', (v) => { const h = loose({ open } as unknown as Db).open(typeof v === 'string' ? join(dir, 'p', v) : v); if (h) (h as Db).close() }],
   ]
-  for (const [label, call] of calls) for (const v of STRINGS) survives(`${label}(${show(v)})`, () => call(v))
+  // libuv's WTF-8 to UTF-16 path conversion on Windows asserts `code_point < 0x10FFFF`, so any Node fs call
+  // on a path holding U+10FFFF aborts the process there (Node's bug, not kerno's). Keep that value off paths
+  // on Windows only; every other platform still tries it.
+  const onPath = (label: string, v: unknown): boolean =>
+    !(process.platform === 'win32' && label === 'open.path' && typeof v === 'string' && v.includes('\u{10ffff}'))
+  for (const [label, call] of calls) for (const v of STRINGS) if (onPath(label, v)) survives(`${label}(${show(v)})`, () => call(v))
 })
 
 test('every numeric option accepts a whole number or throws INVALID_ARGUMENT, whatever it is given', () => {
