@@ -1896,16 +1896,30 @@ impl Database {
 /// most operations one `commit` may hold (default 10,000). `verify_payload_on_read=True` makes
 /// every read (get, find, query, neighbors, search hits) also check each payload against its
 /// content hash; off by default, since the bytes come from blocks whose checksum is always
-/// checked. `verify()`, history reads, export and import always check it.
+/// checked. `verify()`, history reads, export and import always check it. `durability="sync"`
+/// (the default) returns from a commit only once it is on stable storage; `"buffered"` does not
+/// wait for it (no `fsync` per commit, like SQLite's `synchronous=NORMAL` in WAL mode): after a
+/// power cut the last commits may be missing, never torn, and `close()` still makes everything
+/// durable.
 #[pyfunction]
-#[pyo3(signature = (path, read_only=false, max_batch_ops=None, verify_payload_on_read=false))]
+#[pyo3(signature = (path, read_only=false, max_batch_ops=None, verify_payload_on_read=false, durability="sync"))]
 fn open(
     py: Python<'_>,
     path: PathBuf,
     read_only: bool,
     #[pyo3(from_py_with = max_batch_ops_arg)] max_batch_ops: Option<usize>,
     verify_payload_on_read: bool,
+    durability: &str,
 ) -> PyResult<Database> {
+    let durability = match durability {
+        "sync" => kerno::Durability::Sync,
+        "buffered" => kerno::Durability::Buffered,
+        other => {
+            return Err(InvalidArgumentError::new_err(format!(
+                "durability must be \"sync\" or \"buffered\", not {other:?}"
+            )))
+        }
+    };
     let db = py
         .detach(|| {
             let config = if read_only {
@@ -1920,7 +1934,7 @@ fn open(
                     ..Config::default()
                 }
             } else {
-                Config { allow_unverified_platform: true, verify_payload_on_read, ..Config::default() }
+                Config { allow_unverified_platform: true, verify_payload_on_read, durability, ..Config::default() }
             };
             Db::open_with_limits(path, config, max_batch_ops.unwrap_or(kerno::units::DEFAULT_MAX_CHANGESET_OPS))
         })

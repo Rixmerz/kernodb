@@ -408,10 +408,12 @@ def open(
     read_only: bool = False,
     max_batch_ops: int | None = None,
     verify_payload_on_read: bool = False,
+    durability: str = "sync",
 ) -> Database:
     """Open the database in `path`, creating it when `path` holds none.
 
     `read_only=True` takes no lock and opens beside a live writer; it reads the state at open time until
     `refresh()`. Writes raise `ReadOnlyError`; a missing database raises `DatabaseNotFoundError`.
     `verify_payload_on_read=True` makes every read also check each payload against its content hash
-    (off by default; `verify()` always checks it)."""
+    (off by default; `verify()` always checks it). `durability="buffered"` does not wait for stable
+    storage on each commit (like SQLite's `synchronous=NORMAL`); `close()` still makes everything durable."""
