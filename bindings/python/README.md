@@ -210,6 +210,7 @@ never return wrong data.
 | Call | Returns |
 |------|---------|
 | `kerno.open(path, read_only=False, max_batch_ops=None)` | a `Database`. A read-only open writes nothing and takes no lock, so it runs beside a writer and reads the commits made up to the open (see `refresh`); a write on it raises `ReadOnlyError`, and a directory with no database raises `DatabaseNotFoundError`. `max_batch_ops` changes the 10,000-operation limit of one `commit` |
+| | A read-only open loads each table of the database at the first read that needs it, not at open: a damaged table is reported by that read (`CorruptionError`), and `verify()` still checks them all |
 | `db.store(unit_type, payload)` | the new unit's id |
 | `db.read(id)` | `Unit` (`id`, `unit_type`, `schema_version`, `lifecycle`, `revision`, `oldest_revision`, `created_at_us`, `updated_at_us`, `payload`) or `None`. `oldest_revision` is the oldest revision retention still keeps |
 | `db.update(id, payload, if_changed=False)` | `True` when a revision was written |

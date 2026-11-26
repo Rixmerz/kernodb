@@ -1585,6 +1585,9 @@ fn open(
                     access: AccessMode::ReadOnly,
                     create_if_missing: false,
                     allow_unverified_platform: true,
+                    // A reader opens beside a writer and often for one question: load each
+                    // table when a read first needs it, not all of them up front.
+                    lazy_tables: true,
                     ..Config::default()
                 }
             } else {

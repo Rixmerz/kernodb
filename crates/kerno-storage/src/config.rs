@@ -206,6 +206,13 @@ pub struct Config {
     pub durability: Durability,
     /// Capacity of the block cache in bytes (default 64 MiB).
     pub cache_bytes: usize,
+    /// Read-only handles only (default `false`; a read-write handle ignores it). Open each
+    /// table from what the MANIFEST records of it, and read and check its index, filter,
+    /// properties and range tombstones at its first use instead of at open. Opening then
+    /// costs the MANIFEST and one file open per table, whatever their size, and a table no
+    /// read touches is never loaded. A table whose meta blocks are damaged is found by the
+    /// first read that needs it (`Corruption`), not by `open`; `verify` still reads them all.
+    pub lazy_tables: bool,
     /// Size of the active memtable that triggers a switch to a new one and a
     /// flush of the old one to L0 (default 8 MiB; at least 4 KiB is used).
     /// Unless [`CompactionConfig`] sets them explicitly, the SST target size
@@ -556,6 +563,7 @@ impl Default for Config {
             create_if_missing: true,
             durability: Durability::Sync,
             cache_bytes: 64 << 20,
+            lazy_tables: false,
             write_buffer_bytes: 8 << 20,
             max_immutable_memtables: MAX_IMMUTABLE,
             limits: Limits::default(),

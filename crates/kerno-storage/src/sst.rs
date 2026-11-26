@@ -21,8 +21,8 @@
 
 use std::io;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use kerno_core::vfs::{File, OpenMode, Vfs};
 use kerno_core::{Error, Result};
@@ -86,6 +86,10 @@ pub struct TableCtx {
     pub deleter: Arc<Deleter>,
     /// New tables store LZ4 data blocks (`Config::block_compression`, §4.4).
     pub block_compression: bool,
+    /// Tables are opened from what the MANIFEST says of them, and their index, filter,
+    /// properties and fragments are read and checked at their first use
+    /// (`Config::lazy_tables`, read-only handles only).
+    pub lazy: bool,
 }
 
 impl TableCtx {
@@ -101,6 +105,7 @@ impl TableCtx {
             bytes_per_sync: None,
             bytes_per_writeback: None,
             db_id: [0; 16],
+            lazy: false,
             deleter,
             block_compression: false,
         }
@@ -127,6 +132,12 @@ impl TableCtx {
     }
 
     /// New tables store LZ4 data blocks (§4.4).
+    /// Tables load their meta blocks at first use (`Config::lazy_tables`).
+    pub fn with_lazy(mut self, lazy: bool) -> Self {
+        self.lazy = lazy;
+        self
+    }
+
     pub fn with_block_compression(mut self, on: bool) -> Self {
         self.block_compression = on;
         self
@@ -309,6 +320,18 @@ impl TableBuilder {
 /// references it; the file is deleted when the last reference goes away
 /// after the table was marked obsolete (i.e. after a MANIFEST that no
 /// longer lists it became durable).
+/// The resident part of a table: its index, properties, filter and range tombstones.
+struct Body {
+    index: Vec<IndexEntry>,
+    props: Props,
+    filter: Filter,
+    /// The range tombstones of the table, sorted and disjoint, resident like
+    /// the index (SST-F1).
+    fragments: Vec<Fragment>,
+    /// The header has `BLOCK_LZ4`: data blocks store `codec ‖ body`.
+    lz4: bool,
+}
+
 pub struct Table {
     pub number: u64,
     pub size: u64,
@@ -322,19 +345,18 @@ pub struct Table {
     /// table may hold.
     pub largest_exclusive: bool,
     file: Arc<dyn File>,
-    index: Vec<IndexEntry>,
-    props: Props,
-    filter: Filter,
-    /// The range tombstones of the table, sorted and disjoint, resident like
-    /// the index (SST-F1).
-    fragments: Vec<Fragment>,
+    /// What the file's meta blocks hold. Read and checked when the table is opened, or at its
+    /// first use when the tables are lazy (`TableCtx::lazy`).
+    body: OnceLock<Body>,
+    /// What the MANIFEST records of the table, and the sequence it was opened against: what
+    /// a lazy table answers from, and checks its file against, before and when it loads.
+    fm: FileMeta,
+    last_seq: u64,
     ctx: Arc<TableCtx>,
     obsolete: AtomicBool,
     /// `ro_compat` bits of the header this engine does not know (HDR-7):
     /// a database with such a file opens read-only.
     pub unknown_ro_compat: u64,
-    /// The header has `BLOCK_LZ4`: data blocks store `codec ‖ body`.
-    lz4: bool,
 }
 
 impl Table {
@@ -342,7 +364,41 @@ impl Table {
     /// `last_seq` (SST-O1..O7).
     /// Point entries in the table (the `point_entries` property).
     pub fn entries(&self) -> u64 {
-        self.props.point_entries
+        self.body.get().map_or(self.fm.point_entries, |b| b.props.point_entries)
+    }
+
+    /// The resident part of the table, read and checked now if it was not yet (a lazy table).
+    /// Two threads may both read it; one result is kept.
+    fn body(&self) -> Result<&Body> {
+        if let Some(b) = self.body.get() {
+            return Ok(b);
+        }
+        let (body, _, _) = self.load()?;
+        Ok(self.body.get_or_init(|| body))
+    }
+
+    /// Reads and checks the header, footer and meta blocks against the MANIFEST (SST-O1..O7,
+    /// SST-V3): the body, the header's unknown `ro_compat` bits and the file's size.
+    fn load(&self) -> Result<(Body, u64, u64)> {
+        let name = sst_name(self.number);
+        let (opened, size) = {
+            let mut src = FileSource::new(&*self.file)?;
+            let ex = SstExpect {
+                file_number: self.number,
+                db_id: self.ctx.db_id,
+                meta: Some(&self.fm),
+                last_seq: self.last_seq,
+            };
+            let size = src.len();
+            (open_sst_from(&mut src, &ex).map_err(|e| read_error(&name, e))?, size)
+        };
+        // SST-V3 over what the open holds (F-E9A-03-1): `get` trusts the filter.
+        check_filter_holds_index_keys(&opened).map_err(|e| format_error(&name, e))?;
+        let unknown = opened.header.unknown_ro_compat();
+        let lz4 = opened.header.incompat & crate::format::features::BLOCK_LZ4 != 0;
+        let body =
+            Body { index: opened.index, props: opened.props, filter: opened.filter, fragments: opened.fragments, lz4 };
+        Ok((body, unknown, size))
     }
 
     pub fn open(ctx: &Arc<TableCtx>, meta: &FileMeta, last_seq: u64) -> Result<Table> {
@@ -360,36 +416,38 @@ impl Table {
     }
 
     fn open_file(ctx: &Arc<TableCtx>, file: Arc<dyn File>, meta: &FileMeta, last_seq: u64) -> Result<Table> {
-        let name = sst_name(meta.number);
-        let (opened, size) = {
-            let mut src = FileSource::new(&*file)?;
-            let ex = SstExpect { file_number: meta.number, db_id: ctx.db_id, meta: Some(meta), last_seq };
-            let size = src.len();
-            (open_sst_from(&mut src, &ex).map_err(|e| read_error(&name, e))?, size)
-        };
-        // SST-V3 over what the open holds (F-E9A-03-1): `get` trusts the filter.
-        check_filter_holds_index_keys(&opened).map_err(|e| format_error(&name, e))?;
-        Ok(Table {
+        let mut table = Table {
             number: meta.number,
-            size,
-            smallest: opened.props.smallest_key.clone(),
-            largest: opened.props.largest_key.clone(),
-            largest_exclusive: opened.props.largest_exclusive,
+            size: meta.size,
+            smallest: meta.smallest.clone(),
+            largest: meta.largest.clone(),
+            largest_exclusive: meta.largest_exclusive,
             file,
-            index: opened.index,
-            props: opened.props,
-            filter: opened.filter,
-            fragments: opened.fragments,
+            body: OnceLock::new(),
+            fm: meta.clone(),
+            last_seq,
             ctx: ctx.clone(),
             obsolete: AtomicBool::new(false),
-            unknown_ro_compat: opened.header.unknown_ro_compat(),
-            lz4: opened.header.incompat & crate::format::features::BLOCK_LZ4 != 0,
-        })
+            unknown_ro_compat: 0,
+        };
+        if !ctx.lazy {
+            let (body, unknown, size) = table.load()?;
+            table.size = size;
+            table.smallest = body.props.smallest_key.clone();
+            table.largest = body.props.largest_key.clone();
+            table.largest_exclusive = body.props.largest_exclusive;
+            table.unknown_ro_compat = unknown;
+            let _ = table.body.set(body);
+        }
+        Ok(table)
     }
 
     /// What the MANIFEST records about this table when it is in `level`.
     pub fn meta(&self, level: u8) -> FileMeta {
-        file_meta(level, self.number, self.size, &self.props)
+        match self.body.get() {
+            Some(b) => file_meta(level, self.number, self.size, &b.props),
+            None => FileMeta { level, ..self.fm.clone() },
+        }
     }
 
     /// Marks the table as replaced: its file goes when the last reference
@@ -410,30 +468,37 @@ impl Table {
 
     /// The highest sequence in the table, points and fragments.
     pub fn largest_seq(&self) -> u64 {
-        self.props.largest_seq
+        self.body.get().map_or(self.fm.largest_seq, |b| b.props.largest_seq)
     }
 
     pub fn point_deletes(&self) -> u64 {
-        self.props.point_deletes
+        // Only compaction asks, and a handle that compacts opens its tables in full.
+        self.body.get().map_or(0, |b| b.props.point_deletes)
     }
 
     pub fn has_fragments(&self) -> bool {
-        !self.fragments.is_empty()
+        self.body.get().map_or(self.fm.range_fragments > 0, |b| !b.fragments.is_empty())
     }
 
-    pub fn fragments(&self) -> &[Fragment] {
-        &self.fragments
+    /// How many range tombstone fragments the table holds, without loading a lazy one.
+    pub fn fragment_count(&self) -> u64 {
+        self.body.get().map_or(self.fm.range_fragments, |b| b.fragments.len() as u64)
+    }
+
+    pub fn fragments(&self) -> Result<&[Fragment]> {
+        Ok(&self.body()?.fragments)
     }
 
     /// The sequence of the fragment covering `key`, if one does. Every
     /// fragment of a table is visible to whoever sees the table (SEM-5).
-    pub fn covering_seq(&self, key: &[u8]) -> Option<u64> {
-        crate::format::rangedel::covering_seq(&self.fragments, key)
+    pub fn covering_seq(&self, key: &[u8]) -> Result<Option<u64>> {
+        Ok(crate::format::rangedel::covering_seq(&self.body()?.fragments, key))
     }
 
     /// Removes the blocks of this table from the block cache.
     pub fn purge_cache(&self) {
-        for e in &self.index {
+        // A table that never loaded has no block in the cache.
+        for e in self.body.get().map_or(&[][..], |b| &b.index) {
             self.ctx.cache.remove(&(self.number, e.handle.offset));
         }
     }
@@ -445,7 +510,8 @@ impl Table {
     /// Reads (through the cache unless `fill_cache` is false and the block
     /// is not cached) and verifies data block `i` (SST-R1..R3).
     pub fn read_block(&self, i: usize, fill_cache: bool) -> Result<Arc<Block>> {
-        let handle = self.index[i].handle;
+        let body = self.body()?;
+        let handle = body.index[i].handle;
         let key = (self.number, handle.offset);
         let stats = &self.ctx.stats;
         if let Some(b) = self.ctx.cache.get(&key) {
@@ -459,8 +525,8 @@ impl Table {
         }
         let mut buf = vec![0u8; handle.len as usize];
         self.file.read_at(&mut buf, handle.offset)?;
-        let payload = crate::format::block::data_block_payload(&buf, self.number, handle.offset, self.lz4)
-            .and_then(|p| read_data_block(&p, &self.index, i, &self.props).map(|_| ()).map(|()| p.into_owned()))
+        let payload = crate::format::block::data_block_payload(&buf, self.number, handle.offset, body.lz4)
+            .and_then(|p| read_data_block(&p, &body.index, i, &body.props).map(|_| ()).map(|()| p.into_owned()))
             .map_err(|e| format_error(&sst_name(self.number), e))?;
         let block = Arc::new(Block::from_payload(payload));
         if fill_cache {
@@ -481,12 +547,13 @@ impl Table {
         }
         let stats = &self.ctx.stats;
         bump(&stats.bloom_checks, 1);
-        if !self.filter.may_contain(hash) {
+        let body = self.body()?;
+        if !body.filter.may_contain(hash) {
             bump(&stats.bloom_negatives, 1);
             return Ok(None);
         }
-        let i = self.index.partition_point(|e| e.last_key.as_slice() < key);
-        if i == self.index.len() {
+        let i = body.index.partition_point(|e| e.last_key.as_slice() < key);
+        if i == body.index.len() {
             return Ok(None);
         }
         let block = self.read_block(i, true)?;
@@ -527,7 +594,8 @@ impl TableIter<'_> {
     /// blocks if needed.
     fn load(&mut self, mut block_idx: usize, mut entry: usize) -> Result<()> {
         self.pos = None;
-        while block_idx < self.table.index.len() {
+        let blocks = self.table.body()?.index.len();
+        while block_idx < blocks {
             let block = self.table.read_block(block_idx, self.fill_cache)?;
             if entry < block.len() {
                 let e = block.entry(entry).ok_or_else(|| self.table.corrupt("unreadable block".into()))?;
@@ -558,8 +626,9 @@ impl InternalIterator for TableIter<'_> {
     }
 
     fn seek(&mut self, target: &[u8]) -> Result<()> {
-        let idx = self.table.index.partition_point(|e| e.last_key.as_slice() < target);
-        if idx == self.table.index.len() {
+        let index = &self.table.body()?.index;
+        let idx = index.partition_point(|e| e.last_key.as_slice() < target);
+        if idx == index.len() {
             self.pos = None;
             return Ok(());
         }
@@ -653,7 +722,7 @@ mod tests {
         let (_sim, ctx) = ctx(512);
         let n = 500;
         let built = build(&ctx, 7, n);
-        assert!(built.index.len() > 10, "expected many blocks");
+        assert!(built.body().unwrap().index.len() > 10, "expected many blocks");
         let t = reopen(&ctx, &built).unwrap();
         assert_eq!(t.meta(0), built.meta(0));
         assert_eq!(
@@ -718,7 +787,7 @@ mod tests {
         let mut b = TableBuilder::create(&ctx, 3, crate::format::props::REASON_RECOVERY).unwrap();
         b.add(b"k", 9, Some(b"v")).unwrap();
         let t = b.finish().unwrap();
-        assert_eq!(t.props.creation_reason, crate::format::props::REASON_RECOVERY);
+        assert_eq!(t.body().unwrap().props.creation_reason, crate::format::props::REASON_RECOVERY);
         // Another database's table is not this one's (HDR-10).
         let other = Arc::new(TableCtx::new(ctx.vfs.clone(), ctx.dir.clone(), 1 << 20, ctx.stats.clone(), 4096));
         let e = Table::open(&other, &t.meta(0), MAX_SEQ).err().unwrap();
@@ -918,7 +987,7 @@ mod tests {
             b.add(&key(i), 1, Some(&[b'v'; 120])).unwrap();
         }
         let t = b.finish().unwrap();
-        let (h0, h1) = (t.index[0].handle, t.index[1].handle);
+        let (h0, h1) = (t.body().unwrap().index[0].handle, t.body().unwrap().index[1].handle);
         assert_eq!(h0.len, h1.len, "test setup: blocks of one length");
         // Block 0's bytes at block 1's offset.
         let f = ctx.vfs.open(&ctx.path(4), OpenMode::Existing).unwrap();

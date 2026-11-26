@@ -773,7 +773,8 @@ fn merge_into(
         GrandparentCut::new(plan.deeper.first().map_or(&[], Vec::as_slice), tuning.grandparent_overlap_bytes);
     // The range tombstones of the inputs, the highest sequence over each
     // part: they decide which points go, and which fragments the outputs keep.
-    let all = rangedel::aggregate(plan.all_inputs().map(|t| t.fragments()));
+    let input_fragments = plan.all_inputs().map(|t| t.fragments()).collect::<Result<Vec<_>>>()?;
+    let all = rangedel::aggregate(input_fragments);
     let mut cover = CoverCursor::new(vec![Cow::Borrowed(&all[..])]);
     let kept = keep_fragments(&all, plan, lo, hi, stats);
     let mut splitter = FragmentSplitter::new(kept);

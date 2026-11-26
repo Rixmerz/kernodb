@@ -38,7 +38,7 @@ fn lookup(t: &Table, key: &[u8], hash: u64, max_tomb: &mut u64) -> Result<Option
         return Ok(Some(None));
     }
     if t.has_fragments()
-        && let Some(u) = t.covering_seq(key)
+        && let Some(u) = t.covering_seq(key)?
     {
         *max_tomb = (*max_tomb).max(u);
     }
@@ -128,19 +128,16 @@ impl Version {
             if table_in_range(t, start, end) {
                 children.push(Box::new(t.iter(true)));
                 if t.has_fragments() {
-                    fragments.push(Cow::Borrowed(t.fragments()));
+                    fragments.push(Cow::Borrowed(t.fragments()?));
                 }
             }
         }
         for level in &self.levels[1..] {
             if !level.is_empty() {
                 children.push(Box::new(LevelIter::new(level, true)));
-                fragments.extend(
-                    tables_in_range(level, start, end)
-                        .iter()
-                        .filter(|t| t.has_fragments())
-                        .map(|t| Cow::Borrowed(t.fragments())),
-                );
+                for t in tables_in_range(level, start, end).iter().filter(|t| t.has_fragments()) {
+                    fragments.push(Cow::Borrowed(t.fragments()?));
+                }
             }
         }
         let mut cover = CoverCursor::new(fragments);

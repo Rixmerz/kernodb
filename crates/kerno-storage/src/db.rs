@@ -1658,7 +1658,11 @@ impl KernoDb {
                         number: t.number,
                         size: t.size,
                         entries: t.entries(),
-                        fragments: t.fragments().iter().map(|f| (f.start.clone(), f.end.clone(), f.seq)).collect(),
+                        // A lazy table that cannot be read lists none here; reading it reports why.
+                        fragments: t
+                            .fragments()
+                            .map(|fs| fs.iter().map(|f| (f.start.clone(), f.end.clone(), f.seq)).collect())
+                            .unwrap_or_default(),
                         smallest: t.smallest.clone(),
                         largest: t.largest.clone(),
                         largest_exclusive: t.largest_exclusive,
@@ -1950,6 +1954,7 @@ impl KernoDb {
                     .with_bytes_per_writeback(cfg.compaction.bytes_per_writeback)
                     .with_db_id(db_id)
                     .with_block_compression(cfg.block_compression)
+                    .with_lazy(cfg.lazy_tables && cfg.access == AccessMode::ReadOnly)
                     .with_deleter(Deleter::inline(vfs.clone(), stats.clone())),
             )
         };
@@ -2181,7 +2186,7 @@ impl KernoDb {
                 .map(|l| LevelMetrics { files: l.len() as u64, bytes: l.iter().map(|t| t.size).sum() })
                 .collect(),
             l0_depth: compaction::l0_depth(&v.levels[0]) as u64,
-            range_fragments: v.levels.iter().flatten().map(|t| t.fragments().len() as u64).sum(),
+            range_fragments: v.levels.iter().flatten().map(|t| t.fragment_count()).sum(),
             l0_files_max: 0,
             memtable_bytes: v.mem.approx_bytes() as u64,
             immutable_memtables: v.imms.len() as u64,
