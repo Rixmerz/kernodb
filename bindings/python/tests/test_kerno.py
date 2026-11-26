@@ -251,7 +251,9 @@ def test_refresh_shows_a_read_only_handle_the_commits_made_since_it_opened(tmp_p
 def test_verify_reports_storage_corruption(tmp_path):
     path = tmp_path / "db"
     with kerno.open(path) as db:
-        db.commit([("store", "c", "payload-%d" % i * 20) for i in range(2000)])
+        # Payloads over the 2048 bytes a unit's head carries (units-v10), so that the query
+        # below reads every block of the table: heads, revisions and payloads.
+        db.commit([("store", "c", "payload-%d" % i * 300) for i in range(2000)])
     sst = max(path.glob("*.sst"), key=lambda f: f.stat().st_size)
     data = bytearray(sst.read_bytes())
     data[len(data) // 2] ^= 0xFF

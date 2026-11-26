@@ -281,8 +281,9 @@ fn read_only_open_reports_damage_without_retrying() {
     });
     let err = open_in(&vfs, &read_only(Durability::Sync)).err().expect("a damaged table");
     assert!(matches!(err, Error::Corruption(_)), "{err:?}");
-    // open's own listing, then one read: before, the read, after.
-    assert_eq!(lists.load(Ordering::SeqCst), 4, "damage is not read again");
+    // open's own listing, which is also the read's "before" and the one the read works from,
+    // then the listing after the error.
+    assert_eq!(lists.load(Ordering::SeqCst), 2, "damage is not read again");
 }
 
 #[test]
