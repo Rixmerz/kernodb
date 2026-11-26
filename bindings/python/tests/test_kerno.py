@@ -1033,8 +1033,10 @@ def test_search_substring_matches_like_and_follows_every_write(tmp_path):
         b = db.store("sym", "abc bcd")  # every trigram of "abcd", but not "abcd"
         c = db.store("sym", b"\xff\x00raw bytes")
         assert db.substring("sym") is False
-        with pytest.raises(kerno.NotIndexedError):  # off by default: no type is searchable
-            db.search_substring("parse")
+        # Off by default: the payloads are scanned, with the answers the index gives.
+        assert db.search_substring("parseheader") == [a]
+        assert db.search_substring("abcd") == []
+        assert db.search_substring("a") == sorted([a, b, c])
         db.set_substring("sym", True)  # indexes the units the type already has
         db.set_substring("sym", True)  # same state: nothing written
         assert db.substring("sym") is True
@@ -1058,8 +1060,8 @@ def test_search_substring_matches_like_and_follows_every_write(tmp_path):
     with kerno.open(tmp_path / "db") as db:  # the option and the entries hold across opens
         assert db.search_substring("renamed") == [a]
         db.set_substring("sym", False)
-        with pytest.raises(kerno.NotIndexedError):
-            db.search_substring("renamed")
+        assert db.search_substring("renamed") == [a]  # scanned again
+        assert db.search_substring("renamed", types=["sym"]) == [a]
         assert db.verify()["clean"] is True
 
 

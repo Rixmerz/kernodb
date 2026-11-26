@@ -246,10 +246,12 @@ class Database:
         """The ids of the units whose payload holds `needle`, in id order, at most `limit` (`None`: all).
 
         ASCII letters match in either case and every other byte must be equal, like SQL's
-        `LIKE '%needle%'`; only the first 256 KiB of a payload are searched. Raises instead of
-        returning `[]` for a search that could never match: `NotIndexedError` (no type, or a type
-        in `types`, is substring-indexed), `UnknownTypeError` (a type nothing ever used),
-        `InvalidArgumentError` (`limit < 1`, an empty needle or one over 1024 bytes, an empty `types`).
+        `LIKE '%needle%'`; only the first 256 KiB of a payload are searched. `types=None` searches
+        the substring-indexed types, or every type when none is. A type without the trigram index
+        is searched by scanning its payloads in parallel, with the same answers. Raises instead of
+        returning `[]` for a search that could never match: `UnknownTypeError` (a type nothing
+        ever used), `InvalidArgumentError` (`limit < 1`, an empty needle or one over 1024 bytes,
+        an empty `types`).
         """
     def last_commit_seq(self) -> int: ...
     def set_read_cache_bytes(self, bytes: int) -> None:

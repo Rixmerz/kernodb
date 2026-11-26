@@ -1087,15 +1087,16 @@ impl Db {
 
     /// The ids of the units whose payload holds `needle`, in unit id order, at most `limit`
     /// (`None`: all of them). ASCII letters match in either case and every other byte must be
-    /// equal, as in SQL's `LIKE '%needle%'`. Only the types turned on with
-    /// [`Db::set_substring`] are searched; `types` restricts the search further to those unit
-    /// types (`None`: every substring-indexed type). The first 256 KiB of a payload are searched.
+    /// equal, as in SQL's `LIKE '%needle%'`. `types` restricts the search to those unit types;
+    /// `None` searches every type turned on with [`Db::set_substring`], or every type when none
+    /// is. A type with the trigram index is answered by it; one without (off by default) by
+    /// reading its payloads, on several threads, with the same matches and order. The first
+    /// 256 KiB of a payload are searched.
     ///
     /// A search that could never match raises instead of answering an empty list.
     ///
     /// # Errors
     ///
-    /// `NotIndexed` when no type is substring-indexed or a type in `types` is not;
     /// `UnknownType` for a type in `types` that no unit, schema or option ever named;
     /// `InvalidArgument` for `limit == Some(0)`, an empty needle or one over 1024 bytes, an
     /// empty `types`, or an invalid type name; the engine fails or finds the index damaged.
@@ -1105,7 +1106,7 @@ impl Db {
         limit: Option<usize>,
         types: Option<&[&str]>,
     ) -> Result<Vec<UnitId>> {
-        self.units.snapshot()?.search_substring(needle.as_ref(), limit, types)
+        self.units.snapshot()?.search_substring_or_scan(needle.as_ref(), limit, types)
     }
 
     /// Whether `unit_type` is substring-indexed (see [`Db::set_substring`]; off by default).

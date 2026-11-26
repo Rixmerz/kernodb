@@ -20,6 +20,8 @@ name = "kerno_units"
 kerno-core.workspace = true
 crc32c.workspace = true
 blake3.workspace = true
+# Substring search of the types without a trigram index (a scan of their payloads).
+memchr.workspace = true
 # Only for the `embed-openai` feature: a remote or local OpenAI-compatible
 # embedding endpoint. Never reached by kerno-core or by a default build. TLS is
 # the platform's (`native-tls`), not rustls: rustls pulls ring, rustls-webpki

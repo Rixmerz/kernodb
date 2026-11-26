@@ -484,6 +484,61 @@ fn the_index_answers_what_a_scan_of_the_payloads_answers() {
     assert_clean(&db);
 }
 
+/// A type without the trigram index is searched by a scan of its payloads, with the answers the
+/// index gives for the same payloads: same units (by position), same order, the same limit, the
+/// same first bytes searched, inline and separate payloads, and only `Active` units.
+#[test]
+fn a_type_without_the_index_is_scanned_with_the_same_answers() {
+    let disk = SimVfs::new(16);
+    let db = open(&disk);
+    let mut state = 0x9E37_79B9_7F4A_7C15u64;
+    let mut next = move |n: u64| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state % n
+    };
+    let alphabet = b"abAB. ";
+    let mut text = |len: u64| -> Vec<u8> { (0..len).map(|_| alphabet[next(6) as usize]).collect() };
+    // Short payloads (in the head) and long ones (in their revision), one past the searched bytes.
+    let mut payloads: Vec<Vec<u8>> = (0..150).map(|i| text(3 + i % 23)).collect();
+    payloads.push([vec![b'.'; 3000], b"needleX".to_vec()].concat());
+    payloads.push([vec![b'.'; MAX_INDEXED_BYTES], b"needleX".to_vec()].concat());
+    let (mut sym, mut raw) = (Vec::new(), Vec::new());
+    for p in &payloads {
+        sym.push(store_as(&db, "sym", p));
+        raw.push(store_as(&db, "raw", p));
+    }
+    // Archived and deleted units are in neither answer.
+    for i in [3usize, 40] {
+        change(&db, |cs| cs.archive(sym[i], None).unwrap());
+        change(&db, |cs| cs.archive(raw[i], None).unwrap());
+    }
+    for i in [7usize, 41] {
+        change(&db, |cs| cs.delete(sym[i], None).unwrap());
+        change(&db, |cs| cs.delete(raw[i], None).unwrap());
+    }
+    let snap = db.snapshot().unwrap();
+    let as_sym = |ids: Vec<UnitId>| -> Vec<UnitId> {
+        ids.into_iter().map(|id| sym[raw.iter().position(|r| *r == id).expect("a raw unit")]).collect()
+    };
+    let mut needles: Vec<Vec<u8>> = (1..=7u64).flat_map(|len| (0..12).map(move |_| len)).map(&mut text).collect();
+    needles.push(b"NEEDLEx".to_vec());
+    for needle in &needles {
+        for limit in [None, Some(1), Some(5)] {
+            let want = snap.search_substring(needle, limit, Some(&["sym"])).unwrap();
+            let got = snap.search_substring_or_scan(needle, limit, Some(&["raw"])).unwrap();
+            assert_eq!(as_sym(got), want, "needle {:?} limit {limit:?}", String::from_utf8_lossy(needle));
+        }
+    }
+    // The index alone still refuses a type it does not hold; the scan does not.
+    assert!(matches!(snap.search_substring(b"ab", None, Some(&["raw"])), Err(UnitError::NotIndexed { .. })));
+    // Both types at once: the indexed one by the index, the other by the scan, merged by id.
+    let both = snap.search_substring_or_scan(b"needlex", None, Some(&["sym", "raw"])).unwrap();
+    assert_eq!(both.len(), 2, "one long payload per type holds it within the searched bytes");
+    assert!(both.windows(2).all(|w| w[0] < w[1]));
+}
+
 // --------------------------------------------------------------- verify
 
 #[test]

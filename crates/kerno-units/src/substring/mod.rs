@@ -82,6 +82,10 @@ use crate::types::{Lifecycle, UnitId};
 
 pub(crate) use check::Check;
 
+/// What answers the types the trigram index does not hold in a substring search, from the types
+/// (`None`: every type), the folded needle and the limit.
+type ScanFn<'a> = &'a dyn Fn(Option<&[&str]>, &[u8], usize) -> Result<Vec<UnitId>, UnitError>;
+
 /// Key tag of a trigram entry.
 pub const TAG_TRIGRAM: u8 = 0x7a;
 
@@ -556,6 +560,20 @@ impl<E: Engine> UnitSnapshot<E> {
         limit: Option<usize>,
         types: Option<&[&str]>,
     ) -> Result<Vec<UnitId>, UnitError> {
+        self.search_substring_with(needle, limit, types, None)
+    }
+
+    /// [`search_substring`](Self::search_substring), with `scan` answering the types the trigram
+    /// index does not hold (instead of `NotIndexed`): a type in `types` that is known but not
+    /// indexed, or every type (`None` in its argument) when `types` is `None` and no type is
+    /// indexed. `scan` gets the folded needle and the limit, and answers in unit id order.
+    fn search_substring_with(
+        &self,
+        needle: &[u8],
+        limit: Option<usize>,
+        types: Option<&[&str]>,
+        scan: Option<ScanFn<'_>>,
+    ) -> Result<Vec<UnitId>, UnitError> {
         let invalid = |m: &str| UnitError::InvalidArgument(format!("search_substring: {m}"));
         if limit == Some(0) {
             return Err(invalid("limit must be at least 1"));
@@ -575,19 +593,29 @@ impl<E: Engine> UnitSnapshot<E> {
             }
         }
         let indexed = self.substring_types()?;
-        if indexed.is_empty() {
-            return Err(UnitError::NotIndexed {
-                detail: "no unit type is substring-indexed: turn it on for a type with set_substring".into(),
-            });
+        // The types the index does not hold that `scan` answers: `Some(list)`, or `None` for all.
+        let mut scanned: Option<Option<Vec<&str>>> = None;
+        if indexed.is_empty() && types.is_none() {
+            if scan.is_none() {
+                return Err(UnitError::NotIndexed {
+                    detail: "no unit type is substring-indexed: turn it on for a type with set_substring".into(),
+                });
+            }
+            scanned = Some(None);
         }
         for t in types.unwrap_or_default() {
             if !self.type_known(t)? {
                 return Err(UnitError::UnknownType { unit_type: (*t).to_string() });
             }
             if !indexed.iter().any(|i| i == t) {
-                return Err(UnitError::NotIndexed {
-                    detail: format!("unit type {t:?} is not substring-indexed: turn it on with set_substring"),
-                });
+                if scan.is_none() {
+                    return Err(UnitError::NotIndexed {
+                        detail: format!("unit type {t:?} is not substring-indexed: turn it on with set_substring"),
+                    });
+                }
+                if let Some(list) = scanned.get_or_insert_with(|| Some(Vec::new())) {
+                    list.push(t);
+                }
             }
         }
         let needle = needle.to_ascii_lowercase();
@@ -595,6 +623,9 @@ impl<E: Engine> UnitSnapshot<E> {
         let mut out = Vec::new();
         for unit_type in indexed.iter().filter(|i| types.is_none_or(|ts| ts.contains(&i.as_str()))) {
             out.extend(self.search_type(unit_type, &needle, limit)?);
+        }
+        if let (Some(which), Some(scan)) = (scanned, scan) {
+            out.extend(scan(which.as_deref(), &needle, limit)?);
         }
         // A unit has one type, so the per-type answers share no unit.
         out.sort_unstable();
@@ -715,5 +746,231 @@ impl<E: Engine> UnitSnapshot<E> {
             }
         }
         Ok(candidates)
+    }
+}
+
+// ------------------------------------------------------------ scan path
+
+/// Heads read per scan call of a substring scan.
+const HEAD_PAGE: usize = 1024;
+/// Slices of the id space per thread in a substring scan: units are rarely spread evenly over
+/// their ids (they are minted by time, in bursts), so the threads take many small slices.
+const SLICES_PER_THREAD: usize = 32;
+
+/// A unit a scan reads: its payload in its head, or the revision that holds it.
+enum Source {
+    Inline(Vec<u8>),
+    Rev(crate::types::RevNo),
+}
+
+impl<E: Engine> UnitSnapshot<E>
+where
+    E::Snapshot: Sync,
+{
+    /// [`search_substring`](Self::search_substring), answering the unit types the trigram index
+    /// does not hold by reading their payloads: a type in `types` that is known but not
+    /// indexed, and every type when `types` is `None` and no type is indexed (where
+    /// `search_substring` refuses with `NotIndexed`). Same matches and order as the index would
+    /// give: the first [`MAX_INDEXED_BYTES`] bytes of the head payload of every `Active` unit,
+    /// ASCII letters folded. The payloads are searched with `memchr::memmem`, on several
+    /// threads when there are many.
+    ///
+    /// # Errors
+    ///
+    /// As [`search_substring`](Self::search_substring), without `NotIndexed`.
+    pub fn search_substring_or_scan(
+        &self,
+        needle: &[u8],
+        limit: Option<usize>,
+        types: Option<&[&str]>,
+    ) -> Result<Vec<UnitId>, UnitError> {
+        self.search_substring_with(needle, limit, types, Some(&|t, n, l| self.scan_substring(t, n, l)))
+    }
+
+    /// The first `limit` `Active` units of `types` (`None`: every type) whose payload holds the
+    /// folded `needle`, in id order, by reading every head and payload.
+    ///
+    /// The `UNIT_HEAD` range is cut in slices of the id space between its first and its last
+    /// key, many more slices than threads; each thread takes the next slice, scans its heads and
+    /// searches the payloads of the units it keeps. The slices' answers are joined in slice
+    /// order, which is id order.
+    fn scan_substring(&self, types: Option<&[&str]>, needle: &[u8], limit: usize) -> Result<Vec<UnitId>, UnitError> {
+        use crate::codec::TAG_UNIT_HEAD;
+        let Some((first, last)) = self.head_span()? else {
+            return Ok(Vec::new());
+        };
+        let threads = std::thread::available_parallelism().map_or(1, usize::from);
+        let slices = if threads == 1 { 1 } else { threads * SLICES_PER_THREAD };
+        let step = (last - first) / slices as u128 + 1;
+        // Slice `i` is `[bound(i), bound(i + 1))`; the last one ends with the range.
+        let bound = |i: usize| -> Vec<u8> {
+            let mut k = vec![TAG_UNIT_HEAD];
+            match first.checked_add(step.saturating_mul(i as u128)) {
+                Some(id) if i < slices => k.extend_from_slice(&id.to_be_bytes()),
+                _ => k[0] = TAG_UNIT_HEAD + 1,
+            }
+            k
+        };
+        let finder = memchr::memmem::Finder::new(needle);
+        let fold = needle.iter().any(u8::is_ascii_lowercase);
+        let slice = |i: usize| -> Result<Vec<UnitId>, UnitError> {
+            let units = self.heads_in(&bound(i), &bound(i + 1), types)?;
+            let mut out = Vec::new();
+            let mut folded = Vec::new();
+            for (unit, source) in &units {
+                let read;
+                let payload: &[u8] = match source {
+                    Source::Inline(p) => p,
+                    Source::Rev(rev) => {
+                        read = self.snap.get(&key(Key::RevPayload { unit: *unit, rev: *rev })?)?;
+                        match &read {
+                            Some(p) => p,
+                            None => continue,
+                        }
+                    }
+                };
+                let hay = indexed(payload);
+                let hit = if fold {
+                    folded.clear();
+                    folded.extend(hay.iter().map(u8::to_ascii_lowercase));
+                    finder.find(&folded).is_some()
+                } else {
+                    finder.find(hay).is_some()
+                };
+                if hit {
+                    out.push(*unit);
+                    if out.len() == limit {
+                        break;
+                    }
+                }
+            }
+            Ok(out)
+        };
+        let mut parts: Vec<(usize, Result<Vec<UnitId>, UnitError>)> = if slices == 1 {
+            vec![(0, slice(0))]
+        } else {
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            std::thread::scope(|scope| {
+                let workers: Vec<_> = (0..threads)
+                    .map(|_| {
+                        scope.spawn(|| {
+                            let mut done = Vec::new();
+                            loop {
+                                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                if i >= slices {
+                                    return done;
+                                }
+                                done.push((i, slice(i)));
+                            }
+                        })
+                    })
+                    .collect();
+                workers
+                    .into_iter()
+                    .flat_map(|w| {
+                        w.join().unwrap_or_else(|_| vec![(0, Err(corruption("a substring scan thread panicked".into())))])
+                    })
+                    .collect()
+            })
+        };
+        parts.sort_unstable_by_key(|(i, _)| *i);
+        let mut out = Vec::new();
+        for (_, part) in parts {
+            out.extend(part?);
+            if out.len() >= limit {
+                out.truncate(limit);
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// The ids of the first and the last `UNIT_HEAD`, as numbers (`None`: no unit): one seek for
+    /// the first, a binary search of seeks for the last.
+    fn head_span(&self) -> Result<Option<(u128, u128)>, UnitError> {
+        use crate::codec::TAG_UNIT_HEAD;
+        let end = [TAG_UNIT_HEAD + 1];
+        let id_at_or_after = |from: u128| -> Result<Option<u128>, UnitError> {
+            let mut k = vec![TAG_UNIT_HEAD];
+            k.extend_from_slice(&from.to_be_bytes());
+            let page = self.snap.scan(Bound::Included(&k), Bound::Excluded(&end), 1)?;
+            Ok(page.first().and_then(|(k, _)| k.get(1..17)).map(|id| {
+                let mut b = [0u8; 16];
+                b.copy_from_slice(id);
+                u128::from_be_bytes(b)
+            }))
+        };
+        let Some(first) = id_at_or_after(0)? else {
+            return Ok(None);
+        };
+        // `lo` has a head; nothing above `hi`.
+        let (mut lo, mut hi) = (first, u128::MAX);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2 + 1;
+            match id_at_or_after(mid)? {
+                Some(id) => lo = id,
+                None => hi = mid - 1,
+            }
+        }
+        Ok(Some((first, lo)))
+    }
+
+    /// The `Active` units of `types` (`None`: every type) with a head in `[from, to)`, in id
+    /// order, with where their payload is. The heads are visited borrowed; the type is the
+    /// first field after the envelope (`len: u32 BE ‖ bytes`), so a head of a type not asked
+    /// for is skipped on those bytes and only the others are decoded.
+    fn heads_in(&self, from: &[u8], to: &[u8], types: Option<&[&str]>) -> Result<Vec<(UnitId, Source)>, UnitError> {
+        use crate::codec::UnitHead;
+        let wanted = |v: &[u8]| match (types, v.get(2..6)) {
+            (None, _) => true,
+            (Some(ts), Some(len)) => {
+                let len = u32::from_be_bytes([len[0], len[1], len[2], len[3]]) as usize;
+                v.get(6..6 + len).is_some_and(|t| ts.iter().any(|w| w.as_bytes() == t))
+            }
+            // Too short to hold a type: let the decoder report it.
+            (Some(_), None) => true,
+        };
+        let mut units = Vec::new();
+        let mut cursor = from.to_vec();
+        let mut inclusive = true;
+        loop {
+            let mut last: Option<Vec<u8>> = None;
+            let mut failed: Option<UnitError> = None;
+            let lo = if inclusive { Bound::Included(cursor.as_slice()) } else { Bound::Excluded(cursor.as_slice()) };
+            let seen = self.snap.scan_visit(lo, Bound::Excluded(to), HEAD_PAGE, &mut |k, v| {
+                if failed.is_none() && wanted(v) {
+                    let r = (|| {
+                        let Key::UnitHead { unit } = Key::decode(k)? else {
+                            return Err(corruption("a key in the UNIT_HEAD range is not a UNIT_HEAD".into()));
+                        };
+                        let head =
+                            UnitHead::decode(v).map_err(|e| context(e, &format!("UNIT_HEAD of unit {unit}")))?;
+                        if head.lifecycle == Lifecycle::Active
+                            && types.is_none_or(|ts| ts.contains(&head.unit_type.as_str()))
+                        {
+                            let source = match head.inline_payload {
+                                Some(p) => Source::Inline(p),
+                                None => Source::Rev(head.head_rev),
+                            };
+                            units.push((unit, source));
+                        }
+                        Ok(())
+                    })();
+                    failed = r.err();
+                }
+                last = Some(k.to_vec());
+                Ok(())
+            })?;
+            if let Some(e) = failed {
+                return Err(e);
+            }
+            match last {
+                Some(k) if seen == HEAD_PAGE => {
+                    cursor = k;
+                    inclusive = false;
+                }
+                _ => return Ok(units),
+            }
+        }
     }
 }
