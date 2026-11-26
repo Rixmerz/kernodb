@@ -860,7 +860,7 @@ pub struct SearchSubstringOptions {
     /// Most ids, at least 1. Default: every match.
     #[napi(ts_type = "number")]
     pub limit: Option<Num>,
-    /// Search only these unit types (at least one). Default: every substring-indexed type.
+    /// Search only these unit types (at least one). Default: every substring-indexed type, or every type when none is.
     #[napi(ts_type = "Array<string>")]
     pub types: Option<Names>,
 }
@@ -1469,10 +1469,11 @@ impl Db {
 
     /// The ids of the units whose payload holds `needle`, in id order, at most `options.limit`
     /// (default: all of them). ASCII letters match in either case, every other byte must be
-    /// equal, like SQL's `LIKE '%needle%'`. Only types turned on with `setSubstring` are
-    /// searched; `options.types` restricts the search to those types. A search that could never
-    /// match throws instead of returning `[]`, with the errors of `searchText`; `INVALID_ARGUMENT`
-    /// also for an empty needle or one over 1024 bytes.
+    /// equal, like SQL's `LIKE '%needle%'`. The types turned on with `setSubstring` are
+    /// searched, or every type when none is; `options.types` restricts the search to those types,
+    /// and a type without the trigram index is searched by scanning its payloads, with the same
+    /// answers. `UNKNOWN_TYPE` for a type nothing ever used; `INVALID_ARGUMENT` for an empty
+    /// needle or one over 1024 bytes.
     #[napi]
     pub fn search_substring(&self, needle: Payload, options: Option<SearchSubstringOptions>) -> Result<Vec<String>> {
         let (limit, types) = options.map_or((None, None), |o| (o.limit, o.types));

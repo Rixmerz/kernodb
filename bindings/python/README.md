@@ -230,7 +230,7 @@ never return wrong data.
 | `db.search_text(query, limit=10, types=None)` | `list[TextHit]` (`id`, `score`), best first, over the keyword-indexed types or only those in `types`. Raises when it could never match (see above) |
 | `db.set_substring(type, enabled)` | `None`. Trigram-index a type for substring search (off by default); its active units follow in the same commit |
 | `db.substring(type)` | `bool`: whether the type is substring-indexed |
-| `db.search_substring(needle, limit=None, types=None)` | `list[str]`: the ids of the units whose payload holds `needle` (`str` or `bytes`), in id order, at most `limit`. ASCII letters match in either case, like SQL's `LIKE '%needle%'`; the first 256 KiB of a payload are searched. Raises like `search_text` when it could never match, and `InvalidArgumentError` for an empty needle or one over 1024 bytes |
+| `db.search_substring(needle, limit=None, types=None)` | `list[str]`: the ids of the units whose payload holds `needle` (`str` or `bytes`), in id order, at most `limit`. ASCII letters match in either case, like SQL's `LIKE '%needle%'`; the first 256 KiB of a payload are searched. `types=None` searches the substring-indexed types, or every type when none is; a type without the trigram index is searched by scanning its payloads, with the same answers. Raises `UnknownTypeError` for a type nothing ever used, and `InvalidArgumentError` for an empty needle or one over 1024 bytes |
 | `db.last_commit_seq()` | the sequence of the last commit |
 | `db.refresh()` | on a `read_only=True` database: pick up the commits a writer made since the open; returns the sequence now read |
 | `db.define_schema(type, fields)` / `db.create_index(type, field)` | `None` |
@@ -275,7 +275,7 @@ Engine failures raise `kerno.KernoError` or one of its subclasses:
 | `NotUniqueError` | `upsert` by a field the schema does not declare unique (or a type with no schema) |
 | `BadEndpointError` | a batch `relate` end that is not an earlier `store` or `upsert` op |
 | `PayloadTooLargeError` | a payload over 1 MiB |
-| `ChangeSetTooLargeError` | a batch over 10,000 ops (the default; `max_batch_ops` changes it) or over the engine's bytes per commit. A subclass of `PayloadTooLargeError` |
+| `ChangeSetTooLargeError` | a batch over 10,000 ops (the default; `max_batch_ops` changes it) or over the engine's bytes per commit (1 GiB). A subclass of `PayloadTooLargeError` |
 | `ReadOnlyError` | a write through a handle opened with `read_only=True`. An empty `commit([])`, or a `run_retention` that has nothing to prune, writes nothing and does not raise |
 | `DatabaseNotFoundError` | `read_only=True` on a directory with no database |
 | `HasRelationsError` | deleting a unit that still has relations, without `cascade` |

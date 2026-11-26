@@ -472,7 +472,7 @@ test('searchSubstring matches like LIKE and follows every write', () => {
   const b = db.store('sym', 'abc bcd') // every trigram of "abcd", but not "abcd"
   const c = db.store('sym', Buffer.from([0xff, 0x00, 0x72, 0x61, 0x77])) // \xff \0 "raw"
   assert.equal(db.substring('sym'), false)
-  assert.equal(codeOf(() => db.searchSubstring('parse')), 'NOT_INDEXED') // off by default
+  assert.deepEqual(db.searchSubstring('parse'), [a]) // off by default: every type is scanned
   db.setSubstring('sym', true) // indexes the units the type already has
   db.setSubstring('sym', true) // same state: nothing written
   assert.equal(db.substring('sym'), true)
@@ -497,20 +497,20 @@ test('searchSubstring matches like LIKE and follows every write', () => {
   db = open(dir) // the option and the entries hold across opens
   assert.deepEqual(db.searchSubstring('renamed'), [a])
   db.setSubstring('sym', false)
-  assert.equal(codeOf(() => db.searchSubstring('renamed')), 'NOT_INDEXED')
+  assert.deepEqual(db.searchSubstring('renamed'), [a]) // no type indexed: scanned
   assert.equal(db.verify().clean, true)
 })
 
-test('searchSubstring throws when it could never match, and answers [] when it merely finds nothing', () => {
+test('searchSubstring scans types without the index, and answers [] when it finds nothing', () => {
   const note = db.store('note', 'shared words')
   const memo = db.store('memo', 'shared words')
-  db.store('plain', 'shared words') // not indexed
+  const plain = db.store('plain', 'shared words') // not indexed
   db.setSubstring('note', true)
   db.setSubstring('memo', true)
   assert.deepEqual(db.searchSubstring('shared'), [note, memo].sort())
   assert.deepEqual(db.searchSubstring('shared', { types: ['memo'] }), [memo])
   assert.deepEqual(db.searchSubstring('absent'), []) // indexed, nothing matches: a real empty answer
-  assert.equal(codeOf(() => db.searchSubstring('shared', { types: ['plain'] })), 'NOT_INDEXED')
+  assert.deepEqual(db.searchSubstring('shared', { types: ['plain'] }), [plain]) // named: scanned
   assert.equal(codeOf(() => db.searchSubstring('shared', { types: ['ghost'] })), 'UNKNOWN_TYPE')
   for (const call of [
     () => db.searchSubstring('shared', { limit: 0 }),

@@ -489,12 +489,16 @@ def test_max_batch_ops_changes_the_limit_up_to_2_pow_20(tmp_path: Path) -> None:
             kerno.open(tmp_path / "c", max_batch_ops=bad)  # type: ignore[arg-type]
 
 
-def test_a_large_batch_over_the_engine_byte_limit_is_refused_whole(db: kerno.Database) -> None:
+def test_a_batch_over_64_mib_commits_whole(db: kerno.Database) -> None:
+    # The engine takes up to 1 GiB per commit; refusing one over it would need more than 1 GiB
+    # of payloads in this test, so the test checks that a batch well past the old 64 MiB limit
+    # is one commit with every unit in it.
     seq = db.last_commit_seq()
     big = b"x" * (MIB - 1)
-    with pytest.raises(kerno.ChangeSetTooLargeError):
-        db.commit([("store", "n", big) for _ in range(300)])
-    assert db.last_commit_seq() == seq
+    ids = db.commit([("store", "n", big) for _ in range(80)])
+    assert db.last_commit_seq() == seq + 1
+    assert len(ids) == 80
+    assert all(db.read(i).payload == big for i in (ids[0], ids[-1]))  # type: ignore[union-attr]
 
 
 def test_document_integers_are_64_bit(db: kerno.Database) -> None:

@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed (behaviour)
+
+- **A commit may hold up to 1 GiB** (was 64 MiB) and 2^24 storage writes: the default `Limits` are now the format's, since a commit is always one WAL frame, recovered whole or not at all. A batch that used to fail with `ChangeSetTooLarge` between 64 MiB and 1 GiB (for example 400k relations in one change set, about 67 MB) now commits. Memory is the caller's to bound: the transaction holds every write until commit. Nothing changes on disk.
+- **Substring search no longer refuses a type without the trigram index; it scans it.** `search_substring` (Rust `Db`, Python, Node `searchSubstring`) with a known but unindexed type in `types` scans that type's payloads in parallel and merges the answers in id order with the indexed types; with no `types` it searches the indexed types, or every type when none is indexed. Same matching rules (`LIKE '%needle%'`, ASCII case folded, first 256 KiB). `NotIndexed` is no longer raised by substring search; `UnknownType` and `InvalidArgument` are as before. `UnitSnapshot::search_substring` (index only) is unchanged; `UnitSnapshot::search_substring_or_scan` is new.
+- **A large commit becomes a frozen memtable** instead of being inserted entry by entry into the skip list: its writes are kept sorted and read by binary search, and its flush starts right after the commit. The commit is still written to the WAL first, so crash recovery is unchanged (all or nothing), and readers see it at once. Nothing changes on disk.
+- **Faster bulk writes** on the same branch, with no change to what is stored: SST data blocks are LZ4-compressed in batches on worker threads (the files are byte for byte the same); unique-field checks and the counts of new adjacency lists read the snapshot the transaction began on instead of folding the write buffer; fewer allocations and reads on create and relate (about 20% fewer instructions per created unit and per relation in a change set).
+
 ### Fixed
 
 - **A batch refused at commit is `ChangeSetTooLarge` too.** The engine measures a batch again as it encodes it, and with its framing a batch whose writes each passed can be over the limit; that refusal reached callers as a storage `InvalidArgument`. It is now `ChangeSetTooLarge` with the engine's message, like a write over the limit, and nothing is written.

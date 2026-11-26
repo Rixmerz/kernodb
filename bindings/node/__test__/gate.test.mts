@@ -220,7 +220,7 @@ test('error messages use the Node names', () => {
   assert.match(refused(() => db.searchText('x', { limit: 0 }), /limit/), /1 or more/)
   assert.match(thrown(() => db.searchText('x')).message, /setFulltext/)
   assert.doesNotMatch(thrown(() => db.searchText('x')).message, /set_fulltext/)
-  assert.match(thrown(() => db.searchSubstring('x')).message, /setSubstring/)
+  assert.equal(db.searchSubstring('x').length, 1) // no type indexed: scanned, no error
   refused(() => db.hybridSearch({ text: 'x', textTypes: ['note'], weights: { keyword: 0 } }), /textTypes/)
   db.store('note', 'seed')
   refused(() => db.hybridSearch({ relations: { seeds: [MISSING], maxDepth: 5 } }), /maxDepth/)

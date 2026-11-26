@@ -1065,18 +1065,19 @@ def test_search_substring_matches_like_and_follows_every_write(tmp_path):
         assert db.verify()["clean"] is True
 
 
-def test_search_substring_raises_when_it_could_never_match(tmp_path):
+def test_search_substring_scans_types_without_the_index(tmp_path):
     with kerno.open(tmp_path / "db") as db:
+        plain = db.store("plain", "shared words")  # not indexed
+        assert db.search_substring("shared") == [plain]  # no type indexed: every type is scanned
         note = db.store("note", "shared words")
         memo = db.store("memo", "shared words")
-        db.store("plain", "shared words")  # not indexed
         db.set_substring("note", True)
         db.set_substring("memo", True)
-        assert db.search_substring("shared") == sorted([note, memo])
+        assert db.search_substring("shared") == sorted([note, memo])  # the indexed types only
         assert db.search_substring("shared", types=["memo"]) == [memo]
         assert db.search_substring("absent") == []  # indexed, nothing matches: a real empty answer
-        with pytest.raises(kerno.NotIndexedError):
-            db.search_substring("shared", types=["plain"])
+        assert db.search_substring("shared", types=["plain"]) == [plain]  # named: scanned
+        assert db.search_substring("shared", types=["plain", "memo"]) == sorted([plain, memo])
         with pytest.raises(kerno.UnknownTypeError):
             db.search_substring("shared", types=["ghost"])
         for call in (

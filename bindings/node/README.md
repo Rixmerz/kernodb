@@ -172,7 +172,7 @@ deleted one does not.
 | `db.searchText(query, { limit?, types? })` | `{ id, score }[]`, best first (`limit` default 10, at least 1), over the keyword-indexed types or only the unit types in `types`. A unit scores the same either way. It throws instead of returning `[]` when it could never match: `NOT_INDEXED` (no type, or a requested type, is indexed), `UNKNOWN_TYPE` (a type nothing ever used), `INVALID_ARGUMENT` (`limit` below 1, a query with no word, an empty `types`). |
 | `db.setSubstring(unitType, enabled)` | nothing. Turns the substring (trigram) index of a type on or off (off by default); its active units are indexed or cleared in the same commit. |
 | `db.substring(unitType)` | `boolean`: whether the type is substring-indexed. |
-| `db.searchSubstring(needle, { limit?, types? })` | `string[]`: the ids of the units whose payload holds `needle` (`string` or `Buffer`), in id order (`limit` default: all). ASCII letters match in either case, like SQL's `LIKE '%needle%'`; the first 256 KiB of a payload are searched. It throws like `searchText` when it could never match, and `INVALID_ARGUMENT` for an empty needle or one over 1024 bytes. |
+| `db.searchSubstring(needle, { limit?, types? })` | `string[]`: the ids of the units whose payload holds `needle` (`string` or `Buffer`), in id order (`limit` default: all). ASCII letters match in either case, like SQL's `LIKE '%needle%'`; the first 256 KiB of a payload are searched. Without `types` it searches the substring-indexed types, or every type when none is; a type without the trigram index is searched by scanning its payloads, with the same answers. It throws `UNKNOWN_TYPE` for a type nothing ever used, and `INVALID_ARGUMENT` for an empty needle or one over 1024 bytes. |
 
 ### Schemas, indexes and documents
 
@@ -262,7 +262,7 @@ try {
 | `NOT_UNIQUE` | `NotUniqueError` | `upsert` by a field the schema does not declare unique (or a type with no schema) |
 | `BAD_ENDPOINT` | `BadEndpointError` | a `relate` end that is not an earlier `store` or `upsert` op of the commit |
 | `PAYLOAD_TOO_LARGE` | `PayloadTooLargeError` | the payload is over 1 MiB |
-| `CHANGESET_TOO_LARGE` | `ChangeSetTooLargeError` | a commit over 10,000 ops (see `maxBatchOps`) or over the engine's bytes per commit |
+| `CHANGESET_TOO_LARGE` | `ChangeSetTooLargeError` | a commit over 10,000 ops (see `maxBatchOps`) or over the engine's bytes per commit (1 GiB) |
 | `READ_ONLY` | `ReadOnlyError` | a write through a handle opened with `readOnly: true`. An empty `commit([])`, or a `runRetention` with nothing to prune, writes nothing and does not throw |
 | `DATABASE_NOT_FOUND` | `DatabaseNotFoundError` | `readOnly: true` on a directory with no database |
 | `HAS_RELATIONS` | `HasRelationsError` | the unit still has live relations; unrelate them or use `cascade` |
