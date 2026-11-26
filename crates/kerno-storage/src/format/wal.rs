@@ -74,11 +74,29 @@ impl<B: AsRef<[u8]>> CanonicalCommit<B> {
 
     /// Appends `op_count varint ‖ op*` (§6.3).
     pub fn encode_into(&self, out: &mut Vec<u8>) {
+        self.encode_chunked(out, usize::MAX, &mut |_| Ok::<(), std::convert::Infallible>(()))
+            .unwrap_or_else(|e| match e {});
+    }
+
+    /// Like [`encode_into`](Self::encode_into), but calls `flush(out)` after
+    /// every operation that leaves `out` holding `chunk` bytes or more; the
+    /// callback takes the bytes (and normally clears `out`). The bytes handed
+    /// to `flush`, followed by what is left in `out`, are exactly the bytes
+    /// `encode_into` appends.
+    pub fn encode_chunked<E>(
+        &self,
+        out: &mut Vec<u8>,
+        chunk: usize,
+        flush: &mut impl FnMut(&mut Vec<u8>) -> std::result::Result<(), E>,
+    ) -> std::result::Result<(), E> {
         put_varint(out, self.op_count() as u64);
         for (start, end) in &self.ranges {
             out.push(OP_DELETE_RANGE);
             put_bytes(out, start.as_ref());
             put_bytes(out, end.as_ref());
+            if out.len() >= chunk {
+                flush(out)?;
+            }
         }
         for (key, value) in &self.points {
             match value {
@@ -92,7 +110,11 @@ impl<B: AsRef<[u8]>> CanonicalCommit<B> {
                     put_bytes(out, key.as_ref());
                 }
             }
+            if out.len() >= chunk {
+                flush(out)?;
+            }
         }
+        Ok(())
     }
 
     pub fn to_owned_commit(&self) -> CanonicalCommit<Vec<u8>> {

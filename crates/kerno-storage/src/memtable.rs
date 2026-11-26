@@ -329,7 +329,9 @@ impl Memtable {
 
     /// Whether nothing, points or range tombstones, was applied.
     pub fn is_empty(&self) -> bool {
-        self.map.is_empty() && self.range_count() == 0 && self.frozen.as_ref().is_none_or(|f| f.commit.points.is_empty())
+        self.map.is_empty()
+            && self.range_count() == 0
+            && self.frozen.as_ref().is_none_or(|f| f.commit.points.is_empty())
     }
 
     /// Range tombstones applied so far.

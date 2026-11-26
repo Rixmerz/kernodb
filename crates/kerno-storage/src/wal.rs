@@ -41,9 +41,12 @@ use kerno_core::Result;
 use kerno_core::vfs::{File, OpenMode, Vfs};
 
 use crate::files::{FileSource, read_error};
+use crate::format::crc::file_ctx;
 use crate::format::features::{SLOT_LEN, WRITE_INCOMPAT, frame_has_slot};
 use crate::format::header::{HEADER_LEN, Header};
-use crate::format::wal::{CanonicalCommit, WalScan, WalScanParams, frame_len, reseal_frame, scan_wal};
+use crate::format::wal::{
+    CanonicalCommit, FRAME_HEADER_LEN, WalScan, WalScanParams, frame_len, reseal_frame, scan_wal,
+};
 
 pub fn wal_name(number: u64) -> String {
     format!("{number:06}.wal")
@@ -82,6 +85,12 @@ pub const SPARE_WAL: &str = "WAL.spare";
 /// does not leave the file system a burst of dirty pages that the next
 /// commit's `fdatasync` would have to wait behind.
 const ZERO_CHUNK: usize = 1 << 20;
+
+/// A frame longer than this is not built in memory: its payload is encoded
+/// and written in pieces of about [`STREAM_CHUNK`] bytes, and its head last
+/// (see [`WalWriter::append_group`]).
+const STREAM_THRESHOLD: u64 = 4 << 20;
+const STREAM_CHUNK: usize = 1 << 20;
 
 pub struct WalWriter {
     file: Arc<dyn File>,
@@ -152,7 +161,9 @@ impl WalWriter {
     }
 
     /// Appends one frame holding `commits`, the first of which has sequence
-    /// `first_seq` (a single `write_at`), and returns its length. The
+    /// `first_seq` (a single `write_at`, or for a frame above
+    /// [`STREAM_THRESHOLD`] the payload in pieces then the 32-byte head), and
+    /// returns its length. The
     /// sequence must follow the last one of the previous frame, and
     /// `commits` must be 1..=`MAX_FRAME_COMMITS` commits.
     pub fn append_group<B: AsRef<[u8]>>(
@@ -162,6 +173,9 @@ impl WalWriter {
     ) -> io::Result<usize> {
         let slot = frame_has_slot(WRITE_INCOMPAT);
         let payload_len: usize = commits.iter().map(|c| c.encoded_len()).sum();
+        if frame_len(payload_len as u32, slot) > STREAM_THRESHOLD {
+            return self.append_streamed(first_seq, commits, payload_len, slot);
+        }
         let mut frame = Vec::with_capacity(frame_len(payload_len as u32, slot) as usize);
         frame.extend_from_slice(&(payload_len as u32).to_le_bytes());
         frame.extend_from_slice(&[0; 4]); // crc, set below
@@ -179,6 +193,58 @@ impl WalWriter {
         self.file.write_at(&frame, self.offset)?;
         self.offset += frame.len() as u64;
         Ok(frame.len())
+    }
+
+    /// The large-frame path of [`append_group`](Self::append_group): the same
+    /// bytes, but the payload (and slot) is encoded into a reusable buffer of
+    /// about [`STREAM_CHUNK`] bytes, each piece is fed to the frame's CRC and
+    /// written at its offset, and the head, which carries the CRC, is written
+    /// last. A crash before the head lands leaves a head of zeros (a
+    /// preallocated log, or the hole of a grown one) or a head whose CRC does
+    /// not match the payload: replay sees an invalid frame at the tail, the
+    /// same torn tail as a frame cut short in a single `write_at`, which the
+    /// file system never promised to write in order anyway.
+    fn append_streamed<B: AsRef<[u8]>>(
+        &mut self,
+        first_seq: u64,
+        commits: &[&CanonicalCommit<B>],
+        payload_len: usize,
+        slot: bool,
+    ) -> io::Result<usize> {
+        let mut head = [0u8; FRAME_HEADER_LEN];
+        head[0..4].copy_from_slice(&(payload_len as u32).to_le_bytes());
+        head[8..16].copy_from_slice(&first_seq.to_le_bytes());
+        head[16..24].copy_from_slice(&self.synced_len.to_le_bytes());
+        head[24..28].copy_from_slice(&(commits.len() as u32).to_le_bytes());
+        // crc(file_number; head[0..4] ‖ head[8..32] ‖ payload ‖ slot?), as reseal_frame.
+        let mut crc = crc32c::crc32c(&file_ctx(self.number));
+        crc = crc32c::crc32c_append(crc, &head[0..4]);
+        crc = crc32c::crc32c_append(crc, &head[8..]);
+        let mut at = self.offset + FRAME_HEADER_LEN as u64;
+        let mut buf = Vec::with_capacity(STREAM_CHUNK + (64 << 10));
+        let file = &self.file;
+        let mut flush = |b: &mut Vec<u8>| -> io::Result<()> {
+            crc = crc32c::crc32c_append(crc, b);
+            file.write_at(b, at)?;
+            at += b.len() as u64;
+            b.clear();
+            Ok(())
+        };
+        for commit in commits {
+            commit.encode_chunked(&mut buf, STREAM_CHUNK, &mut flush)?;
+        }
+        if slot {
+            buf.resize(buf.len() + SLOT_LEN, 0);
+        }
+        if !buf.is_empty() {
+            flush(&mut buf)?;
+        }
+        let len = frame_len(payload_len as u32, slot);
+        debug_assert_eq!(at, self.offset + len);
+        head[4..8].copy_from_slice(&crc.to_le_bytes());
+        self.file.write_at(&head, self.offset)?;
+        self.offset += len;
+        Ok(len as usize)
     }
 
     /// Whether a frame was written since the last successful `sync` (a log
@@ -350,6 +416,65 @@ mod tests {
 
     fn append(w: &mut WalWriter, seq: u64) {
         w.append_group(seq, &[&canonical(&batch(seq))]).unwrap();
+    }
+
+    #[test]
+    fn a_streamed_frame_has_the_bytes_of_a_built_one() {
+        let mut batches = Vec::new();
+        for c in 0..3u64 {
+            let mut b = WriteBatch::new();
+            for i in 0..3000u64 {
+                b.put(format!("c{c}k{i:06}"), vec![(i ^ c) as u8; ((i * 7919) % 3000) as usize]);
+            }
+            b.put(format!("c{c}big"), vec![c as u8 + 1; 3 << 20]); // one op longer than a piece
+            b.delete(format!("c{c}gone"));
+            b.delete_range(format!("c{c}r0"), format!("c{c}r9"));
+            batches.push(b);
+        }
+        let commits: Vec<_> = batches.iter().map(canonical).collect();
+        let refs: Vec<_> = commits.iter().collect();
+        let payload: usize = commits.iter().map(|c| c.encoded_len()).sum();
+        assert!(payload as u64 > STREAM_THRESHOLD);
+        let sim = SimVfs::new(1);
+        let (vfs, mut w) = setup(&sim, 1);
+        append(&mut w, 1);
+        let at = w.offset as usize;
+        let n = w.append_group(2, &refs).unwrap();
+        append(&mut w, 5);
+        // The frame of the single-allocation path, built by hand.
+        let mut payload_bytes = Vec::new();
+        for c in &commits {
+            c.encode_into(&mut payload_bytes);
+        }
+        let synced = HEADER_LEN as u64;
+        let want = seal_frame(1, 2, synced, 3, &payload_bytes, frame_has_slot(WRITE_INCOMPAT));
+        let file = vfs.open(Path::new("/w/000001.wal"), OpenMode::Existing).unwrap();
+        let mut got = vec![0; n];
+        file.read_at(&mut got, at as u64).unwrap();
+        assert_eq!(n, want.len());
+        assert!(got == want, "streamed frame differs from the built one");
+        let (scan, replayed) = collect(&*vfs, 1).unwrap();
+        assert_eq!((scan.frames, scan.commits, scan.end), (3, 5, End::Clean));
+        assert_eq!(replayed[1].1, commits[0].to_owned_commit());
+    }
+
+    #[test]
+    fn a_streamed_frame_without_its_head_is_a_torn_tail() {
+        let mut b = WriteBatch::new();
+        for i in 0..2000u64 {
+            b.put(format!("k{i:06}"), vec![i as u8; 3000]);
+        }
+        let sim = SimVfs::new(1);
+        let (vfs, mut w) = setup(&sim, 1);
+        append(&mut w, 1);
+        let at = w.offset;
+        w.append_group(2, &[&canonical(&b)]).unwrap();
+        // A crash after the payload pieces, before the head: zeros where the head goes.
+        let file = vfs.open(Path::new("/w/000001.wal"), OpenMode::Existing).unwrap();
+        file.write_at(&[0; FRAME_HEADER_LEN], at).unwrap();
+        let (scan, got) = collect(&*vfs, 1).unwrap();
+        assert_eq!((scan.frames, scan.commits, scan.valid_len, scan.end), (1, 1, at, End::Torn));
+        assert_eq!(got.len(), 1);
     }
 
     #[test]

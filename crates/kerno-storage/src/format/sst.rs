@@ -354,7 +354,8 @@ fn flat_entries(payload: &[u8]) -> Option<(Vec<FlatEntry>, Option<&'static str>,
             let key = &payload[key_at..key_at + key_len as usize];
             if offset != next {
                 o5 = Some("index entries are not contiguous from offset 96");
-            } else if len < MIN_DATA_BLOCK_LEN || len > super::block::MAX_STORED_DATA_PAYLOAD + BLOCK_TRAILER_LEN as u64 {
+            } else if len < MIN_DATA_BLOCK_LEN || len > super::block::MAX_STORED_DATA_PAYLOAD + BLOCK_TRAILER_LEN as u64
+            {
                 o5 = Some("data block length out of range");
             } else if i > 0 && prev >= key {
                 o5 = Some("index keys not strictly increasing");
