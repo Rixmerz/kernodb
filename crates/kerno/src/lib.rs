@@ -282,7 +282,8 @@ use std::path::Path;
 use kerno_core::vfs::StdVfs;
 use kerno_storage::KernoDb;
 use kerno_units::{
-    AsOf, ChangeMeta, CommitSeq, NewUnit, PreparedText, RelationProvenance, RevNo, UnitAt, UnitConfig, UnitDb, UnitUpdate, upsert_key,
+    AsOf, ChangeMeta, CommitSeq, NewUnit, PreparedPayload, RelationProvenance, RevNo, UnitAt, UnitConfig, UnitDb,
+    UnitUpdate, upsert_key,
 };
 
 pub use kerno_core::Durability;
@@ -491,6 +492,9 @@ pub struct Db {
     units: UnitDb<KernoDb>,
 }
 
+/// Fewer upserts in a batch than this are hashed one by one as they are applied.
+const UPSERT_HASH_PARALLEL_MIN: usize = 256;
+
 impl Db {
     /// Opens the database in `path`, creating it when `path` holds none.
     ///
@@ -685,12 +689,22 @@ impl Db {
                 _ => None,
             })
             .collect();
-        let mut prepared: Vec<Option<PreparedText>> = (0..ops.len()).map(|_| None).collect();
+        let mut prepared: Vec<Option<PreparedPayload>> = (0..ops.len()).map(|_| None).collect();
         if stores.len() > 1 {
             let items: Vec<(&str, &[u8])> = stores.iter().map(|&(_, t, p)| (t, p)).collect();
             for ((i, ..), text) in stores.iter().zip(changes.prepare_texts(&items)?) {
-                prepared[*i] = text;
+                prepared[*i] = Some(text);
             }
+        }
+        // Many upserts: their final payloads hashed up front on several threads, as the stores'.
+        let mut upsert_hash: Vec<Option<kerno_units::payload::ContentHash>> = vec![None; upsert_last.len()];
+        if upsert_last.len() >= UPSERT_HASH_PARALLEL_MIN {
+            let hashes = kerno_units::payload::ContentHash::blake3_many(
+                kerno_units::payload::PAYLOAD_CODEC_OPAQUE,
+                &upsert_last,
+                UPSERT_HASH_PARALLEL_MIN,
+            );
+            upsert_hash = hashes.into_iter().map(Some).collect();
         }
         let mut out = Committed::default();
         let mut unrelated: HashSet<RelationId> = HashSet::new();
@@ -811,7 +825,7 @@ impl Db {
                                 metadata: Vec::new(),
                                 payload: payload.to_vec(),
                             };
-                            let done = changes.upsert(new, field)?;
+                            let done = changes.upsert_prepared(new, field, upsert_hash.get(slot).copied().flatten())?;
                             match done.outcome {
                                 UpsertOutcome::Unchanged => out.unchanged += 1,
                                 UpsertOutcome::Created | UpsertOutcome::Updated => wrote = true,

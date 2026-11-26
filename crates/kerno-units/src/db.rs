@@ -810,6 +810,7 @@ impl<E: TxnEngine> UnitDb<E> {
             schema_cache: std::cell::RefCell::default(),
             unique_free: std::cell::RefCell::default(),
             prepared_text: std::cell::RefCell::default(),
+            prepared_hash: std::cell::Cell::default(),
             base: std::cell::OnceCell::new(),
             ranges_deleted: false,
             unique_staged: Default::default(),
@@ -1106,7 +1107,11 @@ impl<E: Engine> UnitSnapshot<E> {
             return Ok(Some(hit));
         }
         let get = |k: &[u8]| self.snap.get(k);
-        let loaded = if self.checked_reads { load_unit_checked(&get, id)? } else { load_unit(&get, id, self.verify_payload_on_read)? };
+        let loaded = if self.checked_reads {
+            load_unit_checked(&get, id)?
+        } else {
+            load_unit(&get, id, self.verify_payload_on_read)?
+        };
         let unit = loaded.map(|(head, payload)| Arc::new(to_unit(id, head, payload)));
         if let Some(u) = &unit {
             self.read_cache.put_unit(seq, u);
@@ -1149,7 +1154,11 @@ impl<E: Engine> UnitSnapshot<E> {
                     self.snap.get(q)
                 }
             };
-            let loaded = if self.checked_reads { load_unit_checked(&get, id)? } else { load_unit(&get, id, self.verify_payload_on_read)? };
+            let loaded = if self.checked_reads {
+                load_unit_checked(&get, id)?
+            } else {
+                load_unit(&get, id, self.verify_payload_on_read)?
+            };
             let unit = loaded.map(|(head, payload)| Arc::new(to_unit(id, head, payload)));
             if let Some(u) = &unit {
                 self.read_cache.put_unit(seq, u);
@@ -1437,6 +1446,9 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     pub(crate) live_pending: std::collections::HashMap<Vec<u8>, u64>,
     /// The document of the payload a `create_prepared` is creating, cut ahead of it.
     pub(crate) prepared_text: std::cell::RefCell<Option<crate::fulltext::PreparedText>>,
+    /// The content hash (with the payload length it was computed over) of the payload the next
+    /// create or update writes, computed ahead of it (`create_prepared`, `upsert_prepared`).
+    pub(crate) prepared_hash: std::cell::Cell<Option<(usize, ContentHash)>>,
     pub(crate) schema_cache:
         std::cell::RefCell<std::collections::HashMap<String, Option<std::sync::Arc<crate::schema::Schema>>>>,
     /// Whether the database held no `DERIVED_SRC` record when this change set
@@ -1943,6 +1955,15 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         Ok((head, payload))
     }
 
+    /// The content hash of `payload`: the one computed ahead of this operation when there is one
+    /// for a payload of its length, else computed here.
+    fn content_hash_of(&self, payload: &[u8]) -> ContentHash {
+        match self.prepared_hash.take() {
+            Some((len, hash)) if len == payload.len() => hash,
+            _ => ContentHash::blake3(PAYLOAD_CODEC_OPAQUE, payload),
+        }
+    }
+
     fn next_head(&self, head: &UnitHead) -> UnitHead {
         UnitHead { head_rev: RevNo(head.head_rev.0 + 1), updated_seq: self.seq, updated_at: self.now, ..head.clone() }
     }
@@ -1986,7 +2007,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
             updated_seq: self.seq,
             created_at: self.now,
             updated_at: self.now,
-            content_hash: ContentHash::blake3(PAYLOAD_CODEC_OPAQUE, &new.payload),
+            content_hash: self.content_hash_of(&new.payload),
             payload_len: new.payload.len() as u32,
             metadata: new.metadata,
             inline_payload: None,
@@ -2016,7 +2037,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         }
         let mut next = self.next_head(&head);
         next.lifecycle = Lifecycle::Active;
-        next.content_hash = ContentHash::blake3(PAYLOAD_CODEC_OPAQUE, &upd.payload);
+        next.content_hash = self.content_hash_of(&upd.payload);
         next.payload_len = upd.payload.len() as u32;
         if let Some(v) = upd.schema_version {
             next.schema_version = v;

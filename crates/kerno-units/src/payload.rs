@@ -74,6 +74,21 @@ impl ContentHash {
     pub fn blake3(codec: u8, payload: &[u8]) -> Self {
         Self::compute(HashAlg::Blake3, codec, payload)
     }
+
+    /// [`blake3`](Self::blake3) of each payload, in order: on several scoped threads when there
+    /// are at least `parallel_min` of them, else on the calling thread. The same values either way.
+    pub fn blake3_many(codec: u8, payloads: &[&[u8]], parallel_min: usize) -> Vec<Self> {
+        let hash = |part: &[&[u8]]| -> Vec<Self> { part.iter().map(|p| Self::blake3(codec, p)).collect() };
+        let threads = std::thread::available_parallelism().map_or(1, usize::from);
+        if threads == 1 || payloads.len() < parallel_min.max(2) {
+            return hash(payloads);
+        }
+        let per = payloads.len().div_ceil(threads);
+        std::thread::scope(|scope| {
+            let parts: Vec<_> = payloads.chunks(per).map(|part| scope.spawn(move || hash(part))).collect();
+            parts.into_iter().flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
+        })
+    }
 }
 
 /// What a `REV_META` declares about its payload.

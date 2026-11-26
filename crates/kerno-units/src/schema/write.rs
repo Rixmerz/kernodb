@@ -163,6 +163,28 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
     /// `SchemaViolation` when the payload is not a record the schema accepts or has no value in
     /// `field`; otherwise as [`create`](Self::create) and [`update`](Self::update).
     pub fn upsert(&mut self, new: NewUnit, field: &str) -> Result<Upserted, UnitError> {
+        self.upsert_prepared(new, field, None)
+    }
+
+    /// [`upsert`](Self::upsert), with `hash` the content hash of `new.payload` computed ahead
+    /// (`ContentHash::blake3(PAYLOAD_CODEC_OPAQUE, ..)`; `None`: computed here, as `upsert` does).
+    ///
+    /// # Errors
+    ///
+    /// As [`upsert`](Self::upsert).
+    pub fn upsert_prepared(
+        &mut self,
+        new: NewUnit,
+        field: &str,
+        hash: Option<crate::payload::ContentHash>,
+    ) -> Result<Upserted, UnitError> {
+        self.prepared_hash.set(hash.map(|h| (new.payload.len(), h)));
+        let done = self.upsert_inner(new, field);
+        self.prepared_hash.set(None);
+        done
+    }
+
+    fn upsert_inner(&mut self, new: NewUnit, field: &str) -> Result<Upserted, UnitError> {
         check_type(&new.unit_type)?;
         let not_unique = |detail: String| UnitError::NotUnique { detail };
         let Some(schema) = self.read_schema(&new.unit_type)? else {

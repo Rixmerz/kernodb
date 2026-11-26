@@ -98,7 +98,7 @@ pub use error::{DecodeError, ErrorClass, UnitError, UnitRule};
 pub use fingerprint::{
     FINGERPRINT_VERSION, Fingerprint, FingerprintAlg, FingerprintKey, NormalizedQuery, QueryKind, RelationQuery,
 };
-pub use fulltext::{PreparedText, TextHit};
+pub use fulltext::{PreparedPayload, PreparedText, TextHit};
 pub use history::{
     AsOf, ChangeSetInfo, ChangeSetMember, Comparison, HistoryPage, HistoryQuery, Order, Provenance, Revision,
     RevisionView, UnitAt, UnitStates,

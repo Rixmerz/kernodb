@@ -90,6 +90,7 @@ use kerno_core::contract::{Engine, Snapshot, Txn, TxnEngine};
 use crate::db::NewUnit;
 use crate::db::{ChangeSet, UnitDb, UnitSnapshot, Write, context, scan_all};
 use crate::error::{DecodeError, UnitError, UnitRule};
+use crate::payload::{ContentHash, PAYLOAD_CODEC_OPAQUE};
 use crate::type_options::TAG_TYPE_OPTIONS;
 use crate::types::{Lifecycle, UnitId};
 use tokenize::{Doc, analyze};
@@ -760,52 +761,66 @@ pub struct PreparedText {
     doc: Option<Doc>,
 }
 
+/// What [`ChangeSet::prepare_texts`] computes of one payload ahead of its create: its content
+/// hash and, when its type is keyword-indexed, its terms.
+pub struct PreparedPayload {
+    len: usize,
+    hash: ContentHash,
+    text: Option<PreparedText>,
+}
+
 /// Fewer payloads than this are cut on the calling thread.
 const PREPARE_PARALLEL_MIN: usize = 64;
 
 impl<E: TxnEngine> ChangeSet<'_, E> {
-    /// Cuts the payloads of `items` (`(unit_type, payload)`) into terms, on several threads when
-    /// there are many, for [`create_prepared`](Self::create_prepared): the same documents the
-    /// creates would make one by one, so the index is the same, byte for byte. `None` for an
-    /// item whose type has no keyword index, whose create cuts nothing.
+    /// Hashes the payloads of `items` (`(unit_type, payload)`) and cuts into terms those whose
+    /// type has a keyword index, on several threads when there are many, for
+    /// [`create_prepared`](Self::create_prepared): the same hashes and documents the creates
+    /// would make one by one, so the stored bytes are the same.
     ///
     /// # Errors
     ///
     /// The change set is closed, or a type-options record is damaged.
-    pub fn prepare_texts(&self, items: &[(&str, &[u8])]) -> Result<Vec<Option<PreparedText>>, UnitError> {
+    pub fn prepare_texts(&self, items: &[(&str, &[u8])]) -> Result<Vec<PreparedPayload>, UnitError> {
         let mut wanted = Vec::with_capacity(items.len());
-        for (unit_type, _) in items {
-            wanted.push(self.fulltext_enabled(unit_type)?);
+        for (unit_type, payload) in items {
+            wanted.push((self.fulltext_enabled(unit_type)?, *payload));
         }
-        let payloads: Vec<&[u8]> = items.iter().zip(&wanted).filter(|(_, w)| **w).map(|((_, p), _)| *p).collect();
-        let cut = |part: &[&[u8]]| -> Vec<PreparedText> {
-            part.iter().map(|p| PreparedText { len: p.len(), doc: analyze(p) }).collect()
+        let cut = |part: &[(bool, &[u8])]| -> Vec<PreparedPayload> {
+            part.iter()
+                .map(|&(w, p)| PreparedPayload {
+                    len: p.len(),
+                    hash: ContentHash::blake3(PAYLOAD_CODEC_OPAQUE, p),
+                    text: w.then(|| PreparedText { len: p.len(), doc: analyze(p) }),
+                })
+                .collect()
         };
         let threads = std::thread::available_parallelism().map_or(1, usize::from);
-        let docs: Vec<PreparedText> = if threads == 1 || payloads.len() < PREPARE_PARALLEL_MIN {
-            cut(&payloads)
-        } else {
-            let per = payloads.len().div_ceil(threads);
-            std::thread::scope(|scope| {
-                let parts: Vec<_> = payloads.chunks(per).map(|part| scope.spawn(move || cut(part))).collect();
-                // A panic of `analyze` on a worker is a panic of the caller, as it would have been.
-                parts.into_iter().flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
-            })
-        };
-        let mut docs = docs.into_iter();
-        Ok(wanted.into_iter().map(|w| if w { docs.next() } else { None }).collect())
+        if threads == 1 || wanted.len() < PREPARE_PARALLEL_MIN {
+            return Ok(cut(&wanted));
+        }
+        let per = wanted.len().div_ceil(threads);
+        Ok(std::thread::scope(|scope| {
+            let parts: Vec<_> = wanted.chunks(per).map(|part| scope.spawn(move || cut(part))).collect();
+            // A panic of `analyze` on a worker is a panic of the caller, as it would have been.
+            parts.into_iter().flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
+        }))
     }
 
-    /// [`create`](Self::create), with the payload already cut into terms by
-    /// [`prepare_texts`](Self::prepare_texts) (`None`: cut it here, as `create` does).
+    /// [`create`](Self::create), with the payload already hashed and cut into terms by
+    /// [`prepare_texts`](Self::prepare_texts) (`None`: do it here, as `create` does).
     ///
     /// # Errors
     ///
     /// As [`create`](Self::create).
-    pub fn create_prepared(&mut self, new: NewUnit, text: Option<PreparedText>) -> Result<UnitId, UnitError> {
-        *self.prepared_text.get_mut() = text;
+    pub fn create_prepared(&mut self, new: NewUnit, prepared: Option<PreparedPayload>) -> Result<UnitId, UnitError> {
+        if let Some(p) = prepared {
+            self.prepared_hash.set(Some((p.len, p.hash)));
+            *self.prepared_text.get_mut() = p.text;
+        }
         let created = self.create(new);
         *self.prepared_text.get_mut() = None;
+        self.prepared_hash.set(None);
         created
     }
 }
