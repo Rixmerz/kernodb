@@ -182,13 +182,16 @@ impl Overlay {
         // Stable sort keeps the call order inside a run of one key; the
         // run's last entry is the write that stands.
         self.pending.sort_by(|a, b| a.0.cmp(&b.0));
-        let mut buffered: Vec<Entry> = Vec::with_capacity(self.pending.len());
-        for e in self.pending {
-            match buffered.last_mut() {
-                Some(last) if last.0 == e.0 => *last = e,
-                _ => buffered.push(e),
+        // In place, no second copy of the entries: of a run of one key the
+        // last write is moved into the slot that stays.
+        let mut buffered = self.pending;
+        buffered.dedup_by(|later, kept| {
+            let same = later.0 == kept.0;
+            if same {
+                std::mem::swap(later, kept);
             }
-        }
+            same
+        });
         if self.map.is_empty() {
             return buffered;
         }
