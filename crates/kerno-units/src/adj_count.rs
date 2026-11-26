@@ -281,7 +281,20 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
                 // and the writer must not take a list with entries for an empty one (it would
                 // overwrite its tail block), so it counts them, as it always did (one seek for
                 // a new list) and records the total with this change.
-                None => (false, count_entries(self.txn()?, unit, dir, relation_type)?),
+                //
+                // The blocks are written only when the change set commits, so the state the
+                // transaction began on has them as the transaction does: counted there, the
+                // seek does not make the transaction fold its buffer of writes.
+                None => {
+                    let n = match self.base()? {
+                        Some(base) => count_entries(&|lo, hi, n| base.scan(lo, hi, n), unit, dir, relation_type)?,
+                        None => {
+                            let txn = self.txn()?;
+                            count_entries(&|lo, hi, n| txn.scan(lo, hi, n), unit, dir, relation_type)?
+                        }
+                    };
+                    (false, n)
+                }
             }
         };
         let next =
@@ -306,10 +319,13 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
     }
 }
 
-/// The adjacency entries of `(unit, dir, relation_type)` in `txn`'s view: the entries of the
+/// The adjacency entries of `(unit, dir, relation_type)` in `scan`'s view: the entries of the
 /// blocks of that list. A block that does not decode is an error, as it is for the write that
 /// would have to read it.
-fn count_entries<T: Txn>(txn: &T, unit: UnitId, dir: Direction, relation_type: &str) -> Result<u64, UnitError> {
+/// The entries of the scan `scan` (a transaction's, or the snapshot it began on).
+type ScanFn<'a> = dyn Fn(Bound<&[u8]>, Bound<&[u8]>, usize) -> kerno_core::Result<Vec<(Vec<u8>, Vec<u8>)>> + 'a;
+
+fn count_entries(scan: &ScanFn<'_>, unit: UnitId, dir: Direction, relation_type: &str) -> Result<u64, UnitError> {
     if !valid_relation_type(relation_type) {
         return Ok(0);
     }
@@ -319,7 +335,7 @@ fn count_entries<T: Txn>(txn: &T, unit: UnitId, dir: Direction, relation_type: &
     let mut total = 0u64;
     loop {
         let lo = if inclusive { Bound::Included(cursor.as_slice()) } else { Bound::Excluded(cursor.as_slice()) };
-        let page = txn.scan(lo, Bound::Excluded(&end), PAGE)?;
+        let page = scan(lo, Bound::Excluded(&end), PAGE)?;
         for (_, v) in &page {
             total += AdjBlock::decode(v).map_err(|e| crate::db::context(e, "REL_ADJ"))?.entries.len() as u64;
         }

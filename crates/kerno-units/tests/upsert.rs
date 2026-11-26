@@ -131,6 +131,45 @@ fn a_refused_upsert_writes_nothing<E: Target>() {
     assert!(db.snapshot().unwrap().reference_filter(&UnitFilter::default()).unwrap().is_empty());
 }
 
+/// Within one change set, a unique value its own writes freed can be taken, and one they took
+/// cannot: what the change set wrote counts over what was stored before it.
+fn values_freed_and_taken_in_the_change_set_count<E: Target>() {
+    let db = open::<E>();
+    let a = upsert(&db, "email", doc("a@x.io", "Ada")).unwrap().id;
+    let b = upsert(&db, "email", doc("b@x.io", "Bob")).unwrap().id;
+    let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
+    let upd = UnitUpdate { payload: doc("c@x.io", "Ada"), schema_version: None, metadata: None };
+    cs.update(a, upd, None).unwrap();
+    // a@ is free now: a new unit takes it.
+    let fresh = cs.upsert(new_unit(doc("a@x.io", "Another")), "email").unwrap();
+    assert_eq!(fresh.outcome, UpsertOutcome::Created);
+    assert_ne!(fresh.id, a);
+    // c@ is taken by this change set's update, b@ by the stored unit.
+    assert!(matches!(cs.create(new_unit(doc("c@x.io", "X"))), Err(UnitError::SchemaViolation { .. })));
+    let mut cs = {
+        drop(cs);
+        let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
+        cs.update(a, UnitUpdate { payload: doc("c@x.io", "Ada"), schema_version: None, metadata: None }, None)
+            .unwrap();
+        cs
+    };
+    assert!(matches!(cs.create(new_unit(doc("b@x.io", "X"))), Err(UnitError::SchemaViolation { .. })));
+    let mut cs = {
+        drop(cs);
+        db.begin_changeset(ChangeMeta::default()).unwrap()
+    };
+    cs.delete(b, None).unwrap();
+    let again = cs.upsert(new_unit(doc("b@x.io", "Bea")), "email").unwrap();
+    assert_eq!(again.outcome, UpsertOutcome::Created, "the deletion freed b@");
+    assert!(matches!(cs.create(new_unit(doc("b@x.io", "X"))), Err(UnitError::SchemaViolation { .. })));
+    drop(cs);
+    let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
+    cs.delete(b, None).unwrap();
+    let bea = cs.upsert(new_unit(doc("b@x.io", "Bea")), "email").unwrap().id;
+    cs.commit().unwrap();
+    assert_eq!(upsert(&db, "email", doc("b@x.io", "Bea")).unwrap().id, bea);
+}
+
 macro_rules! engines {
     ($($m:ident: $e:ty),*) => {$(
         mod $m {
@@ -148,6 +187,7 @@ macro_rules! engines {
             each!(a_key_stored_earlier_in_the_change_set_is_found);
             each!(only_an_active_unit_holds_the_key);
             each!(a_refused_upsert_writes_nothing);
+            each!(values_freed_and_taken_in_the_change_set_count);
         }
     )*};
 }

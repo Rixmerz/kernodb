@@ -753,6 +753,9 @@ impl<E: TxnEngine> UnitDb<E> {
             schema_cache: std::cell::RefCell::default(),
             unique_free: std::cell::RefCell::default(),
             prepared_text: std::cell::RefCell::default(),
+            base: std::cell::OnceCell::new(),
+            ranges_deleted: false,
+            unique_staged: Default::default(),
             no_derived: std::cell::Cell::new(None),
         })
     }
@@ -1304,6 +1307,16 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     /// The unique-field prefix (`field_prefix ‖ value`) an `upsert` just found held by no unit,
     /// while it creates the unit; cleared by any write.
     pub(crate) unique_free: std::cell::RefCell<Option<Vec<u8>>>,
+    /// A snapshot of the state the transaction began on, taken at its first use: what a read
+    /// of keys this change set has not written answers from, without the transaction folding
+    /// its buffer of writes for a scan (see [`ChangeSet::base`]).
+    base: std::cell::OnceCell<Option<E::Snapshot>>,
+    /// The change set deleted a range: the snapshot is no longer the transaction's view of the
+    /// keys it did not write.
+    ranges_deleted: bool,
+    /// The entries of unique fields this change set put (`true`) or deleted (`false`), in
+    /// order, by `field_prefix ‖ value`: with `base`, who holds a unique value.
+    pub(crate) unique_staged: std::collections::HashMap<Vec<u8>, Vec<(UnitId, bool)>>,
     /// The document of the payload a `create_prepared` is creating, cut ahead of it.
     pub(crate) prepared_text: std::cell::RefCell<Option<crate::fulltext::PreparedText>>,
     pub(crate) schema_cache:
@@ -1396,6 +1409,35 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         Ok(())
     }
 
+    /// The state the transaction began on, as a snapshot, while it is still the transaction's
+    /// view of every key this change set did not write (`None` once it deleted a range, or if
+    /// the engine's snapshot is not at the transaction's sequence). The write slot is held from
+    /// `begin_write` on, so nothing commits in between.
+    pub(crate) fn base(&self) -> Result<Option<&E::Snapshot>, UnitError> {
+        if self.ranges_deleted {
+            return Ok(None);
+        }
+        if self.base.get().is_none() {
+            let snap = self.db.engine.snapshot()?;
+            let same = snap.seq() == self.txn()?.read_seq();
+            let _ = self.base.set(same.then_some(snap));
+        }
+        Ok(self.base.get().and_then(Option::as_ref))
+    }
+
+    /// Records a write of the field-index entry `k` when its field is unique (see
+    /// `unique_staged`).
+    fn stage_unique(&mut self, k: &[u8], put: bool) -> Result<(), UnitError> {
+        let Ok((unit_type, field, _, unit)) = crate::schema::entry_key_parts(k) else {
+            return Ok(());
+        };
+        let unique = self.read_schema(unit_type)?.is_some_and(|s| s.field(field).is_some_and(|f| f.unique));
+        if unique {
+            self.unique_staged.entry(k[..k.len() - 16].to_vec()).or_default().push((unit, put));
+        }
+        Ok(())
+    }
+
     pub(crate) fn txn(&self) -> Result<&E::Txn<'db>, UnitError> {
         match &self.txn {
             Some(t) if !self.broken => Ok(t),
@@ -1450,6 +1492,17 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
     /// engine keeps its buffers instead of copying them (the path of every
     /// record of a unit or a relation).
     pub(crate) fn write_owned(&mut self, w: Write) -> Result<(), UnitError> {
+        if self.txn.is_none() {
+            return Err(UnitError::ChangeSetClosed);
+        }
+        // Before the write: a write that fails breaks the change set anyway.
+        match &w {
+            Write::DeleteRange(..) => self.ranges_deleted = true,
+            Write::Put(k, _) | Write::Delete(k) if k.first() == Some(&crate::schema::TAG_FIELD_INDEX) => {
+                self.stage_unique(k, matches!(w, Write::Put(..)))?;
+            }
+            _ => {}
+        }
         let Some(txn) = self.txn.as_mut() else {
             return Err(UnitError::ChangeSetClosed);
         };

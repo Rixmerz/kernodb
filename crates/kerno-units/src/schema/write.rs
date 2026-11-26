@@ -5,10 +5,11 @@ use std::collections::BTreeMap;
 use std::ops::Bound;
 use std::sync::Arc;
 
-use kerno_core::contract::{Txn, TxnEngine};
+use kerno_core::contract::{Snapshot, Txn, TxnEngine};
 
 use super::{
-    Document, FieldDef, FieldValue, Schema, decode_entry_key, entry_key, entry_value, field_prefix, prefix_bounds,
+    Document, FieldDef, FieldValue, Schema, entry_key, entry_key_parts, entry_value, field_prefix,
+    prefix_bounds,
     schema_key,
 };
 use crate::codec::{Key, TAG_UNIT_HEAD, UnitHead};
@@ -185,9 +186,8 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         }
         let mut prefix = field_prefix(&new.unit_type, field);
         prefix.extend_from_slice(&upsert_key(&new.payload, field)?);
-        let (start, end) = prefix_bounds(&prefix);
-        let held = self.txn()?.scan(Bound::Included(&start), Bound::Excluded(&end), 1)?;
-        let Some((k, _)) = held.first() else {
+        let held = self.unique_holders(&prefix)?;
+        let Some(&id) = held.first() else {
             // No unit holds the value: the create's own uniqueness check of this field would scan
             // the same range again, with no write in between (see `ensure_unique`).
             *self.unique_free.get_mut() = Some(prefix);
@@ -196,7 +196,6 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
             let id = created?;
             return Ok(Upserted { id, outcome: UpsertOutcome::Created });
         };
-        let (_, _, _, id) = decode_entry_key(k).map_err(|e| context(e, "FIELD_INDEX"))?;
         let current = self.get_unit(id)?.and_then(|u| u.payload);
         if current.as_deref() == Some(new.payload.as_slice()) {
             return Ok(Upserted { id, outcome: UpsertOutcome::Unchanged });
@@ -213,9 +212,7 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         if self.unique_free.borrow().as_deref() == Some(prefix.as_slice()) {
             return Ok(());
         }
-        let (start, end) = prefix_bounds(&prefix);
-        for (k, _) in self.txn()?.scan(Bound::Included(&start), Bound::Excluded(&end), 2)? {
-            let (_, _, _, holder) = decode_entry_key(&k).map_err(|e| context(e, "FIELD_INDEX"))?;
+        for holder in self.unique_holders(&prefix)? {
             if holder != unit {
                 return Err(violation(format!(
                     "unit {unit}: another unit already holds the unique value of {field:?}"
@@ -223,6 +220,40 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
             }
         }
         Ok(())
+    }
+
+    /// The units whose entry of a unique field starts with `prefix` (`field_prefix ‖ value`) as
+    /// this change set sees them, in id order (at most two of the stored ones are read: one
+    /// holder is the rule, a second one the violation). The stored entries come from the state
+    /// the transaction began on, with one bounded seek, and this change set's own entries of
+    /// unique fields from `unique_staged`: the transaction never folds its buffer of writes
+    /// for it. Without that state (a range deletion), the transaction is scanned.
+    fn unique_holders(&self, prefix: &[u8]) -> Result<Vec<UnitId>, UnitError> {
+        let (start, end) = prefix_bounds(prefix);
+        let unit_of = |k: &[u8]| -> Result<UnitId, UnitError> {
+            Ok(entry_key_parts(k).map_err(|e| context(e, "FIELD_INDEX"))?.3)
+        };
+        let Some(base) = self.base()? else {
+            let page = self.txn()?.scan(Bound::Included(&start), Bound::Excluded(&end), 2)?;
+            return page.iter().map(|(k, _)| unit_of(k)).collect();
+        };
+        let staged = self.unique_staged.get(prefix).map_or(&[][..], Vec::as_slice);
+        let removed = staged.iter().filter(|(_, put)| !put).count();
+        let mut held = Vec::new();
+        for (k, _) in base.scan(Bound::Included(&start), Bound::Excluded(&end), 2 + removed)? {
+            held.push(unit_of(&k)?);
+        }
+        for (unit, put) in staged {
+            if *put {
+                if !held.contains(unit) {
+                    held.push(*unit);
+                }
+            } else {
+                held.retain(|h| h != unit);
+            }
+        }
+        held.sort_unstable();
+        Ok(held)
     }
 
     /// Every unit of `unit_type` that is not deleted, validated against
