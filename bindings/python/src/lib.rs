@@ -360,10 +360,51 @@ fn field_type(name: &str) -> PyResult<FieldType> {
 /// "store" or "upsert" op.
 fn endpoint(v: &Bound<'_, PyAny>) -> PyResult<Endpoint> {
     if v.is_instance_of::<PyString>() {
-        Ok(Endpoint::Unit(UnitId(parse_id(&v.extract::<String>()?)?)))
+        Ok(Endpoint::Unit(UnitId(parse_id_py(v)?)))
     } else {
         Ok(Endpoint::Op(unsigned("a relate end", v)?))
     }
+}
+
+/// [`parse_id`] of a Python `str`, read into a stack buffer instead of a `String` when it is
+/// 32 ASCII hex digits; anything else goes the [`parse_id`] way, so errors are unchanged.
+fn parse_id_py(v: &Bound<'_, PyAny>) -> PyResult<[u8; 16]> {
+    if let Some(id) = fast_id(v) {
+        return Ok(id);
+    }
+    parse_id(&v.extract::<String>()?)
+}
+
+/// The id a `str` of exactly 32 ASCII hex digits spells, or `None` for any other value.
+fn fast_id(v: &Bound<'_, PyAny>) -> Option<[u8; 16]> {
+    if !v.is_instance_of::<PyString>() {
+        return None;
+    }
+    let mut buf = [0u32; 33];
+    // SAFETY: `v` is a `str` (checked above), and `PyUnicode_AsUCS4` writes at most `buf.len()`
+    // code points (plus no terminator, `copy_null = 0`) into the buffer it is given; a longer
+    // string fails without writing past it. Both calls are in the limited API since 3.3.
+    let n = unsafe {
+        let len = pyo3::ffi::PyUnicode_GetLength(v.as_ptr());
+        if len != 32 {
+            if len < 0 {
+                pyo3::ffi::PyErr_Clear();
+            }
+            return None;
+        }
+        pyo3::ffi::PyUnicode_AsUCS4(v.as_ptr(), buf.as_mut_ptr().cast(), buf.len() as pyo3::ffi::Py_ssize_t, 0)
+    };
+    if n.is_null() {
+        // SAFETY: the failed call set an exception; the slow path raises its own.
+        unsafe { pyo3::ffi::PyErr_Clear() };
+        return None;
+    }
+    let digit = |c: u32| char::from_u32(c).and_then(|c| c.to_digit(16)).map(|d| d as u8);
+    let mut id = [0u8; 16];
+    for (byte, pair) in id.iter_mut().zip(buf[..32].chunks(2)) {
+        *byte = digit(pair[0])? << 4 | digit(pair[1])?;
+    }
+    Some(id)
 }
 
 fn parse_id(hex: &str) -> PyResult<[u8; 16]> {
@@ -1463,14 +1504,45 @@ impl Database {
     ) -> PyResult<Bound<'py, PyAny>> {
         let mut batch = Batch::new();
         let id_at = |op: &Bound<'py, pyo3::types::PyTuple>, i: usize| -> PyResult<UnitId> {
-            Ok(UnitId(parse_id(&op.get_item(i)?.extract::<String>()?)?))
+            Ok(UnitId(parse_id_py(&op.get_item(i)?)?))
         };
+        // Op names as Python interns them: a literal name in the caller's code is this very
+        // object, so the name is matched by identity without reading it.
+        // The most frequent first: they are tried in this order.
+        const NAMES: [&str; 12] = [
+            "relate",
+            "store",
+            "upsert",
+            "update",
+            "update_if_changed",
+            "delete",
+            "delete_cascade",
+            "unrelate",
+            "relate_unique",
+            "archive",
+            "unarchive",
+            "restore",
+        ];
+        let interned: Vec<Bound<'py, PyString>> = NAMES.iter().map(|n| PyString::intern(py, n)).collect();
+        // Callers pass the same `str` object for a relation's type, and for its `from` end,
+        // op after op: the last one seen and what it converted to. The cache holds a strong
+        // reference to the object, so its address cannot be reused by another while cached.
+        let mut last_type: Option<(Bound<'py, PyAny>, String)> = None;
+        let mut last_from: Option<(Bound<'py, PyAny>, Endpoint)> = None;
         for op in &ops {
             if op.is_empty() {
                 return Err(InvalidArgumentError::new_err("unknown or malformed batch op: ()"));
             }
-            let name: String = op.get_item(0)?.extract()?;
-            match (name.as_str(), op.len()) {
+            let first = op.get_borrowed_item(0)?;
+            let owned_name: String;
+            let name: &str = match interned.iter().position(|n| n.as_ptr() == first.as_ptr()) {
+                Some(at) => NAMES[at],
+                None => {
+                    owned_name = first.extract()?;
+                    &owned_name
+                }
+            };
+            match (name, op.len()) {
                 ("store", 3) => {
                     let t: String = op.get_item(1)?.extract()?;
                     let p: Payload = op.get_item(2)?.extract()?;
@@ -1495,12 +1567,29 @@ impl Database {
                     batch.unrelate(RelationId(parse_id(&id)?));
                 }
                 ("relate", 4) | ("relate_unique", 4) => {
-                    let (f, t) = (endpoint(&op.get_item(1)?)?, endpoint(&op.get_item(2)?)?);
-                    let ty: String = op.get_item(3)?.extract()?;
+                    let from = op.get_borrowed_item(1)?;
+                    let f = match &last_from {
+                        Some((o, e)) if o.as_ptr() == from.as_ptr() => *e,
+                        _ => {
+                            let e = endpoint(&from)?;
+                            last_from = Some((from.to_owned(), e));
+                            e
+                        }
+                    };
+                    let to = op.get_borrowed_item(2)?;
+                    let t = endpoint(&to)?;
+                    let ty_obj = op.get_borrowed_item(3)?;
+                    let ty: &str = match &last_type {
+                        Some((o, ty)) if o.as_ptr() == ty_obj.as_ptr() => ty,
+                        _ => {
+                            let ty: String = ty_obj.extract()?;
+                            &last_type.insert((ty_obj.to_owned(), ty)).1
+                        }
+                    };
                     if name == "relate" {
-                        batch.relate(f, t, &ty);
+                        batch.relate(f, t, ty);
                     } else {
-                        batch.relate_unique(f, t, &ty);
+                        batch.relate_unique(f, t, ty);
                     }
                 }
                 ("archive", 2) => {
