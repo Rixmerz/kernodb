@@ -356,13 +356,59 @@ fn field_type(name: &str) -> PyResult<FieldType> {
     })
 }
 
-/// A relation end in a batch: a unit id (hex), or the position in the op list of an earlier
-/// "store" or "upsert" op.
-fn endpoint(v: &Bound<'_, PyAny>) -> PyResult<Endpoint> {
-    if v.is_instance_of::<PyString>() {
-        Ok(Endpoint::Unit(UnitId(parse_id_py(v)?)))
-    } else {
-        Ok(Endpoint::Op(unsigned("a relate end", v)?))
+/// `obj` as a `String`, converted only when it is not the very object `cache` holds (which
+/// keeps it alive, so its address cannot be reused while cached). Errors are `extract`'s own.
+fn cached_str<'a, 'py>(
+    cache: &'a mut Option<(Bound<'py, PyAny>, String)>,
+    obj: Borrowed<'_, 'py, PyAny>,
+) -> PyResult<&'a str> {
+    if !matches!(cache, Some((o, _)) if o.as_ptr() == obj.as_ptr()) {
+        let s: String = obj.extract()?;
+        *cache = Some((obj.to_owned(), s));
+    }
+    Ok(cache.as_ref().map_or("", |(_, s)| s.as_str()))
+}
+
+/// The ids of the `str` objects a `commit` call met, by object address: callers pass the same
+/// id object op after op (a unit's id in each of its relations). Direct-mapped; each slot holds
+/// a strong reference, so an address cannot be reused by another object while it is cached.
+/// Only `str`s that parsed are kept, and a `str` is immutable, so a hit is what parsing gives.
+struct IdCache<'py> {
+    slots: Vec<Option<(Bound<'py, PyAny>, [u8; 16])>>,
+}
+
+impl<'py> IdCache<'py> {
+    const BITS: u32 = 12;
+
+    fn new() -> Self {
+        IdCache { slots: Vec::new() }
+    }
+
+    /// [`parse_id_py`] of `v`, from the cache when `v` is an object met before.
+    fn parse(&mut self, v: &Bound<'py, PyAny>) -> PyResult<[u8; 16]> {
+        let addr = v.as_ptr() as usize;
+        let at = (addr >> 4).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (usize::BITS - Self::BITS);
+        if let Some(Some((o, id))) = self.slots.get(at)
+            && o.as_ptr() == v.as_ptr()
+        {
+            return Ok(*id);
+        }
+        let id = parse_id_py(v)?;
+        if self.slots.is_empty() {
+            self.slots.resize_with(1 << Self::BITS, || None);
+        }
+        self.slots[at] = Some((v.clone(), id));
+        Ok(id)
+    }
+
+    /// A relation end in a batch: a unit id (hex, through the cache), or the position in the
+    /// op list of an earlier "store" or "upsert" op.
+    fn endpoint(&mut self, v: &Bound<'py, PyAny>) -> PyResult<Endpoint> {
+        if v.is_instance_of::<PyString>() {
+            Ok(Endpoint::Unit(UnitId(self.parse(v)?)))
+        } else {
+            Ok(Endpoint::Op(unsigned("a relate end", v)?))
+        }
     }
 }
 
@@ -399,13 +445,35 @@ fn fast_id(v: &Bound<'_, PyAny>) -> Option<[u8; 16]> {
         unsafe { pyo3::ffi::PyErr_Clear() };
         return None;
     }
-    let digit = |c: u32| char::from_u32(c).and_then(|c| c.to_digit(16)).map(|d| d as u8);
+    // Each code point through a table: `0x10` marks a non-digit, OR-ed into `bad` so the loop
+    // has no branch per digit.
     let mut id = [0u8; 16];
-    for (byte, pair) in id.iter_mut().zip(buf[..32].chunks(2)) {
-        *byte = digit(pair[0])? << 4 | digit(pair[1])?;
+    let mut bad = 0u8;
+    let nib = |c: u32| if c < 128 { HEX[c as usize] } else { 0x10 };
+    for (byte, pair) in id.iter_mut().zip(buf[..32].chunks_exact(2)) {
+        let (hi, lo) = (nib(pair[0]), nib(pair[1]));
+        bad |= hi | lo;
+        *byte = hi << 4 | (lo & 0x0f);
     }
-    Some(id)
+    (bad & 0x10 == 0).then_some(id)
 }
+
+/// The value of an ASCII hex digit, or `0x10` for any other byte below 128.
+const HEX: [u8; 128] = {
+    let mut t = [0x10u8; 128];
+    let mut i = 0;
+    while i < 10 {
+        t[b'0' as usize + i] = i as u8;
+        i += 1;
+    }
+    let mut i = 0;
+    while i < 6 {
+        t[b'a' as usize + i] = 10 + i as u8;
+        t[b'A' as usize + i] = 10 + i as u8;
+        i += 1;
+    }
+    t
+};
 
 fn parse_id(hex: &str) -> PyResult<[u8; 16]> {
     let bad = || InvalidArgumentError::new_err(format!("not a unit id (expected 32 hex digits): {hex:?}"));
@@ -1630,9 +1698,7 @@ impl Database {
         detailed: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let mut batch = Batch::new();
-        let id_at = |op: &Bound<'py, pyo3::types::PyTuple>, i: usize| -> PyResult<UnitId> {
-            Ok(UnitId(parse_id_py(&op.get_item(i)?)?))
-        };
+        let mut ids = IdCache::new();
         // Op names as Python interns them: a literal name in the caller's code is this very
         // object, so the name is matched by identity without reading it.
         // The most frequent first: they are tried in this order.
@@ -1656,6 +1722,9 @@ impl Database {
         // reference to the object, so its address cannot be reused by another while cached.
         let mut last_type: Option<(Bound<'py, PyAny>, String)> = None;
         let mut last_from: Option<(Bound<'py, PyAny>, Endpoint)> = None;
+        // The same for the unit type of "store" and "upsert" ops and the key field of "upsert".
+        let mut last_unit_type: Option<(Bound<'py, PyAny>, String)> = None;
+        let mut last_field: Option<(Bound<'py, PyAny>, String)> = None;
         for op in &ops {
             if op.is_empty() {
                 return Err(InvalidArgumentError::new_err("unknown or malformed batch op: ()"));
@@ -1671,23 +1740,23 @@ impl Database {
             };
             match (name, op.len()) {
                 ("store", 3) => {
-                    let t: String = op.get_item(1)?.extract()?;
+                    let t = cached_str(&mut last_unit_type, op.get_borrowed_item(1)?)?;
                     let p: Payload = op.get_item(2)?.extract()?;
-                    batch.store(&t, into_bytes(p));
+                    batch.store(t, into_bytes(p));
                 }
                 ("update", 3) => {
                     let p: Payload = op.get_item(2)?.extract()?;
-                    batch.update(id_at(op, 1)?, into_bytes(p));
+                    batch.update(UnitId(ids.parse(&op.get_item(1)?)?), into_bytes(p));
                 }
                 ("update_if_changed", 3) => {
                     let p: Payload = op.get_item(2)?.extract()?;
-                    batch.update_if_changed(id_at(op, 1)?, into_bytes(p));
+                    batch.update_if_changed(UnitId(ids.parse(&op.get_item(1)?)?), into_bytes(p));
                 }
                 ("delete", 2) => {
-                    batch.delete(id_at(op, 1)?);
+                    batch.delete(UnitId(ids.parse(&op.get_item(1)?)?));
                 }
                 ("delete_cascade", 2) => {
-                    batch.delete_cascade(id_at(op, 1)?);
+                    batch.delete_cascade(UnitId(ids.parse(&op.get_item(1)?)?));
                 }
                 ("unrelate", 2) => {
                     let id: String = op.get_item(1)?.extract()?;
@@ -1698,21 +1767,14 @@ impl Database {
                     let f = match &last_from {
                         Some((o, e)) if o.as_ptr() == from.as_ptr() => *e,
                         _ => {
-                            let e = endpoint(&from)?;
+                            let e = ids.endpoint(&from)?;
                             last_from = Some((from.to_owned(), e));
                             e
                         }
                     };
-                    let to = op.get_borrowed_item(2)?;
-                    let t = endpoint(&to)?;
+                    let t = ids.endpoint(&op.get_item(2)?)?;
                     let ty_obj = op.get_borrowed_item(3)?;
-                    let ty: &str = match &last_type {
-                        Some((o, ty)) if o.as_ptr() == ty_obj.as_ptr() => ty,
-                        _ => {
-                            let ty: String = ty_obj.extract()?;
-                            &last_type.insert((ty_obj.to_owned(), ty)).1
-                        }
-                    };
+                    let ty = cached_str(&mut last_type, ty_obj)?;
                     if name == "relate" {
                         batch.relate(f, t, ty);
                     } else {
@@ -1720,22 +1782,22 @@ impl Database {
                     }
                 }
                 ("archive", 2) => {
-                    batch.archive(id_at(op, 1)?);
+                    batch.archive(UnitId(ids.parse(&op.get_item(1)?)?));
                 }
                 ("unarchive", 2) => {
-                    batch.unarchive(id_at(op, 1)?);
+                    batch.unarchive(UnitId(ids.parse(&op.get_item(1)?)?));
                 }
                 ("restore", 3) => {
                     let rev: u64 = unsigned("a restore op's revision", &op.get_item(2)?)?;
-                    batch.restore(id_at(op, 1)?, rev);
+                    batch.restore(UnitId(ids.parse(&op.get_item(1)?)?), rev);
                 }
                 ("upsert", 4) => {
-                    let t: String = op.get_item(1)?.extract()?;
-                    let field: String = op.get_item(2)?.extract()?;
+                    let t = cached_str(&mut last_unit_type, op.get_borrowed_item(1)?)?;
+                    let field = cached_str(&mut last_field, op.get_borrowed_item(2)?)?;
                     let doc = to_document(op.get_item(3)?.cast::<PyDict>().map_err(|_| {
                         InvalidArgumentError::new_err("an upsert op's document is a dict of bool/int/float/str/bytes")
                     })?)?;
-                    batch.upsert(&t, &field, doc.encode().map_err(engine_error)?);
+                    batch.upsert(t, field, doc.encode().map_err(engine_error)?);
                 }
                 _ => return Err(InvalidArgumentError::new_err(format!("unknown or malformed batch op: {op}"))),
             }
