@@ -597,23 +597,59 @@ impl Unit {
 /// A payload decoded as a document dict (`None` for no payload), straight from the bytes: no
 /// intermediate document. Raises `SchemaError` when the payload is not a document.
 fn payload_document<'py>(py: Python<'py>, payload: Option<&[u8]>) -> PyResult<Option<Bound<'py, PyDict>>> {
-    let Some(payload) = payload else { return Ok(None) };
-    // Straight from the bytes into the dict: no intermediate document.
-    let d = PyDict::new(py);
-    let mut failed: Option<PyErr> = None;
-    let walked = Document::visit(payload, |name, value| {
-        if failed.is_none()
-            && let Err(e) = value_ref_to_py(py, value).and_then(|v| d.set_item(name, v))
-        {
-            failed = Some(e);
-        }
-    });
-    if let Err(e) = walked {
-        return Err(SchemaError::new_err(format!("the payload is not a document: {e}")));
+    DocBuilder::new(None).build(py, payload)
+}
+
+/// Builds document dicts for one call: each field name becomes a Python str once and is reused
+/// as the key of every dict; with `fields`, only those names are kept.
+struct DocBuilder {
+    keys: Vec<(String, Py<PyString>)>,
+    fields: Option<Vec<String>>,
+}
+
+impl DocBuilder {
+    fn new(fields: Option<Vec<String>>) -> Self {
+        DocBuilder { keys: Vec::new(), fields }
     }
-    match failed {
-        Some(e) => Err(e),
-        None => Ok(Some(d)),
+
+    /// The key of `name`, the `at`-th field kept: documents of one type list their fields in one
+    /// order, so the name seen at that position last time is tried first.
+    fn key<'py>(&mut self, py: Python<'py>, at: usize, name: &str) -> Bound<'py, PyString> {
+        if let Some((n, k)) = self.keys.get(at)
+            && n == name
+        {
+            return k.bind(py).clone();
+        }
+        if let Some((_, k)) = self.keys.iter().find(|(n, _)| n == name) {
+            return k.bind(py).clone();
+        }
+        let k = PyString::intern(py, name);
+        self.keys.push((name.to_owned(), k.clone().unbind()));
+        k
+    }
+
+    fn build<'py>(&mut self, py: Python<'py>, payload: Option<&[u8]>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let Some(payload) = payload else { return Ok(None) };
+        let d = PyDict::new(py);
+        let mut failed: Option<PyErr> = None;
+        let mut at = 0;
+        let walked = Document::visit(payload, |name, value| {
+            if failed.is_some() || self.fields.as_ref().is_some_and(|f| !f.iter().any(|n| n == name)) {
+                return;
+            }
+            let key = self.key(py, at, name);
+            at += 1;
+            if let Err(e) = value_ref_to_py(py, value).and_then(|v| d.set_item(key, v)) {
+                failed = Some(e);
+            }
+        });
+        if let Err(e) = walked {
+            return Err(SchemaError::new_err(format!("the payload is not a document: {e}")));
+        }
+        match failed {
+            Some(e) => Err(e),
+            None => Ok(Some(d)),
+        }
     }
 }
 
@@ -1248,19 +1284,23 @@ impl Database {
     }
 
     /// `find`, but each hit as its document dict: no `Unit` objects, no per-unit `document()`
-    /// call. A hit whose payload is not a document raises `SchemaError`.
+    /// call. A hit whose payload is not a document raises `SchemaError`. `fields`, a sequence of
+    /// field names, keeps only those in each dict (a name the document lacks is absent).
+    #[pyo3(signature = (unit_type, field, value, fields=None))]
     fn find_documents<'py>(
         &self,
         py: Python<'py>,
         unit_type: &str,
         field: &str,
         value: Bound<'py, PyAny>,
+        fields: Option<Vec<String>>,
     ) -> PyResult<Vec<Bound<'py, PyDict>>> {
         let v = to_field(&value)?;
         let units = self.with_db(py, |db| db.find_shared(unit_type, field, &v).map_err(engine_error))?;
         let mut out = Vec::with_capacity(units.len());
+        let mut docs = DocBuilder::new(fields);
         for u in units {
-            if let Some(d) = payload_document(py, u.payload.as_deref())? {
+            if let Some(d) = docs.build(py, u.payload.as_deref())? {
                 out.push(d);
             }
         }
@@ -1270,8 +1310,10 @@ impl Database {
     /// `find(unit_type, field, value)` then `neighbors(unit, direction, type_prefix=...)` of every
     /// unit found then `.document()` of each other end, in one call:
     /// `[(relation_type, document), ...]`. An other end that is deleted or whose payload is not a
-    /// document is left out.
-    #[pyo3(signature = (unit_type, field, value, direction="out", type_prefix=None))]
+    /// document is left out. `fields` keeps only those field names in each dict, as in
+    /// `find_documents`.
+    #[pyo3(signature = (unit_type, field, value, direction="out", type_prefix=None, fields=None))]
+    #[allow(clippy::too_many_arguments)] // the Python signature's keywords
     fn neighbor_documents<'py>(
         &self,
         py: Python<'py>,
@@ -1280,6 +1322,7 @@ impl Database {
         value: Bound<'py, PyAny>,
         direction: &str,
         type_prefix: Option<&str>,
+        fields: Option<Vec<String>>,
     ) -> PyResult<Vec<(String, Bound<'py, PyDict>)>> {
         let v = to_field(&value)?;
         let dir = match direction {
@@ -1304,8 +1347,9 @@ impl Database {
             Ok(out)
         })?;
         let mut out = Vec::with_capacity(pairs.len());
+        let mut docs = DocBuilder::new(fields);
         for (t, u) in pairs {
-            if let Some(d) = payload_document(py, u.payload.as_deref())? {
+            if let Some(d) = docs.build(py, u.payload.as_deref())? {
                 out.push((t, d));
             }
         }

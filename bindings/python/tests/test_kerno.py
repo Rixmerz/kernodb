@@ -1157,6 +1157,24 @@ def test_neighbor_documents(tmp_path):
             db.neighbor_documents("sym", "sid", 1, "sideways")
 
 
+def test_find_documents_fields(tmp_path):
+    with kerno.open(tmp_path / "db") as db:
+        db.define_schema("sym", [{"name": "sid", "type": "int", "unique": True}, {"name": "name", "type": "text", "indexed": True}])
+        db.store_document("sym", {"sid": 1, "name": "x"})
+        assert db.find_documents("sym", "sid", 1, fields=("name",)) == [{"name": "x"}]
+        assert db.find_documents("sym", "sid", 1, fields=["sid", "missing"]) == [{"sid": 1}]
+        assert db.find_documents("sym", "sid", 1, fields=()) == [{}]
+
+
+def test_neighbor_documents_fields(tmp_path):
+    with kerno.open(tmp_path / "db") as db:
+        db.define_schema("sym", [{"name": "sid", "type": "int", "unique": True}, {"name": "name", "type": "text"}])
+        a = db.store_document("sym", {"sid": 1, "name": "a"})
+        b = db.store_document("sym", {"sid": 2, "name": "b"})
+        db.relate(a, b, "e:calls")
+        assert db.neighbor_documents("sym", "sid", 1, fields=["name", "nope"]) == [("e:calls", {"name": "b"})]
+
+
 def test_keyword_search_finds_documents_of_any_encoding(tmp_path):
     # Issue #12: an int >= 128 or a text of >= 128 bytes makes the record invalid UTF-8.
     with kerno.open(tmp_path / "db") as db:
