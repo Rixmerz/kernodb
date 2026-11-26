@@ -443,6 +443,10 @@ fn retention_every_point<E: Target>(kind: CrashKind, durability: Durability, per
         let mut c = cfg();
         c.engine.durability = durability;
         c.retention_pacing = RetentionPacing { units_per_change_set: per_cs, pause_ratio: 0 };
+        // No WAL rotation inside the call (see `every_point_setup`): since layer 10 a head
+        // carries a copy of its payload, and the setup no longer fits the 16 KiB of
+        // `small_for_tests` with room to spare.
+        c.engine.write_buffer_bytes = 32 << 10;
         c
     };
     let deferred = <E as kerno_core::contract::Engine>::name() == <KernoDb as kerno_core::contract::Engine>::name();

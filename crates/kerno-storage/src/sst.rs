@@ -21,7 +21,7 @@
 
 use std::io;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use kerno_core::vfs::{File, OpenMode, Vfs};
@@ -38,10 +38,14 @@ use crate::format::manifest::FileMeta;
 use crate::format::props::Props;
 use crate::format::rangedel::Fragment;
 use crate::format::sst::{
-    IndexEntry, SstBuilder, SstExpect, check_filter_holds_index_keys, file_meta, open_sst_from, read_data_block,
+    BlockHandle, BlockIndex, FlatIndex, Footer, SstBuilder, SstExpect, SstOpen, check_data_block,
+    check_filter_holds_keys, file_meta, open_sst_as, read_filter,
 };
 use crate::iter::InternalIterator;
 use crate::stats::{Stats, bump};
+
+/// Index keys a lazy table checks its filter against when it reads it (SST-V3).
+const LAZY_FILTER_SAMPLE: usize = 64;
 
 /// Output is handed to the file system in chunks of about this size.
 const WRITE_CHUNK: usize = 256 << 10;
@@ -322,9 +326,15 @@ impl TableBuilder {
 /// longer lists it became durable).
 /// The resident part of a table: its index, properties, filter and range tombstones.
 struct Body {
-    index: Vec<IndexEntry>,
+    index: FlatIndex,
     props: Props,
-    filter: Filter,
+    /// The filter: read with the rest when the table is opened, and for a lazy table once its
+    /// lookups have cost what reading it does ([`Table::filter`]).
+    filter: OnceLock<Filter>,
+    /// The footer's handles (the filter's, for a filter read later).
+    footer: Footer,
+    /// Bytes of data blocks that lookups without the filter may have read.
+    unfiltered: AtomicU64,
     /// The range tombstones of the table, sorted and disjoint, resident like
     /// the index (SST-F1).
     fragments: Vec<Fragment>,
@@ -390,15 +400,55 @@ impl Table {
                 last_seq: self.last_seq,
             };
             let size = src.len();
-            (open_sst_from(&mut src, &ex).map_err(|e| read_error(&name, e))?, size)
+            // A lazy table leaves its filter for later: see `filter`.
+            let opened: SstOpen<FlatIndex> =
+                open_sst_as(&mut src, &ex, !self.ctx.lazy).map_err(|e| read_error(&name, e))?;
+            (opened, size)
         };
-        // SST-V3 over what the open holds (F-E9A-03-1): `get` trusts the filter.
-        check_filter_holds_index_keys(&opened).map_err(|e| format_error(&name, e))?;
+        let filter = OnceLock::new();
+        if let Some(f) = opened.filter {
+            // SST-V3 over what the open holds (F-E9A-03-1): `get` trusts the filter.
+            check_filter_holds_keys(&f, &opened.index, opened.footer.filter.offset, usize::MAX)
+                .map_err(|e| format_error(&name, e))?;
+            let _ = filter.set(f);
+        }
         let unknown = opened.header.unknown_ro_compat();
         let lz4 = opened.header.incompat & crate::format::features::BLOCK_LZ4 != 0;
-        let body =
-            Body { index: opened.index, props: opened.props, filter: opened.filter, fragments: opened.fragments, lz4 };
+        let body = Body {
+            index: opened.index,
+            props: opened.props,
+            filter,
+            footer: opened.footer,
+            unfiltered: AtomicU64::new(0),
+            fragments: opened.fragments,
+            lz4,
+        };
         Ok((body, unknown, size))
+    }
+
+    /// The filter to ask before a lookup, or `None` to look without one.
+    ///
+    /// A table opened in full always has it. A lazy table reads it only once the lookups made
+    /// without it may have read as many bytes of data blocks as the filter block is long: a
+    /// filter is ten bits per key of the table, so for a handle that makes a few reads and
+    /// goes, reading it (and hashing index keys to check it) costs more than the blocks it
+    /// would have spared. Looking without a filter is always correct, only slower for a key the
+    /// table does not hold. When it is read it is checked as an open checks it (SST-O4, SST-O7)
+    /// and against a sample of the index keys (SST-V3, [`check_filter_holds_keys`]).
+    fn filter<'b>(&self, body: &'b Body) -> Result<Option<&'b Filter>> {
+        if let Some(f) = body.filter.get() {
+            return Ok(Some(f));
+        }
+        let spent = body.unfiltered.fetch_add(self.ctx.block_size as u64, Ordering::Relaxed);
+        if spent < body.footer.filter.len {
+            return Ok(None);
+        }
+        let name = sst_name(self.number);
+        let mut src = FileSource::new(&*self.file)?;
+        let f = read_filter(&mut src, self.number, &body.footer).map_err(|e| read_error(&name, e))?;
+        check_filter_holds_keys(&f, &body.index, body.footer.filter.offset, LAZY_FILTER_SAMPLE)
+            .map_err(|e| format_error(&name, e))?;
+        Ok(Some(body.filter.get_or_init(|| f)))
     }
 
     pub fn open(ctx: &Arc<TableCtx>, meta: &FileMeta, last_seq: u64) -> Result<Table> {
@@ -498,8 +548,10 @@ impl Table {
     /// Removes the blocks of this table from the block cache.
     pub fn purge_cache(&self) {
         // A table that never loaded has no block in the cache.
-        for e in self.body.get().map_or(&[][..], |b| &b.index) {
-            self.ctx.cache.remove(&(self.number, e.handle.offset));
+        if let Some(b) = self.body.get() {
+            for i in 0..b.index.blocks() {
+                self.ctx.cache.remove(&(self.number, b.index.handle(i).offset));
+            }
         }
     }
 
@@ -511,7 +563,7 @@ impl Table {
     /// is not cached) and verifies data block `i` (SST-R1..R3).
     pub fn read_block(&self, i: usize, fill_cache: bool) -> Result<Arc<Block>> {
         let body = self.body()?;
-        let handle = body.index[i].handle;
+        let handle: BlockHandle = body.index.handle(i);
         let key = (self.number, handle.offset);
         let stats = &self.ctx.stats;
         if let Some(b) = self.ctx.cache.get(&key) {
@@ -526,7 +578,7 @@ impl Table {
         let mut buf = vec![0u8; handle.len as usize];
         self.file.read_at(&mut buf, handle.offset)?;
         let payload = crate::format::block::data_block_payload(&buf, self.number, handle.offset, body.lz4)
-            .and_then(|p| read_data_block(&p, &body.index, i, &body.props).map(|_| ()).map(|()| p.into_owned()))
+            .and_then(|p| check_data_block(&p, &body.index, i, &body.props).map(|()| p.into_owned()))
             .map_err(|e| format_error(&sst_name(self.number), e))?;
         let block = Arc::new(Block::from_payload(payload));
         if fill_cache {
@@ -546,14 +598,17 @@ impl Table {
             return Ok(None);
         }
         let stats = &self.ctx.stats;
-        bump(&stats.bloom_checks, 1);
         let body = self.body()?;
-        if !body.filter.may_contain(hash) {
-            bump(&stats.bloom_negatives, 1);
-            return Ok(None);
+        let filter = self.filter(body)?;
+        if let Some(f) = filter {
+            bump(&stats.bloom_checks, 1);
+            if !f.may_contain(hash) {
+                bump(&stats.bloom_negatives, 1);
+                return Ok(None);
+            }
         }
-        let i = body.index.partition_point(|e| e.last_key.as_slice() < key);
-        if i == body.index.len() {
+        let i = body.index.block_for(key);
+        if i == body.index.blocks() {
             return Ok(None);
         }
         let block = self.read_block(i, true)?;
@@ -563,7 +618,9 @@ impl Table {
         {
             return Ok(Some((e.seq, block.value(&e).map(<[u8]>::to_vec))));
         }
-        bump(&stats.bloom_false_positives, 1);
+        if filter.is_some() {
+            bump(&stats.bloom_false_positives, 1);
+        }
         Ok(None)
     }
 
@@ -594,7 +651,7 @@ impl TableIter<'_> {
     /// blocks if needed.
     fn load(&mut self, mut block_idx: usize, mut entry: usize) -> Result<()> {
         self.pos = None;
-        let blocks = self.table.body()?.index.len();
+        let blocks = self.table.body()?.index.blocks();
         while block_idx < blocks {
             let block = self.table.read_block(block_idx, self.fill_cache)?;
             if entry < block.len() {
@@ -627,8 +684,8 @@ impl InternalIterator for TableIter<'_> {
 
     fn seek(&mut self, target: &[u8]) -> Result<()> {
         let index = &self.table.body()?.index;
-        let idx = index.partition_point(|e| e.last_key.as_slice() < target);
-        if idx == index.len() {
+        let idx = index.block_for(target);
+        if idx == index.blocks() {
             self.pos = None;
             return Ok(());
         }
@@ -987,7 +1044,7 @@ mod tests {
             b.add(&key(i), 1, Some(&[b'v'; 120])).unwrap();
         }
         let t = b.finish().unwrap();
-        let (h0, h1) = (t.body().unwrap().index[0].handle, t.body().unwrap().index[1].handle);
+        let (h0, h1) = (t.body().unwrap().index.handle(0), t.body().unwrap().index.handle(1));
         assert_eq!(h0.len, h1.len, "test setup: blocks of one length");
         // Block 0's bytes at block 1's offset.
         let f = ctx.vfs.open(&ctx.path(4), OpenMode::Existing).unwrap();
@@ -1008,7 +1065,7 @@ mod tests {
         let size = f.len().unwrap();
         let mut src = FileSource::new(&*f).unwrap();
         let ex = SstExpect { file_number: number, db_id: DB, meta: None, last_seq: MAX_SEQ };
-        let m = open_sst_from(&mut src, &ex).map_err(|e| read_error("t", e)).unwrap();
+        let m = crate::format::sst::open_sst_from(&mut src, &ex).map_err(|e| read_error("t", e)).unwrap();
         file_meta(0, number, size, &m.props)
     }
 }

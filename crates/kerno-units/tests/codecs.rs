@@ -30,6 +30,7 @@ fn head() -> UnitHead {
         content_hash: hash(),
         payload_len: 1,
         metadata: Vec::new(),
+        inline_payload: None,
     }
 }
 
@@ -132,6 +133,7 @@ fn valid_head() -> impl Strategy<Value = UnitHead> {
                     content_hash,
                     payload_len,
                     metadata,
+                    inline_payload: None,
                 }
             },
         )

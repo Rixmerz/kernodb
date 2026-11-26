@@ -343,10 +343,10 @@ fn the_option_does_not_move_the_layer_mark_and_survives_a_reopen() {
         let db = open_plain(&disk);
         store(&db, b"plain");
         let mark = |db: &UnitDb<E>| db.snapshot().unwrap().layer_version().unwrap();
-        assert_eq!(mark(&db), Some(crate::codec::LAYER_VERSION_BLOCKS), "a database starts at the cut version");
+        assert_eq!(mark(&db), Some(crate::codec::MIN_LAYER_VERSION), "a database starts at the cut version");
         db.set_substring("sym", true, ChangeMeta::default()).unwrap();
         db.set_substring("sym", false, ChangeMeta::default()).unwrap();
-        assert_eq!(mark(&db), Some(crate::codec::LAYER_VERSION_BLOCKS));
+        assert_eq!(mark(&db), Some(crate::codec::MIN_LAYER_VERSION));
         db.set_substring("sym", true, ChangeMeta::default()).unwrap();
         db.close().unwrap();
     }
@@ -639,4 +639,78 @@ fn a_batch_of_units_writes_the_same_blocks_as_one_commit_each() {
     }
     assert_eq!(blocks(&one), blocks(&many));
     assert_clean(&one);
+}
+
+/// The shortcuts of a flush (appending to the tail's bytes, writing a list of new units without
+/// looking for its blocks) write what the general path writes: the same units committed in
+/// batches of any size, with an update of an old unit among them, give the same blocks, and a
+/// list left with bounded blocks and no tail takes new units in a new tail.
+#[test]
+fn appends_in_batches_of_any_size_write_the_same_blocks() {
+    let new = |p: &str| NewUnit {
+        unit_type: "sym".into(),
+        schema_version: 1,
+        metadata: vec![],
+        payload: p.as_bytes().to_vec(),
+    };
+    let payloads: Vec<String> = (0..700).map(|i| format!("token_{}_{i}", i % 5)).collect();
+    let (single, batched) = (SimVfs::new(31), SimVfs::new(32));
+    let (one, many) = (open(&single), open(&batched));
+    for p in &payloads {
+        store(&one, p.as_bytes());
+    }
+    // Batches of 1, 7, 150 (over a block) and 300 (over two): appends that stay in the tail,
+    // fill it exactly, and cut it once or more.
+    let mut rest = payloads.as_slice();
+    for size in [1usize, 7, 150, 300, 1, 128, 113] {
+        let (now, later) = rest.split_at(size.min(rest.len()));
+        rest = later;
+        change(&many, |cs| {
+            for p in now {
+                cs.create(new(p)).unwrap();
+            }
+        });
+    }
+    assert!(rest.is_empty());
+    assert_eq!(blocks(&one), blocks(&many));
+    assert_clean(&many);
+
+    // An update of an old unit before the creations of its change set: the change set does
+    // not learn that its new units are above the stored ones, and writes the same blocks.
+    let ids = found(&one, b"token_");
+    assert_eq!(ids.len(), 700);
+    for db in [&one, &many] {
+        change(db, |cs| {
+            let upd = UnitUpdate { payload: b"token_9_moved zzq".to_vec(), schema_version: None, metadata: None };
+            cs.update(ids[3], upd, None).unwrap();
+            cs.create(new("token_9_fresh zzq")).unwrap();
+        });
+    }
+    assert_eq!(blocks(&one), blocks(&many));
+    assert_eq!(found(&many, b"zzq").len(), 2);
+    assert_clean(&many);
+
+    // Empty the tail of a list that has bounded blocks: it is deleted and the bounded blocks
+    // stay. New units then go to a new tail, above every bound.
+    let list = list_key(&type_prefix("sym"), *b"tok");
+    let of_list = |db: &UnitDb<E>| -> Vec<(Vec<u8>, Vec<UnitId>)> {
+        blocks(db).into_iter().filter(|(k, _)| k.starts_with(&list)).collect()
+    };
+    let before = of_list(&many);
+    let (tail_key, tail_units) = before.last().cloned().unwrap();
+    assert_eq!(decode_key(&tail_key).unwrap().2, None);
+    assert!(before.len() > 1, "the list has bounded blocks");
+    change(&many, |cs| {
+        for id in &tail_units {
+            cs.delete(*id, None).unwrap();
+        }
+    });
+    assert!(of_list(&many).iter().all(|(k, _)| decode_key(k).unwrap().2.is_some()), "no tail is left");
+    let added: Vec<UnitId> =
+        change(&many, |cs| (0..3).map(|i| cs.create(new(&format!("token_x_{i}"))).unwrap()).collect());
+    let after = of_list(&many);
+    assert_eq!(after.len(), before.len());
+    assert_eq!(after.last().map(|(k, u)| (decode_key(k).unwrap().2, u.clone())), Some((None, added.clone())));
+    assert_eq!(found(&many, b"token_x"), added);
+    assert_clean(&many);
 }

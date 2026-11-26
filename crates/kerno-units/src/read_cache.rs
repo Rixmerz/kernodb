@@ -1,9 +1,9 @@
 //! A cache of what a read already loaded and verified: schemas, units, the units of an
 //! indexed-field range and the relations of a unit.
 //!
-//! Reading a unit costs three point reads (head, revision metadata, payload)
-//! and a content hash; `find` also reads and decodes the type's schema on
-//! every call. A snapshot at one commit sequence never changes, so what one
+//! Reading a unit costs a point read and a content hash (three point reads
+//! when its head does not carry its payload, `units-v10.md`); `find` also
+//! reads and decodes the type's schema on every call. A snapshot at one commit sequence never changes, so what one
 //! read verified there, the next read at the same sequence may reuse.
 //!
 //! # Validity
@@ -105,6 +105,13 @@ impl ReadCache {
     pub(crate) fn set_budget(&self, budget: usize) {
         let mut c = self.lock();
         c.budget = budget;
+        c.schemas.clear();
+        c.drop_data();
+    }
+
+    /// Drops everything held; the budget stays.
+    pub(crate) fn clear(&self) {
+        let mut c = self.lock();
         c.schemas.clear();
         c.drop_data();
     }

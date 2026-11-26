@@ -1839,7 +1839,11 @@ struct ReadView {
 /// size of the MANIFEST. A flush, a compaction, a rotation and a checkpoint
 /// each change it; a commit does not (it only grows a WAL).
 fn fingerprint(vfs: &dyn Vfs, dir: &Path) -> Result<(recovery::Listing, u64)> {
-    let listing = list_dir(vfs, dir)?;
+    fingerprint_of(vfs, dir, list_dir(vfs, dir)?)
+}
+
+/// [`fingerprint`] with a listing the caller already has.
+fn fingerprint_of(vfs: &dyn Vfs, dir: &Path, listing: recovery::Listing) -> Result<(recovery::Listing, u64)> {
     let len = match vfs.open(&dir.join(MANIFEST), kerno_core::vfs::OpenMode::Existing) {
         Ok(f) => f.len()?,
         Err(e) if e.kind() == io::ErrorKind::NotFound => 0,
@@ -1855,12 +1859,12 @@ fn read_view_once(
     dir: &Path,
     ctx_for: &dyn Fn([u8; 16]) -> Result<Arc<TableCtx>>,
     reuse: &mut HashMap<u64, Arc<Table>>,
+    listing: &recovery::Listing,
 ) -> Result<ReadView> {
-    let listing = list_dir(&**vfs, dir)?;
     if !listing.has_manifest {
-        return Err(refuse_without_manifest(&listing).unwrap_or_else(|| no_database(dir)));
+        return Err(refuse_without_manifest(listing).unwrap_or_else(|| no_database(dir)));
     }
-    let (loaded, plan) = recovery::plan(&**vfs, dir, &listing)?;
+    let (loaded, plan) = recovery::plan(&**vfs, dir, listing)?;
     let ctx = ctx_for(loaded.replay.header.db_id)?;
     let state = &loaded.replay.state;
     let (levels, table_ro_compat) = recovery::open_tables_reusing(&ctx, state, reuse)?;
@@ -1880,6 +1884,7 @@ fn read_view(
     dir: &Path,
     ctx_for: &dyn Fn([u8; 16]) -> Result<Arc<TableCtx>>,
     reuse: &HashMap<u64, Arc<Table>>,
+    listed: Option<recovery::Listing>,
 ) -> Result<ReadView> {
     // Tables opened by an attempt that failed stay open for the next one (a
     // file that was opened cannot vanish under the reader), so each retry
@@ -1887,9 +1892,15 @@ fn read_view(
     // the writer's progress instead of repeating the whole open.
     let mut opened = reuse.clone();
     let started = Instant::now();
+    // A listing the caller has just made stands for the first one: the directory is read once
+    // per attempt, and what is read is what the attempt is compared against afterwards.
+    let mut listed = listed;
     loop {
-        let before = fingerprint(&**vfs, dir)?;
-        match read_view_once(vfs, dir, ctx_for, &mut opened) {
+        let before = match listed.take() {
+            Some(listing) => fingerprint_of(&**vfs, dir, listing)?,
+            None => fingerprint(&**vfs, dir)?,
+        };
+        match read_view_once(vfs, dir, ctx_for, &mut opened, &before.0) {
             Ok(view) => return Ok(view),
             Err(e) => {
                 let changed = fingerprint(&**vfs, dir).is_ok_and(|after| after != before);
@@ -1947,6 +1958,7 @@ impl KernoDb {
             sync_dir_entries(&*vfs, dir, &created, true)?;
         }
         let stats = Arc::new(Stats::default());
+        let lazy = cfg.lazy_tables && cfg.access == AccessMode::ReadOnly;
         let make_ctx = |db_id: [u8; 16]| {
             Arc::new(
                 TableCtx::new(vfs.clone(), dir.to_path_buf(), cfg.cache_bytes, stats.clone(), BLOCK_SIZE)
@@ -1954,7 +1966,7 @@ impl KernoDb {
                     .with_bytes_per_writeback(cfg.compaction.bytes_per_writeback)
                     .with_db_id(db_id)
                     .with_block_compression(cfg.block_compression)
-                    .with_lazy(cfg.lazy_tables && cfg.access == AccessMode::ReadOnly)
+                    .with_lazy(lazy)
                     .with_deleter(Deleter::inline(vfs.clone(), stats.clone())),
             )
         };
@@ -1962,7 +1974,8 @@ impl KernoDb {
         // while it reads, and `read_view` reads again when it does.
         let (lock, view): (Box<dyn Any + Send + Sync>, Option<ReadView>) = if requested_read_only {
             let ctx = std::cell::OnceCell::new();
-            let view = read_view(&vfs, dir, &|db_id| Ok(ctx.get_or_init(|| make_ctx(db_id)).clone()), &HashMap::new())?;
+            let ctx_for = |db_id| Ok(ctx.get_or_init(|| make_ctx(db_id)).clone());
+            let view = read_view(&vfs, dir, &ctx_for, &HashMap::new(), Some(first))?;
             (Box::new(()), Some(view))
         } else {
             let lock = vfs.lock(&dir.join("LOCK")).map_err(|e| match e.kind() {
@@ -2151,6 +2164,7 @@ impl KernoDb {
                 }
             },
             &reuse,
+            None,
         )?;
         bump_max(&inner.stats.l0_files_max, view.levels[0].len() as u64);
         let version = Arc::new(Version { mem: Arc::new(view.mem), imms: Vec::new(), levels: view.levels });

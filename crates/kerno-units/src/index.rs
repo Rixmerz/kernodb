@@ -380,7 +380,7 @@ impl<E: Engine> UnitSnapshot<E> {
         };
         let mut out = Vec::new();
         let mut seen = 0u64;
-        let pages = crate::db::UnitPages::new(&self.snap);
+        let pages = crate::db::UnitPages::new(&self.snap, self.checked_reads);
         scan_all(&self.snap, start, end, |k, v| {
             let Key::IndexType { unit_type: t, schema_version: sv, unit } = Key::decode(k)? else {
                 return Err(corruption("a key in the IDX_TYPE range is not an IDX_TYPE".into()));
@@ -390,7 +390,7 @@ impl<E: Engine> UnitSnapshot<E> {
             if schema_version.is_some_and(|f| f != sv) {
                 return Ok(());
             }
-            let Some((head, _, payload)) = pages.load(unit, None)? else {
+            let Some((head, payload)) = pages.load(unit, None)? else {
                 return Err(corruption(format!("IDX_TYPE entry of unit {unit} has no UNIT_HEAD")));
             };
             let u = to_unit(unit, head, payload);

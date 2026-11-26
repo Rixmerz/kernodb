@@ -53,6 +53,7 @@ fn unit_seeds() -> Vec<Pair> {
         content_hash: hash(),
         payload_len: 1,
         metadata: b"meta".to_vec(),
+        inline_payload: None,
     };
     let rev = RevisionMeta {
         kind: RevisionKind::Update,

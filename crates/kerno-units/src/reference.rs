@@ -58,7 +58,7 @@ impl<E: Engine> UnitSnapshot<E> {
         let mut cursor = vec![TAG_UNIT_HEAD];
         let mut inclusive = true;
         let mut out = Vec::new();
-        let pages = UnitPages::new(&self.snap);
+        let pages = UnitPages::new(&self.snap, self.checked_reads);
         loop {
             let start = if inclusive { Bound::Included(cursor.as_slice()) } else { Bound::Excluded(cursor.as_slice()) };
             let page = self.snap.scan(start, Bound::Excluded(&end), PAGE)?;
@@ -72,7 +72,7 @@ impl<E: Engine> UnitSnapshot<E> {
                     continue;
                 }
                 // The scanned head stands for the read of its key.
-                let Some((head, _, payload)) = pages.load(unit, Some((k, v)))? else {
+                let Some((head, payload)) = pages.load(unit, Some((k, v)))? else {
                     return Err(corruption(format!("unit {unit}: UNIT_HEAD vanished inside a snapshot")));
                 };
                 out.push(to_unit(unit, head, payload));

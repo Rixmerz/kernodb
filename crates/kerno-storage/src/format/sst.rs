@@ -143,26 +143,185 @@ pub fn decode_index(payload: &[u8], base: u64) -> Result<Vec<IndexEntry>> {
     Ok(out)
 }
 
+/// What the checks and the readers ask of a table's index, whatever holds it.
+pub trait BlockIndex {
+    /// How many data blocks the index lists.
+    fn blocks(&self) -> usize;
+    /// The last key of data block `i`.
+    fn last_key(&self, i: usize) -> &[u8];
+    fn handle(&self, i: usize) -> BlockHandle;
+
+    /// The first block whose last key is `>= key` (`blocks()` if none): the one that holds
+    /// `key` if the table does.
+    fn block_for(&self, key: &[u8]) -> usize {
+        let (mut lo, mut hi) = (0, self.blocks());
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if self.last_key(mid) < key {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
+    }
+}
+
+impl<B: AsRef<[u8]>> BlockIndex for [IndexEntry<B>] {
+    fn blocks(&self) -> usize {
+        self.len()
+    }
+
+    fn last_key(&self, i: usize) -> &[u8] {
+        self[i].last_key.as_ref()
+    }
+
+    fn handle(&self, i: usize) -> BlockHandle {
+        self[i].handle
+    }
+}
+
+impl<B: AsRef<[u8]>> BlockIndex for Vec<IndexEntry<B>> {
+    fn blocks(&self) -> usize {
+        self.len()
+    }
+
+    fn last_key(&self, i: usize) -> &[u8] {
+        self[i].last_key.as_ref()
+    }
+
+    fn handle(&self, i: usize) -> BlockHandle {
+        self[i].handle
+    }
+}
+
+/// An index that can be parsed from its block payload.
+pub trait DecodeIndex: BlockIndex + Sized {
+    /// As [`decode_index`]: the same checks, the same errors.
+    fn decode(payload: Vec<u8>, base: u64) -> Result<Self>;
+}
+
+impl DecodeIndex for Vec<IndexEntry> {
+    fn decode(payload: Vec<u8>, base: u64) -> Result<Self> {
+        decode_index(&payload, base)
+    }
+}
+
+/// The index of an open table as the engine keeps it: the block payload as it was read, and
+/// where each entry's key lies in it. [`decode_index`] makes one allocation per data block,
+/// which was most of the cost of loading a table; this makes two per table.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FlatIndex {
+    payload: Vec<u8>,
+    entries: Vec<FlatEntry>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FlatEntry {
+    key_at: u32,
+    key_len: u32,
+    handle: BlockHandle,
+}
+
+impl FlatIndex {
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+impl BlockIndex for FlatIndex {
+    fn blocks(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn last_key(&self, i: usize) -> &[u8] {
+        let e = &self.entries[i];
+        &self.payload[e.key_at as usize..(e.key_at + e.key_len) as usize]
+    }
+
+    fn handle(&self, i: usize) -> BlockHandle {
+        self.entries[i].handle
+    }
+}
+
+impl DecodeIndex for FlatIndex {
+    fn decode(payload: Vec<u8>, base: u64) -> Result<Self> {
+        // A meta block payload is at most `MAX_META_PAYLOAD` long, so positions fit in 32 bits.
+        debug_assert!(payload.len() as u64 <= MAX_META_PAYLOAD);
+        match flat_entries(&payload) {
+            Some(entries) => Ok(FlatIndex { payload, entries }),
+            // Not a valid index: the checked parser names the rule and the offset.
+            None => Err(decode_index(&payload, base)
+                .err()
+                .unwrap_or_else(|| FormatError::corruption("SST-O4", base, "index block does not parse"))),
+        }
+    }
+}
+
+/// A varint of a valid index at `*pos`, or `None` for anything [`decode_varint`] refuses.
+#[inline(always)]
+fn flat_varint(buf: &[u8], pos: &mut usize) -> Option<u64> {
+    let mut v = 0u64;
+    for i in 0..10 {
+        let b = *buf.get(*pos + i)?;
+        v |= u64::from(b & 0x7f) << (7 * i);
+        if b < 0x80 {
+            if (i == 9 && b > 1) || (b == 0 && i > 0) {
+                return None;
+            }
+            *pos += i + 1;
+            return Some(v);
+        }
+    }
+    None
+}
+
+/// The entries of an index payload [`decode_index`] accepts, and `None` for one it does not:
+/// the same grammar, without building an error on the way (a table's index is decoded every
+/// time the table is loaded, and a large table has thousands of entries).
+fn flat_entries(payload: &[u8]) -> Option<Vec<FlatEntry>> {
+    let mut pos = 0;
+    let count = flat_varint(payload, &mut pos)?;
+    let mut entries = Vec::with_capacity((count as usize).min(payload.len() / 3));
+    for _ in 0..count {
+        let key_len = flat_varint(payload, &mut pos)?;
+        if key_len > MAX_KEY_LEN as u64 || key_len > (payload.len() - pos) as u64 {
+            return None;
+        }
+        let key_at = pos;
+        pos += key_len as usize;
+        let offset = flat_varint(payload, &mut pos)?;
+        let len = flat_varint(payload, &mut pos)?;
+        entries.push(FlatEntry { key_at: key_at as u32, key_len: key_len as u32, handle: BlockHandle { offset, len } });
+    }
+    (pos == payload.len()).then_some(entries)
+}
+
 /// SST-O5: the entries cover exactly `[96, D)` in order, each length in
 /// `55..=80 MiB + 44`, last keys strictly increasing, `count = data_blocks`,
 /// and `count = 0` exactly when `point_entries = 0`. Errors carry `at`, the
 /// offset of the index block.
-pub fn check_index<B: AsRef<[u8]>>(index: &[IndexEntry<B>], data_end: u64, props: &Props, at: u64) -> Result<()> {
+pub fn check_index<I: BlockIndex + ?Sized>(index: &I, data_end: u64, props: &Props, at: u64) -> Result<()> {
     let o5 = |detail| Err(FormatError::corruption("SST-O5", at, detail));
     let mut next = HEADER_LEN as u64;
-    for (i, e) in index.iter().enumerate() {
-        if e.handle.offset != next {
+    for i in 0..index.blocks() {
+        let handle = index.handle(i);
+        if handle.offset != next {
             return o5("index entries are not contiguous from offset 96");
         }
-        if e.handle.len < MIN_DATA_BLOCK_LEN
-            || e.handle.len > super::block::MAX_STORED_DATA_PAYLOAD + BLOCK_TRAILER_LEN as u64
+        if handle.len < MIN_DATA_BLOCK_LEN
+            || handle.len > super::block::MAX_STORED_DATA_PAYLOAD + BLOCK_TRAILER_LEN as u64
         {
             return o5("data block length out of range");
         }
-        if i > 0 && index[i - 1].last_key.as_ref() >= e.last_key.as_ref() {
+        if i > 0 && index.last_key(i - 1) >= index.last_key(i) {
             return o5("index keys not strictly increasing");
         }
-        next = match e.handle.end() {
+        next = match handle.end() {
             Some(n) => n,
             None => return o5("index offsets overflow"),
         };
@@ -170,10 +329,10 @@ pub fn check_index<B: AsRef<[u8]>>(index: &[IndexEntry<B>], data_end: u64, props
     if next != data_end {
         return o5("index does not cover the data blocks exactly");
     }
-    if index.len() as u64 != props.data_blocks {
+    if index.blocks() as u64 != props.data_blocks {
         return o5("index count differs from data_blocks");
     }
-    if index.is_empty() != (props.point_entries == 0) {
+    if (index.blocks() == 0) != (props.point_entries == 0) {
         return o5("index count 0 does not match point_entries 0");
     }
     Ok(())
@@ -229,6 +388,73 @@ pub fn open_sst_from<S: ByteSource>(
     src: &mut S,
     ex: &SstExpect<'_>,
 ) -> std::result::Result<SstMeta, ReadError<S::Error>> {
+    let o: SstOpen<Vec<IndexEntry>> = open_sst_as(src, ex, true)?;
+    let filter = o.filter.expect("the filter was asked for");
+    Ok(SstMeta {
+        header: o.header,
+        footer: o.footer,
+        data_end: o.data_end,
+        index: o.index,
+        props: o.props,
+        filter,
+        fragments: o.fragments,
+    })
+}
+
+/// What [`open_sst_as`] read: [`SstMeta`] with the index kept as `I`, and the filter only if it
+/// was asked for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SstOpen<I> {
+    pub header: Header,
+    pub footer: Footer,
+    /// `D`: end of the data blocks.
+    pub data_end: u64,
+    pub index: I,
+    pub props: Props,
+    /// `None` when the open left the filter block unread ([`read_filter`] reads it later).
+    pub filter: Option<Filter>,
+    pub fragments: Vec<Fragment>,
+}
+
+/// Reads a meta block: `open_block`'s length checks before the read, then SST-O4.
+fn read_meta_block<S: ByteSource>(
+    src: &mut S,
+    file_number: u64,
+    h: BlockHandle,
+) -> std::result::Result<Vec<u8>, ReadError<S::Error>> {
+    if h.len < BLOCK_TRAILER_LEN as u64 {
+        return Err(FormatError::corruption("SST-O4", h.offset, "block shorter than its trailer").into());
+    }
+    if h.len - BLOCK_TRAILER_LEN as u64 > MAX_META_PAYLOAD {
+        return Err(FormatError::corruption("SST-O4", h.offset, "block payload above the format limit").into());
+    }
+    let mut block = vec![0; h.len as usize];
+    src.read_exact_at(h.offset, &mut block).map_err(ReadError::Source)?;
+    let payload_len = open_block(&block, file_number, h.offset, MAX_META_PAYLOAD, "SST-O4")?.len();
+    block.truncate(payload_len);
+    Ok(block)
+}
+
+/// The filter block of a table whose open left it unread: SST-O4 of the block, then SST-O7 of
+/// the filter, as [`open_sst_from`] applies them. `footer` is the open's.
+pub fn read_filter<S: ByteSource>(
+    src: &mut S,
+    file_number: u64,
+    footer: &Footer,
+) -> std::result::Result<Filter, ReadError<S::Error>> {
+    let payload = read_meta_block(src, file_number, footer.filter)?;
+    Ok(decode_filter(&payload, footer.filter.offset)?.to_owned_filter())
+}
+
+/// [`open_sst_from`] with the index kept as `I`. Without `with_filter` the filter block is
+/// neither read nor checked (its handle still is, by SST-O3): the rules that concern it
+/// (SST-O4 of its block, SST-O7) are then [`read_filter`]'s, whenever the caller needs the
+/// filter. Every other rule is evaluated, in the same order.
+pub fn open_sst_as<S: ByteSource, I: DecodeIndex>(
+    src: &mut S,
+    ex: &SstExpect<'_>,
+    with_filter: bool,
+) -> std::result::Result<SstOpen<I>, ReadError<S::Error>> {
     let len = src.len();
     // The header: 96 bytes, or the longer header_len a future version
     // declares (needed to verify its CRC before rejecting it by version).
@@ -256,35 +482,28 @@ pub fn open_sst_from<S: ByteSource>(
     let data_end = check_layout(&footer, len)?;
     let has_rdel = footer.rdel != BlockHandle::default();
     // SST-O4 in file order, with open_block's length checks before reading.
-    let mut read_meta = |h: BlockHandle| -> std::result::Result<Vec<u8>, ReadError<S::Error>> {
-        if h.len < BLOCK_TRAILER_LEN as u64 {
-            return Err(FormatError::corruption("SST-O4", h.offset, "block shorter than its trailer").into());
-        }
-        if h.len - BLOCK_TRAILER_LEN as u64 > MAX_META_PAYLOAD {
-            return Err(FormatError::corruption("SST-O4", h.offset, "block payload above the format limit").into());
-        }
-        let mut block = vec![0; h.len as usize];
-        src.read_exact_at(h.offset, &mut block).map_err(ReadError::Source)?;
-        let payload_len = open_block(&block, ex.file_number, h.offset, MAX_META_PAYLOAD, "SST-O4")?.len();
-        block.truncate(payload_len);
-        Ok(block)
-    };
+    let mut read_meta = |h: BlockHandle| read_meta_block(src, ex.file_number, h);
     let rdel_payload = if has_rdel { Some(read_meta(footer.rdel)?) } else { None };
-    let filter_payload = read_meta(footer.filter)?;
+    let filter_payload = if with_filter { Some(read_meta(footer.filter)?) } else { None };
     let props_payload = read_meta(footer.props)?;
     let index_payload = read_meta(footer.index)?;
-    let index = decode_index(&index_payload, footer.index.offset)?;
+    let index_at = footer.index.offset;
+    // The order of the two is the order of their errors (SST-O4 of the index first).
+    let index = I::decode(index_payload, index_at)?;
     let props = decode_props(&props_payload, footer.props.offset)?;
     check_index(&index, data_end, &props, footer.index.offset)?;
     check_props(&props, ex.meta, ex.last_seq, footer.props.offset)?;
-    let filter = decode_filter(&filter_payload, footer.filter.offset)?.to_owned_filter();
+    let filter = match &filter_payload {
+        Some(p) => Some(decode_filter(p, footer.filter.offset)?.to_owned_filter()),
+        None => None,
+    };
     let fragments: Vec<Fragment> = match &rdel_payload {
         Some(p) => decode_rangedel(p, footer.rdel.offset)?.iter().map(Fragment::to_owned_fragment).collect(),
         None => Vec::new(),
     };
     // Without a range block, a fragment count above 0 is the properties' fault.
     check_fragments(&fragments, &props, if has_rdel { footer.rdel.offset } else { footer.props.offset })?;
-    Ok(SstMeta { header, footer, data_end, index, props, filter, fragments })
+    Ok(SstOpen { header, footer, data_end, index, props, filter, fragments })
 }
 
 /// SST-V3 applied at open to the keys the open already holds: the last key of
@@ -303,14 +522,34 @@ pub fn open_sst_from<S: ByteSource>(
 /// it right after the open instead. The error carries the offset of the filter
 /// block and no key bytes.
 pub fn check_filter_holds_index_keys(sst: &SstMeta) -> Result<()> {
-    if sst.index.iter().all(|e| sst.filter.may_contain(bloom::hash(&e.last_key))) {
+    check_filter_holds_keys(&sst.filter, &sst.index, sst.footer.filter.offset, usize::MAX)
+}
+
+/// [`check_filter_holds_index_keys`] over at most `sample` of the index keys, evenly spread and
+/// always with the first and the last. What the check is for is a filter that is not this
+/// table's (zeroed, or another table's bytes under a valid CRC), and such a filter misses
+/// nearly every key: one that holds a share `p` of the keys passes a sample of `n` with
+/// probability `p^n`. A table opened for a few reads (`Config::lazy_tables`) asks for a
+/// sample, because hashing every index key costs more than those reads; an eager open and
+/// `verify()` ask for all of them.
+pub fn check_filter_holds_keys<I: BlockIndex + ?Sized>(
+    filter: &Filter,
+    index: &I,
+    filter_offset: u64,
+    sample: usize,
+) -> Result<()> {
+    let n = index.blocks();
+    let holds = |i: usize| filter.may_contain(bloom::hash(index.last_key(i)));
+    let ok = if n <= sample || sample < 2 {
+        (0..n).all(holds)
+    } else {
+        // `sample` positions from 0 to n - 1 inclusive.
+        (0..sample).all(|j| holds(j * (n - 1) / (sample - 1)))
+    };
+    if ok {
         return Ok(());
     }
-    Err(FormatError::corruption(
-        "SST-V3",
-        sst.footer.filter.offset,
-        "the last key of a data block is missing from the filter",
-    ))
+    Err(FormatError::corruption("SST-V3", filter_offset, "the last key of a data block is missing from the filter"))
 }
 
 /// SST-O7 and SST-F1 for the resident fragments: as many as
@@ -341,20 +580,20 @@ pub fn check_fragments<B: AsRef<[u8]>>(fragments: &[Fragment<B>], props: &Props,
 /// `payload` is the block's data-block payload, from
 /// [`data_block_payload`](super::block::data_block_payload) (which checks the
 /// encapsulation and decompresses).
-pub fn read_data_block<'a, B: AsRef<[u8]>>(
+pub fn read_data_block<'a, I: BlockIndex + ?Sized>(
     payload: &'a [u8],
-    index: &[IndexEntry<B>],
+    index: &I,
     i: usize,
     props: &Props,
 ) -> Result<Vec<Entry<&'a [u8]>>> {
-    let h = index[i].handle;
+    let h = index.handle(i);
     let entries = super::block::parse_data_block(payload, h.offset)?;
     let r2 = |detail| Err(FormatError::corruption("SST-R2", h.offset, detail));
     let (first, last) = (entries[0].key, entries[entries.len() - 1].key);
-    if last != index[i].last_key.as_ref() {
+    if last != index.last_key(i) {
         return r2("last key differs from the index");
     }
-    let first_ok = if i == 0 { first >= &props.smallest_key[..] } else { first > index[i - 1].last_key.as_ref() };
+    let first_ok = if i == 0 { first >= &props.smallest_key[..] } else { first > index.last_key(i - 1) };
     if !first_ok {
         return r2("first key not above the previous block");
     }
@@ -362,6 +601,34 @@ pub fn read_data_block<'a, B: AsRef<[u8]>>(
         return Err(FormatError::corruption("SST-R3", h.offset, "sequence outside the table's range"));
     }
     Ok(entries)
+}
+
+/// [`read_data_block`] for a reader that keeps the payload and not the entries: the same rules
+/// in the same order (all of SST-R1 over the block, then SST-R2, then SST-R3), no allocation.
+pub fn check_data_block<I: BlockIndex + ?Sized>(payload: &[u8], index: &I, i: usize, props: &Props) -> Result<()> {
+    let h = index.handle(i);
+    let (mut first, mut last): (&[u8], &[u8]) = (&[], &[]);
+    let (mut seen, mut seq_ok) = (false, true);
+    super::block::walk_data_block(payload, h.offset, |_, e| {
+        if !seen {
+            first = e.key;
+            seen = true;
+        }
+        last = e.key;
+        seq_ok &= e.seq >= props.smallest_seq && e.seq <= props.largest_seq;
+    })?;
+    let r2 = |detail| Err(FormatError::corruption("SST-R2", h.offset, detail));
+    if last != index.last_key(i) {
+        return r2("last key differs from the index");
+    }
+    let first_ok = if i == 0 { first >= &props.smallest_key[..] } else { first > index.last_key(i - 1) };
+    if !first_ok {
+        return r2("first key not above the previous block");
+    }
+    if !seq_ok {
+        return Err(FormatError::corruption("SST-R3", h.offset, "sequence outside the table's range"));
+    }
+    Ok(())
 }
 
 /// The `verify()` checks over a full read of an SST (SST-V1..V4). Feed every

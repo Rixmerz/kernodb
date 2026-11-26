@@ -205,6 +205,7 @@ fn write_revision<E: TxnEngine>(cs: &mut ChangeSet<'_, E>, u: &UnitData, ri: usi
             content_hash: m.content_hash,
             payload_len: m.payload_len,
             metadata: m.metadata.clone(),
+            inline_payload: UnitHead::inline_of(r.payload.as_deref()),
         };
         writes.push(Write::Put(key(Key::UnitHead { unit: id })?, head.encode()?));
     }

@@ -767,9 +767,13 @@ mod early_stop {
             commit(&db, |cs| cs.create_relation(owner, g, "follows", RelationProvenance::Declared)).expect("relate");
             ghosts.push(g);
         }
-        // The payload record, not the head: a scan of heads does not read it, opening the unit does.
-        let payload = Key::RevPayload { unit: ghosts[1], rev: RevNo(1) }.encode().expect("key");
-        db.raw_commit(vec![(payload, Some(vec![0xFF; 3]))]).expect("damage");
+        // The payload, not the fields of the head: a scan of heads does not check it, opening the
+        // unit does. The head of a unit this small carries its payload (`units-v10.md`), so that
+        // is the copy an open reads, and the one to damage: its last byte.
+        let head = Key::UnitHead { unit: ghosts[1] }.encode().expect("key");
+        let mut damaged = db.raw_get(&head).expect("read").expect("the head exists");
+        *damaged.last_mut().expect("not empty") ^= 0xFF;
+        db.raw_commit(vec![(head, Some(damaged))]).expect("damage");
         // With the type index ready the scan of `acct` opens only its own units, not every unit.
         db.rebuild_index().expect("rebuild reads heads only");
 

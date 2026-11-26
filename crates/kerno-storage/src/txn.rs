@@ -12,9 +12,10 @@
 //! keys, not the overlay's later writes). Together they are the canonical
 //! form of the writes (WAL-C1): the ranges, then the points in key order,
 //! each key once. Writes are appended to a buffer in call order; it is sorted
-//! once at commit (last write of a key wins). A read that needs the sorted
-//! view folds the buffer into a map first, so a batch that only writes pays
-//! one sort and no per-record tree insert.
+//! once at commit (last write of a key wins). A point read finds the last
+//! write of its key through a hash index of the buffer; only a scan, which
+//! needs the sorted view, folds the buffer into a map first. So a batch that
+//! writes and reads points pays one sort and no per-record tree insert.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, VecDeque};
@@ -32,11 +33,6 @@ use crate::stats::bump;
 /// transaction's ranges do not hide.
 const SCAN_PAGE: usize = 1024;
 
-/// Writes a `get` answers by scanning the buffer backwards; past this many
-/// the buffer is folded into the map instead, so that a transaction that
-/// reads between its writes does not scan a long buffer on every read.
-const PENDING_SCAN: usize = 32;
-
 type Entry = (Vec<u8>, Option<Vec<u8>>);
 
 /// The point writes of a transaction (`None` is a deletion).
@@ -47,32 +43,170 @@ struct Overlay {
     /// Writes since the last fold, in call order: a later entry of a key
     /// replaces an earlier one, and any entry replaces the map's.
     pending: Vec<Entry>,
+    /// Hash index of `pending` for `get`: open addressing, each slot `0`
+    /// (empty) or `1 +` the position in `pending` of the **last** write of a
+    /// key. A point read between writes is then one probe instead of a fold
+    /// of the buffer into the ordered map (a tree insert per write) or a scan
+    /// of the buffer. It is an index only: `pending` stays the truth, so the
+    /// canonical form (`into_sorted`, `fold`) does not depend on it. Length
+    /// a power of two, at most half full; empty until the first write.
+    slots: Vec<u32>,
+    /// Positions in `pending` of its lowest and its highest key (meaningless
+    /// while it is empty): a scan whose bounds lie wholly outside them needs
+    /// nothing from the buffer, so it does not fold it.
+    low: usize,
+    high: usize,
+}
+
+/// FNV-1a folded over eight bytes at a time: the keys are short (tens of
+/// bytes) and differ mostly in their last bytes, and the table only needs a
+/// spread, not resistance to chosen keys (a transaction hashes its own writes).
+fn hash_key(key: &[u8]) -> u64 {
+    const K: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut h = (key.len() as u64).wrapping_mul(K);
+    let (words, rest) = key.as_chunks::<8>();
+    for w in words {
+        h = (h.rotate_left(27) ^ u64::from_le_bytes(*w)).wrapping_mul(K);
+    }
+    let mut tail = [0u8; 8];
+    tail[..rest.len()].copy_from_slice(rest);
+    h = (h.rotate_left(27) ^ u64::from_le_bytes(tail)).wrapping_mul(K);
+    h ^ (h >> 29)
 }
 
 impl Overlay {
+    /// The slot of `key`: the one that holds its last write, or the empty
+    /// one where it goes. The table is never full (`index` keeps it at most
+    /// half full), so the probe ends.
+    fn slot(&self, key: &[u8]) -> usize {
+        let mask = self.slots.len() - 1;
+        let mut at = hash_key(key) as usize & mask;
+        loop {
+            match self.slots[at] {
+                0 => return at,
+                n if self.pending[n as usize - 1].0 == key => return at,
+                _ => at = (at + 1) & mask,
+            }
+        }
+    }
+
+    /// Points the index at the last entry of `pending`, just pushed.
+    fn index_last(&mut self) {
+        if self.pending.len() * 2 > self.slots.len() {
+            return self.reindex();
+        }
+        let at = self.slot(&self.pending[self.pending.len() - 1].0);
+        self.slots[at] = self.pending.len() as u32;
+    }
+
+    /// Rebuilds the index from `pending`, with room to double.
+    fn reindex(&mut self) {
+        let len = (self.pending.len() * 4).next_power_of_two().max(64);
+        self.slots.clear();
+        self.slots.resize(len, 0);
+        // In call order, so the slot of a key ends at its last write.
+        for i in 0..self.pending.len() {
+            let at = self.slot(&self.pending[i].0);
+            self.slots[at] = i as u32 + 1;
+        }
+    }
+
+    fn push(&mut self, entry: Entry) {
+        let at = self.pending.len();
+        if at == 0 {
+            (self.low, self.high) = (0, 0);
+        } else if entry.0 > self.pending[self.high].0 {
+            self.high = at;
+        } else if entry.0 < self.pending[self.low].0 {
+            self.low = at;
+        }
+        self.pending.push(entry);
+        self.index_last();
+    }
+
+    /// Finds the lowest and highest key of `pending` again, after entries were removed.
+    fn rebound(&mut self) {
+        (self.low, self.high) = (0, 0);
+        for (i, (k, _)) in self.pending.iter().enumerate() {
+            if *k > self.pending[self.high].0 {
+                self.high = i;
+            } else if *k < self.pending[self.low].0 {
+                self.low = i;
+            }
+        }
+    }
+
+    /// Whether a buffered write may lie within the bounds: `false` only when
+    /// every buffered key is below `start` or above `end`.
+    fn pending_within(&self, start: Bound<&[u8]>, end: Bound<&[u8]>) -> bool {
+        if self.pending.is_empty() {
+            return false;
+        }
+        let (low, high) = (self.pending[self.low].0.as_slice(), self.pending[self.high].0.as_slice());
+        let above = match start {
+            Bound::Included(s) => s > high,
+            Bound::Excluded(s) => s >= high,
+            Bound::Unbounded => false,
+        };
+        let below = match end {
+            Bound::Included(e) => e < low,
+            Bound::Excluded(e) => e <= low,
+            Bound::Unbounded => false,
+        };
+        !(above || below)
+    }
+
+    /// The last write of `key`, if the transaction wrote it.
+    fn get(&self, key: &[u8]) -> Option<&Option<Vec<u8>>> {
+        if !self.pending.is_empty() {
+            match self.slots[self.slot(key)] {
+                0 => {}
+                n => return Some(&self.pending[n as usize - 1].1),
+            }
+        }
+        self.map.get(key)
+    }
+
     fn fold(&mut self) {
+        if self.pending.is_empty() {
+            return;
+        }
         for (k, v) in self.pending.drain(..) {
             self.map.insert(k, v);
         }
+        self.slots.clear();
     }
 
     /// The points in key order, each key once, the last write of it.
     fn into_sorted(mut self) -> Vec<Entry> {
-        if self.map.is_empty() {
-            // Stable sort keeps the call order inside a run of one key; the
-            // run's last entry is the write that stands.
-            self.pending.sort_by(|a, b| a.0.cmp(&b.0));
-            let mut out: Vec<Entry> = Vec::with_capacity(self.pending.len());
-            for e in self.pending {
-                match out.last_mut() {
-                    Some(last) if last.0 == e.0 => *last = e,
-                    _ => out.push(e),
-                }
+        // Stable sort keeps the call order inside a run of one key; the
+        // run's last entry is the write that stands.
+        self.pending.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut buffered: Vec<Entry> = Vec::with_capacity(self.pending.len());
+        for e in self.pending {
+            match buffered.last_mut() {
+                Some(last) if last.0 == e.0 => *last = e,
+                _ => buffered.push(e),
             }
-            return out;
         }
-        self.fold();
-        self.map.into_iter().collect()
+        if self.map.is_empty() {
+            return buffered;
+        }
+        // Two sorted runs, merged: what a scan folded into the map earlier,
+        // and the buffer, whose writes are later and win on a key of both.
+        // Folding the buffer into the map instead costs a tree insert per
+        // write.
+        let mut out: Vec<Entry> = Vec::with_capacity(self.map.len() + buffered.len());
+        let mut folded = self.map.into_iter().peekable();
+        for e in buffered {
+            while let Some(f) = folded.next_if(|f| f.0 < e.0) {
+                out.push(f);
+            }
+            folded.next_if(|f| f.0 == e.0);
+            out.push(e);
+        }
+        out.extend(folded);
+        out
     }
 }
 
@@ -136,14 +270,7 @@ impl<'db> WriteTxn<'db> {
     /// snapshot's.
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         {
-            let mut ov = self.overlay();
-            if ov.pending.len() > PENDING_SCAN {
-                ov.fold();
-            }
-            if let Some((_, written)) = ov.pending.iter().rev().find(|(k, _)| k == key) {
-                return Ok(written.clone());
-            }
-            if let Some(written) = ov.map.get(key) {
+            if let Some(written) = self.overlay().get(key) {
                 return Ok(written.clone());
             }
         }
@@ -161,7 +288,14 @@ impl<'db> WriteTxn<'db> {
             return Ok(Vec::new());
         }
         let mut ov = self.overlay();
-        ov.fold();
+        // The buffer is folded into the ordered map only when one of its
+        // writes can be in the range: a caller that writes its keys in
+        // ascending order and seeks ahead of them (an index flush) then
+        // never pays a tree insert per write. What the map already holds is
+        // merged below either way.
+        if ov.pending_within(start, end) {
+            ov.fold();
+        }
         let mut written = ov.map.range::<[u8], _>((start, end)).peekable();
         let mut base = BasePages {
             snapshot: self.base(),
@@ -210,7 +344,7 @@ impl<'db> WriteTxn<'db> {
     pub fn put_owned(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<()> {
         check_put(&key, &value, self.db.limits())?;
         self.admit(key.len() + value.len())?;
-        self.overlay.get_mut().unwrap_or_else(PoisonError::into_inner).pending.push((key, Some(value)));
+        self.overlay.get_mut().unwrap_or_else(PoisonError::into_inner).push((key, Some(value)));
         Ok(())
     }
 
@@ -218,7 +352,7 @@ impl<'db> WriteTxn<'db> {
     pub fn delete(&mut self, key: &[u8]) -> Result<()> {
         check_delete(key, self.db.limits())?;
         self.admit(key.len())?;
-        self.overlay.get_mut().unwrap_or_else(PoisonError::into_inner).pending.push((key.to_vec(), None));
+        self.overlay.get_mut().unwrap_or_else(PoisonError::into_inner).push((key.to_vec(), None));
         Ok(())
     }
 
@@ -233,6 +367,8 @@ impl<'db> WriteTxn<'db> {
             let hit = |k: &[u8]| start <= k && k < end;
             ov.map.retain(|k, _| !hit(k));
             ov.pending.retain(|(k, _)| !hit(k));
+            ov.reindex();
+            ov.rebound();
             self.ranges.push((start.to_vec(), end.to_vec()));
         }
         Ok(())
@@ -409,5 +545,84 @@ impl BasePages<'_> {
 
     fn pop(&mut self) -> Option<(Vec<u8>, Vec<u8>)> {
         self.buffered.pop_front()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(n: u64) -> Vec<u8> {
+        format!("key-{n:04}").into_bytes()
+    }
+
+    /// The overlay against a plain ordered map, through growth of the hash
+    /// index, repeated keys, folds and removals: `get` and the canonical
+    /// form must agree with the map after every step.
+    #[test]
+    fn overlay_matches_an_ordered_map() {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for round in 0..20 {
+            let (mut ov, mut model) = (Overlay::default(), BTreeMap::new());
+            for step in 0..400 {
+                let (k, r) = (key(next() % 150), next() % 100);
+                match r {
+                    // A fold, as a scan over the buffered keys does.
+                    0..=2 => ov.fold(),
+                    // A range deletion removes the entries it covers from both views.
+                    3 => {
+                        let end = key(next() % 150);
+                        let (lo, hi) = if k <= end { (k.clone(), end) } else { (end, k.clone()) };
+                        ov.map.retain(|x, _| !(lo <= *x && *x < hi));
+                        ov.pending.retain(|(x, _)| !(lo <= *x && *x < hi));
+                        ov.reindex();
+                        ov.rebound();
+                        model.retain(|x: &Vec<u8>, _| !(lo <= *x && *x < hi));
+                    }
+                    4..=20 => {
+                        ov.push((k.clone(), None));
+                        model.insert(k.clone(), None);
+                    }
+                    _ => {
+                        let v = Some(vec![round as u8, step as u8]);
+                        ov.push((k.clone(), v.clone()));
+                        model.insert(k.clone(), v);
+                    }
+                }
+                let probe = key(next() % 150);
+                assert_eq!(ov.get(&probe), model.get(&probe), "round {round} step {step}");
+                if let (Some((low, _)), Some((high, _))) = (ov.pending.get(ov.low), ov.pending.get(ov.high)) {
+                    assert!(ov.pending.iter().all(|(x, _)| low <= x && x <= high));
+                }
+            }
+            let sorted = ov.into_sorted();
+            assert_eq!(sorted, model.into_iter().collect::<Vec<_>>(), "round {round}");
+        }
+    }
+
+    /// A scan folds the buffer only when one of its writes can lie within the bounds.
+    #[test]
+    fn pending_within_tells_when_a_scan_needs_the_buffer() {
+        let mut ov = Overlay::default();
+        let all = (Bound::Unbounded, Bound::Unbounded);
+        assert!(!ov.pending_within(all.0, all.1), "nothing buffered");
+        for n in [20, 10, 30] {
+            ov.push((key(n), None));
+        }
+        let (k5, k10, k30, k40) = (key(5), key(10), key(30), key(40));
+        assert!(ov.pending_within(all.0, all.1));
+        assert!(!ov.pending_within(Bound::Included(&k40), Bound::Unbounded), "above the highest");
+        assert!(!ov.pending_within(Bound::Excluded(&k30), Bound::Unbounded), "after the highest");
+        assert!(ov.pending_within(Bound::Included(&k30), Bound::Unbounded), "the highest itself");
+        assert!(!ov.pending_within(Bound::Unbounded, Bound::Excluded(&k10)), "before the lowest");
+        assert!(ov.pending_within(Bound::Unbounded, Bound::Included(&k10)), "the lowest itself");
+        assert!(!ov.pending_within(Bound::Unbounded, Bound::Included(&k5)), "below the lowest");
+        assert!(ov.pending_within(Bound::Included(&k5), Bound::Excluded(&k40)));
     }
 }

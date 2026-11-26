@@ -50,6 +50,17 @@ impl PartialOrd for InternalKey {
 /// `None` is a tombstone.
 type Value = Option<Vec<u8>>;
 
+/// Bits of a memtable's key filter (128 KiB): over eight per key for the
+/// most keys the default write buffer holds, and still correct, only less
+/// selective, for a larger buffer.
+const FILTER_BITS: u64 = 1 << 20;
+
+/// The two bits of a key in the filter, from its bloom hash (the halves of
+/// the hash are independent enough for two probes).
+fn filter_bits(hash: u64) -> [u64; 2] {
+    [hash % FILTER_BITS, (hash >> 32) % FILTER_BITS]
+}
+
 /// One piece of the range index: `[start, end)` (start is the map key) and
 /// the sequences of every tombstone covering all of it, ascending.
 #[derive(Clone, Debug)]
@@ -170,6 +181,17 @@ pub struct Memtable {
     /// Set when the memtable left the current version (it was written out):
     /// from then on only snapshots keep it alive.
     retired: OnceLock<Retired>,
+    /// A bloom filter of the user keys in `map`, so that a point read of a
+    /// key this memtable never held skips the search of the skip list (most
+    /// reads of a write-heavy load look for keys that were flushed long ago,
+    /// and pay that search in the active memtable and in every one waiting
+    /// to be flushed). Allocated by the first write.
+    ///
+    /// The writer sets a key's bits before it inserts the key, and a reader
+    /// only looks for entries at or below a sequence that was published
+    /// after its commit was applied, so a clear bit means the key is not
+    /// among the entries the reader may see. A set bit means nothing.
+    filter: OnceLock<Box<[AtomicU64]>>,
 }
 
 /// A memtable's bytes counted in `snapshot_retained_bytes`.
@@ -200,6 +222,7 @@ impl Memtable {
             extra_wals: Vec::new(),
             wal_len: AtomicU64::new(0),
             retired: OnceLock::new(),
+            filter: OnceLock::new(),
         }
     }
 
@@ -300,8 +323,15 @@ impl Memtable {
             }
             self.range_count.store(ranges.count, Relaxed);
         }
+        let filter = (!commit.points.is_empty())
+            .then(|| self.filter.get_or_init(|| (0..FILTER_BITS / 64).map(|_| AtomicU64::new(0)).collect()));
         for (key, value) in &commit.points {
             let (key, value) = (key.as_ref(), value.as_ref().map(|v| v.as_ref().to_vec()));
+            if let Some(words) = filter {
+                for bit in filter_bits(crate::format::bloom::hash(key)) {
+                    words[(bit / 64) as usize].fetch_or(1 << (bit % 64), Relaxed);
+                }
+            }
             let size = key.len() + value.as_ref().map_or(0, Vec::len) + ENTRY_OVERHEAD;
             self.bytes.fetch_add(size, Relaxed);
             self.map.insert(InternalKey { user_key: key.to_vec(), seq }, value);
@@ -316,6 +346,19 @@ impl Memtable {
     pub fn get(&self, probe: &InternalKey) -> Option<(u64, Value)> {
         let e = self.map.lower_bound(Bound::Included(probe))?;
         (e.key().user_key == probe.user_key).then(|| (e.key().seq, e.value().clone()))
+    }
+
+    /// Whether the memtable may hold a version of the key with the bloom
+    /// hash `hash` (`format::bloom::hash`): `false` only when it holds none
+    /// that a reader may see (see the `filter` field).
+    pub fn may_hold(&self, hash: u64) -> bool {
+        match self.filter.get() {
+            Some(words) => {
+                filter_bits(hash).iter().all(|bit| words[(bit / 64) as usize].load(Relaxed) & 1 << (bit % 64) != 0)
+            }
+            // No point write yet.
+            None => false,
+        }
     }
 
     /// The highest sequence `<= seq` of the range tombstones that cover `key`
@@ -436,6 +479,25 @@ mod tests {
 
     fn probe(k: &str, seq: u64) -> InternalKey {
         InternalKey { user_key: k.into(), seq }
+    }
+
+    /// The key filter never rules out a key the memtable holds, as a value or as a tombstone,
+    /// and rules out most keys it does not.
+    #[test]
+    fn the_filter_never_hides_a_stored_key() {
+        let m = Memtable::new(0);
+        let hash = |k: &str| crate::format::bloom::hash(k.as_bytes());
+        assert!(!m.may_hold(hash("anything")), "an empty memtable holds no key");
+        let keys: Vec<String> = (0..5000).map(|i| format!("key-{i}")).collect();
+        for (i, k) in keys.iter().enumerate() {
+            apply(&m, i as u64 + 1, &[(k, if i % 3 == 0 { None } else { Some("v") })]);
+        }
+        for k in &keys {
+            assert!(m.may_hold(hash(k)), "{k}");
+            assert!(m.get(&probe(k, u64::MAX)).is_some());
+        }
+        let wrong = (0..5000).filter(|i| m.may_hold(hash(&format!("other-{i}")))).count();
+        assert!(wrong < 50, "{wrong} of 5000 absent keys pass the filter");
     }
 
     #[test]

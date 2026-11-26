@@ -399,8 +399,13 @@ fn open_missing_in_parallel(
     reuse: &mut HashMap<u64, Arc<Table>>,
 ) -> Result<()> {
     let missing: Vec<_> = state.levels.iter().flatten().filter(|f| !reuse.contains_key(&f.number)).collect();
+    // A lazy table opens its file and reads nothing: there is no work to share out, and asking
+    // the system how many processors there are costs more than opening them.
+    if ctx.lazy || missing.len() < PARALLEL_OPEN_MIN {
+        return Ok(());
+    }
     let workers = std::thread::available_parallelism().map_or(1, usize::from).min(8);
-    if missing.len() < PARALLEL_OPEN_MIN || workers < 2 {
+    if workers < 2 {
         return Ok(());
     }
     let next = std::sync::atomic::AtomicUsize::new(0);

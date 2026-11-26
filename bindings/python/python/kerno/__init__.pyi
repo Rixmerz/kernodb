@@ -252,6 +252,10 @@ class Database:
         `InvalidArgumentError` (`limit < 1`, an empty needle or one over 1024 bytes, an empty `types`).
         """
     def last_commit_seq(self) -> int: ...
+    def set_read_cache_bytes(self, bytes: int) -> None:
+        """Set how many bytes of units already read and checked the handle keeps in memory, to answer
+        the same reads again until the next commit (32 MiB by default); 0 turns that off. The cache
+        starts empty either way."""
     def refresh(self) -> int:
         """Move a `read_only=True` database to the writer's newest commits; returns the sequence it now reads.
 

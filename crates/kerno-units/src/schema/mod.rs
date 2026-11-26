@@ -166,17 +166,25 @@ impl FieldValue {
     pub(crate) fn index_bytes(&self) -> Option<Vec<u8>> {
         Some(match self {
             FieldValue::Bool(b) => vec![u8::from(*b)],
-            FieldValue::Int(i) => ((*i as u64) ^ (1 << 63)).to_be_bytes().to_vec(),
+            FieldValue::Int(i) => int_index(*i).to_vec(),
             FieldValue::Float(f) if f.is_nan() => return None,
-            FieldValue::Float(f) => {
-                let bits = if *f == 0.0 { 0.0f64 } else { *f }.to_bits();
-                let ordered = if bits >> 63 == 1 { !bits } else { bits | (1 << 63) };
-                ordered.to_be_bytes().to_vec()
-            }
+            FieldValue::Float(f) => float_index(*f).to_vec(),
             FieldValue::Text(s) => escaped(s.as_bytes()),
             FieldValue::Bytes(b) => escaped(b),
         })
     }
+}
+
+/// The index encoding of an `Int`: its bits with the sign flipped, so it sorts as a number.
+fn int_index(i: i64) -> [u8; 8] {
+    ((i as u64) ^ (1 << 63)).to_be_bytes()
+}
+
+/// The index encoding of a `Float` that is not NaN: sorts as a number, `-0.0` as `0.0`.
+fn float_index(f: f64) -> [u8; 8] {
+    let bits = if f == 0.0 { 0.0f64 } else { f }.to_bits();
+    let ordered = if bits >> 63 == 1 { !bits } else { bits | (1 << 63) };
+    ordered.to_be_bytes()
 }
 
 /// `0x00` as `0x00 0xFF`, then the terminator `0x00 0x00`: sorts like the bytes
@@ -259,59 +267,137 @@ impl Document {
     }
 
     pub(crate) fn parse(bytes: &[u8]) -> Result<Document, String> {
-        let mut r = Cursor(bytes);
-        if r.take(1)? != [RECORD_VERSION] {
-            return Err("not a record (unknown version byte)".into());
-        }
-        let n = u16::from_be_bytes(r.array()?);
-        if usize::from(n) > MAX_FIELDS {
-            return Err(format!("{n} fields exceed {MAX_FIELDS}"));
-        }
         let mut map = BTreeMap::new();
-        let mut last: Option<String> = None;
-        for _ in 0..n {
-            let len = usize::from(r.take(1)?[0]);
-            let name =
-                std::str::from_utf8(r.take(len)?).map_err(|_| "a field name is not UTF-8".to_owned())?.to_owned();
-            check_name(&name)?;
-            if last.as_ref().is_some_and(|l| *l >= name) {
-                return Err("field names are not in strictly ascending order".into());
-            }
-            let ty =
-                FieldType::from_byte(r.take(1)?[0]).ok_or_else(|| format!("field {name:?} has an unknown type"))?;
-            let value = match ty {
-                FieldType::Bool => match r.take(1)?[0] {
-                    0 => FieldValue::Bool(false),
-                    1 => FieldValue::Bool(true),
-                    _ => return Err(format!("field {name:?} is a Bool that is neither 0 nor 1")),
-                },
-                FieldType::Int => FieldValue::Int(i64::from_be_bytes(r.array()?)),
-                FieldType::Float => {
-                    let f = f64::from_be_bytes(r.array()?);
-                    if f.is_nan() {
-                        return Err(format!("field {name:?} is NaN"));
-                    }
-                    FieldValue::Float(f)
-                }
-                FieldType::Text | FieldType::Bytes => {
-                    let len = u32::from_be_bytes(r.array()?) as usize;
-                    let raw = r.take(len)?;
-                    if ty == FieldType::Bytes {
-                        FieldValue::Bytes(raw.to_vec())
-                    } else {
-                        let s = std::str::from_utf8(raw).map_err(|_| format!("field {name:?} is not UTF-8"))?;
-                        FieldValue::Text(s.to_owned())
-                    }
-                }
-            };
-            last = Some(name.clone());
-            map.insert(name, value);
-        }
-        if !r.0.is_empty() {
-            return Err(format!("{} trailing bytes", r.0.len()));
-        }
+        walk_record(bytes, |name, value| {
+            map.insert(name.to_owned(), value.to_owned_value());
+        })?;
         Ok(Document(map))
     }
+
+    /// Reads the document in `bytes`, handing each field to `visit` in name order, without
+    /// building a [`Document`]: for a caller that turns the fields into values of its own (a
+    /// language binding making a dictionary). `visit` may have been called for some fields
+    /// before an error is found in a later one.
+    ///
+    /// # Errors
+    ///
+    /// As [`decode`](Self::decode).
+    pub fn visit<'a>(bytes: &'a [u8], visit: impl FnMut(&'a str, ValueRef<'a>)) -> Result<(), UnitError> {
+        walk_record(bytes, visit).map_err(|m| UnitError::InvalidArgument(format!("record: {m}")))
+    }
+
+    /// Whether `bytes` are a canonical record whose `field` has the index encoding `enc`:
+    /// `Document::parse(bytes)` then `get(field)` then `index_bytes() == enc`, without building
+    /// the document. A lookup asks this of every unit an index entry names.
+    pub(crate) fn field_encodes_to(bytes: &[u8], field: &str, enc: &[u8]) -> bool {
+        let mut agrees = false;
+        let walked = walk_record(bytes, |name, value| {
+            if name == field {
+                agrees = value.index_eq(enc);
+            }
+        });
+        walked.is_ok() && agrees
+    }
+}
+
+/// A field value inside the bytes of a document: what [`Document::visit`] hands out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ValueRef<'a> {
+    Bool(bool),
+    Int(i64),
+    /// Never NaN.
+    Float(f64),
+    Text(&'a str),
+    Bytes(&'a [u8]),
+}
+
+impl ValueRef<'_> {
+    fn to_owned_value(self) -> FieldValue {
+        match self {
+            ValueRef::Bool(b) => FieldValue::Bool(b),
+            ValueRef::Int(i) => FieldValue::Int(i),
+            ValueRef::Float(f) => FieldValue::Float(f),
+            ValueRef::Text(s) => FieldValue::Text(s.to_owned()),
+            ValueRef::Bytes(b) => FieldValue::Bytes(b.to_vec()),
+        }
+    }
+
+    /// Whether [`FieldValue::index_bytes`] of this value is `enc`.
+    fn index_eq(self, enc: &[u8]) -> bool {
+        match self {
+            ValueRef::Bool(b) => enc == [u8::from(b)],
+            ValueRef::Int(i) => enc == int_index(i),
+            ValueRef::Float(f) => enc == float_index(f),
+            ValueRef::Text(s) => escaped_eq(s.as_bytes(), enc),
+            ValueRef::Bytes(b) => escaped_eq(b, enc),
+        }
+    }
+}
+
+/// Whether [`escaped`] of `bytes` is `enc`.
+fn escaped_eq(bytes: &[u8], enc: &[u8]) -> bool {
+    let mut rest = enc;
+    for &b in bytes {
+        let n = if b == 0 { 2 } else { 1 };
+        if rest.len() < n || rest[0] != b || (b == 0 && rest[1] != 0xFF) {
+            return false;
+        }
+        rest = &rest[n..];
+    }
+    rest == [0, 0]
+}
+
+/// Reads a record, handing each field to `visit` in order. An error is what
+/// [`Document::parse`] says of bytes that are not a canonical record.
+fn walk_record<'a>(bytes: &'a [u8], mut visit: impl FnMut(&'a str, ValueRef<'a>)) -> Result<(), String> {
+    let mut r = Cursor(bytes);
+    if r.take(1)? != [RECORD_VERSION] {
+        return Err("not a record (unknown version byte)".into());
+    }
+    let n = u16::from_be_bytes(r.array()?);
+    if usize::from(n) > MAX_FIELDS {
+        return Err(format!("{n} fields exceed {MAX_FIELDS}"));
+    }
+    let mut last: Option<&str> = None;
+    for _ in 0..n {
+        let len = usize::from(r.take(1)?[0]);
+        let name = std::str::from_utf8(r.take(len)?).map_err(|_| "a field name is not UTF-8".to_owned())?;
+        check_name(name)?;
+        if last.is_some_and(|l| l >= name) {
+            return Err("field names are not in strictly ascending order".into());
+        }
+        let ty = FieldType::from_byte(r.take(1)?[0]).ok_or_else(|| format!("field {name:?} has an unknown type"))?;
+        let value = match ty {
+            FieldType::Bool => match r.take(1)?[0] {
+                0 => ValueRef::Bool(false),
+                1 => ValueRef::Bool(true),
+                _ => return Err(format!("field {name:?} is a Bool that is neither 0 nor 1")),
+            },
+            FieldType::Int => ValueRef::Int(i64::from_be_bytes(r.array()?)),
+            FieldType::Float => {
+                let f = f64::from_be_bytes(r.array()?);
+                if f.is_nan() {
+                    return Err(format!("field {name:?} is NaN"));
+                }
+                ValueRef::Float(f)
+            }
+            FieldType::Text | FieldType::Bytes => {
+                let len = u32::from_be_bytes(r.array()?) as usize;
+                let raw = r.take(len)?;
+                if ty == FieldType::Bytes {
+                    ValueRef::Bytes(raw)
+                } else {
+                    ValueRef::Text(std::str::from_utf8(raw).map_err(|_| format!("field {name:?} is not UTF-8"))?)
+                }
+            }
+        };
+        last = Some(name);
+        visit(name, value);
+    }
+    if !r.0.is_empty() {
+        return Err(format!("{} trailing bytes", r.0.len()));
+    }
+    Ok(())
 }
 
 fn put_bytes(out: &mut Vec<u8>, b: &[u8]) -> Result<(), String> {
@@ -585,6 +671,12 @@ pub(crate) fn decode_schema_key(key: &[u8]) -> Result<String, DecodeError> {
 
 /// `(unit_type, field, encoded value, unit)` of an entry key.
 pub(crate) fn decode_entry_key(key: &[u8]) -> Result<(String, String, Vec<u8>, UnitId), DecodeError> {
+    let (t, f, enc, unit) = entry_key_parts(key)?;
+    Ok((t.to_owned(), f.to_owned(), enc.to_vec(), unit))
+}
+
+/// [`decode_entry_key`] without copying the parts out of the key.
+pub(crate) fn entry_key_parts(key: &[u8]) -> Result<(&str, &str, &[u8], UnitId), DecodeError> {
     let shape =
         || DecodeError::new(UnitRule::Unit3, format!("field index key of {} bytes has no valid shape", key.len()));
     let tlen = usize::from(*key.get(1).ok_or_else(shape)?);
@@ -594,15 +686,13 @@ pub(crate) fn decode_entry_key(key: &[u8]) -> Result<(String, String, Vec<u8>, U
     if tlen == 0 || tlen > MAX_TYPE_LEN || flen == 0 || flen > MAX_FIELD_NAME_LEN || key.len() < value_at + 1 + 16 {
         return Err(shape());
     }
-    let text = |b: &[u8]| {
-        std::str::from_utf8(b)
-            .map(str::to_owned)
-            .map_err(|_| DecodeError::new(UnitRule::Unit12, "field index key names are not UTF-8"))
+    let text = |b| {
+        std::str::from_utf8(b).map_err(|_| DecodeError::new(UnitRule::Unit12, "field index key names are not UTF-8"))
     };
     let unit_at = key.len() - 16;
     let mut unit = [0u8; 16];
     unit.copy_from_slice(&key[unit_at..]);
-    Ok((text(&key[2..flen_at])?, text(&key[flen_at + 1..value_at])?, key[value_at..unit_at].to_vec(), UnitId(unit)))
+    Ok((text(&key[2..flen_at])?, text(&key[flen_at + 1..value_at])?, &key[value_at..unit_at], UnitId(unit)))
 }
 
 /// An entry's value is its envelope and nothing else.

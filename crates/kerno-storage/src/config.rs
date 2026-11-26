@@ -212,6 +212,12 @@ pub struct Config {
     /// costs the MANIFEST and one file open per table, whatever their size, and a table no
     /// read touches is never loaded. A table whose meta blocks are damaged is found by the
     /// first read that needs it (`Corruption`), not by `open`; `verify` still reads them all.
+    ///
+    /// A lazy table's filter is left on disk longer still: lookups go without it (always
+    /// correct, one data block read for a key the table does not hold) until they may have
+    /// read as many bytes of data blocks as the filter block is long, and only then is it read
+    /// and checked, against a sample of 64 of the table's index keys where an eager open
+    /// checks them all (SST-V3). Such a handle opens no table on other threads either.
     pub lazy_tables: bool,
     /// Size of the active memtable that triggers a switch to a new one and a
     /// flush of the old one to L0 (default 8 MiB; at least 4 KiB is used).
