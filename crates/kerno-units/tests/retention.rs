@@ -108,6 +108,17 @@ fn stored(d: &Dump, unit: UnitId) -> (Vec<u64>, Vec<u64>) {
             _ => {}
         }
     }
+    // The revisions that keep a payload: the head revision's is in the head when it carries
+    // it (units-v11 §2), with no REV_PAYLOAD.
+    let head_key = Key::UnitHead { unit }.encode().unwrap();
+    if let Some((_, v)) = d.iter().find(|(k, _)| *k == head_key) {
+        let head = kerno_units::codec::UnitHead::decode(v).expect("head");
+        if head.inline_payload.is_some() {
+            assert!(!payloads.contains(&head.head_rev.0), "the head's payload is stored twice");
+            payloads.push(head.head_rev.0);
+            payloads.sort_unstable();
+        }
+    }
     (metas, payloads)
 }
 

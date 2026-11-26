@@ -100,8 +100,29 @@ pub fn check_shape(key: &[u8], value: &[u8]) -> Result<(String, u8), DecodeError
     Ok((decode_key(key)?, decode_value(value)?))
 }
 
-/// An active unit and the key of its head payload.
-pub(crate) type ActiveHead = (crate::types::UnitId, Vec<u8>);
+/// An active unit and where its head payload is.
+pub(crate) type ActiveHead = (crate::types::UnitId, PayloadAt);
+
+/// Where the payload of a head revision is (`units-v11.md` §2).
+pub(crate) enum PayloadAt {
+    /// Carried by the head, which was read already.
+    Head(Vec<u8>),
+    /// In the `REV_PAYLOAD` with this key.
+    Rev(Vec<u8>),
+}
+
+impl PayloadAt {
+    /// The payload, read through `get` when the head does not carry it.
+    pub(crate) fn read(
+        self,
+        get: impl Fn(&[u8]) -> kerno_core::Result<Option<Vec<u8>>>,
+    ) -> Result<Option<Vec<u8>>, UnitError> {
+        Ok(match self {
+            PayloadAt::Head(p) => Some(p),
+            PayloadAt::Rev(k) => get(&k)?,
+        })
+    }
+}
 
 impl<E: TxnEngine> ChangeSet<'_, E> {
     /// The options byte of `unit_type` as this change set sees it (`0`: no
@@ -172,8 +193,13 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
             return Ok(());
         };
         // Index each active unit, or clear its entries.
-        for (unit, payload_key) in units {
-            let payload = if enabled { self.txn()?.get(&payload_key)? } else { None };
+        for (unit, at) in units {
+            let payload = if enabled {
+                let txn = self.txn()?;
+                at.read(|k| txn.get(k))?
+            } else {
+                None
+            };
             let plan = self.plan_document(unit, payload.as_deref())?;
             for w in plan.writes {
                 self.write_owned(w)?;
@@ -207,8 +233,11 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
                 let head =
                     UnitHead::decode(v).map_err(|e| crate::db::context(e, &format!("UNIT_HEAD of unit {unit}")))?;
                 if head.lifecycle == crate::types::Lifecycle::Active && head.unit_type == unit_type {
-                    let payload_key = Key::RevPayload { unit, rev: head.head_rev }.encode()?;
-                    out.push((unit, payload_key));
+                    let at = match head.inline_payload {
+                        Some(p) => PayloadAt::Head(p),
+                        None => PayloadAt::Rev(Key::RevPayload { unit, rev: head.head_rev }.encode()?),
+                    };
+                    out.push((unit, at));
                 }
             }
             match page.into_iter().last() {

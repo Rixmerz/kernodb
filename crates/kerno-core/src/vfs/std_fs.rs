@@ -43,9 +43,8 @@ impl Mapping {
         }
         // SAFETY: a fresh read-only shared mapping of `len` bytes of an open descriptor; the
         // kernel picks the address. Nothing is read until the call returns.
-        let addr = unsafe {
-            linux::mmap(std::ptr::null_mut(), len, linux::PROT_READ, linux::MAP_SHARED, file.as_raw_fd(), 0)
-        };
+        let addr =
+            unsafe { linux::mmap(std::ptr::null_mut(), len, linux::PROT_READ, linux::MAP_SHARED, file.as_raw_fd(), 0) };
         if addr as isize == -1 {
             return None;
         }

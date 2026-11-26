@@ -800,11 +800,15 @@ impl State {
             }
             Record::UnitHead { unit, mut head } => {
                 self.counts.units += 1;
-                // The payload a head carries (`units-v10.md` §2) is checked here against the
+                // The payload a head carries (`units-v11.md` §2) is checked here against the
                 // head's own declaration, and not kept: `check_head` holds the head to its
-                // REV_META, whose REV_PAYLOAD is checked against the same hash, so the two
-                // copies are the same bytes when all three checks pass.
+                // REV_META (same hash and length), and the head revision has no REV_PAYLOAD.
                 if let Some(inline) = head.inline_payload.take() {
+                    // It is the head payload the indexes are checked against (no REV_PAYLOAD).
+                    if head.lifecycle == Lifecycle::Active {
+                        self.fulltext.expect(unit, head.updated_seq.0, &inline);
+                        self.substring.expect(unit, &inline);
+                    }
                     if let Err(e) = verify_payload(&head.inline_decl(), Some(&inline)) {
                         self.push(
                             VerifyRule::Payload(e.rule),
@@ -1293,6 +1297,10 @@ impl State {
             .metas
             .iter()
             .filter(|(id, m)| !self.payloads.contains(id) && (m.payload_present || m.kind == RevisionKind::Delete))
+            // The head revision of a head that carries its payload has none (`units-v11.md` §2).
+            .filter(|((unit, rev), _)| {
+                !(self.inline_heads.contains(unit) && self.heads.get(unit).is_some_and(|h| h.head_rev == *rev))
+            })
             .filter_map(|(id, m)| verify_payload(&m.payload_decl(), None).err().map(|e| (*id, e.detail)))
             .collect();
         for ((unit, rev), detail) in missing {
@@ -1395,11 +1403,19 @@ impl State {
         if m.kind != RevisionKind::Delete && !m.payload_present {
             self.cross(CrossRule::Unit31, hk.clone(), format!("unit {unit}: head revision {top} has no payload"));
         }
-        if self.inline_heads.contains(&unit) && (!m.payload_present || !self.payloads.contains(&(unit, top))) {
+        if self.inline_heads.contains(&unit) && !m.payload_present {
             self.cross(
                 CrossRule::Unit31,
                 hk.clone(),
                 format!("unit {unit}: UNIT_HEAD carries a payload that head revision {top} does not have"),
+            );
+        }
+        // A payload is stored once: in the head when it carries it, else in the REV_PAYLOAD.
+        if self.inline_heads.contains(&unit) && self.payloads.contains(&(unit, top)) {
+            self.cross(
+                CrossRule::Unit31,
+                hk.clone(),
+                format!("unit {unit}: UNIT_HEAD carries the payload of revision {top}, which has a REV_PAYLOAD too"),
             );
         }
         if let Some(first) = self.metas.get(&(unit, oldest)) {

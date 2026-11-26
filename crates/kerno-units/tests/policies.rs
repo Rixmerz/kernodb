@@ -249,21 +249,22 @@ fn policy_matrix_one<E: TxnEngine>(p: HistoryPolicy, seed: u64) {
     assert!(sets[0].members.is_empty());
     assert_eq!(db.change_set(c1.commit_seq).unwrap().unwrap().members.len(), 1);
 
-    // IU-9: what is stored.
+    // IU-9: what is stored. The head revision's payload is in the head (units-v11 §2: every
+    // payload here is small), so it has no REV_PAYLOAD.
     let st = stored(&db);
     let (um, up) = &st[&u];
     let (dm, dp) = &st[&d];
     match p {
         HistoryPolicy::None => {
-            assert_eq!((um, up), (&set([4]), &set([4])), "{ctx}: none keeps only the head");
+            assert_eq!((um, up), (&set([4]), &set([])), "{ctx}: none keeps only the head");
             assert_eq!((dm, dp), (&set([2]), &set([])), "{ctx}");
         }
         HistoryPolicy::Audit => {
-            assert_eq!((um, up), (&set(1..=4), &set([4])), "{ctx}: audit keeps no old payload");
+            assert_eq!((um, up), (&set(1..=4), &set([])), "{ctx}: audit keeps no old payload");
             assert_eq!((dm, dp), (&set([1, 2]), &set([])), "{ctx}");
         }
         _ => {
-            assert_eq!((um, up), (&set(1..=4), &set(1..=4)), "{ctx}");
+            assert_eq!((um, up), (&set(1..=4), &set(1..=3)), "{ctx}");
             assert_eq!((dm, dp), (&set([1, 2]), &set([1])), "{ctx}");
         }
     }
@@ -285,9 +286,9 @@ fn policy_matrix_one<E: TxnEngine>(p: HistoryPolicy, seed: u64) {
     assert_eq!(now.payload.as_deref(), Some(if versioned { &b"v1"[..] } else { &b"v2"[..] }), "{ctx}");
     let st = stored(&db);
     match p {
-        HistoryPolicy::None => assert_eq!(st[&u], (set([5]), set([5])), "{ctx}"),
-        HistoryPolicy::Audit => assert_eq!(st[&u], (set(1..=5), set([5])), "{ctx}"),
-        _ => assert_eq!(st[&u], (set(1..=5), set(1..=5)), "{ctx}"),
+        HistoryPolicy::None => assert_eq!(st[&u], (set([5]), set([])), "{ctx}"),
+        HistoryPolicy::Audit => assert_eq!(st[&u], (set(1..=5), set([])), "{ctx}"),
+        _ => assert_eq!(st[&u], (set(1..=5), set(1..=4)), "{ctx}"),
     }
 
     // Policy change over time: to Versioned. Nothing is rewritten; what the
@@ -327,7 +328,8 @@ fn policy_matrix_one<E: TxnEngine>(p: HistoryPolicy, seed: u64) {
     cs.commit().unwrap();
     assert_eq!(db.get_revision(u, RevNo(6)).unwrap().payload.as_deref(), Some(&b"v6"[..]), "{ctx}");
     let st = stored(&db);
-    assert!(st[&u].1.is_superset(&set([5, 6, 7])), "{ctx}");
+    // Revision 7 is the head, whose payload is in the head (units-v11 §2).
+    assert!(st[&u].1.is_superset(&set([5, 6])) && !st[&u].1.contains(&7), "{ctx}");
 
     // And back to None: one write drops every older revision (IU-9).
     db.set_policy("doc", HistoryPolicy::None, meta()).unwrap();
@@ -335,7 +337,7 @@ fn policy_matrix_one<E: TxnEngine>(p: HistoryPolicy, seed: u64) {
     let mut cs = db.begin_changeset(meta()).unwrap();
     cs.update(u, upd(b"v8"), None).unwrap();
     cs.commit().unwrap();
-    assert_eq!(stored(&db)[&u], (set([8]), set([8])), "{ctx}: none after versioned");
+    assert_eq!(stored(&db)[&u], (set([8]), set([])), "{ctx}: none after versioned");
     assert_eq!(db.get_unit(u).unwrap().unwrap().oldest, RevNo(8));
 
     // Policies persist across a reopen.
@@ -540,6 +542,11 @@ fn check_stored<E: TxnEngine>(db: &UnitDb<E>, model: &UnitModel, ctx: &str) {
         let payloads = set(model.history(id)[oldest as usize - 1..]
             .iter()
             .filter(|r| r.content_kept && r.payload.is_some())
+            // The head's payload, when it fits there, is in the head only (units-v11 §2).
+            .filter(|r| {
+                r.rev.0 != head
+                    || r.payload.as_ref().is_some_and(|p| p.len() > kerno_units::codec::INLINE_PAYLOAD_MAX as usize)
+            })
             .map(|r| r.rev.0));
         assert_eq!(st.get(&id).cloned().unwrap_or_default(), (metas, payloads), "{ctx}: stored revisions of {id}");
     }

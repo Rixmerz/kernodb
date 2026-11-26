@@ -100,7 +100,20 @@ impl Check {
         for (unit, head) in heads.iter().filter(|(_, h)| h.unit_type == unit_type && h.lifecycle != Lifecycle::Deleted)
         {
             // A missing payload is a finding of its own (UNIT-26, UNIT-30).
-            let Some(payload) = snap.get(&Key::RevPayload { unit: *unit, rev: head.head_rev }.encode()?)? else {
+            // The verifier keeps its heads without the payload they carry (`units-v11.md` §2):
+            // without a REV_PAYLOAD, the head is read again for it.
+            let payload = match &head.inline_payload {
+                Some(p) => Some(p.clone()),
+                None => match snap.get(&Key::RevPayload { unit: *unit, rev: head.head_rev }.encode()?)? {
+                    Some(p) => Some(p),
+                    None => snap
+                        .get(&Key::UnitHead { unit: *unit }.encode()?)?
+                        .and_then(|raw| UnitHead::decode(&raw).ok())
+                        .filter(|h| h.head_rev == head.head_rev)
+                        .and_then(|h| h.inline_payload),
+                },
+            };
+            let Some(payload) = payload else {
                 continue;
             };
             // The parse and validation messages name fields read from the payload, which

@@ -76,12 +76,11 @@ use std::ops::Bound;
 
 use kerno_core::contract::{Engine, Snapshot, Txn, TxnEngine};
 
-use crate::codec::{Key, UnitHead};
+use crate::db::NewUnit;
 use crate::db::{ChangeSet, UnitDb, UnitSnapshot, Write, context, scan_all};
 use crate::error::{DecodeError, UnitError, UnitRule};
 use crate::type_options::TAG_TYPE_OPTIONS;
 use crate::types::{Lifecycle, UnitId};
-use crate::db::NewUnit;
 use tokenize::{Doc, analyze};
 
 pub(crate) use check::Check;
@@ -366,22 +365,13 @@ pub(crate) enum Next<'a> {
 
 /// Reads the unit's new head and payload off the writes of its operation.
 pub(crate) fn next_of(unit: UnitId, writes: &[Write]) -> Result<Next<'_>, UnitError> {
-    let head_key = Key::UnitHead { unit }.encode()?;
-    let Some(Write::Put(_, raw)) = writes.iter().find(|w| matches!(w, Write::Put(k, _) if *k == head_key)) else {
+    let Some((head, payload)) = crate::db::planned_head(unit, writes)? else {
         return Ok(Next::Unchanged);
     };
-    let head = UnitHead::decode(raw).map_err(|e| context(e, &format!("UNIT_HEAD of unit {unit}")))?;
     if head.lifecycle != Lifecycle::Active {
         return Ok(Next::Content(head.unit_type, None));
     }
-    let payload_key = Key::RevPayload { unit, rev: head.head_rev }.encode()?;
-    Ok(writes
-        .iter()
-        .find_map(|w| match w {
-            Write::Put(k, p) if *k == payload_key => Some(p.as_slice()),
-            _ => None,
-        })
-        .map_or(Next::Unchanged, |p| Next::Content(head.unit_type, Some(p))))
+    Ok(payload.map_or(Next::Unchanged, |p| Next::Content(head.unit_type, Some(p))))
 }
 
 /// What a change set will change in the posting lists: per term, the postings

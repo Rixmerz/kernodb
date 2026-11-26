@@ -353,7 +353,11 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         if head.lifecycle != Lifecycle::Active {
             return Ok(Vec::new());
         }
-        Ok(txn.get(&key(Key::RevPayload { unit, rev: head.head_rev })?)?.map(|p| grams(&p)).unwrap_or_default())
+        let payload = match head.inline_payload {
+            Some(p) => Some(p),
+            None => txn.get(&key(Key::RevPayload { unit, rev: head.head_rev })?)?,
+        };
+        Ok(payload.map(|p| grams(&p)).unwrap_or_default())
     }
 
     /// The index change that follows the operation `writes` on `unit`, planned
@@ -458,8 +462,9 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
                 cs.substring_pending.types.retain(|(p, _)| *p != prefix);
                 return cs.write_owned(Write::DeleteRange(start, end));
             }
-            for (unit, payload_key) in units {
-                let Some(payload) = cs.txn()?.get(&payload_key)? else { continue };
+            for (unit, at) in units {
+                let txn = cs.txn()?;
+                let Some(payload) = at.read(|k| txn.get(k))? else { continue };
                 let added = distinct(&payload);
                 cs.stage_substring(unit, Some(GramChange { prefix: prefix.clone(), gone: Vec::new(), added }));
             }
@@ -664,7 +669,10 @@ impl<E: Engine> UnitSnapshot<E> {
             let Some(head) = crate::history::read_head(&get, unit)? else {
                 return Err(corruption(format!("a TRIGRAM entry of unit {unit} has no UNIT_HEAD")));
             };
-            let payload = self.snap.get(&key(Key::RevPayload { unit, rev: head.head_rev })?)?;
+            let payload = match head.inline_payload {
+                Some(p) => Some(p),
+                None => self.snap.get(&key(Key::RevPayload { unit, rev: head.head_rev })?)?,
+            };
             if payload.is_some_and(|p| holds(&p, needle)) {
                 out.push(unit);
                 if out.len() == limit {
@@ -868,7 +876,8 @@ where
                 workers
                     .into_iter()
                     .flat_map(|w| {
-                        w.join().unwrap_or_else(|_| vec![(0, Err(corruption("a substring scan thread panicked".into())))])
+                        w.join()
+                            .unwrap_or_else(|_| vec![(0, Err(corruption("a substring scan thread panicked".into())))])
                     })
                     .collect()
             })
@@ -943,8 +952,7 @@ where
                         let Key::UnitHead { unit } = Key::decode(k)? else {
                             return Err(corruption("a key in the UNIT_HEAD range is not a UNIT_HEAD".into()));
                         };
-                        let head =
-                            UnitHead::decode(v).map_err(|e| context(e, &format!("UNIT_HEAD of unit {unit}")))?;
+                        let head = UnitHead::decode(v).map_err(|e| context(e, &format!("UNIT_HEAD of unit {unit}")))?;
                         if head.lifecycle == Lifecycle::Active
                             && types.is_none_or(|ts| ts.contains(&head.unit_type.as_str()))
                         {

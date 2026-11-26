@@ -182,7 +182,10 @@ fn write_revision<E: TxnEngine>(cs: &mut ChangeSet<'_, E>, u: &UnitData, ri: usi
     let r = &u.revs[ri];
     let (id, m) = (u.id, &r.meta);
     let mut writes = vec![Write::Put(key(Key::RevMeta { unit: id, rev: r.no })?, m.encode(r.no)?)];
-    if let Some(p) = &r.payload {
+    // The head carries a payload of at most INLINE_PAYLOAD_MAX bytes, and then its revision
+    // has no REV_PAYLOAD (`units-v11.md` §2); every other revision keeps its own.
+    let carried = r.no == u.head && UnitHead::inline_of(r.payload.as_deref()).is_some();
+    if let Some(p) = r.payload.as_ref().filter(|_| !carried) {
         writes.push(Write::Put(key(Key::RevPayload { unit: id, rev: r.no })?, p.clone()));
     }
     let mut live = None;

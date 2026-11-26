@@ -82,16 +82,22 @@ pub const LAYER_VERSION_BLOCKS: u32 = 9;
 /// A database created by this build starts here, and a build that reads up
 /// to 9 refuses it.
 pub const LAYER_VERSION_INLINE_PAYLOAD: u32 = 10;
+/// `layer_version` of the format cut of `docs/file-format/units-v11.md`: a
+/// payload the `UNIT_HEAD` carries is stored there only. The head revision of
+/// such a unit has no `REV_PAYLOAD`; one is written when a later revision
+/// supersedes it and the history keeps its payload. A database created by
+/// this build starts here, and a build that reads up to 10 refuses it.
+pub const LAYER_VERSION_HEAD_PAYLOAD_ONCE: u32 = 11;
 /// The newest `layer_version` this build reads and writes.
-pub const MAX_LAYER_VERSION: u32 = LAYER_VERSION_INLINE_PAYLOAD;
+pub const MAX_LAYER_VERSION: u32 = LAYER_VERSION_HEAD_PAYLOAD_ONCE;
 /// The lowest `layer_version` this build opens: the format cut of
-/// `units-v10.md`, which supersedes the cuts of ADR-0026 and of
+/// `units-v11.md`, which supersedes the cuts of `units-v10.md`, ADR-0026 and
 /// 1.0.0-alpha.2 (ADR-0023). Every database it creates starts here. A
 /// database below it is exported with the build that wrote it and imported.
-pub const MIN_LAYER_VERSION: u32 = LAYER_VERSION_INLINE_PAYLOAD;
+pub const MIN_LAYER_VERSION: u32 = LAYER_VERSION_HEAD_PAYLOAD_ONCE;
 /// The longest payload a writer of this layer stores in the `UNIT_HEAD` of
-/// its unit as well as in its `REV_PAYLOAD` (`units-v10.md` §2), and the
-/// longest a reader accepts there.
+/// its unit instead of in the `REV_PAYLOAD` of the head revision
+/// (`units-v11.md` §2), and the longest a reader accepts there.
 pub const INLINE_PAYLOAD_MAX: u32 = 2048;
 /// The byte that announces an inline payload at the end of a `UNIT_HEAD`.
 pub const HEAD_TRAILER_PAYLOAD: u8 = 1;
@@ -731,7 +737,17 @@ impl UnitHead {
 
     pub fn encode(&self) -> Result<Vec<u8>, UnitError> {
         // Fixed fields, the variable ones, and the trailer with its tag.
-        let len = 2 + 4 + self.unit_type.len() + 4 + 1 + 6 * 8 + 32 + 4 + 1 + 4 + self.metadata.len()
+        let len = 2
+            + 4
+            + self.unit_type.len()
+            + 4
+            + 1
+            + 6 * 8
+            + 32
+            + 4
+            + 1
+            + 4
+            + self.metadata.len()
             + self.inline_payload.as_ref().map_or(0, |p| 1 + p.len());
         let mut w = Writer::envelope_for(len + 16);
         w.bytes(self.unit_type.as_bytes(), MAX_UNIT_TYPE_LEN, "UNIT_HEAD.unit_type")?;

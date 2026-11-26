@@ -145,10 +145,9 @@ fn base<E: TxnEngine>(seed: u64) -> Base {
     update(&db, c, &[5; 10]);
     let (d, _) = db.create_unit(new_unit("non", &[6; 10]), meta()).unwrap();
     let snap = db.raw_snapshot().unwrap();
-    let d_rev1 = (
-        snap.get(&k(Key::RevMeta { unit: d, rev: RevNo(1) })).unwrap().unwrap(),
-        snap.get(&k(Key::RevPayload { unit: d, rev: RevNo(1) })).unwrap().unwrap(),
-    );
+    // Revision 1 is the head: its payload is in the head, not in a REV_PAYLOAD (units-v11 §2).
+    assert_eq!(snap.get(&k(Key::RevPayload { unit: d, rev: RevNo(1) })).unwrap(), None);
+    let d_rev1 = (snap.get(&k(Key::RevMeta { unit: d, rev: RevNo(1) })).unwrap().unwrap(), vec![6; 10]);
     drop(snap);
     update(&db, d, &[7; 10]);
     step(&db, "policies applied");
@@ -167,7 +166,8 @@ fn base<E: TxnEngine>(seed: u64) -> Base {
     let report = db.verify_units().unwrap();
     assert_eq!(
         (report.counts.units, report.counts.revisions, report.counts.payloads),
-        (5, 5 + 2 + 2 + 1 + 2, 5 + 1 + 1 + 1 + 2),
+        // REV_PAYLOAD: a's 1..=4, b's 1, e's 3; the heads of a, c, d and e carry theirs.
+        (5, 5 + 2 + 2 + 1 + 2, 4 + 1 + 1),
         "{:?}",
         report.counts
     );
@@ -248,11 +248,15 @@ fn damages(b: &Base) -> Vec<(&'static str, Patch, &'static str)> {
     rev0[17..].fill(0);
     let newer = LayerMeta { layer_version: 1, history_policy: HistoryPolicy::Versioned }.encode().unwrap();
     let mut newer = newer;
-    newer[5] = 11; // layer_version = 11, above the newest, 10 (2 DERIVED_VECTORS, 3 public ids, 4 adjacency counts, 5 live-unit counts, 6 schemas, 7 type options, 8 substring index, 9 posting blocks, 10 payload in the head)
+    newer[5] = 12; // layer_version = 12, above the newest, 11 (2 DERIVED_VECTORS, 3 public ids, 4 adjacency counts, 5 live-unit counts, 6 schemas, 7 type options, 8 substring index, 9 posting blocks, 10 payload in the head, 11 stored once)
+    // The head of `a` without the payload it carries: its revision then has none anywhere.
+    let mut bare_a = UnitHead::decode(&raw[&head_key(a)]).unwrap();
+    bare_a.inline_payload = None;
     vec![
         ("payload byte changed", vec![(pay(a, 2), Some(flipped))], "UNIT-28"),
         ("payload truncated", vec![(pay(a, 3), Some(raw[&pay(a, 3)][..4].to_vec()))], "UNIT-27"),
-        ("head payload missing", vec![(pay(a, 5), None)], "UNIT-26"),
+        ("head payload missing", vec![(head_key(a), Some(bare_a.encode().unwrap()))], "UNIT-26"),
+        ("head payload stored twice", vec![(pay(a, 5), Some(vec![1; 10]))], "UNIT-31"),
         ("payload of an audited revision", vec![(pay(c, 1), Some(vec![4; 10]))], "UNIT-26"),
         ("REV_META missing", vec![(k(Key::RevMeta { unit: a, rev: RevNo(2) }), None)], "UNIT-31"),
         ("head missing", vec![(head_key(bu), None)], "UNIT-30"),
@@ -370,7 +374,7 @@ fn damage_detected<E: TxnEngine>() {
                 assert!(name.starts_with("mark"), "{name}: open refused: {e}");
                 assert!(is_damage_error(&e), "{name}: {e}");
                 if rule == "UNIT-16" {
-                    assert!(matches!(e, UnitError::IncompatibleLayer { found: 11, supported: 10 }), "{e}");
+                    assert!(matches!(e, UnitError::IncompatibleLayer { found: 12, supported: 11 }), "{e}");
                 }
                 if name == "mark missing" {
                     assert!(matches!(e, UnitError::NotAUnitDatabase), "{e}");
@@ -519,7 +523,7 @@ fn verify_writes_nothing<E: TxnEngine>() {
     let b = base::<E>(73);
     let mark = k(Key::LayerMeta { name: "layer".into() });
     let mut newer = LayerMeta { layer_version: 1, history_policy: HistoryPolicy::Versioned }.encode().unwrap();
-    newer[5] = 11;
+    newer[5] = 12;
     let variants: Vec<Patch> = vec![
         vec![],
         vec![(mark.clone(), None)],
@@ -565,7 +569,7 @@ fn kerno_read_only_untouched() {
     let b = base::<KernoDb>(74);
     let mark = k(Key::LayerMeta { name: "layer".into() });
     let mut newer = LayerMeta { layer_version: 1, history_policy: HistoryPolicy::Versioned }.encode().unwrap();
-    newer[5] = 11;
+    newer[5] = 12;
     for patch in [vec![], vec![(mark.clone(), None)], vec![(mark, Some(newer))]] {
         let disk = SimVfs::restore(&b.image);
         if !patch.is_empty() {
@@ -629,11 +633,13 @@ fn sentinel_no_content<E: TxnEngine>() {
         correlation: Some(s.clone()),
         purpose: Purpose::Application,
     };
-    let unit = || NewUnit { unit_type: "doc".into(), schema_version: 1, metadata: s.clone(), payload: s.clone() };
+    // Payloads over INLINE_PAYLOAD_MAX: every revision, the head's too, has a REV_PAYLOAD to damage.
+    let body = s.repeat(2049 / s.len() + 1);
+    let unit = || NewUnit { unit_type: "doc".into(), schema_version: 1, metadata: s.clone(), payload: body.clone() };
     let (a, _) = db.create_unit(unit(), m.clone()).unwrap();
     for i in 0..3u8 {
         let mut cs = db.begin_changeset(m.clone()).unwrap();
-        let mut p = s.clone();
+        let mut p = body.clone();
         p.push(i);
         cs.update(a, UnitUpdate { payload: p, schema_version: None, metadata: Some(s.clone()) }, None).unwrap();
         cs.commit().unwrap();

@@ -436,6 +436,32 @@ pub(crate) fn load_unit(get: &GetFn<'_>, id: UnitId) -> Result<Option<Loaded>, U
     Ok(Some((head, Some(inline))))
 }
 
+/// A head among planned writes and the payload of its revision ([`planned_head`]).
+pub(crate) type PlannedHead<'w> = (UnitHead, Option<&'w [u8]>);
+
+/// The head `writes` put for `unit`, decoded, and the payload of its head revision as those
+/// writes hold it: the copy at the end of the head when the head carries one (`units-v11.md`
+/// §2), else the `REV_PAYLOAD` among the writes. `None`: no head among the writes.
+pub(crate) fn planned_head(unit: UnitId, writes: &[Write]) -> Result<Option<PlannedHead<'_>>, UnitError> {
+    let head_key = key(Key::UnitHead { unit })?;
+    let Some(Write::Put(_, raw)) = writes.iter().find(|w| matches!(w, Write::Put(k, _) if *k == head_key)) else {
+        return Ok(None);
+    };
+    let mut head = UnitHead::decode(raw).map_err(|e| context(e, &format!("UNIT_HEAD of unit {unit}")))?;
+    // The copy is the head's trailer, its last bytes: borrowed from the write, not the decode.
+    let payload = match head.inline_payload.take() {
+        Some(p) => Some(&raw[raw.len() - p.len()..]),
+        None => {
+            let payload_key = key(Key::RevPayload { unit, rev: head.head_rev })?;
+            writes.iter().find_map(|w| match w {
+                Write::Put(k, p) if *k == payload_key => Some(p.as_slice()),
+                _ => None,
+            })
+        }
+    };
+    Ok(Some((head, payload)))
+}
+
 /// [`load_unit`] that always reads the head revision as well: the head must mirror its
 /// `REV_META` (IU-2), the `REV_PAYLOAD` must be the payload the revision declares, and an
 /// inline payload must be those same bytes.
@@ -476,7 +502,17 @@ fn load_revision(get: &GetFn<'_>, id: UnitId, head: UnitHead, inline: Option<Vec
     if !consistent {
         return Err(corruption(format!("unit {id}: UNIT_HEAD disagrees with the REV_META of revision {rev}")));
     }
-    let stored = get(&key(Key::RevPayload { unit: id, rev })?)?;
+    // A payload the head carries has no REV_PAYLOAD of its revision (`units-v11.md` §2).
+    let stored = match get(&key(Key::RevPayload { unit: id, rev })?)? {
+        Some(p) if inline.is_some() => {
+            return Err(corruption(format!(
+                "unit {id}: revision {rev} has a REV_PAYLOAD although its UNIT_HEAD carries the payload ({} bytes)",
+                p.len()
+            )));
+        }
+        Some(p) => Some(p),
+        None => inline.clone(),
+    };
     let verified = verify_payload(&meta.payload_decl(), stored.as_deref())
         .map_err(|e| crate::PayloadError { detail: format!("unit {id} rev {rev}: {}", e.detail), ..e })?;
     if inline.is_some() && inline.as_deref() != verified.bytes() {
@@ -795,14 +831,15 @@ impl<E: TxnEngine> UnitDb<E> {
     /// Whether a read of a unit also reads its head revision, as every read did before layer
     /// 10. Off by default.
     ///
-    /// Off, a unit whose head carries its payload (`units-v10.md`) is read with one point read:
-    /// the payload is checked against the head's hash, and the `REV_META` and `REV_PAYLOAD` of
-    /// the head revision are not looked at, so damage that is only in them is found by
-    /// `verify_units`, by the next write to the unit and by a read of its history, not by
-    /// `get_unit`. On, every read of a unit reads the three records and refuses a head that
-    /// does not mirror its `REV_META` (IU-2) or whose copy of the payload is not the
-    /// `REV_PAYLOAD`: three point reads again. The snapshots taken after the call follow it;
-    /// the read cache is emptied.
+    /// Off, a unit whose head carries its payload (`units-v10.md`, `units-v11.md`) is read with
+    /// one point read: the payload is checked against the head's hash, and the `REV_META` of the
+    /// head revision is not looked at, so damage that is only there (or a `REV_PAYLOAD` that must
+    /// not exist) is found by `verify_units`, by the next write to the unit and by a read of its
+    /// history, not by `get_unit`. On, every read of a unit also reads the `REV_META` and the
+    /// `REV_PAYLOAD` of its head revision and refuses a head that does not mirror its
+    /// `REV_META` (IU-2), a payload that does not match it, or a `REV_PAYLOAD` beside the
+    /// payload the head carries. The snapshots taken after the call follow it; the read cache
+    /// is emptied.
     pub fn set_checked_reads(&self, on: bool) {
         self.checked_reads.store(on, Ordering::Relaxed);
         self.read_cache.clear();
@@ -1063,7 +1100,8 @@ impl<E: Engine> UnitSnapshot<E> {
             }
             return Ok(out.into_iter().map(|u| u.expect("every id is answered")).collect());
         }
-        let keys: Vec<Vec<u8>> = missing.iter().map(|&i| key(Key::UnitHead { unit: ids[i] })).collect::<Result<_, _>>()?;
+        let keys: Vec<Vec<u8>> =
+            missing.iter().map(|&i| key(Key::UnitHead { unit: ids[i] })).collect::<Result<_, _>>()?;
         let refs: Vec<&[u8]> = keys.iter().map(Vec::as_slice).collect();
         let heads = self.snap.multi_get(&refs)?;
         for ((&i, k), head) in missing.iter().zip(&keys).zip(heads) {
@@ -1758,14 +1796,20 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
     }
 
     /// What the policy does to the revisions `head` supersedes (see the
-    /// [module documentation](self)); may move `head.oldest_rev`.
-    fn supersede(&self, unit: UnitId, head: &mut UnitHead) -> Result<Vec<Write>, UnitError> {
+    /// [module documentation](self)); may move `head.oldest_rev`. `outgoing`
+    /// is the payload of the revision superseded: when the old head carried
+    /// it, it has no `REV_PAYLOAD` yet (`units-v11.md` §2), and a history that
+    /// keeps it gets one now.
+    fn supersede(&self, unit: UnitId, head: &mut UnitHead, outgoing: Option<&[u8]>) -> Result<Vec<Write>, UnitError> {
         let rev = head.head_rev;
         if rev.0 == 1 {
             return Ok(Vec::new());
         }
         match self.policy(&head.unit_type)? {
-            HistoryPolicy::Versioned => Ok(Vec::new()),
+            HistoryPolicy::Versioned => match outgoing.filter(|p| UnitHead::inline_of(Some(p)).is_some()) {
+                Some(p) => Ok(vec![Write::Put(key(Key::RevPayload { unit, rev: RevNo(rev.0 - 1) })?, p.to_vec())]),
+                None => Ok(Vec::new()),
+            },
             HistoryPolicy::Audit => {
                 let prev = RevNo(rev.0 - 1);
                 let txn = self.txn()?;
@@ -1794,9 +1838,10 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         }
     }
 
-    /// The records of a new revision `rev` of `unit`: what its policy drops
-    /// of the superseded revisions, head, `REV_META`, `REV_PAYLOAD` (when
-    /// there is a payload) and `CS_MEMBER`.
+    /// The records of a new revision `rev` of `unit`: what its policy does
+    /// to the superseded revision (whose payload is `outgoing`), head,
+    /// `REV_META`, `REV_PAYLOAD` (when there is a payload the head does not
+    /// carry) and `CS_MEMBER`.
     fn plan(
         &self,
         unit: UnitId,
@@ -1804,8 +1849,9 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         kind: RevisionKind,
         payload: Option<std::borrow::Cow<'_, [u8]>>,
         restored_from: Option<RevNo>,
+        outgoing: Option<&[u8]>,
     ) -> Result<Planned, UnitError> {
-        let mut writes = self.supersede(unit, &mut head)?;
+        let mut writes = self.supersede(unit, &mut head, outgoing)?;
         // The head carries the payload of the revision it now names, never an older one's.
         head.inline_payload = UnitHead::inline_of(payload.as_deref());
         let rev = head.head_rev;
@@ -1831,7 +1877,8 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         let member = CsMember { unit, rev_no: rev, kind };
         writes.push(Write::Put(key(Key::UnitHead { unit })?, head.encode()?));
         writes.push(Write::Put(key(Key::RevMeta { unit, rev })?, meta.encode(rev)?));
-        if let Some(p) = payload {
+        // A payload the head carries is stored there only (`units-v11.md` §2).
+        if let Some(p) = payload.filter(|_| head.inline_payload.is_none()) {
             // An owned payload (a create's) moves into the write: no copy.
             writes.push(Write::Put(key(Key::RevPayload { unit, rev })?, p.into_owned()));
         }
@@ -1908,7 +1955,8 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
             inline_payload: None,
         };
         let unit_type = head.unit_type.clone();
-        let mut plan = self.plan(id, head, RevisionKind::Create, Some(std::borrow::Cow::Owned(new.payload)), None)?;
+        let mut plan =
+            self.plan(id, head, RevisionKind::Create, Some(std::borrow::Cow::Owned(new.payload)), None, None)?;
         plan.live = Some((unit_type, 1));
         self.apply(plan)?;
         Ok(id)
@@ -1925,7 +1973,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         if let Some(m) = &upd.metadata {
             Self::check_metadata(m)?;
         }
-        let (head, _) = self.current(id, expected)?;
+        let (head, old) = self.current(id, expected)?;
         if head.lifecycle != Lifecycle::Active {
             return Err(UnitError::InvalidArgument(format!("unit {id} is archived; unarchive it before updating")));
         }
@@ -1939,7 +1987,14 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         if let Some(m) = upd.metadata {
             next.metadata = m;
         }
-        let plan = self.plan(id, next, RevisionKind::Update, Some(std::borrow::Cow::Owned(upd.payload)), None)?;
+        let plan = self.plan(
+            id,
+            next,
+            RevisionKind::Update,
+            Some(std::borrow::Cow::Owned(upd.payload)),
+            None,
+            old.as_deref(),
+        )?;
         self.apply(plan)
     }
 
@@ -1967,7 +2022,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         let mut next = self.next_head(&head);
         next.lifecycle = to;
         let live = (next.unit_type.clone(), if to == Lifecycle::Archived { -1 } else { 1 });
-        let mut plan = self.plan(id, next, kind, Some(std::borrow::Cow::Borrowed(&payload)), None)?;
+        let mut plan = self.plan(id, next, kind, Some(std::borrow::Cow::Borrowed(&payload)), None, Some(&payload))?;
         plan.live = Some(live);
         self.apply(plan)
     }
@@ -1999,13 +2054,13 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
 
     fn delete_unguarded(&mut self, id: UnitId, expected: Option<RevNo>) -> Result<RevNo, UnitError> {
         self.admit(Some(id))?;
-        let (head, _) = self.current(id, expected)?;
+        let (head, old) = self.current(id, expected)?;
         self.ensure_no_relations(id)?;
         let mut next = self.next_head(&head);
         next.lifecycle = Lifecycle::Deleted;
         next.content_hash = ContentHash::blake3(PAYLOAD_CODEC_OPAQUE, &[]);
         next.payload_len = 0;
-        let mut plan = self.plan(id, next, RevisionKind::Delete, None, None)?;
+        let mut plan = self.plan(id, next, RevisionKind::Delete, None, None, old.as_deref())?;
         // An archived unit already left the live count.
         plan.live = (head.lifecycle == Lifecycle::Active).then(|| (head.unit_type.clone(), -1));
         self.apply(plan)
@@ -2027,7 +2082,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
 
     fn restore_unguarded(&mut self, id: UnitId, from: RevNo, expected: Option<RevNo>) -> Result<RevNo, UnitError> {
         self.admit(Some(id))?;
-        let (head, _) = self.current(id, expected)?;
+        let (head, old) = self.current(id, expected)?;
         if head.lifecycle != Lifecycle::Active {
             return Err(UnitError::InvalidArgument(format!(
                 "unit {id} is {:?}; only an Active unit is restored",
@@ -2053,7 +2108,14 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         next.payload_len = source.payload_len;
         next.schema_version = source.schema_version;
         next.metadata = source.metadata;
-        let plan = self.plan(id, next, RevisionKind::Restore, Some(std::borrow::Cow::Borrowed(&payload)), Some(from))?;
+        let plan = self.plan(
+            id,
+            next,
+            RevisionKind::Restore,
+            Some(std::borrow::Cow::Borrowed(&payload)),
+            Some(from),
+            old.as_deref(),
+        )?;
         self.apply(plan)
     }
 

@@ -1,11 +1,12 @@
-//! The payload a `UNIT_HEAD` carries (`docs/file-format/units-v10.md`).
+//! The payload a `UNIT_HEAD` carries (`docs/file-format/units-v11.md`).
 //!
 //! A unit whose payload is at most `INLINE_PAYLOAD_MAX` bytes is written with
-//! that payload in its head as well as in its `REV_PAYLOAD`, and reading it is
-//! one point read. These tests pin what is stored, that a read still refuses a
-//! damaged payload, what the one-read path no longer looks at (and that
-//! `verify_units` and a write still do), and that history is untouched. Every
-//! test runs on `emulated_log` and on `kerno_db`.
+//! that payload in its head only: its head revision has no `REV_PAYLOAD`, and
+//! reading it is one point read. A later revision writes the `REV_PAYLOAD` of
+//! the one it supersedes when the history keeps it. These tests pin what is
+//! stored, that a read still refuses a damaged payload, what the one-read path
+//! does not look at (and that `verify_units` and a write still do), and that
+//! history is untouched. Every test runs on `emulated_log` and on `kerno_db`.
 
 #![cfg(feature = "test-support")]
 
@@ -73,31 +74,39 @@ fn a_writer_stores_small_payloads_in_the_head<E: Target>() {
     assert_eq!(stored_head(&db, empty).inline_payload.as_deref(), Some(&[][..]));
     assert_eq!(stored_head(&db, edge).inline_payload, Some(vec![7; max]));
     assert_eq!(stored_head(&db, large).inline_payload, None);
+    let rev_payload = |u, rev| db.raw_get(&Key::RevPayload { unit: u, rev: RevNo(rev) }.encode().unwrap()).unwrap();
     for (u, want) in [(small, b"small".to_vec()), (empty, vec![]), (edge, vec![7; max]), (large, vec![9; max + 1])] {
         assert_eq!(db.get_unit(u).unwrap().unwrap().payload, Some(want.clone()));
-        // The revision keeps its own copy: history does not depend on the head.
-        let rev = Key::RevPayload { unit: u, rev: RevNo(1) }.encode().unwrap();
-        assert_eq!(db.raw_get(&rev).unwrap(), Some(want));
+        // The payload is stored once: in the head when it fits there, else in the revision.
+        let stored = if u == large { Some(want) } else { None };
+        assert_eq!(rev_payload(u, 1), stored);
     }
 
-    // Growing past the limit drops the copy, shrinking brings it back.
+    // Growing past the limit drops the copy, shrinking brings it back; each revision the
+    // head leaves gets its REV_PAYLOAD (the default policy keeps the history).
     update(&db, small, vec![1; max + 1]).unwrap();
     assert_eq!(stored_head(&db, small).inline_payload, None);
     assert_eq!(db.get_unit(small).unwrap().unwrap().payload, Some(vec![1; max + 1]));
+    assert_eq!(rev_payload(small, 1), Some(b"small".to_vec()));
+    assert_eq!(rev_payload(small, 2), Some(vec![1; max + 1]));
     update(&db, small, b"again".to_vec()).unwrap();
     assert_eq!(stored_head(&db, small).inline_payload.as_deref(), Some(&b"again"[..]));
     assert_eq!(db.get_unit(small).unwrap().unwrap().payload.as_deref(), Some(&b"again"[..]));
     assert_eq!(db.get_unit(small).unwrap().unwrap().head, RevNo(3));
+    assert_eq!(rev_payload(small, 3), None);
 
-    // Archiving keeps the content, and the copy; deleting leaves none in the head.
+    // Archiving keeps the content, and the copy; deleting leaves none in the head. Both
+    // revisions they supersede get their REV_PAYLOAD.
     let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
     cs.archive(empty, None).unwrap();
     cs.delete(edge, None).unwrap();
     cs.commit().unwrap();
     assert_eq!(stored_head(&db, empty).inline_payload.as_deref(), Some(&[][..]));
     assert_eq!(db.get_unit(empty).unwrap().unwrap().lifecycle, Lifecycle::Archived);
+    assert_eq!((rev_payload(empty, 1), rev_payload(empty, 2)), (Some(vec![]), None));
     assert_eq!(stored_head(&db, edge).inline_payload, None);
     assert_eq!(db.get_unit(edge).unwrap().unwrap().payload, None);
+    assert_eq!((rev_payload(edge, 1), rev_payload(edge, 2)), (Some(vec![7; max]), None));
 
     let report = db.verify_units().unwrap();
     assert!(report.is_clean(), "{:?}", report.findings);
@@ -130,10 +139,10 @@ fn a_damaged_inline_payload_is_refused<E: Target>() {
     assert!(db.verify_units().unwrap().is_clean());
 }
 
-/// What a one-read `get_unit` does not look at: the `REV_META` and the
-/// `REV_PAYLOAD` of the head revision. Damage there is found by `verify_units`
-/// and refused by the next write to the unit and by a read of the revision; a
-/// unit without a copy in its head is still read in full.
+/// What a one-read `get_unit` does not look at: the `REV_META` of the head
+/// revision, and a `REV_PAYLOAD` it must not have. Damage there is found by
+/// `verify_units` and refused by the next write to the unit and by a read of
+/// the revision; a unit without a copy in its head is still read in full.
 fn the_revision_records_are_checked_by_verify_and_by_writes<E: Target>() {
     let db = open::<E>();
     let u = create(&db, b"content".to_vec());
@@ -149,16 +158,16 @@ fn the_revision_records_are_checked_by_verify_and_by_writes<E: Target>() {
     for (name, key, damage) in [
         ("REV_META disagrees with the head", meta_key(u), Some(other_meta(u))),
         ("REV_META missing", meta_key(u), None),
-        ("REV_PAYLOAD is other bytes", payload_key(u), Some(b"CONTENT".to_vec())),
-        ("REV_PAYLOAD missing", payload_key(u), None),
+        ("a REV_PAYLOAD beside the copy", payload_key(u), Some(b"content".to_vec())),
+        ("a REV_PAYLOAD of other bytes beside the copy", payload_key(u), Some(b"CONTENT".to_vec())),
     ] {
-        let original = db.raw_get(&key).unwrap().unwrap();
+        let original = db.raw_get(&key).unwrap();
         db.raw_commit(vec![(key.clone(), damage)]).unwrap();
         // The head is intact and carries a payload that matches its hash: the read answers.
         assert_eq!(db.get_unit(u).unwrap().unwrap().payload.as_deref(), Some(&b"content"[..]), "{name}");
         assert!(!db.verify_units().unwrap().is_clean(), "{name}: verify must find it");
         assert!(is_corruption(&update(&db, u, b"next".to_vec())), "{name}: a write must refuse it");
-        db.raw_commit(vec![(key, Some(original))]).unwrap();
+        db.raw_commit(vec![(key, original)]).unwrap();
         assert!(db.verify_units().unwrap().is_clean(), "{name}: clean after the undo");
     }
 
@@ -175,15 +184,17 @@ fn the_revision_records_are_checked_by_verify_and_by_writes<E: Target>() {
     }
 }
 
-/// A head that carries a payload its head revision does not have (UNIT-31), and a head whose
-/// copy was removed (allowed: the read falls back to the revision).
+/// A head that carries a payload its head revision does not have (UNIT-31), and a small
+/// payload kept in the REV_PAYLOAD instead of the head (allowed: the read falls back to the
+/// revision; a writer of this layer never makes one).
 fn a_head_copy_is_optional_but_never_extra<E: Target>() {
     let db = open::<E>();
     let u = create(&db, b"content".to_vec());
     let head = stored_head(&db, u);
 
     let without = UnitHead { inline_payload: None, ..head.clone() }.encode().unwrap();
-    db.raw_commit(vec![(head_key(u), Some(without))]).unwrap();
+    let payload_key1 = Key::RevPayload { unit: u, rev: RevNo(1) }.encode().unwrap();
+    db.raw_commit(vec![(head_key(u), Some(without)), (payload_key1, Some(b"content".to_vec()))]).unwrap();
     assert_eq!(db.get_unit(u).unwrap().unwrap().payload.as_deref(), Some(&b"content"[..]));
     assert!(db.verify_units().unwrap().is_clean());
     // The next revision is written with its copy again.

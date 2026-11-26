@@ -377,8 +377,10 @@ fn scenario<E: Target>() -> Seen {
     db.close().unwrap();
     let closed = fresh.dump();
     let kinds: [(&str, Damage); 6] = [
+        // Revision 3 is the head, whose payload the head carries (units-v11 §2): the damaged
+        // payloads are those of the revisions it superseded.
         ("flipped payload", |rows, a| {
-            let k = Key::RevPayload { unit: a, rev: RevNo(3) }.encode().unwrap();
+            let k = Key::RevPayload { unit: a, rev: RevNo(1) }.encode().unwrap();
             let mut v = rows.iter().find(|(rk, _)| *rk == k).unwrap().1.clone();
             *v.last_mut().unwrap() ^= 1;
             vec![(k, Some(v))]
@@ -388,7 +390,7 @@ fn scenario<E: Target>() -> Seen {
             let v = rows.iter().find(|(rk, _)| *rk == k).unwrap().1[..4].to_vec();
             vec![(k, Some(v))]
         }),
-        ("missing payload", |_, a| vec![(Key::RevPayload { unit: a, rev: RevNo(3) }.encode().unwrap(), None)]),
+        ("missing payload", |_, a| vec![(Key::RevPayload { unit: a, rev: RevNo(1) }.encode().unwrap(), None)]),
         ("missing revision", |_, a| vec![(Key::RevMeta { unit: a, rev: RevNo(2) }.encode().unwrap(), None)]),
         ("head with a byte more", |rows, a| {
             let k = Key::UnitHead { unit: a }.encode().unwrap();

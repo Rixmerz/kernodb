@@ -566,13 +566,22 @@ fn written_records_decode<E: TxnEngine>() {
             _ => None,
         })
         .collect();
-    let payloads: BTreeMap<(UnitId, RevNo), Vec<u8>> = records
+    // A head revision's payload is in the REV_PAYLOAD or, when it fits there, in the head only
+    // (units-v11 §2): never both.
+    let mut payloads: BTreeMap<(UnitId, RevNo), Vec<u8>> = records
         .iter()
         .filter_map(|r| match r {
             Record::RevPayload { unit, rev, payload } => Some(((*unit, *rev), payload.clone())),
             _ => None,
         })
         .collect();
+    for r in &records {
+        if let Record::UnitHead { unit, head } = r
+            && let Some(p) = &head.inline_payload
+        {
+            assert!(payloads.insert((*unit, head.head_rev), p.clone()).is_none(), "a payload stored twice");
+        }
+    }
     for ((unit, rev), m) in &metas {
         verify_payload(&m.payload_decl(), payloads.get(&(*unit, *rev)).map(Vec::as_slice)).expect("payload verifies");
         assert_eq!(m.parent_rev, (rev.0 > 1).then(|| RevNo(rev.0 - 1)), "parent_rev = rev - 1");
@@ -821,8 +830,8 @@ fn open_and_mark<E: TxnEngine>() {
 
     // A newer layer, a damaged mark.
     let disk = SimVfs::new(12);
-    raw_commit::<E>(&disk, &[(&mark_key, &[1, 0, 0, 0, 0, 11, 2])]);
-    assert!(matches!(open::<E>(&disk, &cfg()), Err(UnitError::IncompatibleLayer { found: 11, supported: 10 })));
+    raw_commit::<E>(&disk, &[(&mark_key, &[1, 0, 0, 0, 0, 12, 2])]);
+    assert!(matches!(open::<E>(&disk, &cfg()), Err(UnitError::IncompatibleLayer { found: 12, supported: 11 })));
     let disk = SimVfs::new(13);
     raw_commit::<E>(&disk, &[(&mark_key, &[0, 0, 0, 0, 0, 1, 2])]);
     let e = open::<E>(&disk, &cfg()).err().expect("damaged mark");
@@ -866,7 +875,10 @@ fn corruption_detected<E: TxnEngine>() {
     // when it is asked to (`set_checked_reads`), and which every write makes. What the
     // default one-read path sees of each damage is pinned in `tests/inline_payload.rs`.
     db.set_checked_reads(true);
-    let (a, _) = db.create_unit(new_unit("doc", b"payload-bytes"), meta()).unwrap();
+    // Over INLINE_PAYLOAD_MAX, so that the head revision keeps its REV_PAYLOAD (units-v11 §2):
+    // the damage below is to that record.
+    let body = b"payload-bytes".repeat(200);
+    let (a, _) = db.create_unit(new_unit("doc", &body), meta()).unwrap();
     let rp = Key::RevPayload { unit: a, rev: RevNo(1) }.encode().unwrap();
     let rm = Key::RevMeta { unit: a, rev: RevNo(1) }.encode().unwrap();
     let hk = Key::UnitHead { unit: a }.encode().unwrap();
@@ -902,7 +914,7 @@ fn corruption_detected<E: TxnEngine>() {
         put(&rp, Some(&good_payload));
         put(&rm, Some(&good_meta));
         put(&hk, Some(&good_head));
-        assert_eq!(db.get_unit(a).unwrap().unwrap().payload.as_deref(), Some(&b"payload-bytes"[..]));
+        assert_eq!(db.get_unit(a).unwrap().unwrap().payload.as_deref(), Some(&body[..]));
     }
     // A head that disagrees with its REV_META (another revision's hash).
     let mut other = UnitHead::decode(&good_head).unwrap();
@@ -1007,22 +1019,24 @@ fn kerno_batch_limit_breaks_the_changeset() {
     config.limits = Limits { max_batch_ops: 7, ..Limits::default() };
     let engine = KernoDb::open(disk.as_vfs(), Path::new(DIR), &config).expect("engine");
     let db = UnitDb::from_engine(engine, &cfg()).expect("open");
-    // Payloads are not UTF-8, so the full-text index adds no writes.
+    // Payloads are not UTF-8, so the full-text index adds no writes, and over INLINE_PAYLOAD_MAX,
+    // so each revision has its REV_PAYLOAD (units-v11 §2).
+    let big = |n: u8| [vec![0xff, n], vec![0xfe; 3000]].concat();
     // Mark + head + REV_META + REV_PAYLOAD + member + CHANGESET + live count = 7: at the limit.
-    db.create_unit(new_unit("doc", b"\xff1"), meta()).expect("exactly at the batch limit");
+    db.create_unit(new_unit("doc", &big(1)), meta()).expect("exactly at the batch limit");
     let mut cs = db.begin_changeset(meta()).unwrap();
-    cs.create(new_unit("doc", b"\xff2")).unwrap();
-    let e = cs.create(new_unit("doc", b"\xff3")).unwrap_err();
+    cs.create(new_unit("doc", &big(2))).unwrap();
+    let e = cs.create(new_unit("doc", &big(3))).unwrap_err();
     // The second create took 5 writes (its live count rewritten, head, REV_META, REV_PAYLOAD, member); the third stops at its REV_META.
     assert!(matches!(e, UnitError::ChangeSetTooLarge { ops: 8, .. }), "{e}");
     assert!(matches!(e, UnitError::ChangeSetTooLarge { engine_limit: Some(_), .. }), "{e}");
     assert!(e.to_string().contains("8 storage writes") && e.to_string().contains("engine limit"), "{e}");
-    assert!(matches!(cs.create(new_unit("doc", b"\xff4")), Err(UnitError::ChangeSetClosed)));
+    assert!(matches!(cs.create(new_unit("doc", &big(4))), Err(UnitError::ChangeSetClosed)));
     assert!(matches!(cs.get_unit(id(1)), Err(UnitError::ChangeSetClosed)));
     assert!(matches!(cs.commit(), Err(UnitError::ChangeSetClosed)));
     assert_eq!(seq(&db), 1);
     assert_eq!(raw(&db).iter().filter(|(k, _)| k[0] == 0x10).count(), 1);
-    db.create_unit(new_unit("doc", b"\xff5"), meta()).expect("the database keeps working");
+    db.create_unit(new_unit("doc", &big(5)), meta()).expect("the database keeps working");
     db.close().unwrap();
 }
 

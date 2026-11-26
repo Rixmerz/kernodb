@@ -446,7 +446,12 @@ pub(crate) fn read_payload(
     rev: RevNo,
     decl: &PayloadDecl,
 ) -> Result<Option<Vec<u8>>, UnitError> {
-    let stored = get(&key(Key::RevPayload { unit: id, rev })?)?;
+    let stored = match get(&key(Key::RevPayload { unit: id, rev })?)? {
+        Some(p) => Some(p),
+        // The head revision of a unit whose head carries its payload has no REV_PAYLOAD
+        // (`units-v11.md` §2): the copy in the head is the revision's payload.
+        None => read_head(get, id)?.filter(|h| h.head_rev == rev).and_then(|h| h.inline_payload),
+    };
     let verified = verify_payload(decl, stored.as_deref())
         .map_err(|e| crate::PayloadError { detail: format!("unit {id} rev {rev}: {}", e.detail), ..e })?;
     Ok(verified.bytes().map(<[u8]>::to_vec))

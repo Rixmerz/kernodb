@@ -8,13 +8,12 @@ use std::sync::Arc;
 use kerno_core::contract::{Snapshot, Txn, TxnEngine};
 
 use super::{
-    Document, FieldDef, FieldValue, Schema, entry_key, entry_key_parts, entry_value, field_prefix,
-    prefix_bounds,
+    Document, FieldDef, FieldValue, Schema, entry_key, entry_key_parts, entry_value, field_prefix, prefix_bounds,
     schema_key,
 };
 use crate::codec::{Key, TAG_UNIT_HEAD, UnitHead};
 use crate::db::{
-    ChangeMeta, ChangeSet, CommitInfo, NewUnit, UnitDb, UnitUpdate, Write, context, corruption, key, load_unit,
+    ChangeMeta, ChangeSet, CommitInfo, NewUnit, UnitDb, UnitUpdate, Write, context, corruption, load_unit,
 };
 use crate::error::UnitError;
 use crate::types::{Lifecycle, UnitId};
@@ -103,19 +102,14 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
     /// leaves the change set untouched. Nothing for a unit type without a
     /// schema, and nothing for operations that write no head (retention).
     pub(crate) fn plan_schema(&self, unit: UnitId, writes: &[Write]) -> Result<Vec<Write>, UnitError> {
-        let head_key = key(Key::UnitHead { unit })?;
-        let Some(Write::Put(_, raw)) = writes.iter().find(|w| matches!(w, Write::Put(k, _) if *k == head_key)) else {
+        let Some((head, payload)) = crate::db::planned_head(unit, writes)? else {
             return Ok(Vec::new());
         };
-        let head = UnitHead::decode(raw).map_err(|e| context(e, &format!("UNIT_HEAD of unit {unit}")))?;
         let Some(schema) = self.read_schema(&head.unit_type)? else {
             return Ok(Vec::new());
         };
         let new = if head.lifecycle == Lifecycle::Active {
-            let payload_key = key(Key::RevPayload { unit, rev: head.head_rev })?;
-            let Some(Write::Put(_, payload)) =
-                writes.iter().find(|w| matches!(w, Write::Put(k, _) if *k == payload_key))
-            else {
+            let Some(payload) = payload else {
                 return Ok(Vec::new());
             };
             let record = Document::parse(payload).map_err(|m| violation(format!("unit {unit}: {m}")))?;
