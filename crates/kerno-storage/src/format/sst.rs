@@ -10,6 +10,9 @@ use super::filter::{Filter, decode_filter};
 use super::header::{FileKind, HEADER_LEN, Header, HeaderExpect, decode_header};
 use super::limits::{MAX_BLOCK_SIZE, MAX_HEADER_LEN, MAX_KEY_LEN, MAX_META_PAYLOAD, MIN_BLOCK_SIZE};
 use super::manifest::FileMeta;
+use super::parts::{
+    PART_ENTRIES, build_index_parts, check_parts_crcs, check_parts_entries, check_parts_shape, encode_index_with_bounds,
+};
 use super::props::{Props, check_props, decode_props};
 use super::rangedel::{Fragment, check_fragment_seqs, covering_seq, decode_rangedel, encode_rangedel};
 use super::{ByteSource, FormatError, ReadError, Result};
@@ -224,6 +227,16 @@ struct FlatEntry {
 }
 
 impl FlatIndex {
+    /// The `count` entries of one part of an index (§7.6.1), from the bytes of the part: the
+    /// entries of [`decode_index`] without the count before them. Bytes that are not exactly
+    /// `count` entries are SST-P2 at `base`.
+    pub fn decode_part(bytes: Vec<u8>, count: u64, base: u64) -> Result<Self> {
+        match flat_entries_at(&bytes, 0, count) {
+            Some(entries) => Ok(FlatIndex { payload: bytes, entries }),
+            None => Err(FormatError::corruption("SST-P2", base, "index part does not parse")),
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -286,6 +299,11 @@ fn flat_varint(buf: &[u8], pos: &mut usize) -> Option<u64> {
 fn flat_entries(payload: &[u8]) -> Option<Vec<FlatEntry>> {
     let mut pos = 0;
     let count = flat_varint(payload, &mut pos)?;
+    flat_entries_at(payload, pos, count)
+}
+
+/// `count` index entries from `pos` to the end of `payload`, or `None`.
+fn flat_entries_at(payload: &[u8], mut pos: usize, count: u64) -> Option<Vec<FlatEntry>> {
     let mut entries = Vec::with_capacity((count as usize).min(payload.len() / 3));
     for _ in 0..count {
         let key_len = flat_varint(payload, &mut pos)?;
@@ -455,6 +473,37 @@ pub fn open_sst_as<S: ByteSource, I: DecodeIndex>(
     ex: &SstExpect<'_>,
     with_filter: bool,
 ) -> std::result::Result<SstOpen<I>, ReadError<S::Error>> {
+    let o = open_sst_inner(src, ex, with_filter, false)?;
+    Ok(SstOpen {
+        header: o.header,
+        footer: o.footer,
+        data_end: o.data_end,
+        index: o.index.expect("a full open reads the index"),
+        props: o.props,
+        filter: o.filter,
+        fragments: o.fragments,
+    })
+}
+
+/// [`open_sst_as`] without the filter, for a reader that can do without the index: when the
+/// properties hold `index_parts` (§7.6.1) the index block is neither read nor checked, `index`
+/// is `None`, and the rules that concern it are replaced by SST-O8 over the property alone
+/// ([`check_parts_shape`]) here and by SST-P1 and SST-P2 for each part when it is read
+/// ([`check_part`](super::parts::check_part)). The properties are then parsed before anything
+/// else is. Without the property this is `open_sst_as(src, ex, false)`.
+pub fn open_sst_lazy<S: ByteSource, I: DecodeIndex>(
+    src: &mut S,
+    ex: &SstExpect<'_>,
+) -> std::result::Result<SstOpen<Option<I>>, ReadError<S::Error>> {
+    open_sst_inner(src, ex, false, true)
+}
+
+fn open_sst_inner<S: ByteSource, I: DecodeIndex>(
+    src: &mut S,
+    ex: &SstExpect<'_>,
+    with_filter: bool,
+    lazy: bool,
+) -> std::result::Result<SstOpen<Option<I>>, ReadError<S::Error>> {
     let len = src.len();
     // The header: 96 bytes, or the longer header_len a future version
     // declares (needed to verify its CRC before rejecting it by version).
@@ -486,12 +535,36 @@ pub fn open_sst_as<S: ByteSource, I: DecodeIndex>(
     let rdel_payload = if has_rdel { Some(read_meta(footer.rdel)?) } else { None };
     let filter_payload = if with_filter { Some(read_meta(footer.filter)?) } else { None };
     let props_payload = read_meta(footer.props)?;
-    let index_payload = read_meta(footer.index)?;
     let index_at = footer.index.offset;
-    // The order of the two is the order of their errors (SST-O4 of the index first).
-    let index = I::decode(index_payload, index_at)?;
-    let props = decode_props(&props_payload, footer.props.offset)?;
-    check_index(&index, data_end, &props, footer.index.offset)?;
+    let mut props_read = Some(decode_props(&props_payload, footer.props.offset));
+    let parts_only = lazy && props_read.as_ref().is_some_and(|p| p.as_ref().is_ok_and(|p| p.index_parts.is_some()));
+    // What SST-O8 says of the parts against the bytes of the index, kept until its turn.
+    let mut parts_bytes = Ok(());
+    let (index, props) = if parts_only {
+        let props = props_read.take().expect("just read")?;
+        let parts = props.index_parts.as_ref().expect("just seen");
+        check_parts_shape(parts, &props, &footer, data_end, footer.props.offset)?;
+        // SST-O5 for an index that is not read: one with entries belongs to a table with points.
+        if props.point_entries == 0 {
+            return Err(
+                FormatError::corruption("SST-O5", index_at, "index count 0 does not match point_entries 0").into()
+            );
+        }
+        (None, props)
+    } else {
+        let index_payload = read_meta(footer.index)?;
+        if let Some(Ok(p)) = &props_read
+            && let Some(parts) = &p.index_parts
+        {
+            parts_bytes = check_parts_shape(parts, p, &footer, data_end, footer.props.offset)
+                .and_then(|()| check_parts_crcs(parts, p, &index_payload, ex.file_number, index_at));
+        }
+        // The order of the two is the order of their errors (SST-O4 of the index first).
+        let index = I::decode(index_payload, index_at)?;
+        let props = props_read.take().expect("just read")?;
+        check_index(&index, data_end, &props, footer.index.offset)?;
+        (Some(index), props)
+    };
     check_props(&props, ex.meta, ex.last_seq, footer.props.offset)?;
     let filter = match &filter_payload {
         Some(p) => Some(decode_filter(p, footer.filter.offset)?.to_owned_filter()),
@@ -503,6 +576,11 @@ pub fn open_sst_as<S: ByteSource, I: DecodeIndex>(
     };
     // Without a range block, a fragment count above 0 is the properties' fault.
     check_fragments(&fragments, &props, if has_rdel { footer.rdel.offset } else { footer.props.offset })?;
+    // SST-O8, last: the parts of the index say what the index says.
+    if let (Some(index), Some(parts)) = (&index, &props.index_parts) {
+        parts_bytes?;
+        check_parts_entries(parts, index, index_at)?;
+    }
     Ok(SstOpen { header, footer, data_end, index, props, filter, fragments })
 }
 
@@ -910,8 +988,19 @@ impl SstBuilder {
         p.largest_key = largest.to_vec();
         p.largest_exclusive = exclusive;
         p.creation_reason = creation_reason;
+        let (index_payload, bounds) = encode_index_with_bounds(&self.index, PART_ENTRIES);
+        if self.index.len() as u64 > PART_ENTRIES {
+            // The CRC of a part depends on where the index block lies, which is after the
+            // properties block; the length of the property does not depend on the CRCs.
+            let parts_at = |index_offset: u64| {
+                build_index_parts(&self.index, &index_payload, &bounds, PART_ENTRIES, self.file_number, index_offset)
+            };
+            p.index_parts = Some(parts_at(0));
+            let index_offset = self.len() + (p.encode().len() + BLOCK_TRAILER_LEN) as u64;
+            p.index_parts = Some(parts_at(index_offset));
+        }
         footer.props = self.append_meta(&p.encode());
-        footer.index = self.append_meta(&encode_index(&self.index));
+        footer.index = self.append_meta(&index_payload);
         let encoded = footer.encode(self.file_number);
         self.pending.extend_from_slice(&encoded);
         let len = self.len();

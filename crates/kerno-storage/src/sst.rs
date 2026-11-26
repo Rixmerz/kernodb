@@ -32,14 +32,16 @@ use crate::block::{Block, EntryPos};
 use crate::deleter::Deleter;
 use crate::files::{FileSource, format_error, read_error};
 use crate::format::ByteSource;
+use crate::format::FormatError;
 use crate::format::filter::Filter;
 use crate::format::limits::{MAX_BLOCK_SIZE, MAX_SEQ, MIN_BLOCK_SIZE};
 use crate::format::manifest::FileMeta;
+use crate::format::parts::{IndexParts, PartKeys, check_part, part_crc};
 use crate::format::props::Props;
 use crate::format::rangedel::Fragment;
 use crate::format::sst::{
     BlockHandle, BlockIndex, FlatIndex, Footer, SstBuilder, SstExpect, SstOpen, check_data_block,
-    check_filter_holds_keys, file_meta, open_sst_as, read_filter,
+    check_filter_holds_keys, file_meta, open_sst_as, open_sst_lazy, read_filter,
 };
 use crate::iter::InternalIterator;
 use crate::stats::{Stats, bump};
@@ -325,8 +327,52 @@ impl TableBuilder {
 /// after the table was marked obsolete (i.e. after a MANIFEST that no
 /// longer lists it became durable).
 /// The resident part of a table: its index, properties, filter and range tombstones.
+/// The index of an open table: all of it, or the parts read so far of one whose properties say
+/// where its parts are (`index_parts`, v1.md §7.6.1), which a lazy table uses when it can.
+enum TableIndex {
+    Flat(FlatIndex),
+    Parts(PartIndex),
+}
+
+struct PartIndex {
+    parts: IndexParts,
+    /// Where each part starts within the index payload, and where the last one ends.
+    starts: Vec<u64>,
+    /// The parts read and checked so far (SST-P1, SST-P2).
+    loaded: Vec<OnceLock<FlatIndex>>,
+}
+
+/// One data block as the index describes it: what a read of it is checked against (SST-R2).
+struct BlockRef<'a> {
+    handle: BlockHandle,
+    last: &'a [u8],
+    /// The last key of the block before it; `None` for the first block of the table.
+    prev: Option<&'a [u8]>,
+}
+
+/// A [`BlockRef`] as the index [`check_data_block`] asks: the block is entry 1 after its
+/// predecessor, or entry 0 when it has none.
+impl BlockIndex for BlockRef<'_> {
+    fn blocks(&self) -> usize {
+        1 + usize::from(self.prev.is_some())
+    }
+
+    fn last_key(&self, i: usize) -> &[u8] {
+        match self.prev {
+            Some(prev) if i == 0 => prev,
+            _ => self.last,
+        }
+    }
+
+    fn handle(&self, _i: usize) -> BlockHandle {
+        self.handle
+    }
+}
+
 struct Body {
-    index: FlatIndex,
+    index: TableIndex,
+    /// `D`: where the data blocks end.
+    data_end: u64,
     props: Props,
     /// The filter: read with the rest when the table is opened, and for a lazy table once its
     /// lookups have cost what reading it does ([`Table::filter`]).
@@ -400,22 +446,47 @@ impl Table {
                 last_seq: self.last_seq,
             };
             let size = src.len();
-            // A lazy table leaves its filter for later: see `filter`.
-            let opened: SstOpen<FlatIndex> =
-                open_sst_as(&mut src, &ex, !self.ctx.lazy).map_err(|e| read_error(&name, e))?;
+            // A lazy table leaves its filter for later (see `filter`), and its index too when
+            // the table says where the parts of it are (see `part`).
+            let opened: SstOpen<Option<FlatIndex>> = if self.ctx.lazy {
+                open_sst_lazy(&mut src, &ex).map_err(|e| read_error(&name, e))?
+            } else {
+                let o: SstOpen<FlatIndex> = open_sst_as(&mut src, &ex, true).map_err(|e| read_error(&name, e))?;
+                SstOpen {
+                    header: o.header,
+                    footer: o.footer,
+                    data_end: o.data_end,
+                    index: Some(o.index),
+                    props: o.props,
+                    filter: o.filter,
+                    fragments: o.fragments,
+                }
+            };
             (opened, size)
+        };
+        let index = match (opened.index, &opened.props.index_parts) {
+            (Some(flat), _) => TableIndex::Flat(flat),
+            (None, Some(parts)) => TableIndex::Parts(PartIndex {
+                starts: parts.starts(opened.props.data_blocks),
+                loaded: (0..parts.parts.len()).map(|_| OnceLock::new()).collect(),
+                parts: parts.clone(),
+            }),
+            (None, None) => unreachable!("an open without the index has its parts"),
         };
         let filter = OnceLock::new();
         if let Some(f) = opened.filter {
             // SST-V3 over what the open holds (F-E9A-03-1): `get` trusts the filter.
-            check_filter_holds_keys(&f, &opened.index, opened.footer.filter.offset, usize::MAX)
-                .map_err(|e| format_error(&name, e))?;
+            if let TableIndex::Flat(flat) = &index {
+                check_filter_holds_keys(&f, flat, opened.footer.filter.offset, usize::MAX)
+                    .map_err(|e| format_error(&name, e))?;
+            }
             let _ = filter.set(f);
         }
         let unknown = opened.header.unknown_ro_compat();
         let lz4 = opened.header.incompat & crate::format::features::BLOCK_LZ4 != 0;
         let body = Body {
-            index: opened.index,
+            index,
+            data_end: opened.data_end,
             props: opened.props,
             filter,
             footer: opened.footer,
@@ -446,9 +517,84 @@ impl Table {
         let name = sst_name(self.number);
         let mut src = FileSource::new(&*self.file)?;
         let f = read_filter(&mut src, self.number, &body.footer).map_err(|e| read_error(&name, e))?;
-        check_filter_holds_keys(&f, &body.index, body.footer.filter.offset, LAZY_FILTER_SAMPLE)
-            .map_err(|e| format_error(&name, e))?;
+        // The sample is of the index keys at hand: the last keys of the parts when the index
+        // itself is not resident (each is the last key of a data block, a point of the table).
+        match &body.index {
+            TableIndex::Flat(flat) => check_filter_holds_keys(&f, flat, body.footer.filter.offset, LAZY_FILTER_SAMPLE),
+            TableIndex::Parts(px) => {
+                check_filter_holds_keys(&f, &PartKeys(&px.parts), body.footer.filter.offset, LAZY_FILTER_SAMPLE)
+            }
+        }
+        .map_err(|e| format_error(&name, e))?;
         Ok(Some(body.filter.get_or_init(|| f)))
+    }
+
+    /// Part `c` of the index of a table read by parts, read and checked now if it was not yet
+    /// (SST-P1: its CRC, which the properties hold; SST-P2: its entries are the ones the
+    /// properties describe and what SST-O5 asks of an index).
+    fn part<'b>(&self, body: &'b Body, px: &'b PartIndex, c: usize) -> Result<&'b FlatIndex> {
+        if let Some(p) = px.loaded[c].get() {
+            return Ok(p);
+        }
+        let part = &px.parts.parts[c];
+        let offset = body.footer.index.offset + px.starts[c];
+        let mut buf = vec![0u8; part.len as usize];
+        self.file.read_at(&mut buf, offset)?;
+        let blocks = body.props.data_blocks;
+        let checked = (|| {
+            if part_crc(self.number, offset, &buf) != part.crc {
+                return Err(FormatError::corruption("SST-P1", offset, "index part CRC mismatch"));
+            }
+            let entries = FlatIndex::decode_part(buf, px.parts.entries_in(c, blocks), offset)?;
+            check_part(&px.parts, c, &entries, blocks, body.data_end, offset)?;
+            Ok(entries)
+        })();
+        let entries = checked.map_err(|e| format_error(&sst_name(self.number), e))?;
+        Ok(px.loaded[c].get_or_init(|| entries))
+    }
+
+    /// How many data blocks the table has.
+    fn blocks(body: &Body) -> usize {
+        match &body.index {
+            TableIndex::Flat(flat) => flat.blocks(),
+            TableIndex::Parts(_) => body.props.data_blocks as usize,
+        }
+    }
+
+    /// The first block whose last key is `>= key` ([`Self::blocks`] if none).
+    fn block_for(&self, body: &Body, key: &[u8]) -> Result<usize> {
+        match &body.index {
+            TableIndex::Flat(flat) => Ok(flat.block_for(key)),
+            TableIndex::Parts(px) => {
+                let c = px.parts.parts.partition_point(|p| p.last_key.as_slice() < key);
+                if c == px.parts.parts.len() {
+                    return Ok(Self::blocks(body));
+                }
+                // The part ends at a key `>= key`, so the block is one of its own.
+                Ok(c * px.parts.per_part as usize + self.part(body, px, c)?.block_for(key))
+            }
+        }
+    }
+
+    /// Block `i` as the index describes it.
+    fn block_ref<'b>(&self, body: &'b Body, i: usize) -> Result<BlockRef<'b>> {
+        match &body.index {
+            TableIndex::Flat(flat) => Ok(BlockRef {
+                handle: flat.handle(i),
+                last: flat.last_key(i),
+                prev: i.checked_sub(1).map(|p| flat.last_key(p)),
+            }),
+            TableIndex::Parts(px) => {
+                let per = px.parts.per_part as usize;
+                let (c, j) = (i / per, i % per);
+                let part = self.part(body, px, c)?;
+                let prev = match j.checked_sub(1) {
+                    Some(p) => Some(part.last_key(p)),
+                    None => c.checked_sub(1).map(|p| px.parts.parts[p].last_key.as_slice()),
+                };
+                Ok(BlockRef { handle: part.handle(j), last: part.last_key(j), prev })
+            }
+        }
     }
 
     pub fn open(ctx: &Arc<TableCtx>, meta: &FileMeta, last_seq: u64) -> Result<Table> {
@@ -549,8 +695,15 @@ impl Table {
     pub fn purge_cache(&self) {
         // A table that never loaded has no block in the cache.
         if let Some(b) = self.body.get() {
-            for i in 0..b.index.blocks() {
-                self.ctx.cache.remove(&(self.number, b.index.handle(i).offset));
+            // Of an index read by parts, the blocks of the parts read: no other was cached.
+            let parts: Vec<&FlatIndex> = match &b.index {
+                TableIndex::Flat(flat) => vec![flat],
+                TableIndex::Parts(px) => px.loaded.iter().filter_map(OnceLock::get).collect(),
+            };
+            for flat in parts {
+                for i in 0..flat.blocks() {
+                    self.ctx.cache.remove(&(self.number, flat.handle(i).offset));
+                }
             }
         }
     }
@@ -563,7 +716,8 @@ impl Table {
     /// is not cached) and verifies data block `i` (SST-R1..R3).
     pub fn read_block(&self, i: usize, fill_cache: bool) -> Result<Arc<Block>> {
         let body = self.body()?;
-        let handle: BlockHandle = body.index.handle(i);
+        let block = self.block_ref(body, i)?;
+        let handle = block.handle;
         let key = (self.number, handle.offset);
         let stats = &self.ctx.stats;
         if let Some(b) = self.ctx.cache.get(&key) {
@@ -578,7 +732,9 @@ impl Table {
         let mut buf = vec![0u8; handle.len as usize];
         self.file.read_at(&mut buf, handle.offset)?;
         let payload = crate::format::block::data_block_payload(&buf, self.number, handle.offset, body.lz4)
-            .and_then(|p| check_data_block(&p, &body.index, i, &body.props).map(|()| p.into_owned()))
+            .and_then(|p| {
+                check_data_block(&p, &block, usize::from(block.prev.is_some()), &body.props).map(|()| p.into_owned())
+            })
             .map_err(|e| format_error(&sst_name(self.number), e))?;
         let block = Arc::new(Block::from_payload(payload));
         if fill_cache {
@@ -607,8 +763,8 @@ impl Table {
                 return Ok(None);
             }
         }
-        let i = body.index.block_for(key);
-        if i == body.index.blocks() {
+        let i = self.block_for(body, key)?;
+        if i == Self::blocks(body) {
             return Ok(None);
         }
         let block = self.read_block(i, true)?;
@@ -651,7 +807,7 @@ impl TableIter<'_> {
     /// blocks if needed.
     fn load(&mut self, mut block_idx: usize, mut entry: usize) -> Result<()> {
         self.pos = None;
-        let blocks = self.table.body()?.index.blocks();
+        let blocks = Table::blocks(self.table.body()?);
         while block_idx < blocks {
             let block = self.table.read_block(block_idx, self.fill_cache)?;
             if entry < block.len() {
@@ -683,9 +839,9 @@ impl InternalIterator for TableIter<'_> {
     }
 
     fn seek(&mut self, target: &[u8]) -> Result<()> {
-        let index = &self.table.body()?.index;
-        let idx = index.block_for(target);
-        if idx == index.blocks() {
+        let body = self.table.body()?;
+        let idx = self.table.block_for(body, target)?;
+        if idx == Table::blocks(body) {
             self.pos = None;
             return Ok(());
         }
@@ -779,7 +935,7 @@ mod tests {
         let (_sim, ctx) = ctx(512);
         let n = 500;
         let built = build(&ctx, 7, n);
-        assert!(built.body().unwrap().index.len() > 10, "expected many blocks");
+        assert!(Table::blocks(built.body().unwrap()) > 10, "expected many blocks");
         let t = reopen(&ctx, &built).unwrap();
         assert_eq!(t.meta(0), built.meta(0));
         assert_eq!(
@@ -817,6 +973,180 @@ mod tests {
         assert_eq!(it.key(), key(0).as_slice());
         it.seek(b"z").unwrap();
         assert!(!it.valid());
+    }
+
+    /// A context over the same files as `ctx` whose tables load lazily.
+    fn lazy_of(ctx: &Arc<TableCtx>) -> Arc<TableCtx> {
+        Arc::new(
+            TableCtx::new(ctx.vfs.clone(), ctx.dir.clone(), 1 << 20, Arc::new(Stats::default()), ctx.block_size)
+                .with_db_id(DB)
+                .with_lazy(true),
+        )
+    }
+
+    /// Small values and a tombstone now and then: about twenty entries per 512-byte block.
+    fn small(i: usize) -> Option<Vec<u8>> {
+        (i % 11 != 0).then(|| format!("v{i}").into_bytes())
+    }
+
+    fn build_small(ctx: &Arc<TableCtx>, number: u64, n: usize) -> Table {
+        let mut b = TableBuilder::create(ctx, number, REASON_FLUSH).unwrap();
+        for i in 0..n {
+            b.add(&key(i * 2), i as u64 + 1, small(i).as_deref()).unwrap();
+        }
+        b.finish().unwrap()
+    }
+
+    #[test]
+    fn a_lazy_table_reads_its_index_by_parts() {
+        let (_sim, ctx) = ctx(512);
+        // Several parts of 64 entries, the last one short or full.
+        for n in [1500usize, 4000, 6007] {
+            let built = build_small(&ctx, n as u64, n);
+            let blocks = Table::blocks(built.body().unwrap());
+            let parts = built.body().unwrap().props.index_parts.clone().expect("a table this large has index parts");
+            assert_eq!(parts.parts.len(), blocks.div_ceil(64), "{blocks} blocks");
+            let lazy = lazy_of(&ctx);
+            let t = Table::open(&lazy, &built.meta(0), MAX_SEQ).unwrap();
+            assert!(t.body.get().is_none(), "nothing is read at open");
+            // One lookup reads one part.
+            let k = key(n / 2 * 2);
+            assert_eq!(t.get(&k, bloom::hash(&k)).unwrap(), Some((n as u64 / 2 + 1, small(n / 2))));
+            let TableIndex::Parts(px) = &t.body().unwrap().index else { panic!("the index is read by parts") };
+            assert_eq!(px.loaded.iter().filter(|p| p.get().is_some()).count(), 1);
+            assert_eq!(Table::blocks(t.body().unwrap()), blocks);
+            for i in 0..n {
+                let got = t.get(&key(i * 2), bloom::hash(&key(i * 2))).unwrap();
+                assert_eq!(got, Some((i as u64 + 1, small(i))), "key {i}");
+                let absent = key(i * 2 + 1);
+                assert_eq!(t.get(&absent, bloom::hash(&absent)).unwrap(), None);
+            }
+            // A fresh table: iteration and seeks alone load every part they cross.
+            let t = Table::open(&lazy, &built.meta(0), MAX_SEQ).unwrap();
+            let mut it = t.iter(true);
+            it.seek(b"").unwrap();
+            assert_eq!(it.key(), key(0).as_slice());
+            it.seek(b"z").unwrap();
+            assert!(!it.valid());
+            for i in (0..n).rev().step_by(7) {
+                it.seek(&key(i * 2 + 1)).unwrap();
+                if i + 1 < n {
+                    assert_eq!(it.key(), key((i + 1) * 2).as_slice());
+                } else {
+                    assert!(!it.valid());
+                }
+            }
+            it.seek_to_first().unwrap();
+            for i in 0..n {
+                assert!(it.valid());
+                assert_eq!(
+                    (it.key(), it.seq(), it.value()),
+                    (key(i * 2).as_slice(), i as u64 + 1, small(i).as_deref())
+                );
+                it.next().unwrap();
+            }
+            assert!(!it.valid());
+            // Every block as the whole index describes it.
+            let (lb, eb) = (t.body().unwrap(), built.body().unwrap());
+            for i in 0..blocks {
+                let (l, e) = (t.block_ref(lb, i).unwrap(), built.block_ref(eb, i).unwrap());
+                assert_eq!((l.handle, l.last, l.prev), (e.handle, e.last, e.prev), "block {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_small_table_has_no_index_parts_and_a_lazy_one_reads_its_whole_index() {
+        let (_sim, ctx) = ctx(4096);
+        let built = build(&ctx, 5, 40);
+        assert!(built.body().unwrap().props.index_parts.is_none());
+        let t = Table::open(&lazy_of(&ctx), &built.meta(0), MAX_SEQ).unwrap();
+        assert!(matches!(t.body().unwrap().index, TableIndex::Flat(_)));
+        assert_eq!(t.get(&key(2), bloom::hash(&key(2))).unwrap(), Some((2, value(1))));
+    }
+
+    #[test]
+    fn damage_is_detected_by_a_lazy_table_read_by_parts() {
+        let (sim, ctx) = ctx(512);
+        let n = 3000;
+        let built = build_small(&ctx, 3, n);
+        let meta = built.meta(0);
+        let body = built.body().unwrap();
+        let (filter, index) = (body.footer.filter, body.footer.index);
+        let parts = body.props.index_parts.clone().expect("index parts");
+        assert!(parts.parts.len() >= 3);
+        let starts = parts.starts(body.props.data_blocks);
+        drop(built);
+        let path = ctx.path(3);
+        // What a table read by parts never reads: the filter (a scan asks nothing of it), and of
+        // the index block the count before the first part and the trailer after the last (the
+        // count is the properties' `data_blocks`, and each part has its own CRC there).
+        let unread = |off: u64| {
+            let in_filter = off >= filter.offset && off < filter.offset + filter.len;
+            let in_index = off >= index.offset && off < index.offset + index.len;
+            let in_a_part = off >= index.offset + starts[0] && off < index.offset + starts[parts.parts.len()];
+            in_filter || (in_index && !in_a_part)
+        };
+        // One bit flipped anywhere else: the scan of the whole table fails, and what it returned
+        // before failing is right.
+        let mut flipped_in_a_part = 0;
+        for off in (0..meta.size).step_by(53) {
+            sim.corrupt_byte(&path, off, 0x10);
+            // Its own block cache: the lookups below fill it.
+            let lazy = lazy_of(&ctx);
+            let t = Table::open(&lazy, &meta, MAX_SEQ).unwrap();
+            let mut it = t.iter(false);
+            let mut ok = it.seek_to_first().is_ok();
+            let mut i = 0;
+            while ok && it.valid() {
+                assert_eq!(it.key(), key(i * 2).as_slice(), "flip at {off} returned wrong data");
+                assert_eq!(it.value(), small(i).as_deref(), "flip at {off} returned wrong data");
+                i += 1;
+                ok = it.next().is_ok();
+            }
+            assert!(!ok || unread(off), "flip at {off} went unnoticed");
+            flipped_in_a_part += usize::from(off >= index.offset && !unread(off) && off < index.offset + index.len);
+            // A point lookup of some keys: an error or the right answer.
+            let t = Table::open(&lazy, &meta, MAX_SEQ).unwrap();
+            for i in (0..n).step_by(17) {
+                if let Ok(got) = t.get(&key(i * 2), bloom::hash(&key(i * 2))) {
+                    assert_eq!(got, Some((i as u64 + 1, small(i))), "flip at {off}, key {i}");
+                }
+            }
+            sim.corrupt_byte(&path, off, 0x10);
+        }
+        assert!(flipped_in_a_part > 20, "the loop reached the index parts");
+    }
+
+    #[test]
+    fn index_parts_that_disagree_with_the_index_fail_a_full_open() {
+        use crate::format::block::{BLOCK_TRAILER_LEN, reseal_block};
+        let (_sim, ctx) = ctx(512);
+        let n = 4000;
+        let built = build_small(&ctx, 9, n);
+        let meta = built.meta(0);
+        let props_at = built.body().unwrap().footer.props;
+        let mut props = built.body().unwrap().props.clone();
+        drop(built);
+        // A properties block of the same length, sealed again, whose parts name another CRC.
+        let before = props.encode().len();
+        props.index_parts.as_mut().unwrap().parts[2].crc ^= 0x55;
+        let mut block = props.encode();
+        assert_eq!(block.len(), before);
+        block.resize(block.len() + BLOCK_TRAILER_LEN, 0);
+        reseal_block(&mut block, 9, props_at.offset);
+        let f = ctx.vfs.open(&ctx.path(9), OpenMode::Existing).unwrap();
+        f.write_at(&block, props_at.offset).unwrap();
+        let e = Table::open(&ctx, &meta, MAX_SEQ).err().unwrap();
+        assert!(matches!(&e, Error::Corruption(m) if m.contains("SST-O8")), "{e:?}");
+        // The lazy table opens, reads the parts that are intact and refuses the one that is not.
+        let t = Table::open(&lazy_of(&ctx), &meta, MAX_SEQ).unwrap();
+        assert!(t.get(&key(0), bloom::hash(&key(0))).is_ok(), "the first part is intact");
+        let refused: Vec<Error> = (0..n).filter_map(|i| t.get(&key(i * 2), bloom::hash(&key(i * 2))).err()).collect();
+        assert!(!refused.is_empty() && refused.len() < n / 2, "{} reads refused", refused.len());
+        for e in &refused {
+            assert!(matches!(e, Error::Corruption(m) if m.contains("SST-P1")), "{e:?}");
+        }
     }
 
     #[test]
@@ -1044,7 +1374,8 @@ mod tests {
             b.add(&key(i), 1, Some(&[b'v'; 120])).unwrap();
         }
         let t = b.finish().unwrap();
-        let (h0, h1) = (t.body().unwrap().index.handle(0), t.body().unwrap().index.handle(1));
+        let b = t.body().unwrap();
+        let (h0, h1) = (t.block_ref(b, 0).unwrap().handle, t.block_ref(b, 1).unwrap().handle);
         assert_eq!(h0.len, h1.len, "test setup: blocks of one length");
         // Block 0's bytes at block 1's offset.
         let f = ctx.vfs.open(&ctx.path(4), OpenMode::Existing).unwrap();

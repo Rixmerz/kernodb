@@ -45,14 +45,16 @@ impl<E: Engine> UnitSnapshot<E> {
     pub fn find_by_field(&self, unit_type: &str, field: &str, value: &FieldValue) -> Result<Vec<Unit>, UnitError> {
         // A value too long to index can never have been stored, so "no unit" would be a wrong
         // answer to a wrong question. (A range bound this long is meaningful and still allowed.)
-        self.field_bounds(unit_type, field, Bound::Included(value), Bound::Included(value))?;
+        let (start, end) = self.field_bounds(unit_type, field, Bound::Included(value), Bound::Included(value))?;
         if value.index_bytes().is_some_and(|e| e.len() > MAX_INDEXED_VALUE_LEN) {
             return Err(UnitError::InvalidArgument(format!(
                 "the value is too long to be indexed (at most {MAX_INDEXED_TEXT_LEN} bytes of text or bytes, each \
                  0x00 byte counting twice), so no unit can hold it"
             )));
         }
-        self.find_range(unit_type, field, Bound::Included(value), Bound::Included(value), usize::MAX)
+        // The range of one value is never empty, and the schema was read once to bound it:
+        // the scan `find_range` would run, without reading the schema a second time.
+        self.scan_range(unit_type, field, start, end, usize::MAX)
     }
 
     /// The `Active` units of `unit_type` whose indexed `field` lies between

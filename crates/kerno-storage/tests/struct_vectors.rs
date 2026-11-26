@@ -1128,6 +1128,7 @@ fn vectors() -> Vec<Vector> {
         largest_key: b"p".to_vec(),
         largest_exclusive: true,
         creation_reason: props::REASON_FLUSH,
+        index_parts: None,
         ignored: Vec::new(),
     };
     v.push(pos("props_block", pctx.clone(), Value::Props(props.clone())));

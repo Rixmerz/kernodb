@@ -1,9 +1,11 @@
 //! SST properties block (v1.md §7.6): TLV with strictly increasing tags;
 //! tags 1–12 mandatory; unknown tags below 1024 are `Corruption`, from 1024
-//! up they are ignored.
+//! up they are ignored. Tag 1024 is `index_parts` (§7.6.1, [`super::parts`]): optional, and
+//! ignored by a reader that does not know it.
 
 use super::limits::{MAX_KEY_LEN, MAX_SEQ};
 use super::manifest::FileMeta;
+use super::parts::{IndexParts, TAG_INDEX_PARTS};
 use super::tlv::{FIRST_IGNORABLE_TAG, TlvIter, put_tlv, put_tlv_u8, put_tlv_varint, value_u8, value_varint};
 use super::{FormatError, Result};
 
@@ -40,7 +42,9 @@ pub struct Props {
     pub largest_key: Vec<u8>,
     pub largest_exclusive: bool,
     pub creation_reason: u8,
-    /// Fields with tags ≥ 1024, kept as read (a writer never emits them).
+    /// The parts of the index (tag 1024, §7.6.1), on a table whose index has more than one.
+    pub index_parts: Option<IndexParts>,
+    /// Fields with tags above 1024, kept as read (a writer never emits them).
     pub ignored: Vec<(u64, Vec<u8>)>,
 }
 
@@ -59,6 +63,9 @@ impl Props {
         put_tlv(&mut out, TAG_LARGEST_KEY, &self.largest_key);
         put_tlv_u8(&mut out, TAG_LARGEST_EXCLUSIVE, u8::from(self.largest_exclusive));
         put_tlv_u8(&mut out, TAG_CREATION_REASON, self.creation_reason);
+        if let Some(parts) = &self.index_parts {
+            put_tlv(&mut out, TAG_INDEX_PARTS, &parts.encode());
+        }
         for (tag, value) in &self.ignored {
             put_tlv(&mut out, *tag, value);
         }
@@ -114,6 +121,7 @@ pub fn decode_props(payload: &[u8], base: u64) -> Result<Props> {
                 }
                 p.creation_reason = r;
             }
+            TAG_INDEX_PARTS => p.index_parts = Some(IndexParts::decode(f.value, f.value_offset)?),
             t if t >= FIRST_IGNORABLE_TAG => p.ignored.push((t, f.value.to_vec())),
             _ => return Err(o6("unknown property tag below 1024")),
         }

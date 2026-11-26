@@ -30,6 +30,7 @@ pub mod filter;
 pub mod header;
 pub mod limits;
 pub mod manifest;
+pub mod parts;
 pub mod props;
 pub mod rangedel;
 pub mod sst;
