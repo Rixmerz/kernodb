@@ -45,13 +45,41 @@ struct Inner {
     budget: usize,
     bytes: usize,
     units: HashMap<UnitId, Arc<Unit>, IdHash>,
-    schemas: HashMap<String, Option<Arc<Schema>>>,
-    ranges: HashMap<RangeKey, Arc<Vec<UnitId>>>,
+    schemas: HashMap<String, Option<Arc<Schema>>, ByteHash>,
+    ranges: HashMap<RangeKey, Arc<Vec<UnitId>>, ByteHash>,
     relations: HashMap<RelationsKey, Arc<Vec<Relation>>, IdHash>,
 }
 
 /// Unit ids are UUIDv7 with random tail bytes: [`IdHasher`] spreads them, no keyed hash needed.
 type IdHash = BuildHasherDefault<IdHasher>;
+
+/// Type names and key ranges are short byte strings read on every lookup: a multiply-rotate over
+/// their words (as `term_hash`) instead of SipHash. Both maps are bounded (a count, the budget).
+type ByteHash = BuildHasherDefault<ByteHasher>;
+
+#[derive(Default)]
+pub(crate) struct ByteHasher(u64);
+
+impl std::hash::Hasher for ByteHasher {
+    fn finish(&self) -> u64 {
+        self.0 ^ (self.0 >> 31)
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        const K: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut h = (self.0 ^ bytes.len() as u64).wrapping_mul(K);
+        let (words, rest) = bytes.as_chunks::<8>();
+        for w in words {
+            h = (h.rotate_left(26) ^ u64::from_le_bytes(*w)).wrapping_mul(K);
+        }
+        if !rest.is_empty() {
+            let mut w = [0u8; 8];
+            w[..rest.len()].copy_from_slice(rest);
+            h = (h.rotate_left(26) ^ u64::from_le_bytes(w)).wrapping_mul(K);
+        }
+        self.0 = h;
+    }
+}
 
 /// An index key range and the limit it was read with.
 type RangeKey = (Vec<u8>, Vec<u8>, usize);
@@ -166,11 +194,11 @@ impl ReadCache {
         if c.at(seq) { c.schemas.get(unit_type).cloned() } else { None }
     }
 
-    pub(crate) fn put_schema(&self, seq: u64, unit_type: &str, schema: Option<&Schema>) {
+    pub(crate) fn put_schema(&self, seq: u64, unit_type: &str, schema: Option<&Arc<Schema>>) {
         let mut c = self.lock();
         // Type names come from callers: do not let a stream of unknown names grow the map.
         if c.at(seq) && c.schemas.len() < 1024 {
-            c.schemas.insert(unit_type.to_owned(), schema.map(|s| Arc::new(s.clone())));
+            c.schemas.insert(unit_type.to_owned(), schema.cloned());
         }
     }
 }

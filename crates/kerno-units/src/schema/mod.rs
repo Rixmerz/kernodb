@@ -173,6 +173,31 @@ impl FieldValue {
             FieldValue::Bytes(b) => escaped(b),
         })
     }
+
+    /// The length of [`index_bytes`](Self::index_bytes), `None` for NaN.
+    pub(crate) fn index_len(&self) -> Option<usize> {
+        Some(match self {
+            FieldValue::Bool(_) => 1,
+            FieldValue::Int(_) => 8,
+            FieldValue::Float(f) if f.is_nan() => return None,
+            FieldValue::Float(_) => 8,
+            FieldValue::Text(s) => escaped_len(s.as_bytes()),
+            FieldValue::Bytes(b) => escaped_len(b),
+        })
+    }
+
+    /// Appends [`index_bytes`](Self::index_bytes) to `out`; `false` (nothing appended) for NaN.
+    pub(crate) fn write_index(&self, out: &mut Vec<u8>) -> bool {
+        match self {
+            FieldValue::Bool(b) => out.push(u8::from(*b)),
+            FieldValue::Int(i) => out.extend_from_slice(&int_index(*i)),
+            FieldValue::Float(f) if f.is_nan() => return false,
+            FieldValue::Float(f) => out.extend_from_slice(&float_index(*f)),
+            FieldValue::Text(s) => escaped_into(s.as_bytes(), out),
+            FieldValue::Bytes(b) => escaped_into(b, out),
+        }
+        true
+    }
 }
 
 /// The index encoding of an `Int`: its bits with the sign flipped, so it sorts as a number.
@@ -190,15 +215,25 @@ fn float_index(f: f64) -> [u8; 8] {
 /// `0x00` as `0x00 0xFF`, then the terminator `0x00 0x00`: sorts like the bytes
 /// and no encoding is a prefix of another.
 fn escaped(bytes: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(bytes.len() + 2);
-    for &b in bytes {
-        out.push(b);
-        if b == 0 {
-            out.push(0xFF);
-        }
-    }
-    out.extend_from_slice(&[0, 0]);
+    let mut out = Vec::with_capacity(escaped_len(bytes));
+    escaped_into(bytes, &mut out);
     out
+}
+
+fn escaped_len(bytes: &[u8]) -> usize {
+    bytes.len() + memchr::memchr_iter(0, bytes).count() + 2
+}
+
+/// [`escaped`], appended to `out`: the runs between `0x00` bytes copied whole.
+fn escaped_into(bytes: &[u8], out: &mut Vec<u8>) {
+    let mut rest = bytes;
+    while let Some(i) = memchr::memchr(0, rest) {
+        out.extend_from_slice(&rest[..=i]);
+        out.push(0xFF);
+        rest = &rest[i + 1..];
+    }
+    out.extend_from_slice(rest);
+    out.extend_from_slice(&[0, 0]);
 }
 
 // ------------------------------------------------------------------ records
@@ -632,7 +667,14 @@ pub(crate) fn schema_key(unit_type: &str) -> Vec<u8> {
 
 /// The key prefix of every entry of one field, up to where its values start.
 pub(crate) fn field_prefix(unit_type: &str, field: &str) -> Vec<u8> {
-    let mut k = type_prefix(TAG_FIELD_INDEX, unit_type);
+    field_prefix_with(unit_type, field, 0)
+}
+
+/// [`field_prefix`] in a buffer with room for `more` bytes after it.
+pub(crate) fn field_prefix_with(unit_type: &str, field: &str, more: usize) -> Vec<u8> {
+    let mut k = Vec::with_capacity(3 + unit_type.len() + field.len() + more);
+    k.extend_from_slice(&[TAG_FIELD_INDEX, unit_type.len() as u8]);
+    k.extend_from_slice(unit_type.as_bytes());
     k.push(field.len() as u8);
     k.extend_from_slice(field.as_bytes());
     k
@@ -648,13 +690,19 @@ pub(crate) fn entry_key(unit_type: &str, field: &str, value: &[u8], unit: UnitId
 /// `[prefix, end)` of every key that starts with `prefix`.
 pub(crate) fn prefix_bounds(prefix: &[u8]) -> (Vec<u8>, Vec<u8>) {
     let mut end = prefix.to_vec();
-    while end.last() == Some(&0xFF) {
-        end.pop();
+    past_prefix(&mut end);
+    (prefix.to_vec(), end)
+}
+
+/// Turns `prefix` into the first key past every key that starts with it (the end of
+/// [`prefix_bounds`]).
+pub(crate) fn past_prefix(k: &mut Vec<u8>) {
+    while k.last() == Some(&0xFF) {
+        k.pop();
     }
-    if let Some(last) = end.last_mut() {
+    if let Some(last) = k.last_mut() {
         *last += 1;
     }
-    (prefix.to_vec(), end)
 }
 
 pub(crate) fn decode_schema_key(key: &[u8]) -> Result<String, DecodeError> {

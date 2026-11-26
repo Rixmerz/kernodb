@@ -7,8 +7,8 @@ use std::sync::Arc;
 use kerno_core::contract::{Engine, Snapshot};
 
 use super::{
-    Document, FieldValue, MAX_INDEXED_TEXT_LEN, MAX_INDEXED_VALUE_LEN, Schema, entry_key_parts, field_prefix,
-    prefix_bounds, schema_key,
+    Document, FieldValue, MAX_INDEXED_TEXT_LEN, MAX_INDEXED_VALUE_LEN, Schema, entry_key_parts,
+    field_prefix_with, past_prefix, schema_key,
 };
 use crate::db::{Unit, UnitSnapshot, context, corruption};
 use crate::error::UnitError;
@@ -29,12 +29,17 @@ impl<E: Engine> UnitSnapshot<E> {
     ///
     /// `Storage(Corruption)` when the record does not decode.
     pub fn schema(&self, unit_type: &str) -> Result<Option<Schema>, UnitError> {
+        Ok(self.schema_shared(unit_type)?.map(Arc::unwrap_or_clone))
+    }
+
+    /// [`schema`](Self::schema), sharing the schema the read cache holds.
+    pub(crate) fn schema_shared(&self, unit_type: &str) -> Result<Option<Arc<Schema>>, UnitError> {
         let seq = self.snap.seq();
         if let Some(hit) = self.read_cache.schema(seq, unit_type) {
-            return Ok(hit.map(|s| (*s).clone()));
+            return Ok(hit);
         }
         let schema = match self.snap.get(&schema_key(unit_type))? {
-            Some(raw) => Some(Schema::decode(&raw).map_err(|e| context(e, "SCHEMA"))?),
+            Some(raw) => Some(Arc::new(Schema::decode(&raw).map_err(|e| context(e, "SCHEMA"))?)),
             None => None,
         };
         self.read_cache.put_schema(seq, unit_type, schema.as_ref());
@@ -62,14 +67,15 @@ impl<E: Engine> UnitSnapshot<E> {
     ) -> Result<Vec<Arc<Unit>>, UnitError> {
         // A value too long to index can never have been stored, so "no unit" would be a wrong
         // answer to a wrong question. (A range bound this long is meaningful and still allowed.)
-        self.field_bounds(unit_type, field, Bound::Included(value), Bound::Included(value))?;
-        if value.index_bytes().is_some_and(|e| e.len() > MAX_INDEXED_VALUE_LEN) {
+        let (start, end) = self.field_bounds(unit_type, field, Bound::Included(value), Bound::Included(value))?;
+        if value.index_len().is_some_and(|n| n > MAX_INDEXED_VALUE_LEN) {
             return Err(UnitError::InvalidArgument(format!(
                 "the value is too long to be indexed (at most {MAX_INDEXED_TEXT_LEN} bytes of text or bytes, each \
                  0x00 byte counting twice), so no unit can hold it"
             )));
         }
-        self.find_range_shared(unit_type, field, Bound::Included(value), Bound::Included(value), usize::MAX)
+        // What `find_range_shared` would do with these bounds: one value's range is never empty.
+        self.scan_range(unit_type, field, start, end, usize::MAX)
     }
 
     /// The `Active` units of `unit_type` whose indexed `field` lies between
@@ -208,38 +214,45 @@ impl<E: Engine> UnitSnapshot<E> {
     ) -> Result<(Vec<u8>, Vec<u8>), UnitError> {
         let invalid = |m: String| UnitError::InvalidArgument(m);
         let not_indexed = |detail: String| UnitError::NotIndexed { detail };
-        let Some(schema) = self.schema(unit_type)? else {
+        let Some(schema) = self.schema_shared(unit_type)? else {
             return Err(not_indexed("the unit type has no schema".into()));
         };
         let Some(def) = schema.field(field).filter(|f| f.indexed) else {
             return Err(not_indexed(format!("field {field:?} is not an indexed field of the schema")));
         };
-        let prefix = field_prefix(unit_type, field);
-        // The bounds of one value are `[prefix ‖ enc, prefix ‖ enc ‖ 0xFF…)`.
-        let edge = |b: Bound<&FieldValue>, is_lo: bool| -> Result<Bound<Vec<u8>>, UnitError> {
+        // The bounds of one value are `[prefix ‖ enc, prefix ‖ enc ‖ 0xFF…)`; an open end is the
+        // field's own `[prefix, prefix ‖ 0xFF…)`. Each key is built in one buffer.
+        let edge = |b: Bound<&FieldValue>, is_lo: bool| -> Result<Vec<u8>, UnitError> {
             let (Bound::Included(v) | Bound::Excluded(v)) = b else {
-                return Ok(Bound::Unbounded);
+                let mut k = field_prefix_with(unit_type, field, 0);
+                if !is_lo {
+                    past_prefix(&mut k);
+                }
+                return Ok(k);
             };
             if v.field_type() != def.ty {
                 return Err(invalid(format!("a bound is a {:?}, field {field:?} is a {:?}", v.field_type(), def.ty)));
             }
-            let Some(enc) = v.index_bytes() else {
+            let Some(n) = v.index_len() else {
                 return Err(invalid("a bound is NaN".into()));
             };
-            let mut at = prefix.clone();
-            at.extend_from_slice(&enc);
-            let (start, end) = prefix_bounds(&at);
+            let mut k = field_prefix_with(unit_type, field, n);
+            v.write_index(&mut k);
             // Included lo and excluded hi start at the value; the other two skip past it.
-            Ok(Bound::Included(if matches!(b, Bound::Included(_)) == is_lo { start } else { end }))
+            if matches!(b, Bound::Included(_)) != is_lo {
+                past_prefix(&mut k);
+            }
+            Ok(k)
         };
-        let (field_start, field_end) = prefix_bounds(&prefix);
-        let start = match edge(lo, true)? {
-            Bound::Included(k) => k,
-            _ => field_start,
-        };
-        let end = match edge(hi, false)? {
-            Bound::Included(k) => k,
-            _ => field_end,
+        let start = edge(lo, true)?;
+        // A point lookup's end is its start, skipped past: one key built, copied once.
+        let end = match (lo, hi) {
+            (Bound::Included(a), Bound::Included(b)) if std::ptr::eq(a, b) => {
+                let mut k = start.clone();
+                past_prefix(&mut k);
+                k
+            }
+            _ => edge(hi, false)?,
         };
         Ok((start, end))
     }
