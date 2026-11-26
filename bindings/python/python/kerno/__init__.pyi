@@ -301,7 +301,12 @@ class Database:
         `commit_seq` (`None` when nothing was pruned). `history` from a pruned revision and
         `read_as_of` before the oldest kept one raise `PrunedError`. The policy is not stored."""
     def define_schema(self, unit_type: str, fields: list[dict[str, object]]) -> None:
-        """Give a type a schema. The same schema again is a no-op; a different one raises `SchemaExistsError`."""
+        """Give a type a schema. The same schema again is a no-op; a different one raises `SchemaExistsError`.
+
+        Each field dict has `name`, `type` and optional `required`, `unique`, `indexed` and
+        `covering` booleans. `covering` (only with `indexed` or `unique`) keeps each unit's
+        document in its index entries, so `find_documents` on that field reads no unit. A schema
+        that differs from the stored one only in `covering` rewrites those entries."""
     def create_index(self, unit_type: str, field: str) -> None: ...
     def store_document(self, unit_type: str, document: dict[str, FieldValue]) -> str: ...
     def upsert(self, unit_type: str, field: str, document: dict[str, FieldValue]) -> dict[str, str]:

@@ -13,7 +13,7 @@ use kerno_core::contract::Snapshot;
 
 use super::{
     Document, Schema, TAG_FIELD_INDEX, TAG_SCHEMA, check_entry_value, decode_entry_key, decode_schema_key,
-    field_prefix, schema_key,
+    entry_payload, field_prefix, schema_key,
 };
 use crate::codec::{Key, UnitHead};
 use crate::error::{DecodeError, UnitError};
@@ -29,6 +29,8 @@ pub(crate) struct Check {
     schemas: BTreeMap<String, Schema>,
     /// The entries of the store, by `(unit_type, field)`: `(encoded value, unit)`.
     entries: BTreeMap<(String, String), Entries>,
+    /// The payload an entry carries (layer 13), by `(unit_type, field, unit)`.
+    carried: BTreeMap<(String, String, UnitId), Vec<u8>>,
     /// A record did not decode: that is a structure finding already, and the
     /// comparison would only repeat it.
     damaged: bool,
@@ -53,21 +55,34 @@ impl Check {
         } else {
             let (unit_type, field, enc, unit) = decode_entry_key(k)?;
             check_entry_value(v)?;
+            if let Some(p) = entry_payload(v) {
+                self.carried.insert((unit_type.clone(), field.clone(), unit), p.to_vec());
+            }
             self.entries.entry((unit_type, field)).or_default().insert((enc, unit));
         }
         Ok(())
     }
 
     /// Every disagreement. `compare` is false when a head did not decode (its
-    /// type is unknown, like UNIT-47 and UNIT-49).
+    /// type is unknown, like UNIT-47 and UNIT-49). `mark` is the layer version of the mark.
     pub(crate) fn findings<S: Snapshot>(
         &self,
         snap: &S,
         heads: &BTreeMap<UnitId, UnitHead>,
         compare: bool,
+        mark: Option<u32>,
     ) -> Result<Vec<Found>, UnitError> {
         let mut out = Vec::new();
-        if self.damaged || !compare {
+        if self.damaged {
+            return Ok(out);
+        }
+        let first_covering = self.schemas.iter().find(|(_, s)| s.has_covering()).map(|(t, _)| schema_key(t));
+        if let (Some(key), Some(mark)) = (first_covering, mark)
+            && mark < crate::codec::LAYER_VERSION_COVERING
+        {
+            out.push((CrossRule::Unit53, key, "a covering field in a database whose layer mark is below 13".into()));
+        }
+        if !compare {
             return Ok(out);
         }
         for (unit_type, schema) in &self.schemas {
@@ -97,6 +112,8 @@ impl Check {
     ) -> Result<(), UnitError> {
         let key = schema_key(unit_type);
         let mut want: BTreeMap<usize, Entries> = BTreeMap::new();
+        // The head payload of each active unit, kept only when a covering entry needs it.
+        let mut payloads: BTreeMap<UnitId, Vec<u8>> = BTreeMap::new();
         for (unit, head) in heads.iter().filter(|(_, h)| h.unit_type == unit_type && h.lifecycle != Lifecycle::Deleted)
         {
             // A missing payload is a finding of its own (UNIT-26, UNIT-30).
@@ -121,6 +138,9 @@ impl Check {
             let unfit = || format!("unit {unit}: its payload does not satisfy the schema of its type");
             let record = Document::parse(&payload).and_then(|r| schema.validate(&r).map(|()| r)).map_err(|_| unfit());
             let entries = record.and_then(|r| schema.entries(&r).map_err(|_| unfit()));
+            if head.lifecycle == Lifecycle::Active && schema.has_covering() {
+                payloads.insert(*unit, payload.clone());
+            }
             match entries {
                 Err(detail) => out.push((CrossRule::Unit51, key.clone(), detail)),
                 // An archived unit holds no entries.
@@ -161,6 +181,25 @@ impl Check {
                     key.clone(),
                     format!("unit {unit}: an entry of indexed field #{i} does not match its payload or its lifecycle"),
                 ));
+            }
+            // UNIT-53: what a matching entry carries is its unit's payload, exactly when the field
+            // is covering and the payload is one the head stores inline.
+            for (_, unit) in have.intersection(expected) {
+                let carried = self.carried.get(&(unit_type.to_owned(), field.name.clone(), *unit));
+                let detail = if !field.covering {
+                    carried.map(|_| "carries a payload, but the field is not covering")
+                } else {
+                    let Some(p) = payloads.get(unit) else { continue };
+                    let inline = p.len() <= crate::codec::INLINE_PAYLOAD_MAX as usize;
+                    match carried {
+                        Some(c) if !inline || c != p => Some("carries a payload that is not its unit's head payload"),
+                        None if inline => Some("carries no payload, but its unit's payload is inline-sized"),
+                        _ => None,
+                    }
+                };
+                if let Some(d) = detail {
+                    out.push((CrossRule::Unit53, key.clone(), format!("unit {unit}: the entry of covering field #{i} {d}")));
+                }
             }
         }
         Ok(())

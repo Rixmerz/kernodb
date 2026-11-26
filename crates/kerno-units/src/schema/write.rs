@@ -8,8 +8,8 @@ use std::sync::Arc;
 use kerno_core::contract::{Snapshot, Txn, TxnEngine};
 
 use super::{
-    Document, FieldDef, FieldValue, Schema, entry_key, entry_key_parts, entry_value, field_prefix, prefix_bounds,
-    schema_key,
+    Document, FieldDef, FieldValue, Schema, entry_key, entry_key_parts, entry_value_for, field_prefix,
+    prefix_bounds, schema_key,
 };
 use crate::codec::{Key, TAG_UNIT_HEAD, UnitHead};
 use crate::db::{
@@ -74,6 +74,7 @@ pub fn upsert_key(payload: &[u8], field: &str) -> Result<Vec<u8>, UnitError> {
 struct Typed {
     unit: UnitId,
     record: Document,
+    payload: Vec<u8>,
     lifecycle: Lifecycle,
 }
 
@@ -142,11 +143,18 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         for (i, enc) in old.iter().filter(|(i, enc)| new.get(*i) != Some(*enc)) {
             out.push(Write::Delete(entry_key(&head.unit_type, name(*i), enc, unit)));
         }
-        for (i, enc) in new.iter().filter(|(i, enc)| old.get(*i) != Some(*enc)) {
-            if schema.fields()[*i].unique {
+        // An entry of a covering field holds the payload, so it is written again whenever the
+        // unit gets a new revision, also when its value did not change (units-v13.md).
+        for (i, enc) in &new {
+            let def = &schema.fields()[*i];
+            let same = old.get(i) == Some(enc);
+            if same && !def.covering {
+                continue;
+            }
+            if def.unique && !same {
                 self.ensure_unique(&head.unit_type, name(*i), enc, unit)?;
             }
-            out.push(Write::Put(entry_key(&head.unit_type, name(*i), enc, unit), entry_value()));
+            out.push(Write::Put(entry_key(&head.unit_type, name(*i), enc, unit), entry_value_for(def, payload)));
         }
         Ok(out)
     }
@@ -301,7 +309,7 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
                 let record = Document::parse(&payload)
                     .map_err(|m| violation(format!("existing unit {unit} is not a record: {m}")))?;
                 schema.validate(&record).map_err(|m| violation(format!("existing unit {unit}: {m}")))?;
-                out.push(Typed { unit, record, lifecycle: head.lifecycle });
+                out.push(Typed { unit, record, payload, lifecycle: head.lifecycle });
             }
             match page.into_iter().last() {
                 Some((k, _)) if n == HEAD_PAGE => {
@@ -321,13 +329,13 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         unit_type: &str,
         schema: &Schema,
         units: &[Typed],
-        only: Option<usize>,
+        only: Option<&[usize]>,
     ) -> Result<Vec<Write>, UnitError> {
         let mut seen: BTreeMap<(usize, Vec<u8>), UnitId> = BTreeMap::new();
         let mut out = Vec::new();
         for t in units.iter().filter(|t| t.lifecycle == Lifecycle::Active) {
             let entries = schema.entries(&t.record).map_err(|m| violation(format!("existing unit {}: {m}", t.unit)))?;
-            for (i, enc) in entries.into_iter().filter(|(i, _)| only.is_none_or(|o| o == *i)) {
+            for (i, enc) in entries.into_iter().filter(|(i, _)| only.is_none_or(|o| o.contains(i))) {
                 let field = &schema.fields()[i];
                 if field.unique && seen.insert((i, enc.clone()), t.unit).is_some() {
                     return Err(violation(format!(
@@ -335,13 +343,21 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
                         field.name
                     )));
                 }
-                out.push(Write::Put(entry_key(unit_type, &field.name, &enc, t.unit), entry_value()));
+                out.push(Write::Put(
+                    entry_key(unit_type, &field.name, &enc, t.unit),
+                    entry_value_for(field, Some(&t.payload)),
+                ));
             }
         }
         Ok(out)
     }
 
     fn put_schema(&mut self, unit_type: &str, schema: &Schema, more: Vec<Write>) -> Result<(), UnitError> {
+        // A covering field needs a build that keeps its entries' payloads: the first one raises
+        // the mark to 13 in this same transaction, so an older build refuses the database.
+        if schema.has_covering() {
+            self.raise_layer(crate::codec::LAYER_VERSION_COVERING)?;
+        }
         self.write(&Write::Put(schema_key(unit_type), schema.encode()))?;
         for w in &more {
             self.write(w)?;
@@ -358,6 +374,9 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
     ///
     /// # Errors
     ///
+    /// A schema that differs from the type's only in the `covering` flags is accepted: the
+    /// entries of those fields are written again for every `Active` unit, in this change set.
+    ///
     /// `InvalidArgument` for an invalid type or schema; `SchemaExists` for a type that has a
     /// different schema already (the same schema again is a no-op); `SchemaViolation` for an existing unit the schema refuses;
     /// `ChangeSetTooLarge` when the entries exceed the engine's batch limits.
@@ -371,7 +390,22 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         let schema = Schema::new(fields)?;
         if let Some(have) = self.read_schema(unit_type)? {
             // The same schema again changes nothing, so a caller can define on every start.
-            return if *have == schema { Ok(()) } else { Err(UnitError::SchemaExists { unit_type: unit_type.into() }) };
+            if *have == schema {
+                return Ok(());
+            }
+            // Only `covering` differs: the entries of those fields are written again, with or
+            // without the payload (the keys are the same, so every entry is overwritten).
+            let plain = |s: &Schema| -> Vec<FieldDef> {
+                s.fields().iter().map(|f| FieldDef { covering: false, ..f.clone() }).collect()
+            };
+            if plain(&have) != plain(&schema) {
+                return Err(UnitError::SchemaExists { unit_type: unit_type.into() });
+            }
+            let changed: Vec<usize> =
+                (0..schema.fields().len()).filter(|&i| have.fields()[i].covering != schema.fields()[i].covering).collect();
+            let units = self.typed_units(unit_type, &schema)?;
+            let entries = self.backfill(unit_type, &schema, &units, Some(&changed))?;
+            return self.put_schema(unit_type, &schema, entries);
         }
         let units = self.typed_units(unit_type, &schema)?;
         let entries = self.backfill(unit_type, &schema, &units, None)?;
@@ -398,7 +432,7 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         }
         schema.fields[at].indexed = true;
         let units = self.typed_units(unit_type, &schema)?;
-        let entries = self.backfill(unit_type, &schema, &units, Some(at))?;
+        let entries = self.backfill(unit_type, &schema, &units, Some(&[at]))?;
         self.put_schema(unit_type, &schema, entries)
     }
 
@@ -424,6 +458,7 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
             _ => {}
         }
         schema.fields[at].indexed = false;
+        schema.fields[at].covering = false;
         let (start, end) = prefix_bounds(&field_prefix(unit_type, field));
         self.put_schema(unit_type, &schema, vec![Write::DeleteRange(start, end)])
     }

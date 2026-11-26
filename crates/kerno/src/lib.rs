@@ -998,6 +998,18 @@ impl Db {
         self.units.snapshot()?.find_by_field_shared(unit_type, field, value)
     }
 
+    /// `(id, payload)` of the active units of `unit_type` whose indexed `field` equals `value`,
+    /// in unit id order: the ids and payloads [`Db::find`] returns. For a field declared
+    /// [`covering`](FieldDef::covering) the payloads come from the index entries themselves,
+    /// with no read of the units (a payload over the inline size is read from its unit).
+    ///
+    /// # Errors
+    ///
+    /// As [`Db::find`].
+    pub fn find_payloads(&self, unit_type: &str, field: &str, value: &FieldValue) -> Result<Vec<(UnitId, Vec<u8>)>> {
+        self.units.snapshot()?.find_payloads_by_field(unit_type, field, value)
+    }
+
     /// The active units of `unit_type` whose indexed `field` lies between `lo` and `hi`,
     /// ordered by value then unit id, at most `limit`. Floats order as numbers, text and
     /// bytes as bytes.

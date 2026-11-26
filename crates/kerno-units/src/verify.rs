@@ -66,7 +66,9 @@
 //!   index entry of an indexed field exists for exactly the `Active` units that
 //!   hold the field, with the value their payload holds (UNIT-50); every unit
 //!   that is not deleted satisfies the schema of its type and no two active units
-//!   hold one unique value (UNIT-51).
+//!   hold one unique value (UNIT-51); an entry of a `covering` field carries
+//!   exactly its unit's head payload when that payload is inline-sized and
+//!   nothing otherwise, and the mark is at layer 13 (UNIT-53, `units-v13.md`).
 //!   Details name unit ids and field positions, never a value.
 //!
 //! # Contracts
@@ -178,6 +180,10 @@ pub enum CrossRule {
     /// The trigram index (`0x7a`, [`crate::substring`]) disagrees with the
     /// head payloads it indexes, or the database uses it below layer version 8.
     Unit52,
+    /// An entry of a `covering` field (layer 13, [`crate::schema`]) whose payload is not its
+    /// unit's head payload, that lacks one where the payload is inline-sized, an entry of a
+    /// field that is not covering that carries one, or a covering field below layer 13.
+    Unit53,
 }
 
 impl CrossRule {
@@ -1683,7 +1689,7 @@ pub fn verify_snapshot<S: Snapshot>(snap: &S) -> Result<UnitVerifyReport, UnitEr
     for_each_pair(snap, &[], None, |k, v| st.visit(k, v))?;
     st.finish();
     let mark = st.mark.as_ref().map(|m| m.layer_version);
-    for (rule, key, detail) in st.schema.findings(snap, &st.heads, st.bad_heads.is_empty())? {
+    for (rule, key, detail) in st.schema.findings(snap, &st.heads, st.bad_heads.is_empty(), mark)? {
         st.cross(rule, key, detail);
     }
     for f in crate::vector_store::verify_findings(snap, mark)? {

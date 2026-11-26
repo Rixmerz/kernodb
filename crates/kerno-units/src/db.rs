@@ -1649,6 +1649,25 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
     }
 
     /// Writes one put; on an engine error the change set is broken.
+    /// Raises the layer mark to `version` in this change set, when it is below (never lowers
+    /// it). A new database writes its mark at commit, at the raised version.
+    pub(crate) fn raise_layer(&mut self, version: u32) -> Result<(), UnitError> {
+        if self.layer_version >= version {
+            return Ok(());
+        }
+        if !self.need_mark {
+            let Some(raw) = self.txn()?.get(&layer_mark_key())? else {
+                return Err(corruption("the layer mark is gone".into()));
+            };
+            let mut mark = LayerMeta::decode_upto(&raw, MAX_LAYER_VERSION).map_err(|e| context(e, "LAYER_META \"layer\""))?;
+            mark.layer_version = version;
+            let v = mark.encode()?;
+            self.put(&layer_mark_key(), &v)?;
+        }
+        self.layer_version = version;
+        Ok(())
+    }
+
     fn put(&mut self, k: &[u8], v: &[u8]) -> Result<(), UnitError> {
         self.write_owned(Write::Put(k.to_vec(), v.to_vec()))
     }
@@ -2448,10 +2467,8 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         // change set writes; an older one is refused at open, so a mark that
         // exists is already the one every writer uses.
         if self.need_mark {
-            let mark = LayerMeta {
-                layer_version: crate::codec::MIN_LAYER_VERSION,
-                history_policy: self.db.cfg.default_policy,
-            };
+            // The cut version, or higher when this change set raised it (`raise_layer`).
+            let mark = LayerMeta { layer_version: self.layer_version, history_policy: self.db.cfg.default_policy };
             let v = mark.encode()?;
             self.put(&layer_mark_key(), &v)?;
         }

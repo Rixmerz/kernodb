@@ -1249,8 +1249,10 @@ impl Database {
     }
 
     /// Gives `unit_type` a schema. `fields` is a list of dicts: `name`, `type` ("bool", "int",
-    /// "float", "text", "bytes"), and optional `required`, `unique`, `indexed` booleans (`unique`
-    /// implies `indexed`). Defining the schema the type has already (field order aside) is
+    /// "float", "text", "bytes"), and optional `required`, `unique`, `indexed`, `covering` booleans
+    /// (`unique` implies `indexed`; `covering`, valid only with `indexed` or `unique`, stores each
+    /// unit's document in its index entries so `find_documents` reads no unit; defining the schema
+    /// again with only `covering` changed rewrites those entries). Defining the schema the type has already (field order aside) is
     /// accepted and writes nothing, so a program can define on every start; a different one
     /// raises `SchemaExistsError`. A field added to the index later with `create_index` makes the
     /// first field list a different schema. An indexed text or bytes value holds at most 254
@@ -1273,6 +1275,9 @@ impl Database {
             }
             if flag("indexed")? {
                 def = def.indexed();
+            }
+            if flag("covering")? {
+                def = def.covering();
             }
             defs.push(def);
         }
@@ -1368,11 +1373,11 @@ impl Database {
         #[pyo3(from_py_with = fields_arg)] fields: Option<FieldsArg>,
     ) -> PyResult<Vec<Bound<'py, PyDict>>> {
         let v = to_field(&value)?;
-        let units = self.with_db(py, |db| db.find_shared(unit_type, field, &v).map_err(engine_error))?;
-        let mut out = Vec::with_capacity(units.len());
+        let hits = self.with_db(py, |db| db.find_payloads(unit_type, field, &v).map_err(engine_error))?;
+        let mut out = Vec::with_capacity(hits.len());
         let mut docs = DocBuilder::new(fields);
-        for u in units {
-            if let Some(d) = docs.build(py, u.payload.as_deref())? {
+        for (_, payload) in hits {
+            if let Some(d) = docs.build(py, Some(&payload))? {
                 out.push(d);
             }
         }

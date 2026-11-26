@@ -769,6 +769,107 @@ fn definitions_refuse_bad_arguments<E: Target>() {
     assert_eq!(raw(&db), defined);
 }
 
+// -------------------------------------------------------------- covering
+
+fn covering_fields() -> Vec<FieldDef> {
+    acct_fields()
+        .into_iter()
+        .map(|f| if f.name == "age" || f.name == "email" { f.covering() } else { f })
+        .collect()
+}
+
+/// `(id, payload)` by `find_payloads_by_field`, and what `find_by_field` says.
+#[track_caller]
+fn same_answer<E: Target>(db: &UnitDb<E>, field: &str, value: &FieldValue, ctx: &str) -> usize {
+    let snap = db.snapshot().unwrap();
+    let fast = snap.find_payloads_by_field(ACCT, field, value).expect("find_payloads_by_field");
+    let slow: Vec<(UnitId, Vec<u8>)> = snap
+        .find_by_field(ACCT, field, value)
+        .expect("find_by_field")
+        .into_iter()
+        .map(|u| (u.id, u.payload.unwrap()))
+        .collect();
+    assert_eq!(fast, slow, "{ctx}");
+    fast.len()
+}
+
+/// Layer 13: a covering field's entries carry the payload through every write, the lookup
+/// answers from them, the mark is raised, the flag can be turned on and off with units in
+/// place, and verify sees a damaged payload (UNIT-53).
+fn covering_entries_follow_every_write<E: Target>() {
+    let db = open::<E>();
+    create(&db, doc("first", 1, "first@x")).unwrap();
+    assert_eq!(layer_version(&db), kerno_units::codec::MIN_LAYER_VERSION, "a new database starts at the cut");
+    define(&db);
+    assert_eq!(layer_version(&db), 12, "no covering field: the mark stays");
+    let a = create(&db, doc("a", 7, "a@x")).unwrap();
+    // Turning covering on rewrites the entries of the units in place.
+    db.define_schema(ACCT, covering_fields(), ChangeMeta::default()).expect("covering on");
+    assert_eq!(layer_version(&db), 13);
+    clean(&db, "covering on");
+    let carrying = |db: &UnitDb<E>| stored(db, 0x79).iter().filter(|(_, v)| v[1] == 1).count();
+    assert_eq!(carrying(&db), 4, "age and email of two units");
+    let age = FieldValue::Int(7);
+    assert_eq!(same_answer(&db, "age", &age, "after define"), 1);
+    let b = create(&db, doc("b", 7, "b@x")).unwrap();
+    assert_eq!(same_answer(&db, "age", &age, "create"), 2);
+    // An update that keeps the indexed value still rewrites the entry's payload.
+    update(&db, a, doc("a2", 7, "a@x")).unwrap();
+    assert_eq!(same_answer(&db, "age", &age, "update, same value"), 2);
+    assert_eq!(same_answer(&db, "email", &text("a@x"), "update, same unique value"), 1);
+    clean(&db, "updated");
+    let up = one(&db, |cs| cs.upsert(new_unit(ACCT, doc("b2", 7, "b@x")), "email")).unwrap();
+    assert_eq!((up.id, up.outcome), (b, UpsertOutcome::Updated));
+    assert_eq!(same_answer(&db, "age", &age, "upsert"), 2);
+    one(&db, |cs| cs.restore(a, RevNo(1), None)).unwrap();
+    assert_eq!(same_answer(&db, "age", &age, "restore"), 2);
+    clean(&db, "restored");
+    one(&db, |cs| cs.archive(b, None)).unwrap();
+    assert_eq!(same_answer(&db, "age", &age, "archive"), 1);
+    one(&db, |cs| cs.delete(a, None)).unwrap();
+    assert_eq!(same_answer(&db, "age", &age, "delete"), 0);
+    let c = create(&db, doc("c", 7, "c@x")).unwrap();
+    clean(&db, "after delete");
+    // A damaged payload in a covering entry is UNIT-53, and so is one taken away.
+    let (key, value) = stored(&db, 0x79).into_iter().find(|(k, v)| k.ends_with(&c.0) && v[1] == 1).unwrap();
+    let mut lie = value.clone();
+    let n = lie.len();
+    lie[n - 1] ^= 1;
+    patch(&db, vec![(key.clone(), Some(lie))]);
+    assert_eq!(rules(&db), BTreeSet::from(["UNIT-53".to_owned()]));
+    patch(&db, vec![(key.clone(), Some(vec![1, 0]))]);
+    assert_eq!(rules(&db), BTreeSet::from(["UNIT-53".to_owned()]));
+    patch(&db, vec![(key, Some(value))]);
+    clean(&db, "repaired");
+    // A payload over the inline size is not carried; the lookup reads it from its unit.
+    let big = Document::new()
+        .with("name", text("big"))
+        .with("age", FieldValue::Int(7))
+        .with("note", FieldValue::Bytes(vec![9; kerno_units::codec::INLINE_PAYLOAD_MAX as usize]))
+        .encode()
+        .unwrap();
+    create(&db, big).unwrap();
+    assert_eq!(same_answer(&db, "age", &age, "large payload"), 2);
+    clean(&db, "large payload");
+    // Covering off again: the entries lose their payloads, the mark stays.
+    define(&db);
+    assert_eq!(carrying(&db), 0);
+    assert_eq!(layer_version(&db), 13);
+    assert_eq!(same_answer(&db, "age", &age, "covering off"), 2);
+    clean(&db, "covering off");
+    // A schema that changes more than covering is still refused, and drop_index clears it.
+    let mut other = covering_fields();
+    other.push(FieldDef::new("extra", FieldType::Int));
+    assert!(matches!(db.define_schema(ACCT, other, ChangeMeta::default()), Err(UnitError::SchemaExists { .. })));
+    db.define_schema(ACCT, covering_fields(), ChangeMeta::default()).unwrap();
+    db.drop_index(ACCT, "age", ChangeMeta::default()).unwrap();
+    assert!(!db.snapshot().unwrap().schema(ACCT).unwrap().unwrap().field("age").unwrap().covering);
+    clean(&db, "dropped");
+    // Covering without indexed is refused.
+    let bad = vec![FieldDef::new("x", FieldType::Int).covering()];
+    assert!(matches!(db.define_schema("other", bad, ChangeMeta::default()), Err(UnitError::InvalidArgument(_))));
+}
+
 macro_rules! engines {
     ($($m:ident: $e:ty),*) => {$(
         mod $m {
@@ -797,6 +898,7 @@ macro_rules! engines {
             each!(lookups_page_through_many_entries);
             each!(a_definition_checks_archived_units_and_ignores_deleted_ones);
             each!(definitions_refuse_bad_arguments);
+            each!(covering_entries_follow_every_write);
         }
     )*};
 }

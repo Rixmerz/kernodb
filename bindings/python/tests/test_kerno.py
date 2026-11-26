@@ -1210,3 +1210,53 @@ def test_keyword_search_finds_documents_of_any_encoding(tmp_path):
         ]
         assert {h.id for h in db.search_text("zebra", limit=10)} == set(ids)
         assert db.verify()["clean"]
+
+
+def test_covering_find_documents_matches_non_covering(tmp_path):
+    def fields(covering):
+        return [
+            {"name": "sid", "type": "int", "unique": True},
+            {"name": "name", "type": "text", "indexed": True, "covering": covering},
+            {"name": "line", "type": "int"},
+        ]
+
+    dbs = [kerno.open(tmp_path / "plain"), kerno.open(tmp_path / "covering")]
+    try:
+        for db, covering in zip(dbs, (False, True)):
+            db.define_schema("sym", fields(covering))
+        ids = [[db.store_document("sym", {"sid": i, "name": "x" if i % 2 else "y", "line": i}) for i in range(6)] for db in dbs]
+
+        def same(ctx):
+            for value in ("x", "y", "z"):
+                for sel in (None, ["line"], {"sid": "id"}):
+                    got = [db.find_documents("sym", "name", value, fields=sel) for db in dbs]
+                    assert got[0] == got[1], (ctx, value, sel)
+                    assert [d for d in got[1]] == [
+                        {k: v for k, v in u.document().items() if sel is None or k in sel} if not isinstance(sel, dict)
+                        else {"id": u.document()["sid"]}
+                        for u in dbs[1].find("sym", "name", value)
+                    ], ctx
+
+        same("create")
+        for db, i in zip(dbs, ids):
+            db.update_document(i[1], {"sid": 1, "name": "x", "line": 100})  # indexed value unchanged
+        same("update, same indexed value")
+        assert {"sid": 1, "name": "x", "line": 100} in dbs[1].find_documents("sym", "name", "x")
+        for db in dbs:
+            assert db.upsert("sym", "sid", {"sid": 3, "name": "x", "line": 300})["outcome"] == "updated"
+            assert db.upsert("sym", "sid", {"sid": 9, "name": "y", "line": 9})["outcome"] == "created"
+        same("upsert")
+        for db, i in zip(dbs, ids):
+            db.delete(i[5])
+        same("delete")
+        # Turning covering off and on again keeps the answers.
+        dbs[1].define_schema("sym", fields(False))
+        same("covering off")
+        dbs[1].define_schema("sym", fields(True))
+        same("covering on")
+        assert all(db.verify()["clean"] for db in dbs)
+        with pytest.raises(kerno.InvalidArgumentError):
+            dbs[0].define_schema("other", [{"name": "a", "type": "int", "covering": True}])
+    finally:
+        for db in dbs:
+            db.close()

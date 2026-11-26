@@ -173,13 +173,30 @@ fn a_damaged_key_or_value_names_its_rule() {
     assert_eq!(rule(&[1]), UnitRule::Unit9);
     assert_eq!(rule(&[0, 0]), UnitRule::Unit6);
     assert_eq!(rule(&[2, 0]), UnitRule::Unit7);
-    assert_eq!(rule(&[1, 1]), UnitRule::Unit8);
+    assert_eq!(rule(&[1, 2]), UnitRule::Unit8);
     assert_eq!(rule(&[1, 0, 0]), UnitRule::Unit10);
+    // Layer 13: flag bit 0 announces a payload of at most an inline one.
+    assert!(check_entry_value(&[1, 1]).is_ok());
+    assert!(check_entry_value(&[1, 1, 1, 0, 0]).is_ok());
+    let long = [&[1u8, 1][..], &[0; crate::codec::INLINE_PAYLOAD_MAX as usize + 1]].concat();
+    assert_eq!(rule(&long), UnitRule::Unit10);
+}
+
+#[test]
+fn a_covering_field_must_be_indexed_and_round_trips() {
+    assert!(Schema::new(vec![FieldDef::new("c", FieldType::Int).covering()]).is_err());
+    let schema = Schema::new(vec![FieldDef::new("c", FieldType::Int).indexed().covering()]).expect("schema");
+    assert_eq!(Schema::decode(&schema.encode()).expect("decode"), schema);
+    assert!(schema.has_covering());
+    // Covering without indexed is no writer's flags.
+    let rule = |v: &[u8]| Schema::decode(v).expect_err("must not decode").rule;
+    assert_eq!(rule(&[1, 0, 0, 1, 1, b'a', 2, 0b1000]), UnitRule::Unit12);
+    assert_eq!(rule(&[1, 0, 0, 1, 1, b'a', 2, 0b10000]), UnitRule::Unit12);
 }
 
 #[test]
 fn a_unique_field_is_indexed_whichever_way_it_is_declared() {
-    let literal = FieldDef { name: "u".into(), ty: FieldType::Int, required: false, unique: true, indexed: false };
+    let literal = FieldDef { name: "u".into(), ty: FieldType::Int, required: false, unique: true, indexed: false, covering: false };
     let schema = Schema::new(vec![literal]).expect("schema");
     assert!(schema.field("u").is_some_and(|f| f.unique && f.indexed));
 }

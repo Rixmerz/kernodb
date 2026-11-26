@@ -248,7 +248,7 @@ fn damages(b: &Base) -> Vec<(&'static str, Patch, &'static str)> {
     rev0[17..].fill(0);
     let newer = LayerMeta { layer_version: 1, history_policy: HistoryPolicy::Versioned }.encode().unwrap();
     let mut newer = newer;
-    newer[5] = 13; // layer_version = 13, above the newest, 12 (2 DERIVED_VECTORS, 3 public ids, 4 adjacency counts, 5 live-unit counts, 6 schemas, 7 type options, 8 substring index, 9 posting blocks, 10 payload in the head, 11 stored once, 12 keyword ordinals)
+    newer[5] = 14; // layer_version = 14, above the newest, 13 (2 DERIVED_VECTORS, 3 public ids, 4 adjacency counts, 5 live-unit counts, 6 schemas, 7 type options, 8 substring index, 9 posting blocks, 10 payload in the head, 11 stored once, 12 keyword ordinals, 13 covering entries)
     // The head of `a` without the payload it carries: its revision then has none anywhere.
     let mut bare_a = UnitHead::decode(&raw[&head_key(a)]).unwrap();
     bare_a.inline_payload = None;
@@ -376,7 +376,7 @@ fn damage_detected<E: TxnEngine>() {
                 assert!(name.starts_with("mark"), "{name}: open refused: {e}");
                 assert!(is_damage_error(&e), "{name}: {e}");
                 if rule == "UNIT-16" {
-                    assert!(matches!(e, UnitError::IncompatibleLayer { found: 13, supported: 12 }), "{e}");
+                    assert!(matches!(e, UnitError::IncompatibleLayer { found: 14, supported: 13 }), "{e}");
                 }
                 if name == "mark missing" {
                     assert!(matches!(e, UnitError::NotAUnitDatabase), "{e}");
@@ -525,7 +525,7 @@ fn verify_writes_nothing<E: TxnEngine>() {
     let b = base::<E>(73);
     let mark = k(Key::LayerMeta { name: "layer".into() });
     let mut newer = LayerMeta { layer_version: 1, history_policy: HistoryPolicy::Versioned }.encode().unwrap();
-    newer[5] = 13;
+    newer[5] = 14;
     let variants: Vec<Patch> = vec![
         vec![],
         vec![(mark.clone(), None)],
@@ -571,7 +571,7 @@ fn kerno_read_only_untouched() {
     let b = base::<KernoDb>(74);
     let mark = k(Key::LayerMeta { name: "layer".into() });
     let mut newer = LayerMeta { layer_version: 1, history_policy: HistoryPolicy::Versioned }.encode().unwrap();
-    newer[5] = 13;
+    newer[5] = 14;
     for patch in [vec![], vec![(mark.clone(), None)], vec![(mark, Some(newer))]] {
         let disk = SimVfs::restore(&b.image);
         if !patch.is_empty() {

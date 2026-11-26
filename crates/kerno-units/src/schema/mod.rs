@@ -44,10 +44,13 @@
 //!
 //! * `SCHEMA` `0x78 ‖ type_len: u8 ‖ unit_type` → `envelope[2] ‖ n: u16 BE ‖ n
 //!   × (name_len: u8 ‖ name ‖ type: u8 ‖ flags: u8)` with flags bit 0
-//!   `required`, bit 1 `unique`, bit 2 `indexed` (`unique` implies `indexed`).
+//!   `required`, bit 1 `unique`, bit 2 `indexed`, bit 3 `covering` (`unique` and
+//!   `covering` imply `indexed`; bit 3 needs layer 13, `units-v13.md`).
 //! * `FIELD_INDEX` `0x79 ‖ type_len ‖ unit_type ‖ name_len ‖ name ‖ value ‖
 //!   unit[16]` → `envelope[2]`: one entry per `Active` unit that has the
-//!   field, for every indexed field. `value` is order-preserving and
+//!   field, for every indexed field. An entry of a `covering` field whose unit's
+//!   payload is at most `INLINE_PAYLOAD_MAX` bytes is `envelope[2] ‖ payload`
+//!   with envelope flag bit 0 set (layer 13), rewritten whenever the payload changes. `value` is order-preserving and
 //!   self-delimiting: `Bool` one byte; `Int` the `i64` BE with its sign bit
 //!   flipped; `Float` the `f64` bits BE, all bits flipped when negative and the
 //!   sign bit set otherwise (`-0.0` is stored as `0.0`); `Text` and `Bytes` the
@@ -65,7 +68,8 @@
 //! the type into memory and write all the entries in one change set, so they
 //! are bound by the engine's batch limits (`ChangeSetTooLarge`, nothing
 //! stored). A schema has no migration: it is defined once, and only the
-//! `indexed` flag of a field changes afterwards.
+//! `indexed` flag (`create_index`, `drop_index`) and the `covering` flag (`define_schema`
+//! again with only that flag changed) of a field change afterwards.
 //!
 //! `ponytail:` a read checks every unit it returns against its entry but cannot
 //! see an entry that is missing; that is `verify_units` (UNIT-50).
@@ -483,12 +487,17 @@ pub struct FieldDef {
     pub unique: bool,
     /// Entries of this field are kept, for [`UnitSnapshot::find_by_field`](crate::UnitSnapshot).
     pub indexed: bool,
+    /// Each entry of this indexed field also holds its unit's payload, when the payload is one
+    /// the unit's head stores inline (at most [`INLINE_PAYLOAD_MAX`](crate::codec::INLINE_PAYLOAD_MAX)
+    /// bytes), so [`UnitSnapshot::find_payloads_by_field`](crate::UnitSnapshot) answers from the
+    /// entries alone (layer 13, `docs/file-format/units-v13.md`). Only valid with `indexed`.
+    pub covering: bool,
 }
 
 impl FieldDef {
     /// An optional, non-unique, unindexed field.
     pub fn new(name: impl Into<String>, ty: FieldType) -> Self {
-        FieldDef { name: name.into(), ty, required: false, unique: false, indexed: false }
+        FieldDef { name: name.into(), ty, required: false, unique: false, indexed: false, covering: false }
     }
 
     #[must_use]
@@ -511,8 +520,19 @@ impl FieldDef {
         self
     }
 
+    /// Covering: its entries carry the unit's payload (see [`covering`](Self::covering)). The
+    /// field must also be `indexed` (or `unique`).
+    #[must_use]
+    pub fn covering(mut self) -> Self {
+        self.covering = true;
+        self
+    }
+
     fn flags(&self) -> u8 {
-        u8::from(self.required) | u8::from(self.unique) << 1 | u8::from(self.indexed) << 2
+        u8::from(self.required)
+            | u8::from(self.unique) << 1
+            | u8::from(self.indexed) << 2
+            | u8::from(self.covering) << 3
     }
 }
 
@@ -543,6 +563,9 @@ impl Schema {
         if let Some(w) = fields.windows(2).find(|w| w[0].name == w[1].name) {
             return Err(bad(format!("field {:?} is declared twice", w[0].name)));
         }
+        if let Some(f) = fields.iter().find(|f| f.covering && !f.indexed) {
+            return Err(bad(format!("field {:?} is covering but not indexed", f.name)));
+        }
         Ok(Schema { fields })
     }
 
@@ -552,6 +575,11 @@ impl Schema {
 
     pub fn field(&self, name: &str) -> Option<&FieldDef> {
         self.fields.iter().find(|f| f.name == name)
+    }
+
+    /// Whether a field of this schema is covering (layer 13).
+    pub fn has_covering(&self) -> bool {
+        self.fields.iter().any(|f| f.covering)
     }
 
     /// Whether `record` is one this schema accepts: no undeclared field, every
@@ -628,7 +656,8 @@ impl Schema {
                 .to_owned();
             let [ty, flags] = r.array().map_err(short)?;
             let ty = FieldType::from_byte(ty).ok_or_else(|| e(UnitRule::Unit12, "an unknown field type"))?;
-            if flags > 0b111 || (flags & 0b10 != 0 && flags & 0b100 == 0) {
+            // Bit 3, covering, implies indexed like bit 1, unique.
+            if flags > 0b1111 || (flags & 0b1010 != 0 && flags & 0b100 == 0) {
                 return Err(e(UnitRule::Unit12, "field flags no writer produces"));
             }
             fields.push(FieldDef {
@@ -637,6 +666,7 @@ impl Schema {
                 required: flags & 1 != 0,
                 unique: flags & 0b10 != 0,
                 indexed: flags & 0b100 != 0,
+                covering: flags & 0b1000 != 0,
             });
         }
         if !r.0.is_empty() {
@@ -743,9 +773,36 @@ pub(crate) fn entry_key_parts(key: &[u8]) -> Result<(&str, &str, &[u8], UnitId),
     Ok((text(&key[2..flen_at])?, text(&key[flen_at + 1..value_at])?, &key[value_at..unit_at], UnitId(unit)))
 }
 
-/// An entry's value is its envelope and nothing else.
+/// The envelope flag of an entry that carries its unit's payload (layer 13).
+pub(crate) const ENTRY_PAYLOAD: u8 = 1;
+
+/// An entry's value: its envelope and nothing else.
 pub(crate) fn entry_value() -> Vec<u8> {
     vec![RECORD_VERSION, 0]
+}
+
+/// The value of an entry of `def` for a unit whose payload is `payload`: for a covering field and a
+/// payload the head stores inline, the envelope with [`ENTRY_PAYLOAD`] and the payload; otherwise
+/// [`entry_value`].
+pub(crate) fn entry_value_for(def: &FieldDef, payload: Option<&[u8]>) -> Vec<u8> {
+    match payload {
+        Some(p) if def.covering && p.len() <= crate::codec::INLINE_PAYLOAD_MAX as usize => {
+            let mut v = Vec::with_capacity(2 + p.len());
+            v.extend_from_slice(&[RECORD_VERSION, ENTRY_PAYLOAD]);
+            v.extend_from_slice(p);
+            v
+        }
+        _ => entry_value(),
+    }
+}
+
+/// The payload an entry value carries (`None`: the envelope only). The value must have passed
+/// [`check_entry_value`].
+pub(crate) fn entry_payload(v: &[u8]) -> Option<&[u8]> {
+    match v {
+        [RECORD_VERSION, ENTRY_PAYLOAD, rest @ ..] => Some(rest),
+        _ => None,
+    }
 }
 
 pub(crate) fn check_entry_value(v: &[u8]) -> Result<(), DecodeError> {
@@ -754,8 +811,10 @@ pub(crate) fn check_entry_value(v: &[u8]) -> Result<(), DecodeError> {
         [] | [_] => Err(e(UnitRule::Unit9, "fewer bytes than its envelope")),
         [0, ..] => Err(e(UnitRule::Unit6, "envelope_version 0")),
         [RECORD_VERSION, 0] => Ok(()),
-        [RECORD_VERSION, _] => Err(e(UnitRule::Unit8, "reserved_flags set")),
-        [RECORD_VERSION, _, ..] => Err(e(UnitRule::Unit10, "trailing bytes")),
+        [RECORD_VERSION, ENTRY_PAYLOAD, rest @ ..] if rest.len() <= crate::codec::INLINE_PAYLOAD_MAX as usize => Ok(()),
+        [RECORD_VERSION, ENTRY_PAYLOAD, ..] => Err(e(UnitRule::Unit10, "a payload longer than an inline one")),
+        [RECORD_VERSION, 0, ..] => Err(e(UnitRule::Unit10, "trailing bytes")),
+        [RECORD_VERSION, _, ..] => Err(e(UnitRule::Unit8, "reserved_flags set")),
         [_, ..] => Err(e(UnitRule::Unit7, "a newer envelope_version")),
     }
 }

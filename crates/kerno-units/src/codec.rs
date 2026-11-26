@@ -94,8 +94,13 @@ pub const LAYER_VERSION_HEAD_PAYLOAD_ONCE: u32 = 11;
 /// unit id. A database created by this build starts here, and a build that
 /// reads up to 11 refuses it.
 pub const LAYER_VERSION_TEXT_ORDINALS: u32 = 12;
+/// `layer_version` of a database where a schema has, or had, a `covering` field
+/// (`docs/file-format/units-v13.md`): its `FIELD_INDEX` entries carry the unit's payload. Not a
+/// cut: a database of layer 12 is opened as it is and its mark is raised to 13 by the
+/// transaction that defines the first covering field, never before and never lowered.
+pub const LAYER_VERSION_COVERING: u32 = 13;
 /// The newest `layer_version` this build reads and writes.
-pub const MAX_LAYER_VERSION: u32 = LAYER_VERSION_TEXT_ORDINALS;
+pub const MAX_LAYER_VERSION: u32 = LAYER_VERSION_COVERING;
 /// The lowest `layer_version` this build opens: the format cut of
 /// `units-v12.md`, which supersedes the cuts of `units-v11.md`, `units-v10.md`,
 /// ADR-0026 and 1.0.0-alpha.2 (ADR-0023). Every database it creates starts

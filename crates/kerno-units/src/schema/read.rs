@@ -7,12 +7,12 @@ use std::sync::Arc;
 use kerno_core::contract::{Engine, Snapshot};
 
 use super::{
-    Document, FieldValue, MAX_INDEXED_TEXT_LEN, MAX_INDEXED_VALUE_LEN, Schema, entry_key_parts,
-    field_prefix_with, past_prefix, schema_key,
+    Document, FieldValue, MAX_INDEXED_TEXT_LEN, MAX_INDEXED_VALUE_LEN, Schema, check_entry_value, entry_key_parts,
+    entry_payload, field_prefix_with, past_prefix, schema_key,
 };
 use crate::db::{Unit, UnitSnapshot, context, corruption};
 use crate::error::UnitError;
-use crate::types::Lifecycle;
+use crate::types::{Lifecycle, UnitId};
 
 /// Entries read per scan call by a lookup.
 const PAGE: usize = 256;
@@ -76,6 +76,93 @@ impl<E: Engine> UnitSnapshot<E> {
         }
         // What `find_range_shared` would do with these bounds: one value's range is never empty.
         self.scan_range(unit_type, field, start, end, usize::MAX)
+    }
+
+    /// `(id, payload)` of each `Active` unit of `unit_type` whose indexed `field` equals `value`,
+    /// in unit id order: the ids and payloads [`find_by_field`](Self::find_by_field) returns.
+    ///
+    /// For a `covering` field (layer 13) a hit whose entry carries the payload is answered from
+    /// the entry alone: no head is read and the entry is not checked against its unit (that is
+    /// [`verify_units`](Self::verify_units), UNIT-53). A hit whose payload is too long to be
+    /// carried, and every hit of a field that is not covering, is read and checked as
+    /// `find_by_field` does.
+    ///
+    /// # Errors
+    ///
+    /// As [`find_by_field`](Self::find_by_field).
+    pub fn find_payloads_by_field(
+        &self,
+        unit_type: &str,
+        field: &str,
+        value: &FieldValue,
+    ) -> Result<Vec<(UnitId, Vec<u8>)>, UnitError> {
+        let (start, end) = self.field_bounds(unit_type, field, Bound::Included(value), Bound::Included(value))?;
+        if value.index_len().is_some_and(|n| n > MAX_INDEXED_VALUE_LEN) {
+            return Err(UnitError::InvalidArgument(format!(
+                "the value is too long to be indexed (at most {MAX_INDEXED_TEXT_LEN} bytes of text or bytes, each \
+                 0x00 byte counting twice), so no unit can hold it"
+            )));
+        }
+        let covering = self.schema_shared(unit_type)?.is_some_and(|s| s.field(field).is_some_and(|f| f.covering));
+        if !covering {
+            let units = self.scan_range(unit_type, field, start, end, usize::MAX)?;
+            return Ok(units.into_iter().filter_map(|u| u.payload.clone().map(|p| (u.id, p))).collect());
+        }
+        // Entries in key order (one value: unit id order); those without a payload are read
+        // through their units afterwards, in one batch.
+        let mut out: Vec<(UnitId, Vec<u8>)> = Vec::new();
+        let mut missing: Vec<(usize, Vec<u8>)> = Vec::new();
+        let mut cursor = start;
+        let mut inclusive = true;
+        loop {
+            let from = if inclusive { Bound::Included(cursor.as_slice()) } else { Bound::Excluded(cursor.as_slice()) };
+            let page = self.snap.scan(from, Bound::Excluded(end.as_slice()), PAGE)?;
+            let n = page.len();
+            for (k, v) in &page {
+                let (_, _, enc, unit) = entry_key_parts(k).map_err(|e| context(e, "FIELD_INDEX"))?;
+                check_entry_value(v).map_err(|e| context(e, "FIELD_INDEX"))?;
+                match entry_payload(v) {
+                    Some(p) => out.push((unit, p.to_vec())),
+                    None => {
+                        missing.push((out.len(), enc.to_vec()));
+                        out.push((unit, Vec::new()));
+                    }
+                }
+            }
+            match page.into_iter().last() {
+                Some((k, _)) if n == PAGE => {
+                    cursor = k;
+                    inclusive = false;
+                }
+                _ => break,
+            }
+        }
+        if missing.is_empty() {
+            return Ok(out);
+        }
+        let ids: Vec<UnitId> = missing.iter().map(|(at, _)| out[*at].0).collect();
+        let mut gone = Vec::new();
+        for ((at, enc), u) in missing.iter().zip(self.get_units_shared(&ids)?) {
+            let unit = out[*at].0;
+            let Some(u) = u else {
+                return Err(corruption(format!("a FIELD_INDEX entry of unit {unit} has no UNIT_HEAD")));
+            };
+            if !self.entry_agrees(&u, field, enc, unit_type) {
+                return Err(corruption(format!("a FIELD_INDEX entry of unit {unit} disagrees with the unit")));
+            }
+            match &u.payload {
+                Some(p) => out[*at].1.clone_from(p),
+                None => gone.push(*at),
+            }
+        }
+        if !gone.is_empty() {
+            let mut i = 0;
+            out.retain(|_| {
+                i += 1;
+                !gone.contains(&(i - 1))
+            });
+        }
+        Ok(out)
     }
 
     /// The `Active` units of `unit_type` whose indexed `field` lies between

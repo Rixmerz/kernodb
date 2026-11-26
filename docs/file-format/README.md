@@ -16,6 +16,7 @@ Contents of the directory:
 | [`units-v10.md`](units-v10.md) | Units layer v10 (`layer_version = 10`, a format cut): a `UNIT_HEAD` may end with the payload of its head revision, so that reading a unit is one point read |
 | [`units-v11.md`](units-v11.md) | Units layer v11 (`layer_version = 11`, a format cut): a payload the `UNIT_HEAD` carries is stored there only; the head revision has no `REV_PAYLOAD` until a later revision supersedes it |
 | [`units-v12.md`](units-v12.md) | Units layer v12 (`layer_version = 12`, a format cut): keyword-indexed documents get a dense ordinal (`ORD`, `0x7B`); keyword postings (`0x74`) name it, delta and varint coded |
+| [`units-v13.md`](units-v13.md) | Units layer v13 (`layer_version = 13`, not a cut: a layer-12 database opens as it is): a schema field may be `covering`, and its `FIELD_INDEX` entries (`0x79`) carry the unit's inline-sized payload |
 | [`export-v1.md`](export-v1.md) | Logical export, **frozen** at `format_version = 1` (golden files in `crates/kerno-units/tests/golden/export-v1/`). `export-v0-draft.md` is a pointer kept for old links |
 | `crates/kerno-storage/tests/vectors/v1/` | Structure and directory vectors; a CI guard regenerates them in memory and compares them byte by byte ([CONTRIBUTING](../../CONTRIBUTING.md#format-vectors-and-byte-changes)) |
 
