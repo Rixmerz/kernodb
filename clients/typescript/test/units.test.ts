@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import { ApiError, KernoClient, type Unit } from '../src/index.ts';
 import { collect, startServer, stopServer, withServer } from './server.ts';
+
+const packageVersion: string = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
 /** The `ApiError` a call fails with. */
 async function refused(call: Promise<unknown>): Promise<ApiError> {
@@ -17,7 +20,7 @@ async function refused(call: Promise<unknown>): Promise<ApiError> {
 
 test('health', () =>
   withServer(async (kerno) => {
-    assert.deepEqual(await kerno.health(), { status: 'ok', version: '1.0.0-alpha.1' });
+    assert.deepEqual(await kerno.health(), { status: 'ok', version: packageVersion });
   }));
 
 test('a text unit round-trips', () =>
