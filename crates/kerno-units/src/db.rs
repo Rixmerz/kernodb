@@ -1469,7 +1469,7 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     /// The options byte of the unit types this change set looked up (`0`: no
     /// record), so a batch reads a type's options once. [`ChangeSet::write_owned`]
     /// empties it when a type-options record is written.
-    pub(crate) options_cache: std::cell::RefCell<std::collections::HashMap<String, u8>>,
+    pub(crate) options_cache: std::cell::RefCell<LocalMap<String, u8>>,
     /// The schemas this change set read, by unit type (`None`: no schema), so a batch decodes a
     /// type's schema once. [`ChangeSet::write_owned`] empties it when a schema record is written.
     /// The unique-field prefix (`field_prefix ‖ value`) an `upsert` just found held by no unit,
@@ -1478,7 +1478,7 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     /// Per unique field (`field_prefix`), whether the snapshot `base` holds no entry of it at
     /// all, learned with one seek: then only this change set's own entries can hold a value.
     /// Emptied with `schema_cache`.
-    pub(crate) base_field_empty: std::cell::RefCell<std::collections::HashMap<Vec<u8>, bool>>,
+    pub(crate) base_field_empty: std::cell::RefCell<LocalMap<Vec<u8>, bool>>,
     /// A snapshot of the state the transaction began on, taken at its first use: what a read
     /// of keys this change set has not written answers from, without the transaction folding
     /// its buffer of writes for a scan (see [`ChangeSet::base`]).
@@ -1488,17 +1488,16 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     ranges_deleted: bool,
     /// The entries of unique fields this change set put (`true`) or deleted (`false`), in
     /// order, by `field_prefix ‖ value`: with `base`, who holds a unique value.
-    pub(crate) unique_staged: std::collections::HashMap<Vec<u8>, Vec<(UnitId, bool)>>,
+    pub(crate) unique_staged: LocalMap<Vec<u8>, Vec<(UnitId, bool)>>,
     /// The live counts of the unit types this change set moved, by count key, written once at
     /// commit by [`ChangeSet::flush_live`].
-    pub(crate) live_pending: std::collections::HashMap<Vec<u8>, u64>,
+    pub(crate) live_pending: LocalMap<Vec<u8>, u64>,
     /// The document of the payload a `create_prepared` is creating, cut ahead of it.
     pub(crate) prepared_text: std::cell::RefCell<Option<crate::fulltext::PreparedText>>,
     /// The content hash (with the payload length it was computed over) of the payload the next
     /// create or update writes, computed ahead of it (`create_prepared`, `upsert_prepared`).
     pub(crate) prepared_hash: std::cell::Cell<Option<(usize, ContentHash)>>,
-    pub(crate) schema_cache:
-        std::cell::RefCell<std::collections::HashMap<String, Option<std::sync::Arc<crate::schema::Schema>>>>,
+    pub(crate) schema_cache: std::cell::RefCell<LocalMap<String, Option<std::sync::Arc<crate::schema::Schema>>>>,
     /// Whether the database held no `DERIVED_SRC` record when this change set
     /// first asked (`None`: not asked yet). Without one, and while the change
     /// set writes no derived record itself, no unit has derived data to follow.
@@ -1510,6 +1509,11 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
 /// keyed hash buys nothing here and costs most of a lookup.
 #[derive(Default)]
 pub(crate) struct IdHasher(u64);
+
+/// A map that lives inside one change set, keyed by what the change set itself names or writes
+/// (unit types, keys of its own records): hashed with [`IdHasher`], as nothing outside the
+/// caller's own batch chooses its keys and SipHash costs a visible part of a write.
+pub(crate) type LocalMap<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<IdHasher>>;
 
 impl IdHasher {
     fn mix(&mut self, word: u64) {
