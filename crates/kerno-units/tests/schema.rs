@@ -772,10 +772,7 @@ fn definitions_refuse_bad_arguments<E: Target>() {
 // -------------------------------------------------------------- covering
 
 fn covering_fields() -> Vec<FieldDef> {
-    acct_fields()
-        .into_iter()
-        .map(|f| if f.name == "age" || f.name == "email" { f.covering() } else { f })
-        .collect()
+    acct_fields().into_iter().map(|f| if f.name == "age" || f.name == "email" { f.covering() } else { f }).collect()
 }
 
 /// `(id, payload)` by `find_payloads_by_field`, and what `find_by_field` says.

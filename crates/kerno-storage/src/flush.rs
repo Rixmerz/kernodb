@@ -270,7 +270,10 @@ mod tests {
             let (a, b) = (write(&ctx, &normal, l1), write(&ctx, &frozen, l1));
             assert_eq!(ranges(&a), ranges(&b));
             assert_eq!(contents(&a), contents(&b));
-            assert_eq!(a.iter().map(Table::entries).collect::<Vec<_>>(), b.iter().map(Table::entries).collect::<Vec<_>>());
+            assert_eq!(
+                a.iter().map(Table::entries).collect::<Vec<_>>(),
+                b.iter().map(Table::entries).collect::<Vec<_>>()
+            );
         }
     }
 }

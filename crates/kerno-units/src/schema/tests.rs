@@ -196,7 +196,14 @@ fn a_covering_field_must_be_indexed_and_round_trips() {
 
 #[test]
 fn a_unique_field_is_indexed_whichever_way_it_is_declared() {
-    let literal = FieldDef { name: "u".into(), ty: FieldType::Int, required: false, unique: true, indexed: false, covering: false };
+    let literal = FieldDef {
+        name: "u".into(),
+        ty: FieldType::Int,
+        required: false,
+        unique: true,
+        indexed: false,
+        covering: false,
+    };
     let schema = Schema::new(vec![literal]).expect("schema");
     assert!(schema.field("u").is_some_and(|f| f.unique && f.indexed));
 }

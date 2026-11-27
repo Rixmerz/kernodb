@@ -149,8 +149,7 @@ fn values_freed_and_taken_in_the_change_set_count<E: Target>() {
     let mut cs = {
         drop(cs);
         let mut cs = db.begin_changeset(ChangeMeta::default()).unwrap();
-        cs.update(a, UnitUpdate { payload: doc("c@x.io", "Ada"), schema_version: None, metadata: None }, None)
-            .unwrap();
+        cs.update(a, UnitUpdate { payload: doc("c@x.io", "Ada"), schema_version: None, metadata: None }, None).unwrap();
         cs
     };
     assert!(matches!(cs.create(new_unit(doc("b@x.io", "X"))), Err(UnitError::SchemaViolation { .. })));

@@ -389,7 +389,8 @@ fn an_unreadable_unit_is_reported_not_fatal<E: Target>() {
     db.close().unwrap();
     // A read checks a payload's hash only with `verify_payload_on_read`.
     let checking = UnitConfig { verify_payload_on_read: true, ..cfg() };
-    let dd = DerivedDb::open_persisted(open_units::<E>(disk.as_vfs(), &checking).expect("open")).expect("open_persisted").0;
+    let dd =
+        DerivedDb::open_persisted(open_units::<E>(disk.as_vfs(), &checking).expect("open")).expect("open_persisted").0;
     let policy = RetentionPolicy::all(RetentionRule::KeepLast(1)).with_type("note", RetentionRule::KeepAll);
     let report =
         dd.run_retention(&policy, RetentionBudget::default()).expect("a committed retention returns its report");

@@ -154,9 +154,7 @@ impl Interner {
     /// orders the same), the whole strings compared only on a tie.
     pub(crate) fn ascending(&self) -> Vec<u32> {
         let mut keyed: Vec<(u64, u32)> = (0..self.entries.len()).map(|i| (head(self.get(i)), i as u32)).collect();
-        keyed.sort_unstable_by(|a, b| {
-            a.0.cmp(&b.0).then_with(|| self.get(a.1 as usize).cmp(self.get(b.1 as usize)))
-        });
+        keyed.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| self.get(a.1 as usize).cmp(self.get(b.1 as usize))));
         keyed.into_iter().map(|(_, i)| i).collect()
     }
 
@@ -554,7 +552,6 @@ fn analyze_reference(payload: &[u8]) -> Option<Doc> {
     }
     counter.finish(len)
 }
-
 
 #[cfg(test)]
 mod tests {

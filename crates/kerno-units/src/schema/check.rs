@@ -198,7 +198,11 @@ impl Check {
                     }
                 };
                 if let Some(d) = detail {
-                    out.push((CrossRule::Unit53, key.clone(), format!("unit {unit}: the entry of covering field #{i} {d}")));
+                    out.push((
+                        CrossRule::Unit53,
+                        key.clone(),
+                        format!("unit {unit}: the entry of covering field #{i} {d}"),
+                    ));
                 }
             }
         }

@@ -1031,9 +1031,8 @@ impl RevisionMeta {
 
     pub fn encode(&self, rev_no: RevNo) -> Result<Vec<u8>, UnitError> {
         // Envelope, the fixed fields (76 bytes with the hash) and three length-prefixed ones.
-        let mut w = Writer::envelope_for(
-            2 + 76 + 12 + self.metadata.len() + self.actor_ref.len() + self.source_ref.len(),
-        );
+        let mut w =
+            Writer::envelope_for(2 + 76 + 12 + self.metadata.len() + self.actor_ref.len() + self.source_ref.len());
         w.u8(self.kind.to_byte());
         w.u64(self.parent_rev.map_or(0, |r| r.0));
         w.u64(self.commit_seq.0);

@@ -8,8 +8,8 @@ use std::sync::Arc;
 use kerno_core::contract::{Snapshot, Txn, TxnEngine};
 
 use super::{
-    Document, FieldDef, RecordRef, Schema, entry_key, entry_key_parts, entry_value_for, field_prefix,
-    prefix_bounds, schema_key,
+    Document, FieldDef, RecordRef, Schema, entry_key, entry_key_parts, entry_value_for, field_prefix, prefix_bounds,
+    schema_key,
 };
 use crate::codec::{Key, TAG_UNIT_HEAD, UnitHead};
 use crate::db::{
@@ -141,17 +141,16 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
             ),
             None => None,
         };
-        let entries =
-            |r: Option<&RecordRef<'_>>, refuse: fn(String) -> UnitError| -> Result<BTreeMap<usize, Vec<u8>>, UnitError> {
-                match r {
-                    Some(r) => Ok(schema
-                        .entries_ref(r)
-                        .map_err(|m| refuse(format!("unit {unit}: {m}")))?
-                        .into_iter()
-                        .collect()),
-                    None => Ok(BTreeMap::new()),
+        let entries = |r: Option<&RecordRef<'_>>,
+                       refuse: fn(String) -> UnitError|
+         -> Result<BTreeMap<usize, Vec<u8>>, UnitError> {
+            match r {
+                Some(r) => {
+                    Ok(schema.entries_ref(r).map_err(|m| refuse(format!("unit {unit}: {m}")))?.into_iter().collect())
                 }
-            };
+                None => Ok(BTreeMap::new()),
+            }
+        };
         let (old, new) = (entries(old.as_ref(), corruption)?, entries(new.as_ref(), violation)?);
         let mut out = Vec::with_capacity(old.len() + new.len());
         let name = |i: usize| schema.fields()[i].name.as_str();
@@ -452,8 +451,9 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
             if plain(&have) != plain(&schema) {
                 return Err(UnitError::SchemaExists { unit_type: unit_type.into() });
             }
-            let changed: Vec<usize> =
-                (0..schema.fields().len()).filter(|&i| have.fields()[i].covering != schema.fields()[i].covering).collect();
+            let changed: Vec<usize> = (0..schema.fields().len())
+                .filter(|&i| have.fields()[i].covering != schema.fields()[i].covering)
+                .collect();
             let units = self.typed_units(unit_type, &schema)?;
             let entries = self.backfill(unit_type, &schema, &units, Some(&changed))?;
             return self.put_schema(unit_type, &schema, entries);

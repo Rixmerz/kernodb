@@ -1699,7 +1699,8 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
             let Some(raw) = self.txn()?.get(&layer_mark_key())? else {
                 return Err(corruption("the layer mark is gone".into()));
             };
-            let mut mark = LayerMeta::decode_upto(&raw, MAX_LAYER_VERSION).map_err(|e| context(e, "LAYER_META \"layer\""))?;
+            let mut mark =
+                LayerMeta::decode_upto(&raw, MAX_LAYER_VERSION).map_err(|e| context(e, "LAYER_META \"layer\""))?;
             mark.layer_version = version;
             let v = mark.encode()?;
             self.put(&layer_mark_key(), &v)?;

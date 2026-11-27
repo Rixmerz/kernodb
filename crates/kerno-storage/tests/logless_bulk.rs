@@ -92,8 +92,8 @@ fn run(disk: &SimVfs, steps: Vec<Step>) -> (usize, bool) {
 }
 
 fn check_image(after: &SimVfs, models: &[Model], synced: usize, closed: bool, point: u64) {
-    let db = open_in(&after.as_vfs(), &buffered())
-        .unwrap_or_else(|e| panic!("crash point {point}: the reopen failed: {e}"));
+    let db =
+        open_in(&after.as_vfs(), &buffered()).unwrap_or_else(|e| panic!("crash point {point}: the reopen failed: {e}"));
     let got = model_of(&db);
     let k = models.iter().position(|m| *m == got);
     let k = k.unwrap_or_else(|| panic!("crash point {point}: the reopened state is no prefix of the commits"));
