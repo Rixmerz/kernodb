@@ -779,8 +779,35 @@ impl UnitHead {
             w.u8(HEAD_TRAILER_PAYLOAD);
             w.0.extend_from_slice(p);
         }
-        Self::decode(&w.0).map_err(|e| refuse("UNIT_HEAD", &e))?;
+        // The fields are held to what the fast decoder accepts; only a head that fails that is
+        // decoded, so that the checked decoder names the rule it breaks (as it always did).
+        if !self.decodes_fast() {
+            Self::decode(&w.0).map_err(|e| refuse("UNIT_HEAD", &e))?;
+        }
+        debug_assert_eq!(Self::decode(&w.0).as_ref(), Ok(self));
         Ok(w.0)
+    }
+
+    /// Whether [`decode_valid`](Self::decode_valid) accepts the encoding of this head: the
+    /// same conditions, on the fields instead of the bytes, so `encode` needs no decode of
+    /// what it wrote.
+    fn decodes_fast(&self) -> bool {
+        let (alg, digest) = (self.content_hash.alg, &self.content_hash.digest);
+        let type_len = self.unit_type.len();
+        type_len != 0
+            && type_len <= MAX_UNIT_TYPE_LEN as usize
+            && !(alg == HashAlg::Crc32cProvisional && digest[4..].iter().any(|b| *b != 0))
+            && self.payload_len <= MAX_PAYLOAD_LEN
+            && self.metadata.len() <= MAX_METADATA_LEN as usize
+            && self.oldest_rev.0 >= 1
+            && self.oldest_rev <= self.head_rev
+            && self.created_seq.0 >= 1
+            && self.created_seq <= self.updated_seq
+            && self.inline_payload.as_ref().is_none_or(|p| {
+                self.lifecycle != Lifecycle::Deleted
+                    && self.payload_len <= INLINE_PAYLOAD_MAX
+                    && p.len() == self.payload_len as usize
+            })
     }
 
     /// Only the lifecycle of an encoded head: the envelope, `unit_type`,

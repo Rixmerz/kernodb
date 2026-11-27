@@ -485,6 +485,34 @@ pub(crate) fn planned_head(unit: UnitId, writes: &[Write]) -> Result<Option<Plan
     Ok(Some((head, payload)))
 }
 
+/// [`planned_head`] for writes whose head the caller built itself: `head` is that head without
+/// its inline payload, `inline_len` the length of the payload it carried (`None`: none). Nothing
+/// is decoded; the payload is found among the writes as `planned_head` finds it.
+fn known_head(
+    unit: UnitId,
+    writes: &[Write],
+    head: UnitHead,
+    inline_len: Option<usize>,
+) -> Result<PlannedHead<'_>, UnitError> {
+    let payload = match inline_len {
+        Some(n) => {
+            let head_key = key(Key::UnitHead { unit })?;
+            writes.iter().find_map(|w| match w {
+                Write::Put(k, raw) if *k == head_key => Some(&raw[raw.len() - n..]),
+                _ => None,
+            })
+        }
+        None => {
+            let payload_key = key(Key::RevPayload { unit, rev: head.head_rev })?;
+            writes.iter().find_map(|w| match w {
+                Write::Put(k, p) if *k == payload_key => Some(p.as_slice()),
+                _ => None,
+            })
+        }
+    };
+    Ok((head, payload))
+}
+
 /// [`load_unit`] that always reads the head revision as well: the head must mirror its
 /// `REV_META` (IU-2), the `REV_PAYLOAD` must be the payload the revision declares, and an
 /// inline payload must be those same bytes.
@@ -1560,6 +1588,10 @@ struct Planned {
     /// How the operation moves the live count of a unit type (P5): `+1` when
     /// a unit becomes `Active`, `-1` when one stops being.
     live: Option<(String, i64)>,
+    /// The head among `writes`, as built (without its inline payload), and the length of the
+    /// inline payload it carries: what [`planned_head`] would decode back. `None`: not known,
+    /// decoded from the writes when needed.
+    head: Option<(UnitHead, Option<usize>)>,
 }
 
 impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
@@ -1797,7 +1829,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         Ok(plan.rev.rev)
     }
 
-    fn apply(&mut self, plan: Planned) -> Result<RevNo, UnitError> {
+    fn apply(&mut self, mut plan: Planned) -> Result<RevNo, UnitError> {
         // The persisted derived data of the unit follow the source in this
         // same transaction (ADR-0020 §S3): read before the first write, so a
         // refusal leaves the change set untouched.
@@ -1813,13 +1845,19 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         let live = plan.live.as_ref().map(|(t, d)| self.plan_live(t, *d)).transpose()?;
         // The full-text entries of the unit follow its text in this same
         // transaction, planned by reads like the count above.
-        let text = self.plan_fulltext(plan.rev.unit, &plan.writes)?;
-        // So do its trigram entries, when its type is searched by substring.
-        let grams = self.plan_substring(plan.rev.unit, &plan.writes)?;
         let unit = plan.rev.unit;
+        // The head the plan built, read once for the three planners below.
+        let next = match plan.head.take() {
+            Some((head, inline_len)) => Some(known_head(unit, &plan.writes, head, inline_len)?),
+            None => planned_head(unit, &plan.writes)?,
+        };
+        let text = self.plan_fulltext_at(unit, next.as_ref())?;
+        // So do its trigram entries, when its type is searched by substring.
+        let grams = self.plan_substring(unit, next.as_ref())?;
         // The schema check and the user index entries of the unit follow it
         // too; a unit the schema refuses is refused here, before any write.
-        let fields = self.plan_schema(plan.rev.unit, &plan.writes)?;
+        let fields = self.plan_schema(unit, next.as_ref())?;
+        drop(next);
         if let Some(l) = live {
             self.put_live(l)?;
         }
@@ -1966,13 +2004,15 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         let member = CsMember { unit, rev_no: rev, kind };
         writes.push(Write::Put(key(Key::UnitHead { unit })?, head.encode()?));
         writes.push(Write::Put(key(Key::RevMeta { unit, rev })?, meta.encode(rev)?));
+        // The head is kept as built for the planners of `apply`; its inline copy is in the write.
+        let inline_len = head.inline_payload.take().map(|p| p.len());
         // A payload the head carries is stored there only (`units-v11.md` §2).
-        if let Some(p) = payload.filter(|_| head.inline_payload.is_none()) {
+        if let Some(p) = payload.filter(|_| inline_len.is_none()) {
             // An owned payload (a create's) moves into the write: no copy.
             writes.push(Write::Put(key(Key::RevPayload { unit, rev })?, p.into_owned()));
         }
         writes.push(Write::Put(key(Key::CsMember { seq: self.seq, ordinal })?, member.encode()?));
-        Ok(Planned { writes, rev: RevisionId { unit, rev }, kind, live: None })
+        Ok(Planned { writes, rev: RevisionId { unit, rev }, kind, live: None, head: Some((head, inline_len)) })
     }
 
     /// The current head of `id` (verified), refusing a missing unit, an
@@ -2591,7 +2631,7 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         // An import writes the head of a unit here: its text is indexed too.
         let text = self.plan_fulltext(unit, &writes)?;
         writes.extend(text.writes);
-        self.apply_planned_only(Planned { writes, rev: RevisionId { unit, rev }, kind, live: None }, live)?;
+        self.apply_planned_only(Planned { writes, rev: RevisionId { unit, rev }, kind, live: None, head: None }, live)?;
         self.stage_fulltext(text.change);
         Ok(())
     }

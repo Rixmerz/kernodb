@@ -442,18 +442,19 @@ pub(crate) enum Next<'a> {
     Unchanged,
     /// The unit's type and its indexed payload afterwards; `None` when it has
     /// none (the unit is not `Active`).
-    Content(String, Option<&'a [u8]>),
+    Content(&'a str, Option<&'a [u8]>),
 }
 
-/// Reads the unit's new head and payload off the writes of its operation.
-pub(crate) fn next_of(unit: UnitId, writes: &[Write]) -> Result<Next<'_>, UnitError> {
-    let Some((head, payload)) = crate::db::planned_head(unit, writes)? else {
-        return Ok(Next::Unchanged);
+/// The unit's new head and payload, as [`crate::db::planned_head`] reads them off the writes of
+/// its operation (`None`: they write no head).
+pub(crate) fn next_of<'a>(planned: Option<&'a crate::db::PlannedHead<'a>>) -> Next<'a> {
+    let Some((head, payload)) = planned else {
+        return Next::Unchanged;
     };
     if head.lifecycle != Lifecycle::Active {
-        return Ok(Next::Content(head.unit_type, None));
+        return Next::Content(&head.unit_type, None);
     }
-    Ok(payload.map_or(Next::Unchanged, |p| Next::Content(head.unit_type, Some(p))))
+    payload.map_or(Next::Unchanged, |p| Next::Content(&head.unit_type, Some(p)))
 }
 
 /// What a change set will change in the posting lists: per term, the postings
@@ -496,14 +497,25 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
     /// with the operation's and hands the plan to
     /// [`stage_fulltext`](Self::stage_fulltext) after.
     pub(crate) fn plan_fulltext(&self, unit: UnitId, writes: &[Write]) -> Result<TextPlan, UnitError> {
-        let Next::Content(unit_type, payload) = next_of(unit, writes)? else {
+        let next = crate::db::planned_head(unit, writes)?;
+        self.plan_fulltext_at(unit, next.as_ref())
+    }
+
+    /// [`plan_fulltext`](Self::plan_fulltext) of the head and payload the writes put, read off
+    /// them already ([`crate::db::planned_head`]).
+    pub(crate) fn plan_fulltext_at(
+        &self,
+        unit: UnitId,
+        next: Option<&crate::db::PlannedHead<'_>>,
+    ) -> Result<TextPlan, UnitError> {
+        let Next::Content(unit_type, payload) = next_of(next) else {
             return Ok(TextPlan::default());
         };
         // The index is opt-in per type (ADR-0023), and turning it off removes the
         // entries of the type's units in that same change set: a unit of a type
         // that is not indexed has no document to add or to remove. Decided
         // before the payload is cut into terms, which most writes never need.
-        if !self.fulltext_enabled(&unit_type)? {
+        if !self.fulltext_enabled(unit_type)? {
             return Ok(TextPlan::default());
         }
         self.plan_document(unit, payload)

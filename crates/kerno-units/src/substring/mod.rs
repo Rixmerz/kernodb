@@ -366,11 +366,15 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
     /// without the option, and for an operation that writes no head. The
     /// caller hands it to [`stage_substring`](Self::stage_substring) once the
     /// operation is written.
-    pub(crate) fn plan_substring(&self, unit: UnitId, writes: &[Write]) -> Result<Option<GramChange>, UnitError> {
-        let Next::Content(unit_type, payload) = next_of(unit, writes)? else {
+    pub(crate) fn plan_substring(
+        &self,
+        unit: UnitId,
+        next: Option<&crate::db::PlannedHead<'_>>,
+    ) -> Result<Option<GramChange>, UnitError> {
+        let Next::Content(unit_type, payload) = next_of(next) else {
             return Ok(None);
         };
-        if !self.substring_enabled(&unit_type)? {
+        if !self.substring_enabled(unit_type)? {
             return Ok(None);
         }
         let (old, mut new) = (self.indexed_grams(unit)?, payload.map(distinct).unwrap_or_default());
@@ -378,14 +382,14 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
             self.learn_fresh(unit)?;
             // A unit the index does not hold yet (every unit of a bulk load): all its grams
             // are added, and nothing needs them in order.
-            return Ok(Some(GramChange { prefix: type_prefix(&unit_type), gone: Vec::new(), added: new }));
+            return Ok(Some(GramChange { prefix: type_prefix(unit_type), gone: Vec::new(), added: new }));
         }
         // Both lists sorted, so a binary search tells what the other lacks.
         new.sort_unstable();
         let old: Vec<u32> = old.into_iter().map(pack).collect();
         let gone = old.iter().filter(|g| new.binary_search(g).is_err()).copied().collect();
         let added = new.iter().filter(|g| old.binary_search(g).is_err()).copied().collect();
-        Ok(Some(GramChange { prefix: type_prefix(&unit_type), gone, added }))
+        Ok(Some(GramChange { prefix: type_prefix(unit_type), gone, added }))
     }
 
     /// Keeps the index change of an operation on `unit` for

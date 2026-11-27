@@ -107,8 +107,12 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
     /// operation, like [`ChangeSet::plan_fulltext`](crate::fulltext): a refusal
     /// leaves the change set untouched. Nothing for a unit type without a
     /// schema, and nothing for operations that write no head (retention).
-    pub(crate) fn plan_schema(&self, unit: UnitId, writes: &[Write]) -> Result<Vec<Write>, UnitError> {
-        let Some((head, payload)) = crate::db::planned_head(unit, writes)? else {
+    pub(crate) fn plan_schema(
+        &self,
+        unit: UnitId,
+        next: Option<&crate::db::PlannedHead<'_>>,
+    ) -> Result<Vec<Write>, UnitError> {
+        let Some(&(ref head, payload)) = next else {
             return Ok(Vec::new());
         };
         let Some(schema) = self.read_schema(&head.unit_type)? else {
