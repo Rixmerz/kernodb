@@ -45,7 +45,7 @@ use crate::format::crc::file_ctx;
 use crate::format::features::{SLOT_LEN, WRITE_INCOMPAT, frame_has_slot};
 use crate::format::header::{HEADER_LEN, Header};
 use crate::format::wal::{
-    CanonicalCommit, FRAME_HEADER_LEN, WalScan, WalScanParams, frame_len, reseal_frame, scan_wal,
+    CanonicalCommit, FRAME_HEADER_LEN, WalScan, WalScanParams, frame_len, reseal_frame, scan_wal_covered,
 };
 
 pub fn wal_name(number: u64) -> String {
@@ -330,7 +330,8 @@ pub fn prepare_spare(
 }
 
 /// Replays the log `number`, which must start at sequence `expected_seq`
-/// (WAL-R1), calling `apply(seq, commit)` for every commit in order. Returns
+/// (WAL-R1; or above a gap the MANIFEST covers through `covered_through`, see
+/// [`scan_wal_covered`]), calling `apply(seq, commit)` for every commit in order. Returns
 /// the scan: the header state, the commits and the length of the valid
 /// prefix, and how the file ends. Which logs may end torn or have a broken
 /// header is the caller's decision (REC-10).
@@ -345,6 +346,7 @@ pub fn replay(
     number: u64,
     db_id: [u8; 16],
     expected_seq: u64,
+    covered_through: u64,
     mut apply: impl FnMut(u64, &CanonicalCommit<Vec<u8>>) -> Result<()>,
 ) -> Result<WalScan> {
     let name = wal_name(number);
@@ -352,7 +354,7 @@ pub fn replay(
     let mut src = FileSource::new(&*file)?;
     let params = WalScanParams { file_number: number, db_id, expected_seq };
     let mut failed = None;
-    let scanned = scan_wal(&mut src, &params, |_, frame| {
+    let scanned = scan_wal_covered(&mut src, &params, Some(covered_through), |_, frame| {
         for (i, commit) in frame.commits.iter().enumerate() {
             if let Err(e) = apply(frame.first_seq + i as u64, commit) {
                 failed = Some(e);
@@ -372,7 +374,7 @@ pub fn replay(
 mod tests {
     use super::*;
     use crate::format::End;
-    use crate::format::wal::{CommitOp, WalHeaderState, canonicalize, seal_frame};
+    use crate::format::wal::{CommitOp, WalHeaderState, canonicalize, scan_wal, seal_frame};
     use kerno_core::Error;
     use kerno_core::WriteBatch;
     use kerno_testkit::vfs::{CrashKind, SimVfs};
@@ -400,7 +402,7 @@ mod tests {
 
     fn collect(vfs: &dyn Vfs, first: u64) -> Result<(WalScan, Commits)> {
         let mut got = Vec::new();
-        let scan = replay(vfs, Path::new("/w"), 1, DB, first, |s, c| {
+        let scan = replay(vfs, Path::new("/w"), 1, DB, first, 0, |s, c| {
             got.push((s, c.clone()));
             Ok(())
         })?;
@@ -928,7 +930,7 @@ mod tests {
             for n in after.list(Path::new("/w")).unwrap().iter().filter(|n| n.ends_with(".wal")) {
                 assert!(n == "000001.wal" || n == "000002.wal", "unexpected canonical log {n} (point {point})");
             }
-            let scan = replay(&*after, Path::new("/w"), 2, DB, 11, |_, _| Ok(())).unwrap();
+            let scan = replay(&*after, Path::new("/w"), 2, DB, 11, 0, |_, _| Ok(())).unwrap();
             assert_eq!((scan.commits, scan.next_seq), (3, 14), "point {point}");
         }
         assert!(crashed_at >= 5, "the sweep crashed inside the preparation only {crashed_at} times");

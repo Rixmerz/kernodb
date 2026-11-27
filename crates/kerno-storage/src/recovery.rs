@@ -322,11 +322,15 @@ pub fn classify(
 /// Scans the WALs `numbers` in order without keeping their commits: each
 /// starts at the sequence the previous one ended at, the first at
 /// `first_seq`.
+///
+/// `first_seq - 1` is the MANIFEST's `last_seq`: a log may start below the
+/// sequence expected of it only across sequences the MANIFEST holds (see
+/// `format::wal::scan_wal_covered`).
 pub fn scan_wals(vfs: &dyn Vfs, dir: &Path, db_id: [u8; 16], numbers: &[u64], first_seq: u64) -> Result<Vec<WalFacts>> {
     let mut expected = first_seq;
     let mut out = Vec::with_capacity(numbers.len());
     for &number in numbers {
-        let scan = wal::replay(vfs, dir, number, db_id, expected, |_, _| Ok(()))?;
+        let scan = wal::replay(vfs, dir, number, db_id, expected, first_seq - 1, |_, _| Ok(()))?;
         expected = scan.next_seq;
         out.push(WalFacts { number, scan });
     }
@@ -453,7 +457,7 @@ pub fn replay_in_memory(
     let mem = Memtable::new(0);
     let mut expected = state.last_seq + 1;
     for &n in &plan.live_wals {
-        let scan = wal::replay(&*ctx.vfs, &ctx.dir, n, db_id, expected, |seq, commit| {
+        let scan = wal::replay(&*ctx.vfs, &ctx.dir, n, db_id, expected, state.last_seq, |seq, commit| {
             mem.apply_commit(seq, commit);
             Ok(())
         })?;
@@ -557,7 +561,7 @@ pub fn apply(
     let mut expected = state.last_seq + 1;
     for (i, &n) in plan.live_wals.iter().enumerate() {
         deferred.last_mut().expect("never empty").add_wal(n);
-        let scan = wal::replay(vfs, dir, n, db_id, expected, |seq, commit| {
+        let scan = wal::replay(vfs, dir, n, db_id, expected, state.last_seq, |seq, commit| {
             let cur = deferred.last_mut().expect("never empty");
             cur.apply_commit(seq, commit);
             if eager {

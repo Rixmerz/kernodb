@@ -472,14 +472,19 @@ impl Inner {
     }
 
     /// The WAL number the oldest live log has once `mem`, the oldest
-    /// immutable memtable, is flushed: that of the next-oldest memtable, or
+    /// immutable memtable, is flushed: that of the next-oldest memtable that
+    /// has a log (not a log-less one, see [`Memtable::frozen_logless`]), or
     /// of the active one (v1.md §8.3, tag 3: the exact oldest live WAL).
     fn oldest_wal_after(&self, mem: &Arc<Memtable>) -> u64 {
         let st = self.state.lock();
         let v = &st.version;
+        // A log-less memtable names no log: the next newer one that has one
+        // does (the active memtable always has one).
         match v.imms.iter().position(|m| Arc::ptr_eq(m, mem)) {
-            Some(i) if i > 0 => v.imms[i - 1].wal_number(),
-            _ => v.mem.wal_number(),
+            Some(i) => {
+                v.imms[..i].iter().rev().find(|m| !m.is_logless()).map_or(v.mem.wal_number(), |m| m.wal_number())
+            }
+            None => v.mem.wal_number(),
         }
     }
 
@@ -759,6 +764,18 @@ impl Inner {
         // the commit's frame is the only one of its log, and the memtable is switched again
         // after it (the flush of the frozen one retires that log with it).
         let frozen = accepted == 1 && group.len() == 1 && is_large(commits[0]);
+        // Under `Buffered` durability (with background threads) the frozen commit writes no WAL
+        // frame at all: it is durable once its table is in the MANIFEST (see
+        // `Memtable::frozen_logless`). Prefix rule: until then no later frame may reach a log,
+        // so every other group (and a `sync()`) first waits for the log-less memtables to be
+        // installed; a later large commit may go log-less too, the flusher installs oldest first.
+        let logless = frozen && self.durability == Durability::Buffered && !self.inline();
+        if !logless
+            && (accepted > 0 || wants_sync)
+            && let Err(e) = self.await_logless_installed()
+        {
+            return fail_all(e, None);
+        }
         if accepted > 0 {
             let room_start = Instant::now();
             // The rate slowdown charges the group's encoded bytes.
@@ -766,15 +783,20 @@ impl Inner {
             if let Err(e) = self.make_room(w, group_bytes) {
                 return fail_all(e, None);
             }
+            // A log-less commit also needs the active log to hold no frame: its log then starts
+            // at the commit's sequence and the next frame follows it (a gap the MANIFEST covers
+            // once the table is installed, `scan_wal_covered`), and the rotation syncs the older
+            // log, so everything older is durable before the commit's table can be installed.
+            let has_frames = w.wal.written() > crate::format::header::HEADER_LEN as u64;
             if frozen
-                && !w.mem.is_empty()
+                && (!w.mem.is_empty() || (logless && has_frames))
                 && let Err(e) = self.or_poison("memtable switch failed", || self.rotate(w))
             {
                 return fail_all(e, None);
             }
             let commit_refs: Vec<&CanonicalCommit<Vec<u8>>> = commits[..accepted].iter().map(|c| &***c).collect();
             let write_start = Instant::now();
-            let io = w.wal.append_group(first, &commit_refs);
+            let io = if logless { Ok(0) } else { w.wal.append_group(first, &commit_refs) };
             let sync_start = Instant::now();
             // Whether a flush or compaction was writing during the sync (H3).
             let background = || s.background_active.load(Ordering::Relaxed) > 0;
@@ -792,7 +814,21 @@ impl Inner {
             synced |= wants_sync;
             let apply_start = Instant::now();
             let busy = busy || (fsync && background());
-            if frozen {
+            if logless {
+                // Straight to the immutable memtables, newest first: the active memtable (empty)
+                // and its log stay, so no rotation and no new log for this commit.
+                let mem = Arc::new(Memtable::frozen_logless(first, commits[0].clone()));
+                let mut st = self.state.lock();
+                let v = &st.version;
+                let mut imms = Vec::with_capacity(v.imms.len() + 1);
+                imms.push(mem);
+                imms.extend(v.imms.iter().cloned());
+                let next = Arc::new(Version { mem: v.mem.clone(), imms, levels: v.levels.clone() });
+                let old = std::mem::replace(&mut st.version, next);
+                drop(st);
+                self.cv.notify_all();
+                drop(old);
+            } else if frozen {
                 let mem = Arc::new(Memtable::frozen(w.mem.wal_number(), first, commits[0].clone()));
                 let mut st = self.state.lock();
                 let v = &st.version;
@@ -834,7 +870,7 @@ impl Inner {
         // The frozen memtable goes to the flush now rather than at the next commit, so the flush
         // overlaps whatever the caller does next. Its commit is durable already: a failed switch
         // poisons the handle for what follows, not this commit.
-        if frozen && !self.inline() {
+        if frozen && !logless && !self.inline() {
             let _ = self.or_poison("memtable switch failed", || self.rotate(w));
         }
         {
@@ -871,6 +907,23 @@ impl Inner {
             })
             .collect();
         (results, None)
+    }
+
+    /// Waits until no log-less memtable (see [`Memtable::frozen_logless`]) is
+    /// waiting for its flush: until then no later commit may write a frame,
+    /// or a crash could keep it without the earlier log-less commit.
+    fn await_logless_installed(&self) -> Result<()> {
+        let mut st = self.state.lock();
+        while st.version.imms.iter().any(|m| m.is_logless()) {
+            if let Some(msg) = &st.poisoned {
+                return Err(Error::Poisoned(msg.clone()));
+            }
+            if st.shutdown {
+                return Err(Error::Io(io::Error::other("the handle is closing")));
+            }
+            self.cv.wait(&mut st);
+        }
+        Ok(())
     }
 
     /// Applies backpressure and switches to a new memtable when the active
@@ -1182,7 +1235,14 @@ impl Inner {
         // The MANIFEST no longer needs this log (W-5; best effort: a leftover
         // log below `log_number` is deleted by the next recovery).
         let _delete = probe::phase("delete");
-        self.retire_wal(mem.wal_number(), mem.wal_len());
+        if mem.is_logless() {
+            // Its commit is durable now, and everything older already was (the older logs are
+            // synced, the older memtables flushed first).
+            let mut st = self.state.lock();
+            st.durable_seq = st.durable_seq.max(mem.max_seq());
+        } else {
+            self.retire_wal(mem.wal_number(), mem.wal_len());
+        }
         for &n in mem.extra_wals() {
             let _ = self.vfs.remove_file(&self.dir.join(wal_name(n)));
         }

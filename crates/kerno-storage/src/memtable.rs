@@ -168,6 +168,10 @@ pub struct Memtable {
     max_seq: AtomicU64,
     /// The WAL file that holds this memtable's commits.
     wal_number: u64,
+    /// A frozen memtable whose commit wrote no WAL frame (`Buffered`
+    /// durability, see [`Memtable::frozen_logless`]): it has no log of its
+    /// own and is durable only once its table is in the MANIFEST.
+    logless: bool,
     /// Replayed by a recovery whose flush was deferred: its table records
     /// `REASON_RECOVERY`.
     recovered: bool,
@@ -231,6 +235,7 @@ impl Memtable {
             bytes: AtomicUsize::new(0),
             max_seq: AtomicU64::new(0),
             wal_number,
+            logless: false,
             recovered: false,
             extra_wals: Vec::new(),
             wal_len: AtomicU64::new(0),
@@ -259,6 +264,21 @@ impl Memtable {
         m.max_seq.store(seq, Relaxed);
         m.frozen = Some(Frozen { seq, commit });
         m
+    }
+
+    /// [`frozen`](Self::frozen) for a commit that wrote no WAL frame: under
+    /// `Buffered` durability a large commit goes to its table without one. It
+    /// names no log (`wal_number` 0), so its flush retires none and the
+    /// MANIFEST's oldest live log is that of the next memtable that has one.
+    pub fn frozen_logless(seq: u64, commit: Arc<CanonicalCommit<Vec<u8>>>) -> Self {
+        let mut m = Memtable::frozen(0, seq, commit);
+        m.logless = true;
+        m
+    }
+
+    /// Whether this memtable's commit is in no WAL (see [`frozen_logless`](Self::frozen_logless)).
+    pub fn is_logless(&self) -> bool {
+        self.logless
     }
 
     /// A memtable that recovery replays into (see `recovery::apply`).

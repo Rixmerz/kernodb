@@ -458,6 +458,22 @@ fn classify_tail<S: ByteSource>(
 pub fn scan_wal<S: ByteSource>(
     src: &mut S,
     params: &WalScanParams,
+    on_frame: impl FnMut(u64, Frame) -> std::result::Result<(), S::Error>,
+) -> std::result::Result<WalScan, ReadError<S::Error>> {
+    scan_wal_covered(src, params, None, on_frame)
+}
+
+/// [`scan_wal`] for a log of a database whose MANIFEST holds every sequence
+/// up to `covered_through` in its tables. WAL-R1 then also accepts a
+/// `base_seq` below `expected_seq` when every sequence in between is at most
+/// `covered_through`: the commits of that gap wrote no frame (a large commit
+/// under `Buffered` durability goes to a table without one) and the MANIFEST
+/// already holds them. The frames themselves must still start exactly at
+/// `expected_seq`; a gap the MANIFEST does not cover stays WAL-R1.
+pub fn scan_wal_covered<S: ByteSource>(
+    src: &mut S,
+    params: &WalScanParams,
+    covered_through: Option<u64>,
     mut on_frame: impl FnMut(u64, Frame) -> std::result::Result<(), S::Error>,
 ) -> std::result::Result<WalScan, ReadError<S::Error>> {
     let mut w = Window::new(src);
@@ -466,7 +482,9 @@ pub fn scan_wal<S: ByteSource>(
     let expect = HeaderExpect { db_id: Some(params.db_id), file_number: Some(params.file_number) };
     let (header, slot, mut pos) = match decode_header(&prefix, len, FileKind::Wal, &expect) {
         Ok(h) => {
-            if h.per_type != params.expected_seq {
+            let covered_gap =
+                h.per_type < params.expected_seq && covered_through.is_some_and(|c| params.expected_seq - 1 <= c);
+            if h.per_type != params.expected_seq && !covered_gap {
                 return Err(FormatError::corruption("WAL-R1", 64, "base_seq is not the expected sequence").into());
             }
             (h, frame_has_slot(h.incompat), u64::from(h.header_len))

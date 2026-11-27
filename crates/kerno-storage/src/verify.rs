@@ -32,7 +32,7 @@ use crate::files::{FileSource, format_error};
 use crate::format::sst::{
     SstExpect, SstMeta, SstVerifier, check_filter_holds_index_keys, open_sst_from, read_data_block,
 };
-use crate::format::wal::{WalHeaderState, WalScan, WalScanParams, scan_wal};
+use crate::format::wal::{WalHeaderState, WalScan, WalScanParams, scan_wal_covered};
 use crate::format::{End, ErrorClass, FormatError, ReadError};
 use crate::inspect::{FileInfo, FileType, HeaderInfo, lock_and_list, refuse_directory_without_database};
 use crate::manifest::{self, FileMeta, MANIFEST};
@@ -352,7 +352,7 @@ impl Verifier<'_> {
             let file = self.vfs.open(&self.dir.join(&name), OpenMode::Existing)?;
             let mut src = FileSource::new(&*file)?;
             let params = WalScanParams { file_number: number, db_id, expected_seq: expected };
-            let scan = match scan_wal(&mut src, &params, |_, _| Ok(())) {
+            let scan = match scan_wal_covered(&mut src, &params, Some(first_seq - 1), |_, _| Ok(())) {
                 Ok(scan) => scan,
                 Err(ReadError::Source(e)) => return Err(e.into()),
                 Err(ReadError::Format(e)) => {
