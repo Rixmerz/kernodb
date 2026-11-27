@@ -316,6 +316,10 @@ enum Work {
 const FROZEN_MIN_POINTS: usize = 32 * 1024;
 const FROZEN_MIN_BYTES: usize = 4 << 20;
 
+/// With `Config::bulk_without_wal`, a commit of at least this many points is kept the same
+/// way: it then costs no WAL frame and no skip-list insert, only its table.
+const BULK_MIN_POINTS: usize = 512;
+
 fn is_large(commit: &CanonicalCommit<Vec<u8>>) -> bool {
     commit.points.len() >= FROZEN_MIN_POINTS || commit.encoded_len() >= FROZEN_MIN_BYTES
 }
@@ -764,14 +768,16 @@ impl Inner {
         // `Memtable::frozen`): the active memtable is switched first if it holds anything, so
         // the commit's frame is the only one of its log, and the memtable is switched again
         // after it (the flush of the frozen one retires that log with it).
-        let frozen = accepted == 1 && group.len() == 1 && is_large(commits[0]);
+        let bulk = self.bulk_without_wal && self.durability == Durability::Buffered && !self.inline();
+        let frozen = accepted == 1
+            && group.len() == 1
+            && (is_large(commits[0]) || (bulk && commits[0].points.len() >= BULK_MIN_POINTS));
         // Under `Buffered` durability (with background threads) the frozen commit writes no WAL
         // frame at all: it is durable once its table is in the MANIFEST (see
         // `Memtable::frozen_logless`). Prefix rule: until then no later frame may reach a log,
         // so every other group (and a `sync()`) first waits for the log-less memtables to be
         // installed; a later large commit may go log-less too, the flusher installs oldest first.
-        let logless =
-            frozen && self.bulk_without_wal && self.durability == Durability::Buffered && !self.inline();
+        let logless = frozen && bulk;
         if !logless
             && (accepted > 0 || wants_sync)
             && let Err(e) = self.await_logless_installed()
