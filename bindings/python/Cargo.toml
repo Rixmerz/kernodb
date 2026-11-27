@@ -19,7 +19,13 @@ pyo3 = { version = "0.30", features = ["abi3-py39"] }
 # than the system allocator on bulk ingest. It serves only the allocations of this extension.
 # no_thp: mimalloc does not ask for 2 MiB pages. With them a 25 ms load touched 45 MiB instead of
 # 15, all of it zeroed by the kernel: 10-100 ms of system time on a machine short of free memory.
+# With THP set to `always` the kernel still backs mimalloc's arena with 2 MiB pages, so lib.rs
+# reserves the first 1 GiB arena itself and marks it MADV_NOHUGEPAGE (libmimalloc-sys, libc).
 mimalloc = { version = "0.1", default-features = false, features = ["no_thp"] }
+libmimalloc-sys = { version = "0.1.49", default-features = false, features = ["extended", "arena", "no_thp"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
 
 # The wheel is the product: whole-program inlining across the storage, units and binding crates
 # is worth the longer build.

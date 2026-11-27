@@ -4,8 +4,76 @@
 //! payloads as `bytes` (a `str` is stored as its UTF-8 bytes), and every engine failure becomes
 //! a `kerno.KernoError`.
 
+use std::alloc::{GlobalAlloc, Layout};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// mimalloc, with its first arena kept off transparent huge pages (see `reserve_small_page_arena`).
+struct KernoAlloc;
+
+static ARENA_READY: AtomicBool = AtomicBool::new(false);
+
+#[inline]
+fn ensure_arena() {
+    if ARENA_READY.load(Ordering::Relaxed) {
+        return;
+    }
+    ensure_arena_slow();
+}
+
+#[cold]
+fn ensure_arena_slow() {
+    if !ARENA_READY.swap(true, Ordering::AcqRel) {
+        reserve_small_page_arena();
+    }
+}
+
+// With THP set to `always` the kernel zeroes 2 MiB for every touched page of mimalloc's arena. The
+// arena is reserved before any other, so mimalloc serves from it before reserving its own; arenas
+// it adds after this 1 GiB is used are not covered. Failures are ignored: the allocator still works.
+#[cfg(target_os = "linux")]
+fn reserve_small_page_arena() {
+    unsafe extern "C" {
+        fn mi_arena_area(arena_id: libmimalloc_sys::mi_arena_id_t, size: *mut usize) -> *mut std::ffi::c_void;
+    }
+    unsafe {
+        let mut id: libmimalloc_sys::mi_arena_id_t = Default::default();
+        if libmimalloc_sys::mi_reserve_os_memory_ex(1 << 30, false, false, false, &mut id) == 0 {
+            let mut size = 0usize;
+            let start = mi_arena_area(id, &mut size);
+            if !start.is_null() && size > 0 {
+                libc::madvise(start, size, libc::MADV_NOHUGEPAGE);
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn reserve_small_page_arena() {}
+
+unsafe impl GlobalAlloc for KernoAlloc {
+    #[inline]
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        ensure_arena();
+        unsafe { mimalloc::MiMalloc.alloc(layout) }
+    }
+    #[inline]
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { mimalloc::MiMalloc.dealloc(ptr, layout) }
+    }
+    #[inline]
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        ensure_arena();
+        unsafe { mimalloc::MiMalloc.alloc_zeroed(layout) }
+    }
+    #[inline]
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        ensure_arena();
+        unsafe { mimalloc::MiMalloc.realloc(ptr, layout, new_size) }
+    }
+}
+
 #[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: KernoAlloc = KernoAlloc;
 
 use std::collections::HashMap;
 use std::ops::Bound as Range;
