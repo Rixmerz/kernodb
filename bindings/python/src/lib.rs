@@ -2129,6 +2129,9 @@ fn open(
     close_compaction: bool,
     bulk_without_wal: bool,
 ) -> PyResult<Database> {
+    if path.as_os_str().as_encoded_bytes().contains(&0) {
+        return Err(InvalidArgumentError::new_err("path must not contain a NUL byte"));
+    }
     let durability = match durability {
         "sync" => kerno::Durability::Sync,
         "buffered" => kerno::Durability::Buffered,

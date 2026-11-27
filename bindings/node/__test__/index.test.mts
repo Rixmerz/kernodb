@@ -1071,3 +1071,7 @@ test('a pruned read says which number is a revision and which a commit', () => {
   db.runRetention({ default: { keepLast: 2 } })
   assert.throws(() => db.readAsOf(id, first), new RegExp(`commit ${first}.*revision 4`))
 })
+
+test('open refuses a path with a NUL byte as INVALID_ARGUMENT naming path', () => {
+  assert.throws(() => open(join(dir, 'a\0b')), (e: Error & { code?: string }) => e.code === 'INVALID_ARGUMENT' && e.message.includes('path'))
+})

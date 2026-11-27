@@ -1260,3 +1260,8 @@ def test_covering_find_documents_matches_non_covering(tmp_path):
     finally:
         for db in dbs:
             db.close()
+
+
+def test_open_refuses_a_path_with_a_nul_byte(tmp_path):
+    with pytest.raises(kerno.InvalidArgumentError, match="path"):
+        kerno.open(str(tmp_path / "a\0b"))

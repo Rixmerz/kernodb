@@ -1103,6 +1103,9 @@ fn to_f32(v: &[f64]) -> Vec<f32> {
 /// holds a directory at a time: opening it again before `close()` throws `LOCKED`.
 #[napi]
 pub fn open(path: String, options: Option<OpenOptions>) -> Result<Db> {
+    if path.contains('\0') {
+        return Err(invalid("path must not contain a NUL byte"));
+    }
     let options = options.unwrap_or(OpenOptions { read_only: None, max_batch_ops: None });
     let config = if options.read_only.unwrap_or(false) {
         Config {
