@@ -21,7 +21,7 @@ use common::*;
 const BIG_POINTS: u32 = 33 * 1024;
 
 fn buffered() -> Config {
-    Config { write_buffer_bytes: 1 << 20, ..threads_config(Durability::Buffered) }
+    Config { write_buffer_bytes: 1 << 20, bulk_without_wal: true, ..threads_config(Durability::Buffered) }
 }
 
 fn small(i: u32) -> WriteBatch {
@@ -244,4 +244,9 @@ fn read_only_handles_see_a_large_commit_once_installed() {
     assert!(model_of(&ro3) == model);
     drop((ro, ro2, ro3));
     db.close().unwrap();
+}
+
+#[test]
+fn bulk_without_wal_is_off_by_default() {
+    assert!(!Config::default().bulk_without_wal, "off by default");
 }

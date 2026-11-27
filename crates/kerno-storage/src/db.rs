@@ -135,6 +135,7 @@ pub(crate) struct Inner {
     vfs: Arc<dyn Vfs>,
     dir: PathBuf,
     durability: Durability,
+    bulk_without_wal: bool,
     tuning: Tuning,
     /// Compaction threads (`max_background_compactions`).
     max_compactions: usize,
@@ -769,7 +770,8 @@ impl Inner {
         // `Memtable::frozen_logless`). Prefix rule: until then no later frame may reach a log,
         // so every other group (and a `sync()`) first waits for the log-less memtables to be
         // installed; a later large commit may go log-less too, the flusher installs oldest first.
-        let logless = frozen && self.durability == Durability::Buffered && !self.inline();
+        let logless =
+            frozen && self.bulk_without_wal && self.durability == Durability::Buffered && !self.inline();
         if !logless
             && (accepted > 0 || wants_sync)
             && let Err(e) = self.await_logless_installed()
@@ -2166,6 +2168,7 @@ impl KernoDb {
             vfs,
             dir: dir.to_path_buf(),
             durability: cfg.durability,
+            bulk_without_wal: cfg.bulk_without_wal,
             tuning,
             max_compactions: cfg.compaction.max_background_compactions,
             close_budget: cfg.close_budget,

@@ -415,6 +415,7 @@ def open(
     verify_payload_on_read: bool = False,
     durability: str = "sync",
     close_compaction: bool = True,
+    bulk_without_wal: bool = False,
 ) -> Database:
     """Open the database in `path`, creating it when `path` holds none.
 

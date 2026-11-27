@@ -1998,8 +1998,11 @@ impl Database {
 /// durable. `close_compaction=False` makes `close()` only flush: it skips the compaction a close
 /// otherwise does to tidy the newest files, which a bulk load that closes right after its last
 /// commit pays in full; the next session that writes compacts in the background as usual.
+/// `bulk_without_wal=True` (with `durability="buffered"`) keeps a large commit out of the log: it
+/// is durable once its table is written, and until then a crash, of the process too, can lose it
+/// and every commit after it. For bulk loads of data that can be loaded again.
 #[pyfunction]
-#[pyo3(signature = (path, read_only=false, max_batch_ops=None, verify_payload_on_read=false, durability="sync", close_compaction=true))]
+#[pyo3(signature = (path, read_only=false, max_batch_ops=None, verify_payload_on_read=false, durability="sync", close_compaction=true, bulk_without_wal=false))]
 fn open(
     py: Python<'_>,
     path: PathBuf,
@@ -2008,6 +2011,7 @@ fn open(
     verify_payload_on_read: bool,
     durability: &str,
     close_compaction: bool,
+    bulk_without_wal: bool,
 ) -> PyResult<Database> {
     let durability = match durability {
         "sync" => kerno::Durability::Sync,
@@ -2034,6 +2038,7 @@ fn open(
             } else {
                 let mut config =
                     Config { allow_unverified_platform: true, verify_payload_on_read, durability, ..Config::default() };
+                config.bulk_without_wal = bulk_without_wal;
                 if !close_compaction {
                     config.close_budget = kerno::storage::CloseBudget::Deferred;
                 }

@@ -275,6 +275,13 @@ pub struct Config {
     /// (`incompat` bit `BLOCK_LZ4`, v1.md §4.4, ADR-0023). Readers handle both kinds of SST,
     /// whatever this says. Default `true`. Measured on a real store: 2.2x smaller tables.
     pub block_compression: bool,
+    /// With [`Durability::Buffered`] and background threads: a large commit (one kept as a
+    /// frozen memtable) writes no WAL frame and is durable once its table is installed. Until
+    /// then a crash, of the process as well as of the machine, can lose it together with
+    /// every commit after it (never a later commit without it); later commits and `sync()`
+    /// wait for that table. For bulk loads of data that can be loaded again. Default `false`:
+    /// a confirmed Buffered commit then survives a process crash, as documented.
+    pub bulk_without_wal: bool,
 }
 
 /// How much compaction work a clean close may do (phase1-design.md §5.4,
@@ -601,6 +608,7 @@ impl Default for Config {
             close_budget: CloseBudget::default(),
             wal_preallocate: false,
             block_compression: true,
+            bulk_without_wal: false,
         }
     }
 }
