@@ -18,6 +18,10 @@ pub enum Error {
     /// The caller passed something the engine does not accept
     /// (e.g. a key longer than [`crate::MAX_KEY_LEN`]).
     InvalidArgument(String),
+    /// A batch or a transaction holds more operations or more bytes than one commit may (the
+    /// engine's batch limits). Nothing was written, and a smaller batch may succeed. A single key
+    /// or value over its own limit is [`Error::InvalidArgument`].
+    BatchTooLarge(String),
     /// A previous fatal error (typically a failed `fsync`) left the handle
     /// in an unknown state. The database must be reopened, which runs
     /// recovery from what is actually on disk.
@@ -47,6 +51,7 @@ impl fmt::Display for Error {
             Error::Corruption(m) => write!(f, "corruption detected: {m}"),
             Error::Locked => write!(f, "database is locked by another handle"),
             Error::InvalidArgument(m) => write!(f, "invalid argument: {m}"),
+            Error::BatchTooLarge(m) => write!(f, "batch too large: {m}"),
             Error::Poisoned(m) => write!(f, "handle poisoned by an earlier fatal error: {m}"),
             Error::Incompatible(m) => write!(f, "incompatible format: {m}"),
             Error::ReadOnly(m) => write!(f, "read-only: {m}"),
@@ -81,6 +86,7 @@ mod tests {
             "incompatible format: M0 prototype format"
         );
         assert_eq!(Error::ReadOnly("no writes".into()).to_string(), "read-only: no writes");
+        assert_eq!(Error::BatchTooLarge("2 operations".into()).to_string(), "batch too large: 2 operations");
         assert!(std::error::Error::source(&Error::Incompatible("x".into())).is_none());
     }
 }

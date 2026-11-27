@@ -380,7 +380,11 @@ pub(crate) fn check_range(start: &[u8], end: &[u8], limits: &Limits) -> Result<(
 /// engine's limits replace).
 fn validate_batch(batch: &WriteBatch, limits: &Limits) -> Result<()> {
     if batch.len() > limits.max_batch_ops {
-        return Err(over("batch with operations", batch.len(), limits.max_batch_ops));
+        return Err(Error::BatchTooLarge(format!(
+            "batch of {} operations exceeds the limit of {}",
+            batch.len(),
+            limits.max_batch_ops
+        )));
     }
     for op in batch.ops() {
         match op {
@@ -392,7 +396,11 @@ fn validate_batch(batch: &WriteBatch, limits: &Limits) -> Result<()> {
     // The keys and values alone are a lower bound of the encoding: reject
     // early what cannot fit before canonicalizing it.
     if batch.payload_bytes() > limits.max_batch_bytes {
-        return Err(over("batch of payload bytes", batch.payload_bytes(), limits.max_batch_bytes));
+        return Err(Error::BatchTooLarge(format!(
+            "batch of {} payload bytes exceeds the limit of {}",
+            batch.payload_bytes(),
+            limits.max_batch_bytes
+        )));
     }
     Ok(())
 }
@@ -547,7 +555,7 @@ impl Inner {
         let commit = canonical(batch);
         let bytes = commit.encoded_len();
         if bytes > self.limits.max_batch_bytes {
-            return Err(Error::InvalidArgument(format!(
+            return Err(Error::BatchTooLarge(format!(
                 "batch encodes to {bytes} bytes, over the limit of {}",
                 self.limits.max_batch_bytes
             )));
@@ -627,7 +635,7 @@ impl Inner {
         let started = Instant::now();
         let bytes = commit.encoded_len();
         if bytes > self.limits.max_batch_bytes {
-            return Err(Error::InvalidArgument(format!(
+            return Err(Error::BatchTooLarge(format!(
                 "batch encodes to {bytes} bytes, over the limit of {}",
                 self.limits.max_batch_bytes
             )));

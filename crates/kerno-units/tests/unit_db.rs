@@ -1040,6 +1040,26 @@ fn kerno_batch_limit_breaks_the_changeset() {
     db.close().unwrap();
 }
 
+/// A key over the engine's own limit is an invalid argument, not a change set that is too large
+/// (#13): only the batch limits are `ChangeSetTooLarge`.
+#[test]
+fn an_over_long_key_is_an_invalid_argument() {
+    use kerno_storage::{Config, Limits};
+    let disk = SimVfs::new(20);
+    let mut config = Config::from(&Options::small_for_tests());
+    config.limits = Limits { max_key_len: 40, ..Limits::default() };
+    let engine = KernoDb::open(disk.as_vfs(), Path::new(DIR), &config).expect("engine");
+    let db = UnitDb::from_engine(engine, &cfg()).expect("open");
+    db.create_unit(new_unit("doc", b"short type"), meta()).expect("a short type name fits");
+    let long_type = "t".repeat(60);
+    let e = db.create_unit(new_unit(&long_type, b"long type"), meta()).unwrap_err();
+    // The engine's refusal of the key, not a check of the unit layer.
+    assert!(matches!(&e, UnitError::InvalidArgument(m) if m.contains("key of") && m.contains("limit of 40")), "{e:?}");
+    assert_eq!(seq(&db), 1, "the refused create wrote nothing");
+    db.create_unit(new_unit("doc", b"after"), meta()).expect("the database keeps working");
+    db.close().unwrap();
+}
+
 macro_rules! engine_tests {
     ($m:ident, $e:ty) => {
         mod $m {

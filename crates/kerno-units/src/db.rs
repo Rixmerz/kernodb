@@ -1795,11 +1795,13 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
             Err(e) => {
                 self.broken = true;
                 Err(match e {
-                    // The engine refuses a write over its batch or value
-                    // limits before any effect (design §4).
-                    kerno_core::Error::InvalidArgument(m) => {
+                    // The engine refuses a write over its batch limits before
+                    // any effect (design §4)...
+                    kerno_core::Error::BatchTooLarge(m) => {
                         UnitError::ChangeSetTooLarge { ops: writes, bytes, engine_limit: Some(m) }
                     }
+                    // ...and a key or a value over its own limits.
+                    kerno_core::Error::InvalidArgument(m) => UnitError::InvalidArgument(m),
                     e => UnitError::Storage(e),
                 })
             }
@@ -2557,9 +2559,10 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         // effect, and it is the same refusal as a write over the limit (#13).
         let (writes, bytes) = (self.writes, self.bytes);
         let too_large = |e: kerno_core::Error| match e {
-            kerno_core::Error::InvalidArgument(m) => {
+            kerno_core::Error::BatchTooLarge(m) => {
                 UnitError::ChangeSetTooLarge { ops: writes, bytes, engine_limit: Some(m) }
             }
+            kerno_core::Error::InvalidArgument(m) => UnitError::InvalidArgument(m),
             e => UnitError::Storage(e),
         };
         let (got, durable) = if self.deferred {

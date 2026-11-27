@@ -694,35 +694,41 @@ fn batch_over_limit_rejected_before_write() {
     let cfg = Config { limits, ..config(Durability::Sync) };
     let db = open_in(&disk.as_vfs(), &cfg).unwrap();
     let stat = |db: &KernoDb, name: &str| db.metrics().flatten().into_iter().find(|(n, _)| n == name).unwrap().1;
-    let mut over: Vec<(&str, WriteBatch)> = Vec::new();
+    // Each refused batch, and whether it is over a batch limit (`BatchTooLarge`) rather than
+    // holding one key or value over its own limit (`InvalidArgument`).
+    let mut over: Vec<(&str, bool, WriteBatch)> = Vec::new();
     let mut b = WriteBatch::new();
     b.put([b'k'; 9], "v");
-    over.push(("key", b));
+    over.push(("key", false, b));
     let mut b = WriteBatch::new();
     b.delete([b'k'; 9]);
-    over.push(("deleted key", b));
+    over.push(("deleted key", false, b));
     let mut b = WriteBatch::new();
     b.put("k", [b'v'; 17]);
-    over.push(("value", b));
+    over.push(("value", false, b));
     let mut b = WriteBatch::new();
     for i in 0..26u8 {
         b.put([i], "");
     }
-    over.push(("operations", b));
+    over.push(("operations", true, b));
     let mut b = WriteBatch::new();
     b.put([b'a'; 8], [b'v'; 16]).put([b'b'; 8], [b'v'; 16]).put([b'c'; 8], [b'v'; 16]);
-    over.push(("payload bytes", b));
+    over.push(("payload bytes", true, b));
     // Small keys and values, but 20 operations encode to more than 60 bytes.
     let mut b = WriteBatch::new();
     for i in 0..20u8 {
         b.put([i], [i]);
     }
-    over.push(("encoded bytes", b));
+    over.push(("encoded bytes", true, b));
     let ops = disk.mutating_ops();
     let commits = stat(&db, "commits");
-    for (what, b) in &over {
+    for (what, batch_limit, b) in &over {
         let r = db.commit(b);
-        assert!(matches!(&r, Err(Error::InvalidArgument(_))), "{what}: {r:?}");
+        if *batch_limit {
+            assert!(matches!(&r, Err(Error::BatchTooLarge(_))), "{what}: {r:?}");
+        } else {
+            assert!(matches!(&r, Err(Error::InvalidArgument(_))), "{what}: {r:?}");
+        }
         assert_eq!(disk.mutating_ops(), ops, "{what}: a rejected batch wrote something");
         assert_eq!(stat(&db, "commits"), commits, "{what}");
     }

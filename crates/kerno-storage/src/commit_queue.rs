@@ -251,6 +251,7 @@ pub(crate) fn replicate(e: &Error) -> Error {
         Error::Corruption(m) => Error::Corruption(m.clone()),
         Error::Locked => Error::Locked,
         Error::InvalidArgument(m) => Error::InvalidArgument(m.clone()),
+        Error::BatchTooLarge(m) => Error::BatchTooLarge(m.clone()),
         Error::Poisoned(m) => Error::Poisoned(m.clone()),
         Error::Incompatible(m) => Error::Incompatible(m.clone()),
         Error::ReadOnly(m) => Error::ReadOnly(m.clone()),

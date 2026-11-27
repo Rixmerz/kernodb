@@ -391,8 +391,9 @@ impl<'db> WriteTxn<'db> {
     }
 
     /// Writes `key`. `InvalidArgument` if the key or the value is over the
-    /// limits of the database, or the transaction would pass the limits of a
-    /// batch; the write is then not made and the transaction stays usable.
+    /// limits of the database, `BatchTooLarge` if the transaction would pass
+    /// the limits of a batch; the write is then not made and the transaction
+    /// stays usable.
     pub fn put(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
         self.put_owned(key.to_vec(), value.to_vec())
     }
@@ -435,13 +436,13 @@ impl<'db> WriteTxn<'db> {
     fn admit(&mut self, bytes: usize) -> Result<()> {
         let limits = self.db.limits();
         if self.ops >= limits.max_batch_ops {
-            return Err(Error::InvalidArgument(format!(
+            return Err(Error::BatchTooLarge(format!(
                 "transaction with more than {} operations exceeds the batch limit",
                 limits.max_batch_ops
             )));
         }
         if self.payload.saturating_add(bytes) > limits.max_batch_bytes {
-            return Err(Error::InvalidArgument(format!(
+            return Err(Error::BatchTooLarge(format!(
                 "transaction of over {} payload bytes exceeds the batch limit",
                 limits.max_batch_bytes
             )));

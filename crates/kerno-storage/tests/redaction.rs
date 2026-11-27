@@ -65,7 +65,8 @@ const VAL_BIN: Sentinel =
     Sentinel { name: "binary value", bytes: &[0xfe, 0xed, 0xfa, 0xce, 0x0b, 0xad, 0xf0, 0x0d, 0x77, 0x31] };
 const SENTINELS: [&Sentinel; 4] = [&KEY_TEXT, &KEY_BIN, &VAL_TEXT, &VAL_BIN];
 
-const VARIANTS: [&str; 7] = ["Io", "Corruption", "Locked", "InvalidArgument", "Poisoned", "Incompatible", "ReadOnly"];
+const VARIANTS: [&str; 8] =
+    ["Io", "Corruption", "Locked", "InvalidArgument", "BatchTooLarge", "Poisoned", "Incompatible", "ReadOnly"];
 
 // ------------------------------------------------------------- detector
 
@@ -141,6 +142,7 @@ fn variant_name(e: &Error) -> &'static str {
         Error::Corruption(_) => "Corruption",
         Error::Locked => "Locked",
         Error::InvalidArgument(_) => "InvalidArgument",
+        Error::BatchTooLarge(_) => "BatchTooLarge",
         Error::Poisoned(_) => "Poisoned",
         Error::Incompatible(_) => "Incompatible",
         Error::ReadOnly(_) => "ReadOnly",
@@ -496,6 +498,23 @@ fn scenario(cfg: &Config) -> Seen {
     let mut b = WriteBatch::new();
     b.delete(too_long);
     seen.outcome("invalid: long delete key", &db.commit(&b));
+    // BatchTooLarge: a batch and a transaction over the batch limits, on a handle of its own
+    // with small limits.
+    {
+        let limits = kerno_storage::Limits { max_batch_ops: 2, ..kerno_storage::Limits::default() };
+        let small = open(&SimVfs::new(78).as_vfs(), &Config { limits, ..cfg.clone() }).unwrap();
+        let mut b = WriteBatch::new();
+        for i in 0..3 {
+            b.put(key(&KEY_TEXT, i), value(&VAL_TEXT, i));
+        }
+        seen.outcome("batch too large: commit", &small.commit(&b));
+        let mut t = small.begin_write().unwrap();
+        t.put(&key(&KEY_BIN, 0), &value(&VAL_BIN, 0)).unwrap();
+        t.put(&key(&KEY_BIN, 1), &value(&VAL_BIN, 1)).unwrap();
+        seen.outcome("batch too large: transaction", &t.put(&key(&KEY_BIN, 2), &value(&VAL_BIN, 2)));
+        drop(t);
+        small.close().unwrap();
+    }
 
     // Locked: a second handle, verify and inspect while it is open.
     seen.outcome("locked: open", &open(&vfs, cfg).map(drop));
@@ -527,7 +546,7 @@ fn scenario(cfg: &Config) -> Seen {
     seen
 }
 
-/// The scenario on `cfg`: all seven variants are produced and no text carries
+/// The scenario on `cfg`: all eight variants are produced and no text carries
 /// a sentinel.
 fn check_case(case: &str, cfg: &Config) {
     let seen = scenario(cfg);

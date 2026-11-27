@@ -240,7 +240,7 @@ fn batch_limits_bound_the_transaction_eagerly() {
     let limits = Limits { max_batch_bytes: 100, max_batch_ops: 4, ..Limits::default() };
     let db = open(&disk, &Config { limits, ..config(Durability::Sync) });
     let invalid = |r: kerno_core::Result<()>, what: &str| {
-        assert!(matches!(r, Err(Error::InvalidArgument(_))), "{what}: {r:?}");
+        assert!(matches!(r, Err(Error::BatchTooLarge(_))), "{what}: {r:?}");
     };
     let mut t = db.begin_write().unwrap();
     t.put(b"a", &[1u8; 60]).unwrap();
@@ -256,7 +256,7 @@ fn batch_limits_bound_the_transaction_eagerly() {
 }
 
 /// A commit that is under the payload limit but encodes over it fails at the
-/// commit with `InvalidArgument`, writes nothing and frees the slot.
+/// commit with `BatchTooLarge`, writes nothing and frees the slot.
 #[test]
 fn oversized_encoding_fails_at_commit_and_frees_the_slot() {
     let disk = SimVfs::new(8);
@@ -267,7 +267,7 @@ fn oversized_encoding_fails_at_commit_and_frees_the_slot() {
     for i in 0..12u8 {
         t.put(&[b'k', i], &[7, 7, 7]).unwrap();
     }
-    assert!(matches!(t.commit(), Err(Error::InvalidArgument(_))));
+    assert!(matches!(t.commit(), Err(Error::BatchTooLarge(_))));
     assert_eq!(db.snapshot().unwrap().seq(), 0);
     assert_eq!(db.begin_write().unwrap().commit().unwrap(), 0, "the slot is free");
     assert_eq!(put(&db, "ok"), 1, "and the handle is sound");
