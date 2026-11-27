@@ -178,13 +178,12 @@ impl Overlay {
     }
 
     /// The points in key order, each key once, the last write of it.
-    fn into_sorted(mut self) -> Vec<Entry> {
-        // Stable sort keeps the call order inside a run of one key; the
-        // run's last entry is the write that stands.
-        self.pending.sort_by(|a, b| a.0.cmp(&b.0));
-        // In place, no second copy of the entries: of a run of one key the
-        // last write is moved into the slot that stays.
-        let mut buffered = self.pending;
+    fn into_sorted(self) -> Vec<Entry> {
+        // Call order inside a run of one key, as a stable sort keeps it:
+        // the run's last entry is the write that stands.
+        let mut buffered = sort_writes(self.pending);
+        // In place: of a run of one key the last write is moved into the
+        // slot that stays.
         buffered.dedup_by(|later, kept| {
             let same = later.0 == kept.0;
             if same {
@@ -211,6 +210,27 @@ impl Overlay {
         out.extend(folded);
         out
     }
+}
+
+/// The first 16 bytes of `key` as a big-endian number, zero-padded: ordered
+/// like the keys wherever they differ (a key that ends first reads as zeros,
+/// and is the lower one unless the other continues with zeros, a tie).
+fn key_prefix(key: &[u8]) -> u128 {
+    let mut b = [0u8; 16];
+    let n = key.len().min(16);
+    b[..n].copy_from_slice(&key[..n]);
+    u128::from_be_bytes(b)
+}
+
+/// `writes` in key order, writes of one key in call order: what a stable
+/// sort by key gives. The sort runs over small `(prefix, position)` items, so
+/// that most comparisons are of two numbers; whole keys are compared only
+/// where 16 bytes tie. The sort is stable, so equal keys keep their order.
+fn sort_writes(writes: Vec<Entry>) -> Vec<Entry> {
+    let mut order: Vec<(u128, usize)> = writes.iter().enumerate().map(|(i, (k, _))| (key_prefix(k), i)).collect();
+    order.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| writes[a.1].0.cmp(&writes[b.1].0)));
+    let mut writes = writes;
+    order.into_iter().map(|(_, i)| std::mem::take(&mut writes[i])).collect()
 }
 
 /// A write transaction of a [`KernoDb`](crate::KernoDb), from
@@ -606,6 +626,32 @@ mod tests {
             }
             let sorted = ov.into_sorted();
             assert_eq!(sorted, model.into_iter().collect::<Vec<_>>(), "round {round}");
+        }
+    }
+
+    /// `sort_writes` orders like a stable sort by key, on keys that end early, hold NULs, tie
+    /// on their first 16 bytes and repeat.
+    #[test]
+    fn sort_writes_is_a_stable_sort_by_key() {
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for round in 0..50 {
+            let writes: Vec<Entry> = (0..300u32)
+                .map(|i| {
+                    let len = (next() % 24) as usize;
+                    // Few distinct bytes, so keys share long prefixes and repeat.
+                    let key = (0..len).map(|_| [0u8, 1, 0xff][(next() % 3) as usize]).collect();
+                    (key, Some(i.to_be_bytes().to_vec()))
+                })
+                .collect();
+            let mut expected = writes.clone();
+            expected.sort_by(|a, b| a.0.cmp(&b.0));
+            assert_eq!(sort_writes(writes), expected, "round {round}");
         }
     }
 
