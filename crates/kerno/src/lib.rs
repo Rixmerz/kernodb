@@ -282,8 +282,7 @@ use std::path::Path;
 use kerno_core::vfs::StdVfs;
 use kerno_storage::KernoDb;
 use kerno_units::{
-    AsOf, ChangeMeta, CommitSeq, NewUnit, PreparedPayload, RelationProvenance, RevNo, UnitAt, UnitConfig, UnitDb,
-    UnitUpdate, upsert_key,
+    AsOf, ChangeMeta, CommitSeq, NewUnit, RelationProvenance, RevNo, UnitAt, UnitConfig, UnitDb, UnitUpdate, upsert_key,
 };
 
 pub use kerno_core::Durability;
@@ -702,168 +701,166 @@ impl Db {
                 _ => None,
             })
             .collect();
-        let mut prepared: Vec<Option<PreparedPayload>> = (0..ops.len()).map(|_| None).collect();
-        if stores.len() > 1 {
-            let items: Vec<(&str, &[u8])> = stores.iter().map(|&(_, t, p)| (t, p)).collect();
-            for ((i, ..), text) in stores.iter().zip(changes.prepare_texts(&items)?) {
-                prepared[*i] = Some(text);
+        let items: Vec<(&str, &[u8])> = stores.iter().map(|&(_, t, p)| (t, p)).collect();
+        std::thread::scope(|scope| -> Result<Committed> {
+            // Cut on threads of the scope and taken in order as the creates below get to them.
+            let mut stream = changes.prepare_texts_in(scope, &items)?;
+            // Many upserts: their final payloads hashed up front on several threads, as the stores'.
+            let mut upsert_hash: Vec<Option<kerno_units::payload::ContentHash>> = vec![None; upsert_last.len()];
+            if upsert_last.len() >= UPSERT_HASH_PARALLEL_MIN {
+                let hashes = kerno_units::payload::ContentHash::blake3_many(
+                    kerno_units::payload::PAYLOAD_CODEC_OPAQUE,
+                    &upsert_last,
+                    UPSERT_HASH_PARALLEL_MIN,
+                );
+                upsert_hash = hashes.into_iter().map(Some).collect();
             }
-        }
-        // Many upserts: their final payloads hashed up front on several threads, as the stores'.
-        let mut upsert_hash: Vec<Option<kerno_units::payload::ContentHash>> = vec![None; upsert_last.len()];
-        if upsert_last.len() >= UPSERT_HASH_PARALLEL_MIN {
-            let hashes = kerno_units::payload::ContentHash::blake3_many(
-                kerno_units::payload::PAYLOAD_CODEC_OPAQUE,
-                &upsert_last,
-                UPSERT_HASH_PARALLEL_MIN,
-            );
-            upsert_hash = hashes.into_iter().map(Some).collect();
-        }
-        let mut out = Committed::default();
-        let mut unrelated: HashSet<RelationId> = HashSet::new();
-        let mut related: Vec<(UnitId, UnitId, &str, RelationId)> = Vec::new();
-        let mut wrote = false;
-        // The unit each operation created (a store, or an upsert whatever its outcome), by the
-        // operation's position: what `Endpoint::Op` indexes.
-        let mut made: Vec<Option<UnitId>> = vec![None; ops.len()];
-        let resolve = |e: Endpoint, at: usize, made: &[Option<UnitId>]| -> Result<UnitId> {
-            let bad = |why: &str| Error::BadEndpoint { detail: format!("operation {at} relates operation {why}") };
-            match e {
-                Endpoint::Unit(id) => Ok(id),
-                Endpoint::Op(n) if n >= at => Err(bad(&format!("{n}, which is not an earlier operation"))),
-                Endpoint::Op(n) => {
-                    made[n].ok_or_else(|| bad(&format!("{n}, which creates no unit (only a store or an upsert does)")))
+            let mut out = Committed::default();
+            let mut unrelated: HashSet<RelationId> = HashSet::new();
+            let mut related: Vec<(UnitId, UnitId, &str, RelationId)> = Vec::new();
+            let mut wrote = false;
+            // The unit each operation created (a store, or an upsert whatever its outcome), by the
+            // operation's position: what `Endpoint::Op` indexes.
+            let mut made: Vec<Option<UnitId>> = vec![None; ops.len()];
+            let resolve = |e: Endpoint, at: usize, made: &[Option<UnitId>]| -> Result<UnitId> {
+                let bad = |why: &str| Error::BadEndpoint { detail: format!("operation {at} relates operation {why}") };
+                match e {
+                    Endpoint::Unit(id) => Ok(id),
+                    Endpoint::Op(n) if n >= at => Err(bad(&format!("{n}, which is not an earlier operation"))),
+                    Endpoint::Op(n) => made[n]
+                        .ok_or_else(|| bad(&format!("{n}, which creates no unit (only a store or an upsert does)"))),
                 }
-            }
-        };
-        for (i, op) in ops.iter().enumerate() {
-            match op {
-                Op::Store { unit_type, payload } => {
-                    let new = NewUnit {
-                        unit_type: unit_type.clone(),
-                        schema_version: SCHEMA_VERSION,
-                        metadata: Vec::new(),
-                        payload: payload.clone(),
-                    };
-                    let id = changes.create_prepared(new, prepared[i].take())?;
-                    out.units.push(id);
-                    made[i] = Some(id);
-                    wrote = true;
-                }
-                Op::Update { id, payload, if_changed } => {
-                    if *if_changed {
-                        let current = changes.get_unit(*id)?;
-                        if current.as_ref().and_then(|u| u.payload.as_deref()) == Some(payload.as_slice()) {
-                            out.unchanged += 1;
-                            continue;
-                        }
-                    }
-                    let upd = UnitUpdate { payload: payload.clone(), schema_version: None, metadata: None };
-                    changes.update(*id, upd, None)?;
-                    wrote = true;
-                }
-                Op::Delete { id, cascade } => {
-                    if *cascade {
-                        let mut edges = snap.relations_of(*id, Direction::Out, None)?;
-                        edges.extend(snap.relations_of(*id, Direction::In, None)?);
-                        for r in edges {
-                            if unrelated.insert(r.id) {
-                                changes.delete_relation(r.id)?;
-                            }
-                        }
-                        for (from, to, _, edge) in &related {
-                            if (from == id || to == id) && unrelated.insert(*edge) {
-                                changes.delete_relation(*edge)?;
-                            }
-                        }
-                    }
-                    changes.delete(*id, None)?;
-                    wrote = true;
-                }
-                Op::Unrelate { edge } => {
-                    if unrelated.insert(*edge) {
-                        changes.delete_relation(*edge)?;
+            };
+            for (i, op) in ops.iter().enumerate() {
+                match op {
+                    Op::Store { unit_type, payload } => {
+                        let new = NewUnit {
+                            unit_type: unit_type.clone(),
+                            schema_version: SCHEMA_VERSION,
+                            metadata: Vec::new(),
+                            payload: payload.clone(),
+                        };
+                        let id = changes
+                            .create_prepared(new, stream.as_mut().map(kerno_units::fulltext::PreparedStream::next))?;
+                        out.units.push(id);
+                        made[i] = Some(id);
                         wrote = true;
                     }
-                }
-                Op::Relate { from, to, relation_type, unique } => {
-                    let (from, to) = (resolve(*from, i, &made)?, resolve(*to, i, &made)?);
-                    if *unique {
-                        let in_batch = related
-                            .iter()
-                            .find(|(f, t, ty, e)| {
-                                *f == from && *t == to && ty == relation_type && !unrelated.contains(e)
-                            })
-                            .map(|r| r.3);
-                        let existing = match in_batch {
-                            Some(e) => Some(e),
-                            None => snap
-                                .relations_of(from, Direction::Out, Some(relation_type))
-                                .unwrap_or_default()
-                                .into_iter()
-                                .find(|r| r.to == to && !unrelated.contains(&r.id))
-                                .map(|r| r.id),
-                        };
-                        if let Some(edge) = existing {
-                            out.relations.push(edge);
-                            continue;
+                    Op::Update { id, payload, if_changed } => {
+                        if *if_changed {
+                            let current = changes.get_unit(*id)?;
+                            if current.as_ref().and_then(|u| u.payload.as_deref()) == Some(payload.as_slice()) {
+                                out.unchanged += 1;
+                                continue;
+                            }
+                        }
+                        let upd = UnitUpdate { payload: payload.clone(), schema_version: None, metadata: None };
+                        changes.update(*id, upd, None)?;
+                        wrote = true;
+                    }
+                    Op::Delete { id, cascade } => {
+                        if *cascade {
+                            let mut edges = snap.relations_of(*id, Direction::Out, None)?;
+                            edges.extend(snap.relations_of(*id, Direction::In, None)?);
+                            for r in edges {
+                                if unrelated.insert(r.id) {
+                                    changes.delete_relation(r.id)?;
+                                }
+                            }
+                            for (from, to, _, edge) in &related {
+                                if (from == id || to == id) && unrelated.insert(*edge) {
+                                    changes.delete_relation(*edge)?;
+                                }
+                            }
+                        }
+                        changes.delete(*id, None)?;
+                        wrote = true;
+                    }
+                    Op::Unrelate { edge } => {
+                        if unrelated.insert(*edge) {
+                            changes.delete_relation(*edge)?;
+                            wrote = true;
                         }
                     }
-                    let edge = changes.create_relation(from, to, relation_type, RelationProvenance::Declared)?;
-                    related.push((from, to, relation_type.as_str(), edge));
-                    out.relations.push(edge);
-                    wrote = true;
-                }
-                Op::Archive { id } => {
-                    changes.archive(*id, None)?;
-                    wrote = true;
-                }
-                Op::Unarchive { id } => {
-                    changes.unarchive(*id, None)?;
-                    wrote = true;
-                }
-                Op::Restore { id, from } => {
-                    changes.restore(*id, RevNo(*from), None)?;
-                    wrote = true;
-                }
-                Op::Upsert { unit_type, field, payload } => {
-                    let slot = upsert_slot[i];
-                    let done = match upserted.get(slot).copied().flatten() {
-                        Some(done) => done,
-                        None => {
-                            let payload = upsert_last.get(slot).map_or(payload.as_slice(), |p| *p);
-                            let new = NewUnit {
-                                unit_type: unit_type.clone(),
-                                schema_version: SCHEMA_VERSION,
-                                metadata: Vec::new(),
-                                payload: payload.to_vec(),
+                    Op::Relate { from, to, relation_type, unique } => {
+                        let (from, to) = (resolve(*from, i, &made)?, resolve(*to, i, &made)?);
+                        if *unique {
+                            let in_batch = related
+                                .iter()
+                                .find(|(f, t, ty, e)| {
+                                    *f == from && *t == to && ty == relation_type && !unrelated.contains(e)
+                                })
+                                .map(|r| r.3);
+                            let existing = match in_batch {
+                                Some(e) => Some(e),
+                                None => snap
+                                    .relations_of(from, Direction::Out, Some(relation_type))
+                                    .unwrap_or_default()
+                                    .into_iter()
+                                    .find(|r| r.to == to && !unrelated.contains(&r.id))
+                                    .map(|r| r.id),
                             };
-                            let done = changes.upsert_keyed(
-                                new,
-                                field,
-                                upsert_hash.get(slot).copied().flatten(),
-                                upsert_keys.get(slot).map(Vec::as_slice),
-                            )?;
-                            match done.outcome {
-                                UpsertOutcome::Unchanged => out.unchanged += 1,
-                                UpsertOutcome::Created | UpsertOutcome::Updated => wrote = true,
+                            if let Some(edge) = existing {
+                                out.relations.push(edge);
+                                continue;
                             }
-                            if let Some(held) = upserted.get_mut(slot) {
-                                *held = Some(done);
-                            }
-                            done
                         }
-                    };
-                    made[i] = Some(done.id);
-                    out.upserts.push(done);
+                        let edge = changes.create_relation(from, to, relation_type, RelationProvenance::Declared)?;
+                        related.push((from, to, relation_type.as_str(), edge));
+                        out.relations.push(edge);
+                        wrote = true;
+                    }
+                    Op::Archive { id } => {
+                        changes.archive(*id, None)?;
+                        wrote = true;
+                    }
+                    Op::Unarchive { id } => {
+                        changes.unarchive(*id, None)?;
+                        wrote = true;
+                    }
+                    Op::Restore { id, from } => {
+                        changes.restore(*id, RevNo(*from), None)?;
+                        wrote = true;
+                    }
+                    Op::Upsert { unit_type, field, payload } => {
+                        let slot = upsert_slot[i];
+                        let done = match upserted.get(slot).copied().flatten() {
+                            Some(done) => done,
+                            None => {
+                                let payload = upsert_last.get(slot).map_or(payload.as_slice(), |p| *p);
+                                let new = NewUnit {
+                                    unit_type: unit_type.clone(),
+                                    schema_version: SCHEMA_VERSION,
+                                    metadata: Vec::new(),
+                                    payload: payload.to_vec(),
+                                };
+                                let done = changes.upsert_keyed(
+                                    new,
+                                    field,
+                                    upsert_hash.get(slot).copied().flatten(),
+                                    upsert_keys.get(slot).map(Vec::as_slice),
+                                )?;
+                                match done.outcome {
+                                    UpsertOutcome::Unchanged => out.unchanged += 1,
+                                    UpsertOutcome::Created | UpsertOutcome::Updated => wrote = true,
+                                }
+                                if let Some(held) = upserted.get_mut(slot) {
+                                    *held = Some(done);
+                                }
+                                done
+                            }
+                        };
+                        made[i] = Some(done.id);
+                        out.upserts.push(done);
+                    }
                 }
             }
-        }
-        if wrote {
-            out.commit_seq = Some(changes.commit_seq().0);
-            changes.commit()?;
-        }
-        Ok(out)
+            if wrote {
+                out.commit_seq = Some(changes.commit_seq().0);
+                changes.commit()?;
+            }
+            Ok(out)
+        })
     }
 
     /// The sequence of the last commit: the point an as-of read of "now" uses. 0 for an empty

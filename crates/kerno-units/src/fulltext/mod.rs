@@ -84,6 +84,7 @@ mod tests;
 
 use std::collections::{BTreeSet, HashMap};
 use std::ops::Bound;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use kerno_core::contract::{Engine, Snapshot, Txn, TxnEngine};
 
@@ -814,6 +815,55 @@ pub struct PreparedPayload {
 /// Fewer payloads than this are cut on the calling thread.
 const PREPARE_PARALLEL_MIN: usize = 64;
 
+/// Texts per part of [`ChangeSet::prepare_texts_in`]: small, so the first part is back early.
+const PREPARE_PART: usize = 32;
+
+/// Tells the workers of a [`PreparedStream`] to stop when the stream goes away.
+struct StopOnDrop(std::sync::Arc<AtomicBool>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+/// The payloads of [`ChangeSet::prepare_texts_in`], in the order of its items.
+pub struct PreparedStream {
+    rx: std::sync::mpsc::Receiver<(usize, Vec<PreparedPayload>)>,
+    /// Parts that came back before their turn.
+    early: HashMap<usize, Vec<PreparedPayload>>,
+    /// The part `current` will be refilled from next.
+    part: usize,
+    current: std::vec::IntoIter<PreparedPayload>,
+    _stop: StopOnDrop,
+}
+
+impl PreparedStream {
+    /// The next item's payload, waiting for its part when it is not back yet. Call it once per
+    /// item.
+    ///
+    /// # Panics
+    ///
+    /// A worker panicked (as cutting the text here would have), or there is no next item.
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> PreparedPayload {
+        loop {
+            if let Some(p) = self.current.next() {
+                return p;
+            }
+            let part = loop {
+                if let Some(v) = self.early.remove(&self.part) {
+                    break v;
+                }
+                let (n, v) = self.rx.recv().expect("a text worker stopped before its part");
+                self.early.insert(n, v);
+            };
+            self.part += 1;
+            self.current = part.into_iter();
+        }
+    }
+}
+
 impl<E: TxnEngine> ChangeSet<'_, E> {
     /// Hashes the payloads of `items` (`(unit_type, payload)`) and cuts into terms those whose
     /// type has a keyword index, on several threads when there are many, for
@@ -848,6 +898,65 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
             let parts: Vec<_> = wanted.chunks(per).map(|part| scope.spawn(move || cut(part))).collect();
             // A panic of `analyze` on a worker is a panic of the caller, as it would have been.
             parts.into_iter().flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
+        }))
+    }
+
+    /// [`prepare_texts`](Self::prepare_texts) on threads of `scope`, handing the results back in
+    /// the order of `items` as they are ready: the caller stages the first creates while later
+    /// texts are still being cut, instead of waiting for all of them. `None` when the work is
+    /// too small to share out (one thread, or few items): the caller prepares it inline.
+    ///
+    /// # Errors
+    ///
+    /// The change set is closed, or a type-options record is damaged.
+    pub fn prepare_texts_in<'scope, 'env>(
+        &self,
+        scope: &'scope std::thread::Scope<'scope, 'env>,
+        items: &[(&str, &'env [u8])],
+    ) -> Result<Option<PreparedStream>, UnitError> {
+        let threads = std::thread::available_parallelism().map_or(1, usize::from);
+        if threads == 1 || items.len() < PREPARE_PARALLEL_MIN {
+            return Ok(None);
+        }
+        let mut wanted: Vec<(bool, &'env [u8])> = Vec::with_capacity(items.len());
+        for (unit_type, payload) in items {
+            wanted.push((self.fulltext_enabled(unit_type)?, *payload));
+        }
+        let parts = wanted.len().div_ceil(PREPARE_PART);
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let shared = std::sync::Arc::new((wanted, AtomicUsize::new(0), std::sync::Arc::clone(&stop)));
+        let (tx, rx) = std::sync::mpsc::channel();
+        for _ in 0..threads.min(parts) {
+            let (shared, tx) = (std::sync::Arc::clone(&shared), tx.clone());
+            scope.spawn(move || {
+                let (wanted, next, stop) = &*shared;
+                let mut counter = tokenize::Counter::default();
+                loop {
+                    let part = next.fetch_add(1, Ordering::Relaxed);
+                    if part >= parts || stop.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let from = part * PREPARE_PART;
+                    let cut: Vec<PreparedPayload> = wanted[from..wanted.len().min(from + PREPARE_PART)]
+                        .iter()
+                        .map(|&(w, p)| PreparedPayload {
+                            len: p.len(),
+                            hash: ContentHash::blake3(PAYLOAD_CODEC_OPAQUE, p),
+                            text: w.then(|| PreparedText::new(p.len(), tokenize::analyze_with(&mut counter, p))),
+                        })
+                        .collect();
+                    if tx.send((part, cut)).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+        Ok(Some(PreparedStream {
+            rx,
+            early: HashMap::new(),
+            part: 0,
+            current: Vec::new().into_iter(),
+            _stop: StopOnDrop(stop),
         }))
     }
 
