@@ -8,7 +8,7 @@ use std::sync::Arc;
 use kerno_core::contract::{Snapshot, Txn, TxnEngine};
 
 use super::{
-    Document, FieldDef, Schema, entry_key, entry_key_parts, entry_value_for, field_prefix,
+    Document, FieldDef, RecordRef, Schema, entry_key, entry_key_parts, entry_value_for, field_prefix,
     prefix_bounds, schema_key,
 };
 use crate::codec::{Key, TAG_UNIT_HEAD, UnitHead};
@@ -122,27 +122,33 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
             let Some(payload) = payload else {
                 return Ok(Vec::new());
             };
-            let record = Document::parse(payload).map_err(|m| violation(format!("unit {unit}: {m}")))?;
-            schema.validate(&record).map_err(|m| violation(format!("unit {unit}: {m}")))?;
+            // Read in place: the record is checked and its entries encoded, no document built.
+            let record = RecordRef::parse(payload).map_err(|m| violation(format!("unit {unit}: {m}")))?;
+            schema.validate_ref(&record).map_err(|m| violation(format!("unit {unit}: {m}")))?;
             Some(record)
         } else {
             None
         };
         let txn = self.txn()?;
-        let old = match load_unit(&|k| txn.get(k), unit, true)? {
-            Some((h, Some(payload))) if h.lifecycle == Lifecycle::Active => {
-                let record = Document::parse(&payload)
-                    .map_err(|m| corruption(format!("unit {unit}: its stored payload is not a record: {m}")))?;
-                Some(record)
-            }
+        let stored = match load_unit(&|k| txn.get(k), unit, true)? {
+            Some((h, Some(payload))) if h.lifecycle == Lifecycle::Active => Some(payload),
             _ => None,
         };
+        let old = match &stored {
+            Some(payload) => Some(
+                RecordRef::parse(payload)
+                    .map_err(|m| corruption(format!("unit {unit}: its stored payload is not a record: {m}")))?,
+            ),
+            None => None,
+        };
         let entries =
-            |r: Option<&Document>, refuse: fn(String) -> UnitError| -> Result<BTreeMap<usize, Vec<u8>>, UnitError> {
+            |r: Option<&RecordRef<'_>>, refuse: fn(String) -> UnitError| -> Result<BTreeMap<usize, Vec<u8>>, UnitError> {
                 match r {
-                    Some(r) => {
-                        Ok(schema.entries(r).map_err(|m| refuse(format!("unit {unit}: {m}")))?.into_iter().collect())
-                    }
+                    Some(r) => Ok(schema
+                        .entries_ref(r)
+                        .map_err(|m| refuse(format!("unit {unit}: {m}")))?
+                        .into_iter()
+                        .collect()),
                     None => Ok(BTreeMap::new()),
                 }
             };

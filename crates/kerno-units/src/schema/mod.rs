@@ -351,6 +351,27 @@ impl Document {
     }
 }
 
+/// The fields of a canonical record borrowed from its bytes, in name order: what
+/// [`Document::parse`] reads, without a `String` per name and per text value.
+pub(crate) struct RecordRef<'a>(Vec<(&'a str, ValueRef<'a>)>);
+
+impl<'a> RecordRef<'a> {
+    /// The record `bytes` hold.
+    ///
+    /// # Errors
+    ///
+    /// What [`Document::parse`] says of the same bytes.
+    pub(crate) fn parse(bytes: &'a [u8]) -> Result<Self, String> {
+        let mut fields = Vec::with_capacity(16);
+        walk_record(bytes, |name, value| fields.push((name, value)))?;
+        Ok(RecordRef(fields))
+    }
+
+    fn get(&self, name: &str) -> Option<ValueRef<'a>> {
+        self.0.binary_search_by(|(n, _)| (*n).cmp(name)).ok().map(|at| self.0[at].1)
+    }
+}
+
 /// A field value inside the bytes of a document: what [`Document::visit`] hands out.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ValueRef<'a> {
@@ -370,6 +391,16 @@ impl ValueRef<'_> {
             ValueRef::Float(f) => FieldValue::Float(f),
             ValueRef::Text(s) => FieldValue::Text(s.to_owned()),
             ValueRef::Bytes(b) => FieldValue::Bytes(b.to_vec()),
+        }
+    }
+
+    fn field_type(self) -> FieldType {
+        match self {
+            ValueRef::Bool(_) => FieldType::Bool,
+            ValueRef::Int(_) => FieldType::Int,
+            ValueRef::Float(_) => FieldType::Float,
+            ValueRef::Text(_) => FieldType::Text,
+            ValueRef::Bytes(_) => FieldType::Bytes,
         }
     }
 
@@ -609,15 +640,30 @@ impl Schema {
     /// value of its field's type, every required field present. The message
     /// names fields, never values.
     pub fn validate(&self, record: &Document) -> Result<(), String> {
-        for (name, value) in record.iter() {
+        self.validate_fields(record.iter().map(|(n, v)| (n, v.field_type())), |n| record.get(n).is_some())
+    }
+
+    /// [`validate`](Self::validate) of a record read in place.
+    pub(crate) fn validate_ref(&self, record: &RecordRef<'_>) -> Result<(), String> {
+        self.validate_fields(record.0.iter().map(|(n, v)| (*n, v.field_type())), |n| record.get(n).is_some())
+    }
+
+    /// [`validate`](Self::validate) of the record whose fields (name order) and types are
+    /// `fields` and which holds a field named `n` when `has(n)`.
+    fn validate_fields<'n>(
+        &self,
+        fields: impl Iterator<Item = (&'n str, FieldType)>,
+        has: impl Fn(&str) -> bool,
+    ) -> Result<(), String> {
+        for (name, ty) in fields {
             let Some(def) = self.field(name) else {
                 return Err(format!("field {name:?} is not declared"));
             };
-            if value.field_type() != def.ty {
-                return Err(format!("field {name:?} is {:?}, the schema says {:?}", value.field_type(), def.ty));
+            if ty != def.ty {
+                return Err(format!("field {name:?} is {ty:?}, the schema says {:?}", def.ty));
             }
         }
-        match self.fields.iter().find(|f| f.required && record.get(&f.name).is_none()) {
+        match self.fields.iter().find(|f| f.required && !has(&f.name)) {
             Some(f) => Err(format!("required field {:?} is missing", f.name)),
             None => Ok(()),
         }
@@ -626,12 +672,23 @@ impl Schema {
     /// The index entries a valid `record` has: `(field position, encoded
     /// value)` for every indexed field it holds.
     pub(crate) fn entries(&self, record: &Document) -> Result<Vec<(usize, Vec<u8>)>, String> {
+        self.entries_with(|n| record.get(n).map(FieldValue::index_bytes))
+    }
+
+    /// [`entries`](Self::entries) of a record read in place.
+    pub(crate) fn entries_ref(&self, record: &RecordRef<'_>) -> Result<Vec<(usize, Vec<u8>)>, String> {
+        self.entries_with(|n| record.get(n).map(|v| Some(v.index_bytes())))
+    }
+
+    /// [`entries`](Self::entries) of the record whose field `n` has the index encoding
+    /// `index(n)` (`None`: no such field; `Some(None)`: a value no index holds).
+    fn entries_with(&self, index: impl Fn(&str) -> Option<Option<Vec<u8>>>) -> Result<Vec<(usize, Vec<u8>)>, String> {
         let mut out = Vec::new();
         for (i, def) in self.fields.iter().enumerate().filter(|(_, d)| d.indexed) {
-            let Some(value) = record.get(&def.name) else {
+            let Some(enc) = index(&def.name) else {
                 continue;
             };
-            let Some(enc) = value.index_bytes().filter(|e| e.len() <= MAX_INDEXED_VALUE_LEN) else {
+            let Some(enc) = enc.filter(|e| e.len() <= MAX_INDEXED_VALUE_LEN) else {
                 return Err(format!(
                     "the value of indexed field {:?} is too long to index: at most {MAX_INDEXED_TEXT_LEN} bytes of \
                      text or bytes (each 0x00 byte counts twice)",
