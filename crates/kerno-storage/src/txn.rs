@@ -51,6 +51,9 @@ struct Overlay {
     /// canonical form (`into_sorted`, `fold`) does not depend on it. Length
     /// a power of two, at most half full; empty until the first write.
     slots: Vec<u32>,
+    /// `hash_key` of each entry of `pending`, by position: the index grows without hashing
+    /// the keys again.
+    hashes: Vec<u64>,
     /// Positions in `pending` of its lowest and its highest key (meaningless
     /// while it is empty): a scan whose bounds lie wholly outside them needs
     /// nothing from the buffer, so it does not fold it.
@@ -68,9 +71,14 @@ fn hash_key(key: &[u8]) -> u64 {
     for w in words {
         h = (h.rotate_left(27) ^ u64::from_le_bytes(*w)).wrapping_mul(K);
     }
-    let mut tail = [0u8; 8];
-    tail[..rest.len()].copy_from_slice(rest);
-    h = (h.rotate_left(27) ^ u64::from_le_bytes(tail)).wrapping_mul(K);
+    // The last `rest.len()` bytes as a zero-padded little-endian word, without a copy of a
+    // variable length: shifted down out of the key's last eight bytes when it has eight.
+    let tail = match key.last_chunk::<8>() {
+        Some(_) if rest.is_empty() => 0,
+        Some(last) => u64::from_le_bytes(*last) >> (8 * (8 - rest.len())),
+        None => rest.iter().rev().fold(0u64, |w, &b| (w << 8) | u64::from(b)),
+    };
+    h = (h.rotate_left(27) ^ tail).wrapping_mul(K);
     h ^ (h >> 29)
 }
 
@@ -79,8 +87,13 @@ impl Overlay {
     /// one where it goes. The table is never full (`index` keeps it at most
     /// half full), so the probe ends.
     fn slot(&self, key: &[u8]) -> usize {
+        self.slot_hashed(key, hash_key(key))
+    }
+
+    /// [`slot`](Self::slot) of `key`, whose `hash_key` is `hash`.
+    fn slot_hashed(&self, key: &[u8], hash: u64) -> usize {
         let mask = self.slots.len() - 1;
-        let mut at = hash_key(key) as usize & mask;
+        let mut at = hash as usize & mask;
         loop {
             match self.slots[at] {
                 0 => return at,
@@ -95,7 +108,8 @@ impl Overlay {
         if self.pending.len() * 2 > self.slots.len() {
             return self.reindex();
         }
-        let at = self.slot(&self.pending[self.pending.len() - 1].0);
+        let last = self.pending.len() - 1;
+        let at = self.slot_hashed(&self.pending[last].0, self.hashes[last]);
         self.slots[at] = self.pending.len() as u32;
     }
 
@@ -106,9 +120,16 @@ impl Overlay {
         self.slots.resize(len, 0);
         // In call order, so the slot of a key ends at its last write.
         for i in 0..self.pending.len() {
-            let at = self.slot(&self.pending[i].0);
+            let at = self.slot_hashed(&self.pending[i].0, self.hashes[i]);
             self.slots[at] = i as u32 + 1;
         }
+    }
+
+    /// Keeps the entries of `pending` whose key `keep` holds, and indexes them again.
+    fn retain_pending(&mut self, keep: impl Fn(&[u8]) -> bool) {
+        self.pending.retain(|(k, _)| keep(k));
+        self.hashes = self.pending.iter().map(|(k, _)| hash_key(k)).collect();
+        self.reindex();
     }
 
     fn push(&mut self, entry: Entry) {
@@ -120,6 +141,7 @@ impl Overlay {
         } else if entry.0 < self.pending[self.low].0 {
             self.low = at;
         }
+        self.hashes.push(hash_key(&entry.0));
         self.pending.push(entry);
         self.index_last();
     }
@@ -174,6 +196,7 @@ impl Overlay {
         for (k, v) in self.pending.drain(..) {
             self.map.insert(k, v);
         }
+        self.hashes.clear();
         self.slots.clear();
     }
 
@@ -400,8 +423,7 @@ impl<'db> WriteTxn<'db> {
             let ov = self.overlay.get_mut().unwrap_or_else(PoisonError::into_inner);
             let hit = |k: &[u8]| start <= k && k < end;
             ov.map.retain(|k, _| !hit(k));
-            ov.pending.retain(|(k, _)| !hit(k));
-            ov.reindex();
+            ov.retain_pending(|k| !hit(k));
             ov.rebound();
             self.ranges.push((start.to_vec(), end.to_vec()));
         }
@@ -614,8 +636,7 @@ mod tests {
                         let end = key(next() % 150);
                         let (lo, hi) = if k <= end { (k.clone(), end) } else { (end, k.clone()) };
                         ov.map.retain(|x, _| !(lo <= *x && *x < hi));
-                        ov.pending.retain(|(x, _)| !(lo <= *x && *x < hi));
-                        ov.reindex();
+                        ov.retain_pending(|x| !(lo.as_slice() <= x && x < hi.as_slice()));
                         ov.rebound();
                         model.retain(|x: &Vec<u8>, _| !(lo <= *x && *x < hi));
                     }
@@ -637,6 +658,27 @@ mod tests {
             }
             let sorted = ov.into_sorted();
             assert_eq!(sorted, model.into_iter().collect::<Vec<_>>(), "round {round}");
+        }
+    }
+
+    /// `hash_key` reads the tail of a key as the zero-padded word of its last bytes.
+    #[test]
+    fn hash_key_tail_is_the_padded_word() {
+        let reference = |key: &[u8]| {
+            const K: u64 = 0x9E37_79B9_7F4A_7C15;
+            let mut h = (key.len() as u64).wrapping_mul(K);
+            let (words, rest) = key.as_chunks::<8>();
+            for w in words {
+                h = (h.rotate_left(27) ^ u64::from_le_bytes(*w)).wrapping_mul(K);
+            }
+            let mut tail = [0u8; 8];
+            tail[..rest.len()].copy_from_slice(rest);
+            h = (h.rotate_left(27) ^ u64::from_le_bytes(tail)).wrapping_mul(K);
+            h ^ (h >> 29)
+        };
+        let bytes: Vec<u8> = (0..40u8).map(|b| b.wrapping_mul(37) ^ 0xa5).collect();
+        for len in 0..bytes.len() {
+            assert_eq!(hash_key(&bytes[..len]), reference(&bytes[..len]), "{len}");
         }
     }
 
