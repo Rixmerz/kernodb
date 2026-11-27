@@ -796,12 +796,20 @@ impl Inner {
             // once the table is installed, `scan_wal_covered`), and the rotation syncs the older
             // log, so everything older is durable before the commit's table can be installed.
             let has_frames = w.wal.written() > crate::format::header::HEADER_LEN as u64;
-            if frozen
-                && (!w.mem.is_empty() || (logless && has_frames))
-                && let Err(e) = self.or_poison("memtable switch failed", || self.rotate(w))
-            {
+            // A log-less commit never fills the active memtable, so `make_room` applies no
+            // backpressure to it: each switch below, and the push of its own memtable, first
+            // waits for room among the immutable memtables and under the L0 stop limit.
+            let mut stall = StallEpisode::new(&self.stats);
+            if frozen && (!w.mem.is_empty() || (logless && has_frames)) {
+                let r = if logless { self.await_memtable_room(&mut stall) } else { Ok(()) };
+                if let Err(e) = r.and_then(|()| self.or_poison("memtable switch failed", || self.rotate(w))) {
+                    return fail_all(e, None);
+                }
+            }
+            if logless && let Err(e) = self.await_memtable_room(&mut stall) {
                 return fail_all(e, None);
             }
+            drop(stall);
             let commit_refs: Vec<&CanonicalCommit<Vec<u8>>> = commits[..accepted].iter().map(|c| &***c).collect();
             let write_start = Instant::now();
             let io = if logless { Ok(0) } else { w.wal.append_group(first, &commit_refs) };
@@ -987,21 +995,8 @@ impl Inner {
                 }
                 return Ok(());
             }
-            let reason = if st.version.imms.len() >= self.max_immutable {
-                Some(StallReason::Memtable)
-            } else if l0 >= self.tuning.l0_stop {
-                Some(StallReason::L0)
-            } else {
-                None
-            };
-            if let Some(reason) = reason {
-                stall.waiting(reason);
-                if st.poisoned.is_none() {
-                    self.cv.wait(&mut st);
-                }
-                continue;
-            }
             drop(st);
+            self.await_memtable_room(&mut stall)?;
             drop(stall);
             let start = Instant::now();
             let r = self.or_poison("memtable switch failed", || self.rotate(w));
@@ -1009,6 +1004,28 @@ impl Inner {
             bump(&self.stats.memtable_rotation_nanos, took);
             bump_max(&self.stats.memtable_rotation_nanos_max, took);
             return r;
+        }
+    }
+
+    /// Waits until one more immutable memtable may be pushed: fewer than
+    /// `max_immutable_memtables` wait for their flush and L0 is under its stop
+    /// limit. The flusher and the compactions take no writer state, so they
+    /// make progress while the writer waits here.
+    fn await_memtable_room(&self, stall: &mut StallEpisode<'_>) -> Result<()> {
+        loop {
+            self.check_poisoned()?;
+            let mut st = self.state.lock();
+            let reason = if st.version.imms.len() >= self.max_immutable {
+                StallReason::Memtable
+            } else if self.tuning.l0_metric(&st.version.levels[0]) >= self.tuning.l0_stop {
+                StallReason::L0
+            } else {
+                return Ok(());
+            };
+            stall.waiting(reason);
+            if st.poisoned.is_none() {
+                self.cv.wait(&mut st);
+            }
         }
     }
 

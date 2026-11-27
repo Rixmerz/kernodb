@@ -13,7 +13,7 @@ use kerno_core::contract::Engine;
 use kerno_core::{Durability, WriteBatch};
 use kerno_storage::{AccessMode, Config, KernoDb};
 use kerno_testkit::harness::{Model, apply};
-use kerno_testkit::vfs::{CrashKind, SimVfs};
+use kerno_testkit::vfs::{CrashKind, HookAction, HookOp, HookOpKind, HookPoint, HookVfs, OpenMode, SimVfs};
 
 use common::*;
 
@@ -249,4 +249,44 @@ fn read_only_handles_see_a_large_commit_once_installed() {
 #[test]
 fn bulk_without_wal_is_off_by_default() {
     assert!(!Config::default().bulk_without_wal, "off by default");
+}
+
+/// Log-less commits never fill the active memtable, so the backpressure that
+/// a full memtable triggers would never apply to them: each one must still
+/// wait for room among the immutable memtables (and under the L0 stop limit)
+/// before its own memtable is pushed. With every flush slowed down, a run of
+/// bulk commits would otherwise pile up memtables without bound.
+#[test]
+fn logless_commits_wait_for_room_among_the_immutable_memtables() {
+    const LIMIT: usize = 2;
+    const BULK: u32 = 512;
+    let disk = SimVfs::new(1);
+    let slow = |op: &HookOp<'_>| {
+        let sst = op.path.extension().is_some_and(|e| e == "sst");
+        if sst && op.kind == HookOpKind::Open && op.point == HookPoint::Before && op.mode == Some(OpenMode::CreateNew) {
+            HookAction::Delay(Duration::from_millis(20))
+        } else {
+            HookAction::Proceed
+        }
+    };
+    let cfg = Config { max_immutable_memtables: LIMIT, ..buffered() };
+    let db = open_in(&HookVfs::wrap(disk.as_vfs(), slow), &cfg).unwrap();
+    let mut model = Model::new();
+    for i in 0..24u32 {
+        let mut b = WriteBatch::new();
+        for k in 0..BULK {
+            b.put(format!("bulk-{i:03}-{k:04}"), [i as u8; 16]);
+        }
+        db.commit(&b).unwrap();
+        apply(&mut model, &b);
+        let imms = stat(&db, "immutable_memtables");
+        assert!(imms <= LIMIT as u64, "commit {i}: {imms} immutable memtables, the limit is {LIMIT}");
+    }
+    assert!(stat(&db, "wal_bytes") < 64 << 10, "the bulk commits wrote no frame");
+    assert!(stat(&db, "write_stalls") > 0, "the commits waited for the slowed flushes");
+    assert!(model_of(&db) == model);
+    db.close().unwrap();
+    let db = open_in(&disk.as_vfs(), &buffered()).unwrap();
+    assert!(model_of(&db) == model, "every bulk commit reads back after the reopen");
+    db.close().unwrap();
 }
