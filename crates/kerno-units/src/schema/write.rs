@@ -8,7 +8,7 @@ use std::sync::Arc;
 use kerno_core::contract::{Snapshot, Txn, TxnEngine};
 
 use super::{
-    Document, FieldDef, FieldValue, Schema, entry_key, entry_key_parts, entry_value_for, field_prefix,
+    Document, FieldDef, Schema, entry_key, entry_key_parts, entry_value_for, field_prefix,
     prefix_bounds, schema_key,
 };
 use crate::codec::{Key, TAG_UNIT_HEAD, UnitHead};
@@ -63,11 +63,16 @@ pub struct Upserted {
 ///
 /// `SchemaViolation` when `payload` is not a record or has no value in `field`.
 pub fn upsert_key(payload: &[u8], field: &str) -> Result<Vec<u8>, UnitError> {
-    let record = Document::parse(payload).map_err(|m| violation(format!("upsert payload: {m}")))?;
-    record
-        .get(field)
-        .and_then(FieldValue::index_bytes)
-        .ok_or_else(|| violation(format!("upsert payload has no value for the unique field {field:?}")))
+    // The whole record is read, as `Document::parse` would, but no document is built: only the
+    // key field's value is encoded.
+    let mut found = None;
+    super::walk_record(payload, |name, value| {
+        if name == field {
+            found = Some(value.index_bytes());
+        }
+    })
+    .map_err(|m| violation(format!("upsert payload: {m}")))?;
+    found.ok_or_else(|| violation(format!("upsert payload has no value for the unique field {field:?}")))
 }
 
 /// A unit of a typed unit type that is not deleted, with its record.

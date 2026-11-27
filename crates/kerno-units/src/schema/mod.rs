@@ -361,6 +361,17 @@ impl ValueRef<'_> {
         }
     }
 
+    /// [`FieldValue::index_bytes`] of this value (never NaN, so always some).
+    pub(crate) fn index_bytes(self) -> Vec<u8> {
+        match self {
+            ValueRef::Bool(b) => vec![u8::from(b)],
+            ValueRef::Int(i) => int_index(i).to_vec(),
+            ValueRef::Float(f) => float_index(f).to_vec(),
+            ValueRef::Text(s) => escaped(s.as_bytes()),
+            ValueRef::Bytes(b) => escaped(b),
+        }
+    }
+
     /// Whether [`FieldValue::index_bytes`] of this value is `enc`.
     fn index_eq(self, enc: &[u8]) -> bool {
         match self {
@@ -388,7 +399,7 @@ fn escaped_eq(bytes: &[u8], enc: &[u8]) -> bool {
 
 /// Reads a record, handing each field to `visit` in order. An error is what
 /// [`Document::parse`] says of bytes that are not a canonical record.
-fn walk_record<'a>(bytes: &'a [u8], mut visit: impl FnMut(&'a str, ValueRef<'a>)) -> Result<(), String> {
+pub(crate) fn walk_record<'a>(bytes: &'a [u8], mut visit: impl FnMut(&'a str, ValueRef<'a>)) -> Result<(), String> {
     let mut r = Cursor(bytes);
     if r.take(1)? != [RECORD_VERSION] {
         return Err("not a record (unknown version byte)".into());
