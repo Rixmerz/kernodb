@@ -658,10 +658,12 @@ impl Db {
         }
         // Upserts of one key become one: the first one's place, the last one's payload.
         // A hash map, not a scan of the keys seen so far: a batch of many upserts stays linear.
-        let mut upsert_at: HashMap<(&str, &str, Vec<u8>), usize> = HashMap::new();
-        let mut upsert_last: Vec<&[u8]> = Vec::new();
+        // Sized for every upsert up front: no rehash as the map fills.
+        let upserts = ops.iter().filter(|op| matches!(op, Op::Upsert { .. })).count();
+        let mut upsert_at: HashMap<(&str, &str, Vec<u8>), usize> = HashMap::with_capacity(upserts);
+        let mut upsert_last: Vec<&[u8]> = Vec::with_capacity(upserts);
         // Per slot, its key: `ChangeSet::upsert_keyed` does not parse the payload for it again.
-        let mut upsert_keys: Vec<Vec<u8>> = Vec::new();
+        let mut upsert_keys: Vec<Vec<u8>> = Vec::with_capacity(upserts);
         let mut upsert_slot = vec![usize::MAX; ops.len()];
         for (i, op) in ops.iter().enumerate() {
             if let Op::Upsert { unit_type, field, payload } = op {
