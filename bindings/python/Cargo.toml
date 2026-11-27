@@ -17,7 +17,9 @@ kerno = { package = "kernodb", path = "../../crates/kerno", version = "1.0.0-alp
 pyo3 = { version = "0.30", features = ["abi3-py39"] }
 # The write path allocates several small buffers per record; mimalloc measured 18-26% faster
 # than the system allocator on bulk ingest. It serves only the allocations of this extension.
-mimalloc = { version = "0.1", default-features = false }
+# no_thp: mimalloc does not ask for 2 MiB pages. With them a 25 ms load touched 45 MiB instead of
+# 15, all of it zeroed by the kernel: 10-100 ms of system time on a machine short of free memory.
+mimalloc = { version = "0.1", default-features = false, features = ["no_thp"] }
 
 # The wheel is the product: whole-program inlining across the storage, units and binding crates
 # is worth the longer build.
