@@ -284,6 +284,7 @@ dependencies = [
  "crc32c",
  "getrandom",
  "kernodb-core",
+ "memchr",
 ]
 
 [[package]]
