@@ -643,8 +643,13 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
         // Every ordinal at or above the first this change set gave is above every stored posting.
         let above = ords.map(|(base, _)| base);
         let PendingPostings { terms, mut lists } = std::mem::take(&mut self.text_pending);
+        // One buffer for the list keys: `list_key` of each term, built from its bytes.
+        let mut list = Vec::new();
         for i in terms.ascending() {
-            let term = std::str::from_utf8(terms.get(i as usize)).unwrap_or_default();
+            list.clear();
+            list.push(TAG_POSTING);
+            list.extend_from_slice(terms.get(i as usize));
+            list.push(0);
             let mut ops = std::mem::take(&mut lists[i as usize]);
             // Ascending by ordinal; of several operations on one the last wins. New documents are
             // staged in ordinal order already: nothing to sort then.
@@ -653,7 +658,7 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
                 ops.sort_by_key(|(o, _)| *o);
                 ops.dedup_by_key(|(o, _)| *o);
             }
-            flush_postings(self, &list_key(term), ops, &mut probe, above)?;
+            flush_postings(self, &list, ops, &mut probe, above)?;
         }
         let gave = ords.is_some_and(|(base, next)| next > base);
         let (docs, len) = match self.text_stats.take() {
