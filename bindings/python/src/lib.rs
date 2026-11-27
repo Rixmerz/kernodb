@@ -574,7 +574,7 @@ fn fast_id(v: &Bound<'_, PyAny>) -> Option<[u8; 16]> {
     let mut id = [0u8; 16];
     let mut bad = 0u8;
     let nib = |c: u32| if c < 128 { HEX[c as usize] } else { 0x10 };
-    for (byte, pair) in id.iter_mut().zip(buf[..32].chunks_exact(2)) {
+    for (byte, pair) in id.iter_mut().zip(buf[..32].as_chunks::<2>().0) {
         let (hi, lo) = (nib(pair[0]), nib(pair[1]));
         bad |= hi | lo;
         *byte = hi << 4 | (lo & 0x0f);
@@ -2106,6 +2106,8 @@ impl Database {
 /// is durable once its table is written, and until then a crash, of the process too, can lose it
 /// and every commit after it. For bulk loads of data that can be loaded again.
 #[pyfunction]
+// `py` plus the seven keyword options of the Python `open`; a struct would change that signature.
+#[allow(clippy::too_many_arguments)]
 #[pyo3(signature = (path, read_only=false, max_batch_ops=None, verify_payload_on_read=false, durability="sync", close_compaction=true, bulk_without_wal=false))]
 fn open(
     py: Python<'_>,
