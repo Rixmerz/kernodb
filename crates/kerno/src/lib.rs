@@ -383,6 +383,11 @@ impl Batch {
         Self::default()
     }
 
+    /// An empty batch with room for `ops` operations.
+    pub fn with_capacity(ops: usize) -> Self {
+        Batch { ops: Vec::with_capacity(ops) }
+    }
+
     /// Adds a new unit, as [`Db::store`] would create it. [`Db::commit`] returns its id.
     pub fn store(&mut self, unit_type: &str, payload: impl Into<Vec<u8>>) -> &mut Self {
         self.ops.push(Op::Store { unit_type: unit_type.to_owned(), payload: payload.into() });

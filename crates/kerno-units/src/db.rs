@@ -1979,6 +1979,8 @@ impl<'db, E: TxnEngine + 'db> ChangeSet<'db, E> {
         outgoing: Option<&[u8]>,
     ) -> Result<Planned, UnitError> {
         let mut writes = self.supersede(unit, &mut head, outgoing)?;
+        // Head, REV_META, maybe REV_PAYLOAD, CS_MEMBER.
+        writes.reserve(4);
         // The head carries the payload of the revision it now names, never an older one's.
         head.inline_payload = UnitHead::inline_of(payload.as_deref());
         let rev = head.head_rev;

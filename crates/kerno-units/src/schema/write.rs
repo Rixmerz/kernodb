@@ -147,7 +147,7 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
                 }
             };
         let (old, new) = (entries(old.as_ref(), corruption)?, entries(new.as_ref(), violation)?);
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(old.len() + new.len());
         let name = |i: usize| schema.fields()[i].name.as_str();
         for (i, enc) in old.iter().filter(|(i, enc)| new.get(*i) != Some(*enc)) {
             out.push(Write::Delete(entry_key(&head.unit_type, name(*i), enc, unit)));

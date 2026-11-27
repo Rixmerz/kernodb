@@ -1719,7 +1719,7 @@ impl Database {
         source: Option<Payload>,
         detailed: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let mut batch = Batch::new();
+        let mut batch = Batch::with_capacity(ops.len());
         let mut ids = IdCache::new();
         // Op names as Python interns them: a literal name in the caller's code is this very
         // object, so the name is matched by identity without reading it.

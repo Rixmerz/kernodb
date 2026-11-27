@@ -277,7 +277,19 @@ impl Document {
         if self.0.len() > MAX_FIELDS {
             return Err(bad(format!("{} fields exceed {MAX_FIELDS}", self.0.len())));
         }
-        let mut out = vec![RECORD_VERSION];
+        // The exact size, so the buffer never grows.
+        let size = self.0.iter().fold(3, |n, (name, value)| {
+            n + 2
+                + name.len()
+                + match value {
+                    FieldValue::Bool(_) => 1,
+                    FieldValue::Int(_) | FieldValue::Float(_) => 8,
+                    FieldValue::Text(s) => 4 + s.len(),
+                    FieldValue::Bytes(b) => 4 + b.len(),
+                }
+        });
+        let mut out = Vec::with_capacity(size);
+        out.push(RECORD_VERSION);
         out.extend_from_slice(&(self.0.len() as u16).to_be_bytes());
         for (name, value) in &self.0 {
             check_name(name).map_err(bad)?;
@@ -722,7 +734,7 @@ pub(crate) fn field_prefix_with(unit_type: &str, field: &str, more: usize) -> Ve
 }
 
 pub(crate) fn entry_key(unit_type: &str, field: &str, value: &[u8], unit: UnitId) -> Vec<u8> {
-    let mut k = field_prefix(unit_type, field);
+    let mut k = field_prefix_with(unit_type, field, value.len() + unit.0.len());
     k.extend_from_slice(value);
     k.extend_from_slice(&unit.0);
     k
