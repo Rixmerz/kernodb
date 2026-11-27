@@ -482,11 +482,12 @@ test('a commit holds 10,000 ops by default, maxBatchOps changes it', () => {
   }
 })
 
-test('a commit over the engine byte limit is refused whole', () => {
+test('a batch of 80 MiB commits whole, far under the 1 GiB engine limit', () => {
   const seq = db.lastCommitSeq()
   const big = Buffer.alloc(MIB - 1, 1)
-  assert.equal(codeOf(() => db.commit(Array.from({ length: 300 }, () => ({ op: 'store', unitType: 'n', payload: big }) as CommitOp))), 'CHANGESET_TOO_LARGE')
-  assert.equal(db.lastCommitSeq(), seq)
+  const res = db.commit(Array.from({ length: 80 }, () => ({ op: 'store', unitType: 'n', payload: big }) as CommitOp))
+  assert.equal(res.units.length, 80)
+  assert.equal(db.lastCommitSeq(), seq + 1)
 })
 
 test('counters are whole numbers, exact up to 2^53', () => {
