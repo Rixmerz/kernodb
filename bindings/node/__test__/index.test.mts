@@ -368,6 +368,12 @@ test('runRetention prunes old revisions and readAsOf reports PRUNED', () => {
     assert.equal(codeOf(() => db.runRetention({ byType: { note: bad as never } })), 'INVALID_ARGUMENT', JSON.stringify(bad))
     assert.equal(codeOf(() => db.runRetention({ default: bad as never })), 'INVALID_ARGUMENT', JSON.stringify(bad))
   }
+  // A present `byType` or `default` that is not a plain object is refused, not ignored.
+  for (const name of ['byType', 'default']) {
+    for (const bad of [1, 'x', true, [], Buffer.alloc(1), new Date(0)]) {
+      assert.throws(() => db.runRetention({ [name]: bad } as never), (e: Error & { code?: string }) => e.code === 'INVALID_ARGUMENT' && e.message.includes(name))
+    }
+  }
   for (const bad of ['x', 3, { byType: 'x' }]) {
     assert.equal(codeOf(() => db.runRetention(bad as never)), 'INVALID_ARGUMENT', JSON.stringify(bad))
   }

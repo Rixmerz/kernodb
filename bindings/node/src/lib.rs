@@ -532,6 +532,36 @@ fn given<T>(v: Option<Either<T, Null>>) -> Option<T> {
     }
 }
 
+/// Refuses a `default` or `byType` that is present (not undefined or null) and is not a plain
+/// object: napi's own conversion would read a number, an array or a buffer as an empty value and
+/// the option would be silently ignored.
+fn check_retention_shape(options: &Unknown<'_>) -> Result<()> {
+    use napi::bindgen_prelude::JsObjectValue;
+    // SAFETY: `options` is an argument of this call and was checked to be an object by the caller.
+    let obj = unsafe { napi::bindgen_prelude::Object::from_napi_value(options.value().env, options.raw()) }
+        .map_err(|e| invalid(e.reason))?;
+    for name in ["default", "byType"] {
+        let v: Unknown<'_> = obj.get_named_property(name).map_err(|e| invalid(e.reason))?;
+        let kind = v.get_type().map_err(|e| invalid(e.reason))?;
+        if matches!(kind, napi::ValueType::Undefined | napi::ValueType::Null) {
+            continue;
+        }
+        let plain = kind == napi::ValueType::Object && {
+            // SAFETY: `v` was just read from a live object and is an object.
+            let o = unsafe { napi::bindgen_prelude::Object::from_napi_value(v.value().env, v.raw()) }
+                .map_err(|e| invalid(e.reason))?;
+            !(o.is_array().unwrap_or(true)
+                || o.is_buffer().unwrap_or(true)
+                || o.is_typedarray().unwrap_or(true)
+                || o.is_date().unwrap_or(true))
+        };
+        if !plain {
+            return Err(invalid(format!("runRetention options.{name} is an object")));
+        }
+    }
+    Ok(())
+}
+
 /// What `runRetention` removed.
 #[napi(object)]
 pub struct RetentionReport {
@@ -1401,8 +1431,11 @@ impl Db {
             }
             // SAFETY: `u` is an argument of this call, so its env and handle are live for the
             // whole call, and `from_napi_value` only reads it (as napi's own conversion would).
-            Some(u) => unsafe { Option::<RetentionOptions>::from_napi_value(u.value().env, u.raw()) }
-                .map_err(|e| invalid(format!("runRetention options: {}", e.reason)))?,
+            Some(u) => {
+                check_retention_shape(&u)?;
+                unsafe { Option::<RetentionOptions>::from_napi_value(u.value().env, u.raw()) }
+                .map_err(|e| invalid(format!("runRetention options: {}", e.reason)))?
+            }
             None => None,
         };
         let options = options.unwrap_or(RetentionOptions { default: None, by_type: None });
