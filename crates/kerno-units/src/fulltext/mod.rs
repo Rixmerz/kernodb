@@ -343,14 +343,14 @@ fn encode_block(entries: &[(Ord, Posting)]) -> Vec<u8> {
 }
 
 fn encode_doc(ord: Ord, doc: &Doc) -> Vec<u8> {
-    let mut v = Vec::with_capacity(14 + doc.terms().map(|(t, _)| 1 + t.len()).sum::<usize>());
+    let mut v = Vec::with_capacity(14 + doc.term_bytes().len() + doc.text_len());
     v.extend_from_slice(&[RECORD_VERSION, 0]);
     v.extend_from_slice(&ord.to_be_bytes());
     v.extend_from_slice(&doc.len.to_be_bytes());
-    v.extend_from_slice(&(doc.terms().len() as u32).to_be_bytes());
-    for (t, _) in doc.terms() {
+    v.extend_from_slice(&(doc.term_bytes().len() as u32).to_be_bytes());
+    for t in doc.term_bytes() {
         v.push(t.len() as u8);
-        v.extend_from_slice(t.as_bytes());
+        v.extend_from_slice(t);
     }
     v
 }
@@ -829,11 +829,13 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
             wanted.push((self.fulltext_enabled(unit_type)?, *payload));
         }
         let cut = |part: &[(bool, &[u8])]| -> Vec<PreparedPayload> {
+            // One counter for the texts of the part: its table is allocated once.
+            let mut counter = tokenize::Counter::default();
             part.iter()
                 .map(|&(w, p)| PreparedPayload {
                     len: p.len(),
                     hash: ContentHash::blake3(PAYLOAD_CODEC_OPAQUE, p),
-                    text: w.then(|| PreparedText::new(p.len(), analyze(p))),
+                    text: w.then(|| PreparedText::new(p.len(), tokenize::analyze_with(&mut counter, p))),
                 })
                 .collect()
         };
