@@ -32,7 +32,9 @@ repository = "https://github.com/Rixmerz/kernodb"
 homepage = "https://github.com/Rixmerz/kernodb"
 
 [workspace.dependencies]
-# SST data-block compression (ADR-0023 step 3.3): pure Rust, no unsafe in the safe-* features.
+# SST data-block compression (ADR-0023 step 3.3): pure Rust. The encoder is the crate's default (fast,
+# `unsafe`) one: `safe-encode` is not enabled. The decoder, which reads bytes from disk, is the safe one
+# (`safe-decode`).
 lz4_flex = { version = "0.11", default-features = false, features = ["safe-decode", "std"] }
 kerno-core = { package = "kernodb-core", path = "crates/kerno-core", version = "1.0.0-alpha.4" }
 kerno-testkit = { path = "crates/kerno-testkit" }

@@ -24,7 +24,7 @@ docker build -t kerno-server .      # from the repository root; 3 to 6 minutes
 | Volume | `/data`, the working directory. `/backups` exists too, owned by the same user. |
 | Default command | `--data-dir /data --tokens /etc/kerno/tokens --listen 0.0.0.0:8080`: tenant mode. |
 | Health check | `GET /readyz` every 15 s, over plain HTTP or else TLS (it tries both). |
-| Stop | SIGTERM: in-flight requests finish (10 s at most), a last backup is shipped, the databases close, exit 0. |
+| Stop | SIGTERM: in-flight requests finish (10 s at most), with `--backup` a last backup is shipped, the databases close, exit 0. |
 
 **The default command needs a tokens file and refuses to start without one.** That is on purpose:
 `--db` serves a database to anyone who reaches the port, and a container's port is reachable by

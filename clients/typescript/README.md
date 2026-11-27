@@ -35,11 +35,11 @@ for (const hit of await kerno.search({ text: 'rust', graph: { seeds: [topic.id] 
 try {
   await kerno.getUnit('00'.repeat(16));
 } catch (e) {
-  if (e instanceof ApiError) console.log(e.status, e.code, e.message); // 404 not_found unit 0000... not found
+  if (e instanceof ApiError) console.log(e.status, e.code, e.message); // 404 not_found 404 not_found: unit 0000... not found
 }
 ```
 
-Every method throws an `ApiError` when the server refuses the call (`.status`, `.code`; the codes
+Every method throws an `ApiError` when the server refuses the call (`.status`, `.code`; `.message` starts with the status and code; the codes
 are in the server README) and a `TransportError` when it cannot be reached or does not answer
 within `timeoutMs` (30 s by default); both are `KernoError`s. Names are camelCase here and
 snake_case on the wire (`createdAtUs`, `expectedRevision`, `rrfK`).

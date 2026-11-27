@@ -35,6 +35,9 @@ line and headers or to finish a TLS handshake. It exists so that the tests do no
 | `--listen <addr>` | The HTTP address. Default `127.0.0.1:8080`; port `0` picks a free one. |
 | `--grpc-listen <addr>` | Also serve gRPC here. Off by default. |
 | `--tls-cert <pem>`, `--tls-key <pem>` | Serve both transports over TLS (below). Both or neither. |
+| `--fulltext <types>` | Unit types to keyword-index (BM25) in every database served, comma-separated. Off by default. |
+| `--backup <url>` | Keep a base backup and ship the write-ahead log of every database to `file:///dir` or `s3://bucket/prefix` (a tenant's backups go under its name). Off by default; see [backup.md](backup.md). |
+| `--backup-interval <s>` | Seconds between shipments, a whole number of 1 or more. Default 5. Needs `--backup`. |
 
 On start the server prints `listening on http://ADDR` (`https://` with TLS) and, with gRPC,
 `grpc listening on ADDR` to **stdout**, with the real port. Everything else goes to stderr as JSON

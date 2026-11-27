@@ -8,7 +8,7 @@
 
 > **Alpha: 1.0.0-alpha.3.** This is a public alpha, not a 1.0 release.
 >
-> - **It opens databases written by 1.0.0-alpha.2, not those of 1.0.0-alpha.1**: export with alpha.1 and import with alpha.2 or later ([compatibility](docs/compatibility.md#0-before-10-the-alpha2-format-cut)).
+> - **It does not open a database written by 1.0.0-alpha.4 or any earlier alpha.** The units layer was cut again after alpha.4 (layer 9 to 12; this build writes 12, or 13 once a field is `covering`), and a database of layer 11 or below is refused at open with `LayerTooOld`: export it with the build that wrote it (`kerno <dir> export`) and import it with this one (`kerno import`). See the [changelog](CHANGELOG.md) and [compatibility](docs/compatibility.md#0-before-10-the-alpha2-format-cut).
 > - **Keyword search is opt-in per unit type**: `set_fulltext(type, true)` in Rust, Python and Node, or `kerno-server --fulltext <types>`. `search_text` can be restricted to some types, and it raises (`NotIndexed`, `UnknownType`) instead of answering `[]` when it could never match.
 > - The on-disk format v1 is frozen ([ADR-0013](docs/adr/0013-format-v1-and-engine-protocol.md)), and the test vectors fail if one of its bytes changes. The freeze does not promise compatibility of the API.
 > - Narrative-thread search is an experiment. It lives only in `experiments/` and is not part of any published package.
@@ -92,6 +92,9 @@ crates/kerno-units/     units layer over the engine: units, revisions, relations
 crates/kerno/           the facade crate `kerno`: one entry point, `Db` (its examples are in crates/kerno/examples/)
 crates/kerno-mcp/       MCP server that gives an AI agent a Kerno database as long-term memory (see crates/kerno-mcp/README.md)
 crates/kerno-cli/       `kerno`, an administration command-line tool for any Kerno database directory (see crates/kerno-cli/README.md)
+crates/kerno-server/    `kerno-server`, an HTTP JSON (and optional gRPC) server, one database or one per tenant (see crates/kerno-server/README.md and docs/server.md)
+crates/kerno-backup/    base backups and shipped write-ahead log for the server and the CLI (see docs/backup.md)
+clients/                HTTP clients for the server, in Python and TypeScript; not published
 examples/               agent-memory: an example that uses only the public API; it is outside the workspace
 spikes/                 M0 prototypes and benchmarks; not the engine, and their formats are not frozen, so do not create databases with them
 docs/                   architecture, ADRs, file format, security, testing and roadmap

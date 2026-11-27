@@ -7,8 +7,8 @@ its data in a directory on disk. There is no server.
 
 The package is `kernodb`; the module you import is `kerno`.
 
-> **Alpha (1.0.0a3).** It does not open databases written by 1.0.0a1 (see
-> [Upgrading](#upgrading-from-100-alpha1)), and the keyword index is opt-in per type. The on-disk
+> **Alpha (1.0.0a3).** It does not open a database written by 1.0.0a4 or any earlier alpha (see
+> [Upgrading](#upgrading-from-an-earlier-alpha)), and the keyword index is opt-in per type. The on-disk
 > format is frozen, the API is not. Expect breaking changes between alpha releases. See the [changelog](https://github.com/Rixmerz/kernodb/blob/main/CHANGELOG.md).
 
 Guides: [Kerno as a revisioned history next to another database](https://github.com/Rixmerz/kernodb/blob/main/docs/guides/history-alongside.md),
@@ -209,7 +209,7 @@ never return wrong data.
 
 | Call | Returns |
 |------|---------|
-| `kerno.open(path, read_only=False, max_batch_ops=None)` | a `Database`. A read-only open writes nothing and takes no lock, so it runs beside a writer and reads the commits made up to the open (see `refresh`); a write on it raises `ReadOnlyError`, and a directory with no database raises `DatabaseNotFoundError`. `max_batch_ops` changes the 10,000-operation limit of one `commit` |
+| `kerno.open(path, read_only=False, max_batch_ops=None, verify_payload_on_read=False, durability="sync", close_compaction=True, bulk_without_wal=False)` | a `Database`. A read-only open writes nothing and takes no lock, so it runs beside a writer and reads the commits made up to the open (see `refresh`); a write on it raises `ReadOnlyError`, and a directory with no database raises `DatabaseNotFoundError`. `max_batch_ops` changes the 10,000-operation limit of one `commit`. `verify_payload_on_read=True` makes every read also check each payload against its content hash (`verify()`, history reads and export always do). `durability="buffered"` does not wait for stable storage on each commit (see [Durability](#durability)). `close_compaction=False` makes `close()` only flush, for a bulk load that closes right after its last commit. `bulk_without_wal=True` needs `durability="buffered"` on a read-write handle (anything else raises `InvalidArgumentError`): a large commit then skips the log, is durable once its table is written, and until then a crash or a failed flush can lose it and every commit after it |
 | | A read-only open loads each table of the database at the first read that needs it, not at open: a damaged table is reported by that read (`CorruptionError`), and `verify()` still checks them all |
 | `db.store(unit_type, payload)` | the new unit's id |
 | `db.read(id)` | `Unit` (`id`, `unit_type`, `schema_version`, `lifecycle`, `revision`, `oldest_revision`, `created_at_us`, `updated_at_us`, `payload`) or `None`. `oldest_revision` is the oldest revision retention still keeps |
@@ -238,6 +238,9 @@ never return wrong data.
 | `unit.document()` | the `dict` of a `Unit` you already hold (from `find`, `query`, `execute`, `neighbors`), decoded without another read; `None` for a deleted unit |
 | `db.upsert(type, field, dict)` | `{"id", "outcome"}`: store the document or revise the active unit holding the same value of the unique `field`; `outcome` is `"created"`, `"updated"` or `"unchanged"` |
 | `db.find(type, field, value)` | `list[Unit]` whose indexed field equals `value` |
+| `db.find_documents(type, field, value, fields=None)` | `find`, with each hit as its document `dict`, without a `Unit` per hit. `fields` (a list of names, or a `{field: key}` mapping that renames them) keeps only those fields. A field declared `"covering": True` in the schema (only with `indexed` or `unique`) keeps documents of at most 2048 bytes in its index entries, so a lookup reads no unit; with `verify_payload_on_read` the units are read and checked as `find` does |
+| `db.neighbor_documents(type, field, value, direction="out", type_prefix=None, fields=None)` | `find`, then the neighbours of each unit found, as `[(relation_type, document)]`; `type_prefix` keeps the relation types that start with it |
+| `db.set_read_cache_bytes(n)` | `None`. The bytes of units already read and checked that the handle keeps to answer the same reads again until the next commit (32 MiB by default); `0` turns it off. A negative or non-whole `n` raises `InvalidArgumentError` |
 | `db.find_range(type, field, low=None, high=None, limit=None)` | `list[Unit]` whose indexed field is in `[low, high]` (both included, `None` = open end), ordered by value then id. No `limit` means no cap; `limit=0`, or `low` above `high`, raises `InvalidArgumentError` |
 | `db.execute(query)` | `{"aliases": [...], "rows": [[Unit, ...], ...]}` |
 | `db.explain(query)` | the plan `execute` would follow, without running it: `root_alias`, `root_type`, `candidates` (`access` `"type_scan"` or `"field_index"`, `field`, `cost`), `chosen` (an index into `candidates`), `joins`, `planner_version` |
@@ -320,8 +323,10 @@ What makes the most difference:
 
 ## Durability
 
-`kerno.open` asks for synchronous commits: when a commit returns, it is on stable storage.
-That guarantee is verified on Linux (ext4, xfs) only. On other platforms the database opens
+`kerno.open` asks for synchronous commits by default: when a commit returns, it is on stable storage.
+With `durability="buffered"` a commit does not wait for stable storage (no `fsync` per commit, like
+SQLite's `synchronous=NORMAL` in WAL mode): after a power cut the last commits may be missing, never
+torn, and `close()` still makes everything durable. The synchronous guarantee is verified on Linux (ext4, xfs) only. On other platforms the database opens
 and works without that verification. In our tests, killing the process with `kill -9` in the
 middle of a stream of commits never lost an acknowledged commit and never left half a batch.
 
@@ -345,20 +350,22 @@ never sees half of a change set.
 - An indexed text or bytes value holds at most 254 bytes (a 0x00 byte counts twice).
 - Integers in documents are 64-bit (-2**63 to 2**63 - 1); a counter or revision argument is a whole number from 0 to 2**64 - 1 (`limit` and `keep_last` from 1).
 
-## Upgrading from 1.0.0-alpha.1
+## Upgrading from an earlier alpha
 
-1.0.0-alpha.2 does not open a database written by alpha.1. Opening one fails with an error whose
-message says the database's `layer_version` predates the format of this build and to export and
-import it. Nothing in the directory changes. To carry it over, export it with the
-alpha.1 command-line tool and import it with the alpha.2 one:
+This build does not open a database written by 1.0.0-alpha.4 or any earlier alpha. Their units layer
+is 9 or below (alpha.1: 1 to 6) and this build needs 12 (a database that uses a `covering` field is at
+13). Opening one fails with an error whose message says the database's `layer_version` predates the
+format of this build and to export and import it (`LayerTooOld`; from Python a `KernoError`). Nothing in
+the directory changes. To carry it over, export it with the command-line tool of the build that wrote it
+and import it with the one of this build:
 
 ```sh
-kerno old-db export old.kexp        # kerno CLI of 1.0.0-alpha.1
-kerno import old.kexp new-db        # kerno CLI of 1.0.0-alpha.2
+kerno old-db export old.kexp        # kerno CLI of the build that wrote old-db
+kerno import old.kexp new-db        # kerno CLI of this build
 ```
 
-Then turn on the keyword index of every type you search by text (it is off by default in
-alpha.2), and define again the schemas and indexes: an export holds neither.
+Then turn on the keyword index of every type you search by text (it is off by default since
+1.0.0-alpha.2), and define again the schemas and indexes: an export holds neither.
 
 ## Development
 

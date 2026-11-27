@@ -10,8 +10,8 @@ The guides [Kerno as a revisioned history next to another database](https://gith
 and [one unit per entity, keyed by a logical key](https://github.com/Rixmerz/kernodb/blob/main/docs/guides/one-unit-per-entity.md)
 have Python examples. Every call they use exists here under its camelCase name (see the coverage table).
 
-> **Alpha: 1.0.0-alpha.3.** It does not open databases written by alpha.1 (see
-> [Upgrading](#upgrading-from-100-alpha1)). The keyword index is opt-in per type. The on-disk format v1 is frozen
+> **Alpha: 1.0.0-alpha.3.** It does not open a database written by alpha.4 or any earlier alpha (see
+> [Upgrading](#upgrading-from-an-earlier-alpha)). The keyword index is opt-in per type. The on-disk format v1 is frozen
 > ([ADR-0013](https://github.com/Rixmerz/kernodb/blob/main/docs/adr/0013-format-v1-and-engine-protocol.md)).
 > There is no 1.0 release and no stability promise yet for the API. Benchmarks and long fuzzing runs are not yet certified.
 
@@ -296,20 +296,21 @@ try {
 guarantee is verified on Linux (ext4, xfs) only; on macOS and Windows the database works, but the
 guarantee is not verified.
 
-## Upgrading from 1.0.0-alpha.1
+## Upgrading from an earlier alpha
 
-1.0.0-alpha.2 does not open a database written by alpha.1. Opening one fails with an error whose
-message says the database's `layer_version` predates the format of this build and to export and
-import it. Nothing in the directory changes. To carry it over, export it with the
-alpha.1 command-line tool and import it with the alpha.2 one:
+This build does not open a database written by 1.0.0-alpha.4 or any earlier alpha. Their units layer
+is 9 or below (alpha.1: 1 to 6) and this build needs 12 (a database that uses a `covering` field is at
+13). Opening one fails with an error whose message says the database's `layer_version` predates the
+format of this build and to export and import it. Nothing in the directory changes. To carry it over,
+export it with the command-line tool of the build that wrote it and import it with the one of this build:
 
 ```sh
-kerno old-db export old.kexp        # kerno CLI of 1.0.0-alpha.1
-kerno import old.kexp new-db        # kerno CLI of 1.0.0-alpha.2
+kerno old-db export old.kexp        # kerno CLI of the build that wrote old-db
+kerno import old.kexp new-db        # kerno CLI of this build
 ```
 
-Then turn on the keyword index of every type you search by text (it is off by default in
-alpha.2), and define again the schemas and indexes: an export holds neither.
+Then turn on the keyword index of every type you search by text (it is off by default since
+1.0.0-alpha.2), and define again the schemas and indexes: an export holds neither.
 
 ## Build from source
 
