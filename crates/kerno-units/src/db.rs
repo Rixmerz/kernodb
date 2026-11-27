@@ -62,7 +62,6 @@
 //! result whenever they would need what that policy does not keep (see
 //! [`crate::history`]).
 
-use std::collections::BTreeSet;
 use std::ops::Bound;
 use std::path::Path;
 use std::sync::Arc;
@@ -839,7 +838,7 @@ impl<E: TxnEngine> UnitDb<E> {
             text_ords: std::cell::Cell::new(None),
             members: Vec::new(),
             relation_ops: 0,
-            touched: BTreeSet::new(),
+            touched: Default::default(),
             broken: false,
             maintenance: false,
             index: false,
@@ -1453,7 +1452,7 @@ pub struct ChangeSet<'db, E: TxnEngine + 'db> {
     /// Relations created or deleted so far (E4-02): they are not members, but
     /// they count against `max_changeset_ops` and make the change set non-empty.
     relation_ops: usize,
-    touched: BTreeSet<UnitId>,
+    touched: std::collections::HashSet<UnitId, std::hash::BuildHasherDefault<IdHasher>>,
     broken: bool,
     /// A `set_policy` change set: commits without members.
     maintenance: bool,
