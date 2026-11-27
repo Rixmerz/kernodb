@@ -308,6 +308,7 @@ whole_arg!(maybe from_revision_arg, "from_revision", u64);
 whole_arg!(maybe to_revision_arg, "to_revision", u64);
 whole_arg!(revision_a_arg, "a", u64);
 whole_arg!(revision_b_arg, "b", u64);
+whole_arg!(read_cache_bytes_arg, "bytes", usize);
 whole_arg!(commit_seq_arg, "commit_seq", u64);
 whole_arg!(keyword_weight_arg, "keyword_weight", u32);
 whole_arg!(vector_weight_arg, "vector_weight", u32);
@@ -1360,7 +1361,11 @@ impl Database {
     /// Sets how many bytes of units already read and checked the handle keeps in memory to
     /// answer the same reads again until the next commit (32 MiB by default); 0 turns that
     /// off, so every read goes to the files. The cache starts empty either way.
-    fn set_read_cache_bytes(&self, py: Python<'_>, bytes: usize) -> PyResult<()> {
+    fn set_read_cache_bytes(
+        &self,
+        py: Python<'_>,
+        #[pyo3(from_py_with = read_cache_bytes_arg)] bytes: usize,
+    ) -> PyResult<()> {
         self.with_db(py, |db| {
             db.unit_db().set_read_cache_bytes(bytes);
             Ok(())
@@ -2104,7 +2109,9 @@ impl Database {
 /// commit pays in full; the next session that writes compacts in the background as usual.
 /// `bulk_without_wal=True` (with `durability="buffered"`) keeps a large commit out of the log: it
 /// is durable once its table is written, and until then a crash, of the process too, can lose it
-/// and every commit after it. For bulk loads of data that can be loaded again.
+/// and every commit after it. For bulk loads of data that can be loaded again. It has no effect
+/// with `durability="sync"` or `read_only=True`, so either of those with it raises
+/// `InvalidArgumentError`.
 #[pyfunction]
 // `py` plus the seven keyword options of the Python `open`; a struct would change that signature.
 #[allow(clippy::too_many_arguments)]
@@ -2128,6 +2135,13 @@ fn open(
             )));
         }
     };
+    if bulk_without_wal && (read_only || durability == kerno::Durability::Sync) {
+        let other = if read_only { "read_only=True" } else { "durability=\"sync\"" };
+        return Err(InvalidArgumentError::new_err(format!(
+            "bulk_without_wal=True needs durability=\"buffered\" on a read-write handle; it cannot be combined \
+             with {other}"
+        )));
+    }
     let db = py
         .detach(|| {
             let config = if read_only {

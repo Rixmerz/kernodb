@@ -170,3 +170,24 @@ def test_a_wrong_lifecycle_is_an_invalid_argument_in_lowercase(db: kerno.Databas
     uid = db.store("note", "a")
     with pytest.raises(kerno.InvalidArgumentError, match="is active, not archived"):
         db.commit([("unarchive", uid)])
+
+
+def test_read_cache_bytes_refuses_a_negative_size(db: kerno.Database) -> None:
+    with pytest.raises(kerno.InvalidArgumentError) as info:
+        db.set_read_cache_bytes(-1)
+    assert str(info.value) == "bytes must be a whole number from 0 to 2**64 - 1, not -1"
+    db.set_read_cache_bytes(0)
+    db.set_read_cache_bytes(1 << 20)
+
+
+@pytest.mark.parametrize(
+    ("options", "named"),
+    [({"durability": "sync"}, 'durability="sync"'), ({"read_only": True, "durability": "buffered"}, "read_only=True")],
+)
+def test_bulk_without_wal_refuses_options_it_cannot_work_with(tmp_path: Path, options: dict[str, object], named: str) -> None:
+    kerno.open(tmp_path / "db").close()
+    with pytest.raises(kerno.InvalidArgumentError, match="bulk_without_wal") as info:
+        kerno.open(tmp_path / "db", bulk_without_wal=True, **options)  # type: ignore[arg-type]
+    assert named in str(info.value)
+    with kerno.open(tmp_path / "db", bulk_without_wal=True, durability="buffered") as db:
+        db.store("note", "a")

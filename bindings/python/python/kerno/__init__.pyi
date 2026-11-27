@@ -283,7 +283,7 @@ class Database:
     def set_read_cache_bytes(self, bytes: int) -> None:
         """Set how many bytes of units already read and checked the handle keeps in memory, to answer
         the same reads again until the next commit (32 MiB by default); 0 turns that off. The cache
-        starts empty either way."""
+        starts empty either way. A negative or non-whole `bytes` raises `InvalidArgumentError`."""
     def refresh(self) -> int:
         """Move a `read_only=True` database to the writer's newest commits; returns the sequence it now reads.
 
@@ -423,4 +423,8 @@ def open(
     `refresh()`. Writes raise `ReadOnlyError`; a missing database raises `DatabaseNotFoundError`.
     `verify_payload_on_read=True` makes every read also check each payload against its content hash
     (off by default; `verify()` always checks it). `durability="buffered"` does not wait for stable
-    storage on each commit (like SQLite's `synchronous=NORMAL`); `close()` still makes everything durable."""
+    storage on each commit (like SQLite's `synchronous=NORMAL`); `close()` still makes everything durable.
+    `bulk_without_wal=True` keeps a large commit out of the log: it is durable once its table is written,
+    and until then a crash or a failed flush can lose it and every commit after it. It needs
+    `durability="buffered"` on a read-write handle: with `durability="sync"` or `read_only=True` it raises
+    `InvalidArgumentError`."""
