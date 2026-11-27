@@ -46,6 +46,9 @@ pub(crate) struct Doc {
     text: String,
     /// Per distinct term, ascending by term: its bytes in `text` and its frequency.
     spans: Vec<(u32, u32, u32)>,
+    /// [`term_hash`] of each term, in the order of `spans`: computed where the text is cut
+    /// (maybe on another thread), so staging the document only looks its terms up.
+    hashes: Vec<u64>,
 }
 
 impl PartialEq for Doc {
@@ -63,6 +66,11 @@ impl Doc {
     }
 
     /// The frequency of `term`, if the document has it.
+    /// [`terms`](Self::terms) with the [`term_hash`] of each.
+    pub(crate) fn terms_hashed(&self) -> impl Iterator<Item = (&str, u32, u64)> + '_ {
+        self.terms().zip(self.hashes.iter()).map(|((t, tf), &h)| (t, tf, h))
+    }
+
     pub(crate) fn get(&self, term: &str) -> Option<u32> {
         self.spans
             .binary_search_by(|&(s, e, _)| self.text[s as usize..e as usize].cmp(term))
@@ -78,6 +86,8 @@ impl Doc {
 pub(crate) struct Interner {
     text: Vec<u8>,
     spans: Vec<(u32, u32)>,
+    /// [`term_hash`] of each string, by number: a growing table needs no hashing again.
+    hashes: Vec<u64>,
     /// `0` (empty) or `1 +` a number. Length a power of two (or 0), at most half full.
     slots: Vec<u32>,
 }
@@ -87,23 +97,29 @@ impl Interner {
         Interner {
             text: Vec::with_capacity(bytes),
             spans: Vec::with_capacity(strings),
+            hashes: Vec::with_capacity(strings),
             slots: vec![0; (strings.max(8) * 2).next_power_of_two()],
         }
     }
 
     /// The number of `s`, and whether it is new.
     pub(crate) fn intern(&mut self, s: &[u8]) -> (usize, bool) {
+        self.intern_hashed(s, term_hash(s))
+    }
+
+    /// [`intern`](Self::intern) of `s` whose [`term_hash`] is `hash`, computed ahead.
+    pub(crate) fn intern_hashed(&mut self, s: &[u8], hash: u64) -> (usize, bool) {
         if self.slots.is_empty() {
             self.slots = vec![0; 16];
         }
         let mask = self.slots.len() - 1;
-        let mut at = term_hash(s) as usize & mask;
+        let mut at = hash as usize & mask;
         loop {
             match self.slots[at] {
                 0 => break,
                 n => {
                     let (from, to) = self.spans[n as usize - 1];
-                    if self.text[from as usize..to as usize] == *s {
+                    if self.hashes[n as usize - 1] == hash && self.text[from as usize..to as usize] == *s {
                         return (n as usize - 1, false);
                     }
                     at = (at + 1) & mask;
@@ -113,6 +129,7 @@ impl Interner {
         let from = self.text.len() as u32;
         self.text.extend_from_slice(s);
         self.spans.push((from, self.text.len() as u32));
+        self.hashes.push(hash);
         self.slots[at] = self.spans.len() as u32;
         if self.spans.len() * 2 > self.slots.len() {
             self.grow();
@@ -152,7 +169,7 @@ impl Interner {
         self.slots.resize(len, 0);
         let mask = len - 1;
         for i in 0..self.spans.len() {
-            let mut at = term_hash(self.get(i)) as usize & mask;
+            let mut at = self.hashes[i] as usize & mask;
             while self.slots[at] != 0 {
                 at = (at + 1) & mask;
             }
@@ -185,18 +202,18 @@ impl Counter {
         if len == 0 {
             return None;
         }
-        let spans: Vec<(u32, u32, u32)> = self
-            .terms
-            .ascending()
-            .into_iter()
-            .map(|i| {
+        let order = self.terms.ascending();
+        let spans: Vec<(u32, u32, u32)> = order
+            .iter()
+            .map(|&i| {
                 let (from, to) = self.terms.spans[i as usize];
                 (from, to, self.tf[i as usize])
             })
             .collect();
+        let hashes = order.iter().map(|&i| self.terms.hashes[i as usize]).collect();
         // Every term is a `str` (an ASCII word lowered, or what `tokens` gave), so is the buffer.
         let text = String::from_utf8(self.terms.text).ok()?;
-        Some(Doc { len, text, spans })
+        Some(Doc { len, text, spans, hashes })
     }
 }
 

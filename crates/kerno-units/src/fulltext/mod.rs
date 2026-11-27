@@ -613,11 +613,12 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
     pub(crate) fn stage_fulltext(&mut self, change: Option<TextChange>) {
         let Some(c) = change else { return };
         for term in c.gone {
-            stage(&mut self.text_pending, &term, c.ord, None);
+            let hash = tokenize::term_hash(term.as_bytes());
+            stage(&mut self.text_pending, &term, hash, c.ord, None);
         }
         if let Some(doc) = &c.put {
-            for (term, tf) in doc.terms() {
-                stage(&mut self.text_pending, term, c.ord, Some(Posting { tf, dl: doc.len }));
+            for (term, tf, hash) in doc.terms_hashed() {
+                stage(&mut self.text_pending, term, hash, c.ord, Some(Posting { tf, dl: doc.len }));
             }
         }
         let (docs, len) = self.text_stats.get_or_insert((0, 0));
@@ -839,9 +840,14 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
 
 /// Records that `unit` has `value` (`None`: no posting) in the list of `term`. The term is
 /// copied only the first time the change set stages it.
-fn stage(pending: &mut PendingPostings, term: &str, ord: Ord, value: Option<Posting>) {
-    match pending.terms.intern(term.as_bytes()) {
-        (_, true) => pending.lists.push(vec![(ord, value)]),
+fn stage(pending: &mut PendingPostings, term: &str, hash: u64, ord: Ord, value: Option<Posting>) {
+    match pending.terms.intern_hashed(term.as_bytes(), hash) {
+        (_, true) => {
+            // Most terms of a load are staged by several documents: no growth from one.
+            let mut list = Vec::with_capacity(4);
+            list.push((ord, value));
+            pending.lists.push(list);
+        }
         (i, false) => pending.lists[i].push((ord, value)),
     }
 }
