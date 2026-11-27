@@ -278,8 +278,9 @@ pub struct Config {
     /// With [`Durability::Buffered`] and background threads: a large commit, here one of at
     /// least 512 writes (kept as a
     /// frozen memtable) writes no WAL frame and is durable once its table is installed. Until
-    /// then a crash, of the process as well as of the machine, can lose it together with
-    /// every commit after it (never a later commit without it); later commits and `sync()`
+    /// then a crash, of the process as well as of the machine, or a failed flush (for example
+    /// `ENOSPC`, which poisons the handle) can lose it together with every commit after it
+    /// (never a later commit without it); later commits and `sync()`
     /// wait for that table. For bulk loads of data that can be loaded again. Default `false`:
     /// a confirmed Buffered commit then survives a process crash, as documented.
     pub bulk_without_wal: bool,

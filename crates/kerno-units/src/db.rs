@@ -29,9 +29,12 @@
 //!   operation returns the error, every later call returns
 //!   [`UnitError::ChangeSetClosed`], and `commit` aborts it, so a partial
 //!   operation is never committed.
-//! * **Reads verify.** Every read of a `REV_PAYLOAD` goes through
-//!   [`verify_payload`] against its `REV_META`, and the head is checked
-//!   against that `REV_META`; a mismatch is `Storage(Corruption)`.
+//! * **Reads verify.** A payload's length and presence are checked on every
+//!   read; the content hash ([`verify_payload`] against its `REV_META`) is
+//!   checked when [`UnitConfig::verify_payload_on_read`] is on, and always by
+//!   `verify()`, history, export/import and the reads a write builds on; a
+//!   damaged block is always caught by the block CRC. A mismatch is
+//!   `Storage(Corruption)`.
 //! * **Determinism.** Time comes only from the injected [`Clock`] (one
 //!   reading per change set, used for the change set and all its revisions)
 //!   and ids only from the injected [`UnitIdSource`].

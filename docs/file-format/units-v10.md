@@ -90,7 +90,9 @@ Vectors (pinned by `the_head_codec_roundtrips_and_bounds_the_inline_payload` in
     revision in full before it builds on it, and also requires the trailer to be the bytes of the
     `REV_PAYLOAD`;
   - by `history`, `read_as_of` and restore, which read the revision records themselves.
-- The content hash is checked on every read, cached reads aside, as before. The block checksum
+- Length and presence are checked on every read; the content hash is checked when
+  `verify_payload_on_read` is on, and always by `verify()`, history, export/import and the reads a
+  write builds on; a damaged block is always caught by the block CRC. The block checksum
   of the engine covers the bytes of a block against damage at rest; the content hash also ties
   the payload to the head that declares it, whatever wrote the two, and it is what `verify`
   compares across the head, the `REV_META` and the `REV_PAYLOAD`. For a payload that fits in a

@@ -29,7 +29,7 @@
   `1 ‖ 0x01 ‖ payload`: envelope flag bit 0 announces the payload, which is the unit's head
   payload byte for byte. An entry of a covering field whose payload is longer is `envelope[2]`. An
   entry of a field that is not covering is byte for byte what layer 12 writes. A value `1 ‖ 0x01`
-  followed by more than 2048 bytes, `1 ‖ 0 ‖` anything, or other flags is a structure finding
+  followed by more than 2048 bytes, `1 ‖ 0` followed by any byte, or other flags is a structure finding
   (UNIT-8, UNIT-10).
 
 ## 3. Writes

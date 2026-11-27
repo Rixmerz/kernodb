@@ -41,7 +41,7 @@ Minimal proposal, limited to what Stage 3 needs (option 3 above); structural can
 1. **Opaque bytes.** The payload of a revision is bytes that the layer does not interpret; `payload_codec = 0`. The hash is computed over `payload_codec ‖ payload` as stored.
 2. **BLAKE3-256 hash** (32 bytes), identified by an `alg` byte in the `content_hash` field (`alg = 1`), so that the algorithm is not fixed in the layer's format. Adding the dependency requires justifying that neither the standard library nor the current manifest covers it, and it enters with the acceptance of this ADR, not before.
 3. **Provisional CRC-32C** (`alg = 0`), already available in the project and **without cryptographic guarantee**, until this decision is complete; it serves only to detect end-to-end mismatch.
-4. The hash is verified on every read of a payload; a mismatch is `Corruption` (I-08).
+4. A payload's length and presence are checked on every read; the content hash is checked when `verify_payload_on_read` is on, and always by `verify()`, history, export/import and the reads a write builds on; a damaged block is always caught by the block CRC. A hash mismatch is `Corruption` (I-08).
 
 **Acceptance (2026-10-31).** The owner accepted this ADR with these conditions:
 
