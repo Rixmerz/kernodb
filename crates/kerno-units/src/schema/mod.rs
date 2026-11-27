@@ -273,39 +273,7 @@ impl Document {
     /// `InvalidArgument` for a name outside 1..=64 bytes or with a NUL, more
     /// than [`MAX_FIELDS`] fields, a NaN or a value over 4 GiB.
     pub fn encode(&self) -> Result<Vec<u8>, UnitError> {
-        let bad = |m: String| UnitError::InvalidArgument(format!("record: {m}"));
-        if self.0.len() > MAX_FIELDS {
-            return Err(bad(format!("{} fields exceed {MAX_FIELDS}", self.0.len())));
-        }
-        // The exact size, so the buffer never grows.
-        let size = self.0.iter().fold(3, |n, (name, value)| {
-            n + 2
-                + name.len()
-                + match value {
-                    FieldValue::Bool(_) => 1,
-                    FieldValue::Int(_) | FieldValue::Float(_) => 8,
-                    FieldValue::Text(s) => 4 + s.len(),
-                    FieldValue::Bytes(b) => 4 + b.len(),
-                }
-        });
-        let mut out = Vec::with_capacity(size);
-        out.push(RECORD_VERSION);
-        out.extend_from_slice(&(self.0.len() as u16).to_be_bytes());
-        for (name, value) in &self.0 {
-            check_name(name).map_err(bad)?;
-            out.push(name.len() as u8);
-            out.extend_from_slice(name.as_bytes());
-            out.push(value.field_type().to_byte());
-            match value {
-                FieldValue::Bool(b) => out.push(u8::from(*b)),
-                FieldValue::Int(i) => out.extend_from_slice(&i.to_be_bytes()),
-                FieldValue::Float(f) if f.is_nan() => return Err(bad(format!("field {name:?} is NaN"))),
-                FieldValue::Float(f) => out.extend_from_slice(&f.to_be_bytes()),
-                FieldValue::Text(s) => put_bytes(&mut out, s.as_bytes()).map_err(bad)?,
-                FieldValue::Bytes(b) => put_bytes(&mut out, b).map_err(bad)?,
-            }
-        }
-        Ok(out)
+        encode_record(self.0.len(), self.0.iter().map(|(k, v)| (k.as_str(), v)))
     }
 
     /// The record `bytes` encode.
@@ -349,6 +317,62 @@ impl Document {
         });
         walked.is_ok() && agrees
     }
+}
+
+/// [`Document::encode`] of `count` fields given as `(name, value)` in ascending name order,
+/// each name once: the same bytes and the same errors, without building the `Document`. A
+/// name not above the one before it is `InvalidArgument`.
+///
+/// # Errors
+///
+/// As [`Document::encode`].
+pub fn encode_record<'a, I>(count: usize, fields: I) -> Result<Vec<u8>, UnitError>
+where
+    I: Iterator<Item = (&'a str, &'a FieldValue)> + Clone,
+{
+    let bad = |m: String| UnitError::InvalidArgument(format!("record: {m}"));
+    if count > MAX_FIELDS {
+        return Err(bad(format!("{count} fields exceed {MAX_FIELDS}")));
+    }
+    // The exact size, so the buffer never grows.
+    let size = fields.clone().fold(3, |n, (name, value)| {
+        n + 2
+            + name.len()
+            + match value {
+                FieldValue::Bool(_) => 1,
+                FieldValue::Int(_) | FieldValue::Float(_) => 8,
+                FieldValue::Text(s) => 4 + s.len(),
+                FieldValue::Bytes(b) => 4 + b.len(),
+            }
+    });
+    let mut out = Vec::with_capacity(size);
+    out.push(RECORD_VERSION);
+    out.extend_from_slice(&(count as u16).to_be_bytes());
+    let mut written = 0usize;
+    let mut last: Option<&str> = None;
+    for (name, value) in fields {
+        if last.is_some_and(|l| l >= name) {
+            return Err(bad(format!("field {name:?} is not above the field before it")));
+        }
+        last = Some(name);
+        written += 1;
+        check_name(name).map_err(bad)?;
+        out.push(name.len() as u8);
+        out.extend_from_slice(name.as_bytes());
+        out.push(value.field_type().to_byte());
+        match value {
+            FieldValue::Bool(b) => out.push(u8::from(*b)),
+            FieldValue::Int(i) => out.extend_from_slice(&i.to_be_bytes()),
+            FieldValue::Float(f) if f.is_nan() => return Err(bad(format!("field {name:?} is NaN"))),
+            FieldValue::Float(f) => out.extend_from_slice(&f.to_be_bytes()),
+            FieldValue::Text(s) => put_bytes(&mut out, s.as_bytes()).map_err(bad)?,
+            FieldValue::Bytes(b) => put_bytes(&mut out, b).map_err(bad)?,
+        }
+    }
+    if written != count {
+        return Err(bad(format!("{written} fields given for a count of {count}")));
+    }
+    Ok(out)
 }
 
 /// The fields of a canonical record borrowed from its bytes, in name order: what

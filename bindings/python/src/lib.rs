@@ -317,6 +317,40 @@ fn to_document_cached<'py>(
     Ok(doc)
 }
 
+/// `to_document_cached(d, keys)?.encode()`, the record bytes, without building the
+/// `Document`: the values are converted in the dict's order (the same errors, first one
+/// first), then encoded in name order, the order of the document's map. `fields` is a
+/// buffer kept across the dicts of one batch.
+fn encode_document_cached<'py>(
+    d: &Bound<'py, PyDict>,
+    keys: &mut Vec<Option<(Bound<'py, PyAny>, String)>>,
+    fields: &mut Vec<(usize, FieldValue)>,
+) -> PyResult<Vec<u8>> {
+    fields.clear();
+    for (i, (k, v)) in d.iter().enumerate() {
+        if keys.len() <= i {
+            keys.resize_with(i + 1, || None);
+        }
+        if !matches!(&keys[i], Some((o, _)) if o.as_ptr() == k.as_ptr()) {
+            let name = k.extract::<String>()?;
+            keys[i] = Some((k, name));
+        }
+        fields.push((i, to_field(&v)?));
+    }
+    let name = |i: usize| keys[i].as_ref().map_or("", |(_, n)| n.as_str());
+    // Stable, and of equal names (keys of a `str` subclass that compare equal as text) the
+    // later one stays, as in the document's map.
+    fields.sort_by(|a, b| name(a.0).cmp(name(b.0)));
+    fields.dedup_by(|later, kept| {
+        let same = name(later.0) == name(kept.0);
+        if same {
+            std::mem::swap(later, kept);
+        }
+        same
+    });
+    kerno::units::encode_record(fields.len(), fields.iter().map(|(i, v)| (name(*i), v))).map_err(engine_error)
+}
+
 fn field_to_py<'py>(py: Python<'py>, v: &FieldValue) -> PyResult<Bound<'py, PyAny>> {
     Ok(match v {
         FieldValue::Bool(b) => PyBool::new(py, *b).to_owned().into_any(),
@@ -1748,6 +1782,7 @@ impl Database {
         let mut last_unit_type: Option<(Bound<'py, PyAny>, String)> = None;
         let mut last_field: Option<(Bound<'py, PyAny>, String)> = None;
         let mut doc_keys: Vec<Option<(Bound<'py, PyAny>, String)>> = Vec::new();
+        let mut doc_fields: Vec<(usize, FieldValue)> = Vec::new();
         for op in &ops {
             if op.is_empty() {
                 return Err(InvalidArgumentError::new_err("unknown or malformed batch op: ()"));
@@ -1817,15 +1852,16 @@ impl Database {
                 ("upsert", 4) => {
                     let t = cached_str(&mut last_unit_type, op.get_borrowed_item(1)?)?;
                     let field = cached_str(&mut last_field, op.get_borrowed_item(2)?)?;
-                    let doc = to_document_cached(
+                    let record = encode_document_cached(
                         op.get_item(3)?.cast::<PyDict>().map_err(|_| {
                             InvalidArgumentError::new_err(
                                 "an upsert op's document is a dict of bool/int/float/str/bytes",
                             )
                         })?,
                         &mut doc_keys,
+                        &mut doc_fields,
                     )?;
-                    batch.upsert(t, field, doc.encode().map_err(engine_error)?);
+                    batch.upsert(t, field, record);
                 }
                 _ => return Err(InvalidArgumentError::new_err(format!("unknown or malformed batch op: {op}"))),
             }
