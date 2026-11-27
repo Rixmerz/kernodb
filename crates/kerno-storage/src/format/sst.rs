@@ -845,7 +845,7 @@ pub struct SstBuilder {
 /// Data blocks compressed together by one [`SstBuilder::drain`].
 const QUEUE_BLOCKS: usize = 1024;
 /// Fewer queued blocks than this are compressed on the calling thread.
-const PARALLEL_MIN_BLOCKS: usize = 16;
+const PARALLEL_MIN_BLOCKS: usize = 512;
 
 impl SstBuilder {
     /// A writer for SST `file_number`. `block_size` is both the data block

@@ -76,11 +76,15 @@ impl ContentHash {
     }
 
     /// [`blake3`](Self::blake3) of each payload, in order: on several scoped threads when there
-    /// are at least `parallel_min` of them, else on the calling thread. The same values either way.
+    /// are at least `parallel_min` of them and a mebibyte between them, else on the calling thread. The same values either way.
     pub fn blake3_many(codec: u8, payloads: &[&[u8]], parallel_min: usize) -> Vec<Self> {
         let hash = |part: &[&[u8]]| -> Vec<Self> { part.iter().map(|p| Self::blake3(codec, p)).collect() };
         let threads = std::thread::available_parallelism().map_or(1, usize::from);
         if threads == 1 || payloads.len() < parallel_min.max(2) {
+            return hash(payloads);
+        }
+        // Little to hash: starting the threads would cost more than they save.
+        if payloads.iter().map(|p| p.len()).sum::<usize>() < BLAKE3_PARALLEL_MIN_BYTES {
             return hash(payloads);
         }
         let per = payloads.len().div_ceil(threads);
@@ -90,6 +94,10 @@ impl ContentHash {
         })
     }
 }
+
+/// Fewer payload bytes than this are hashed on the calling thread by
+/// [`ContentHash::blake3_many`]: about a millisecond of hashing.
+const BLAKE3_PARALLEL_MIN_BYTES: usize = 1 << 20;
 
 /// What a `REV_META` declares about its payload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
