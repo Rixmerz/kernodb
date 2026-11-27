@@ -209,6 +209,9 @@ fn engine_error(e: kerno::Error) -> PyErr {
     if e.is_engine_argument() {
         return InvalidArgumentError::new_err(msg);
     }
+    if e.is_engine_batch_too_large() {
+        return ChangeSetTooLargeError::new_err(msg);
+    }
     match e {
         E::NotFound { .. } | E::RelationNotFound { .. } | E::RevisionNotFound { .. } => NotFoundError::new_err(msg),
         E::Deleted { .. } => DeletedError::new_err(msg),
@@ -2108,8 +2111,8 @@ impl Database {
 /// otherwise does to tidy the newest files, which a bulk load that closes right after its last
 /// commit pays in full; the next session that writes compacts in the background as usual.
 /// `bulk_without_wal=True` (with `durability="buffered"`) keeps a large commit out of the log: it
-/// is durable once its table is written, and until then a crash, of the process too, can lose it
-/// and every commit after it. For bulk loads of data that can be loaded again. It has no effect
+/// is durable once its table is written, and until then a crash, of the process too, or a failed
+/// flush can lose it and every commit after it. For bulk loads of data that can be loaded again. It has no effect
 /// with `durability="sync"` or `read_only=True`, so either of those with it raises
 /// `InvalidArgumentError`.
 #[pyfunction]

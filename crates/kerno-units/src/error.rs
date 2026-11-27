@@ -354,6 +354,12 @@ impl UnitError {
     pub fn is_engine_argument(&self) -> bool {
         matches!(self, UnitError::Storage(kerno_core::Error::InvalidArgument(_)))
     }
+
+    /// Whether the engine refused a batch over its batch limits on a path that does not report
+    /// it as [`UnitError::ChangeSetTooLarge`] (an index's own commit, a raw commit).
+    pub fn is_engine_batch_too_large(&self) -> bool {
+        matches!(self, UnitError::Storage(kerno_core::Error::BatchTooLarge(_)))
+    }
 }
 
 impl std::error::Error for UnitError {
