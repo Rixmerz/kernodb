@@ -228,7 +228,18 @@ fn key_prefix(key: &[u8]) -> u128 {
 /// where 16 bytes tie. The sort is stable, so equal keys keep their order.
 fn sort_writes(writes: Vec<Entry>) -> Vec<Entry> {
     let mut order: Vec<(u128, usize)> = writes.iter().enumerate().map(|(i, (k, _))| (key_prefix(k), i)).collect();
-    order.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| writes[a.1].0.cmp(&writes[b.1].0)));
+    // Stable on the prefixes alone (integer comparisons), then each run of one prefix stable on
+    // the whole keys: the order of a stable sort on the keys.
+    order.sort_by_key(|o| o.0);
+    let mut from = 0;
+    while from < order.len() {
+        let prefix = order[from].0;
+        let to = from + order[from..].iter().take_while(|o| o.0 == prefix).count();
+        if to - from > 1 {
+            order[from..to].sort_by(|a, b| writes[a.1].0.cmp(&writes[b.1].0));
+        }
+        from = to;
+    }
     let mut writes = writes;
     order.into_iter().map(|(_, i)| std::mem::take(&mut writes[i])).collect()
 }
