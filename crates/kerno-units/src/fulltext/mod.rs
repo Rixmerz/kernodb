@@ -528,9 +528,9 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
     pub(crate) fn plan_document(&self, unit: UnitId, payload: Option<&[u8]>) -> Result<TextPlan, UnitError> {
         // A payload cut into terms ahead of its operation (`create_prepared`), else here.
         let prepared = self.prepared_text.borrow_mut().take().filter(|p| Some(p.len) == payload.map(<[u8]>::len));
-        let new = match prepared {
-            Some(p) => p.doc,
-            None => payload.and_then(analyze),
+        let (new, record) = match prepared {
+            Some(p) => (p.doc, p.record),
+            None => (payload.and_then(analyze), None),
         };
         // A unit with an id above every stored one that has no revision in this change set yet
         // (one being created) has no document anywhere: no read.
@@ -568,7 +568,11 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
             Some(doc) => {
                 docs += 1;
                 len += i64::from(doc.len);
-                writes.push(Write::Put(doc_key(unit), encode_doc(ord, &doc)));
+                let record = match record {
+                    Some(r) => with_ord(r, ord),
+                    None => encode_doc(ord, &doc),
+                };
+                writes.push(Write::Put(doc_key(unit), record));
                 if old.is_none() {
                     writes.push(Write::Put(ord_key(ord).to_vec(), encode_ord(unit)));
                 }
@@ -772,6 +776,26 @@ fn write_postings<E: TxnEngine>(
 pub struct PreparedText {
     len: usize,
     doc: Option<Doc>,
+    /// `encode_doc(0, doc)`: the `DOC` record with ordinal 0, encoded where the text is cut
+    /// (maybe on another thread). The ordinal is given later and only those bytes change
+    /// ([`with_ord`]).
+    record: Option<Vec<u8>>,
+}
+
+impl PreparedText {
+    fn new(len: usize, doc: Option<Doc>) -> Self {
+        let record = doc.as_ref().map(|d| encode_doc(0, d));
+        PreparedText { len, doc, record }
+    }
+}
+
+/// Where the ordinal sits in a `DOC` record (after the envelope's two bytes).
+const DOC_ORD_AT: usize = 2;
+
+/// A `DOC` record encoded with ordinal 0, given the ordinal `ord`: `encode_doc(ord, doc)`.
+fn with_ord(mut record: Vec<u8>, ord: Ord) -> Vec<u8> {
+    record[DOC_ORD_AT..DOC_ORD_AT + 4].copy_from_slice(&ord.to_be_bytes());
+    record
 }
 
 /// What [`ChangeSet::prepare_texts`] computes of one payload ahead of its create: its content
@@ -804,7 +828,7 @@ impl<E: TxnEngine> ChangeSet<'_, E> {
                 .map(|&(w, p)| PreparedPayload {
                     len: p.len(),
                     hash: ContentHash::blake3(PAYLOAD_CODEC_OPAQUE, p),
-                    text: w.then(|| PreparedText { len: p.len(), doc: analyze(p) }),
+                    text: w.then(|| PreparedText::new(p.len(), analyze(p))),
                 })
                 .collect()
         };

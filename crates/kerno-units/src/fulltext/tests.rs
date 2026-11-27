@@ -853,3 +853,13 @@ fn the_last_ordinal_is_given_and_the_one_after_is_refused() {
     store(&db, b"..");
     assert_clean(&db);
 }
+
+/// A `DOC` record encoded ahead with ordinal 0 and given its ordinal later is the record
+/// encoded with that ordinal.
+#[test]
+fn a_doc_record_encoded_ahead_takes_its_ordinal() {
+    let doc = analyze(b"the quick brown fox jumps over the lazy dog, the end").unwrap();
+    for ord in [0, 1, 0x1234_5678, Ord::MAX] {
+        assert_eq!(with_ord(encode_doc(0, &doc), ord), encode_doc(ord, &doc));
+    }
+}
