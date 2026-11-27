@@ -49,8 +49,10 @@
 `find_payloads_by_field` (`kerno::Db::find_payloads`, Python `find_documents`) answers `(unit id,
 payload)` for one value, in unit id order. On a covering field, a hit whose entry carries the
 payload is answered from the entry: no head is read and the entry is not checked against its unit
-(that is `verify_units`). Other hits are read and checked as `find_by_field` does. `find` and
-`find_range` are unchanged.
+(that is `verify_units`). Other hits are read and checked as `find_by_field` does. When reads
+verify (`verify_payload_on_read` is on, or checked reads are on, `set_checked_reads(true)`), no hit
+is answered from its entry: every hit is read and checked as `find_by_field` does, so the payload
+comes from the unit's head. `find` and `find_range` are unchanged.
 
 ## 5. What `verify_units` checks (UNIT-53)
 

@@ -84,7 +84,9 @@ impl<E: Engine> UnitSnapshot<E> {
     /// For a `covering` field (layer 13) a hit whose entry carries the payload is answered from
     /// the entry alone: no head is read and the entry is not checked against its unit (that is
     /// [`verify_units`](Self::verify_units), UNIT-53). A hit whose payload is too long to be
-    /// carried, and every hit of a field that is not covering, is read and checked as
+    /// carried, every hit of a field that is not covering, and every hit when reads verify
+    /// ([`UnitConfig::verify_payload_on_read`](crate::UnitConfig) or
+    /// [`UnitDb::set_checked_reads`](crate::UnitDb::set_checked_reads)), is read and checked as
     /// `find_by_field` does.
     ///
     /// # Errors
@@ -104,7 +106,9 @@ impl<E: Engine> UnitSnapshot<E> {
             )));
         }
         let covering = self.schema_shared(unit_type)?.is_some_and(|s| s.field(field).is_some_and(|f| f.covering));
-        if !covering {
+        // Reads that verify never answer from the entries: those are not checked against the
+        // units they describe.
+        if !covering || self.checked_reads || self.verify_payload_on_read {
             let units = self.scan_range(unit_type, field, start, end, usize::MAX)?;
             return Ok(units.into_iter().filter_map(|u| u.payload.clone().map(|p| (u.id, p))).collect());
         }

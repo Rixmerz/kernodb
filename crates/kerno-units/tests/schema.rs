@@ -867,6 +867,43 @@ fn covering_entries_follow_every_write<E: Target>() {
     assert!(matches!(db.define_schema("other", bad, ChangeMeta::default()), Err(UnitError::InvalidArgument(_))));
 }
 
+/// A covering lookup answers from the entries only when reads are not asked to verify: with
+/// `verify_payload_on_read` or checked reads on, it reads the heads and checks them as
+/// `find_by_field` does. A covering entry carrying a wrong payload (UNIT-53) shows which path
+/// answered: the entries give the wrong payload back, the heads the stored one.
+fn verified_covering_reads_go_through_the_heads<E: Target>() {
+    let open_with = |verify: bool| {
+        let mut c = UnitConfig::with_sources(Arc::new(FixedClock::new(T0)), Arc::new(CounterIds::new(1)));
+        c.engine = Options::small_for_tests();
+        c.verify_payload_on_read = verify;
+        open_units::<E>(SimVfs::new(5).as_vfs(), &c).expect("open")
+    };
+    let age = FieldValue::Int(7);
+    let lookup = |db: &UnitDb<E>| db.snapshot().unwrap().find_payloads_by_field(ACCT, "age", &age).unwrap();
+    for verify in [false, true] {
+        let db = open_with(verify);
+        db.define_schema(ACCT, covering_fields(), ChangeMeta::default()).unwrap();
+        let a = create(&db, doc("a", 7, "a@x")).unwrap();
+        create(&db, doc("b", 7, "b@x")).unwrap();
+        let unverified = same_answer(&db, "age", &age, "before the damage");
+        assert_eq!(unverified, 2);
+        let stored_payloads = lookup(&db);
+        let (key, value) = stored(&db, 0x79).into_iter().find(|(k, v)| k.ends_with(&a.0) && v[1] == 1).unwrap();
+        let mut lie = value;
+        let n = lie.len();
+        lie[n - 1] ^= 1;
+        patch(&db, vec![(key, Some(lie.clone()))]);
+        let answered = lookup(&db);
+        if verify {
+            assert_eq!(answered, stored_payloads, "verify on: the heads answer, not the entries");
+        } else {
+            assert_ne!(answered, stored_payloads, "verify off: the entries answer");
+            db.set_checked_reads(true);
+            assert_eq!(lookup(&db), stored_payloads, "checked reads: the heads answer, not the entries");
+        }
+    }
+}
+
 macro_rules! engines {
     ($($m:ident: $e:ty),*) => {$(
         mod $m {
@@ -896,6 +933,7 @@ macro_rules! engines {
             each!(a_definition_checks_archived_units_and_ignores_deleted_ones);
             each!(definitions_refuse_bad_arguments);
             each!(covering_entries_follow_every_write);
+            each!(verified_covering_reads_go_through_the_heads);
         }
     )*};
 }
