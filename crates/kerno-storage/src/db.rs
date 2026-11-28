@@ -804,17 +804,24 @@ impl Inner {
             // once the table is installed, `scan_wal_covered`), and the rotation syncs the older
             // log, so everything older is durable before the commit's table can be installed.
             let has_frames = w.wal.written() > crate::format::header::HEADER_LEN as u64;
-            // A log-less commit never fills the active memtable, so `make_room` applies no
-            // backpressure to it: each switch below, and the push of its own memtable, first
-            // waits for room among the immutable memtables and under the L0 stop limit.
+            // A frozen commit never fills the active memtable, so `make_room` applies no
+            // backpressure to it: the switch below, and the push of its own memtable (log-less)
+            // or the switch after its frame (with a log), first wait for room among the
+            // immutable memtables and under the L0 stop limit. The second wait comes before the
+            // frame is written: only the writer pushes immutable memtables, so the room it finds
+            // still holds at the switch after the frame, where a failed wait could no longer
+            // refuse a commit already in the log. The writer holds only its own state here,
+            // which the flusher and the compactions never take. Inline, the caller flushes
+            // itself and there is nothing to wait for.
+            let wait = frozen && !self.inline();
             let mut stall = StallEpisode::new(&self.stats);
             if frozen && (!w.mem.is_empty() || (logless && has_frames)) {
-                let r = if logless { self.await_memtable_room(&mut stall) } else { Ok(()) };
+                let r = if wait { self.await_memtable_room(&mut stall) } else { Ok(()) };
                 if let Err(e) = r.and_then(|()| self.or_poison("memtable switch failed", || self.rotate(w))) {
                     return fail_all(e, None);
                 }
             }
-            if logless && let Err(e) = self.await_memtable_room(&mut stall) {
+            if wait && let Err(e) = self.await_memtable_room(&mut stall) {
                 return fail_all(e, None);
             }
             drop(stall);

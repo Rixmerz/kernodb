@@ -290,3 +290,38 @@ fn logless_commits_wait_for_room_among_the_immutable_memtables() {
     assert!(model_of(&db) == model, "every bulk commit reads back after the reopen");
     db.close().unwrap();
 }
+
+#[test]
+fn large_wal_commits_wait_for_room_among_the_immutable_memtables() {
+    // A large commit that writes its frame (no `bulk_without_wal`) switches the memtable before
+    // and after it, two pushes that `make_room` never sees: the active memtable is empty after
+    // each one. Both must still wait for room among the immutable memtables.
+    const LIMIT: usize = 2;
+    let disk = SimVfs::new(1);
+    let slow = |op: &HookOp<'_>| {
+        let sst = op.path.extension().is_some_and(|e| e == "sst");
+        if sst && op.kind == HookOpKind::Open && op.point == HookPoint::Before && op.mode == Some(OpenMode::CreateNew) {
+            HookAction::Delay(Duration::from_millis(20))
+        } else {
+            HookAction::Proceed
+        }
+    };
+    let cfg = Config { max_immutable_memtables: LIMIT, bulk_without_wal: false, ..buffered() };
+    let db = open_in(&HookVfs::wrap(disk.as_vfs(), slow), &cfg).unwrap();
+    let mut model = Model::new();
+    for i in 0..12u32 {
+        for b in [small(i), large(i)] {
+            db.commit(&b).unwrap();
+            apply(&mut model, &b);
+            let imms = stat(&db, "immutable_memtables");
+            assert!(imms <= LIMIT as u64, "commit {i}: {imms} immutable memtables, the limit is {LIMIT}");
+        }
+    }
+    assert!(stat(&db, "wal_bytes") > 12 * u64::from(BIG_POINTS), "the large commits wrote their frames");
+    assert!(stat(&db, "write_stalls") > 0, "the commits waited for the slowed flushes");
+    assert!(model_of(&db) == model);
+    db.close().unwrap();
+    let db = open_in(&disk.as_vfs(), &buffered()).unwrap();
+    assert!(model_of(&db) == model, "every commit reads back after the reopen");
+    db.close().unwrap();
+}
