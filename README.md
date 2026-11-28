@@ -8,7 +8,7 @@
 
 > **Alpha: 1.0.0-alpha.3.** This is a public alpha, not a 1.0 release.
 >
-> - **It does not open a database written by 1.0.0-alpha.4 or any earlier alpha.** The units layer was cut again after alpha.4 (layer 9 to 12; this build writes 12, or 13 once a field is `covering`), and a database of layer 11 or below is refused at open with `LayerTooOld`: export it with the build that wrote it (`kerno <dir> export`) and import it with this one (`kerno import`). See the [changelog](CHANGELOG.md) and [compatibility](docs/compatibility.md#0-before-10-the-alpha2-format-cut).
+> - **It does not open a database written by 1.0.0-alpha.4 or any earlier alpha.** The units layer was cut again after alpha.4 (layer 9 to 12; this build writes 12, or 13 once a field is `covering`), and a database of layer 11 or below is refused at open with `LayerTooOld`: export it with the build that wrote it (`kerno <dir> export`) and import it with this one (`kerno import`). See the [changelog](CHANGELOG.md) and [compatibility](docs/compatibility.md#0-before-10-the-format-cuts).
 > - **Keyword search is opt-in per unit type**: `set_fulltext(type, true)` in Rust, Python and Node, or `kerno-server --fulltext <types>`. `search_text` can be restricted to some types, and it raises (`NotIndexed`, `UnknownType`) instead of answering `[]` when it could never match.
 > - The on-disk format v1 is frozen ([ADR-0013](docs/adr/0013-format-v1-and-engine-protocol.md)), and the test vectors fail if one of its bytes changes. The freeze does not promise compatibility of the API.
 > - Narrative-thread search is an experiment. It lives only in `experiments/` and is not part of any published package.

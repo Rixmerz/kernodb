@@ -9,18 +9,23 @@ the owner's decision.
 
 Each promise names the test that keeps it. A promise with no test says so.
 
-## 0. Before 1.0: the alpha.2 format cut
+## 0. Before 1.0: the format cuts
 
-The promises below start at 1.0. Before that, **1.0.0-alpha.2 does not open databases written by
-1.0.0-alpha.1**, by design ([ADR-0023](adr/0023-format-v2-cut-for-alpha2.md)): nobody ran alpha.1
-in production, so the format was decided once instead of carrying compatibility paths.
+The promises below start at 1.0. Before that, the units layer was cut more than once, by design:
+nobody ran an alpha in production, so the format was changed instead of carrying compatibility
+paths. The cuts were layer 7 in alpha.2 ([ADR-0023](adr/0023-format-v2-cut-for-alpha2.md)), layer 9
+([ADR-0026](adr/0026-posting-blocks-for-adjacency-and-keyword-postings.md)), 10
+([units-v10](file-format/units-v10.md)), 11 ([units-v11](file-format/units-v11.md)) and, today,
+**layer 12** ([units-v12](file-format/units-v12.md)), after 1.0.0-alpha.4.
 
-- An alpha.1 database is refused with `LayerTooOld` (Python: `KernoError`), and nothing is written.
-- To move one across: `kerno <dir> export <file>` with the **alpha.1** CLI, then `kerno import <file>
-  <new-dir>` with the **alpha.2** CLI. Then turn on the keyword index of the types you search
-  (`set_fulltext`, see below) and redefine schemas and indexes, as for any import.
-- The other way round, an alpha.1 build refuses an alpha.2 database (its units layer is 7 and
-  its tables carry the `BLOCK_LZ4` bit).
+- **A database of layer 11 or below is refused** with `LayerTooOld` (Python: `KernoError`), and
+  nothing is written. That is every database written by 1.0.0-alpha.1 to 1.0.0-alpha.4.
+- To move one across: `kerno <dir> export <file>` with the CLI of the **build that wrote it**, then
+  `kerno import <file> <new-dir>` with this one (export v1 is frozen, section 2.3). Then turn on the
+  keyword index of the types you search (`set_fulltext`, see below) and redefine schemas and
+  indexes, as for any import.
+- The other way round, an older build refuses a database of this one: its units layer is newer
+  than that build reads (and for alpha.1, its tables carry the `BLOCK_LZ4` bit).
 - What changed in behaviour: **the keyword (BM25) index is opt-in per unit type**. A type is
   searchable by text only after `set_fulltext(type, true)` (Rust, Python, Node), `PUT
   /v1/types/{type}/fulltext` (server), or `kerno-server --fulltext <types>`.
@@ -52,7 +57,7 @@ has the first two; an export file has the third.
 | Axis | Today | Spec | Where the version lives |
 |---|---|---|---|
 | Engine (physical) format | `format_version = 1`, **frozen** since 2026-10-31 ([ADR-0013](adr/0013-format-v1-and-engine-protocol.md)) | [file-format/v1.md](file-format/v1.md) | header of every file, plus feature bits |
-| Units layer (logical) | `layer_version = 9`, the cut version of [ADR-0026](adr/0026-posting-blocks-for-adjacency-and-keyword-postings.md); 1 to 8 are refused | [units-v1](file-format/units-v1.md) to [units-v9](file-format/units-v9.md) | `LAYER_META` record `layer` |
+| Units layer (logical) | `layer_version = 12`, the cut version of [units-v12](file-format/units-v12.md), or 13 once a field is `covering` ([units-v13](file-format/units-v13.md)); 1 to 11 are refused | [units-v1](file-format/units-v1.md) to [units-v13](file-format/units-v13.md) | `LAYER_META` record `layer` |
 | Export | `format_version = 1`, **frozen** | [file-format/export-v1.md](file-format/export-v1.md) | export header |
 
 Derived data (vectors, summaries, indexes) has no promise of its own: it is
@@ -91,9 +96,10 @@ for byte, so a changed byte fails CI.
 
 `layer_version` is written into the database mark:
 
-- **Every database is created at the cut version, 9** (ADR-0026; the cut of alpha.2 was 7,
-  ADR-0023), and a mark below 9 is refused (`LayerTooOld`). The mark does not rise with the first
-  use of a feature. Opening and reading never write.
+- **Every database is created at the cut version, 12** (units-v12, `MIN_LAYER_VERSION`; the
+  earlier cuts were 11, 10, 9 and 7, section 0), and a mark below 12 is refused (`LayerTooOld`).
+  The mark rises only with the write that needs a newer layer (13: the first `covering` field) and
+  is never lowered. Opening and reading never write.
 - **A build refuses a layer newer than it knows** (rule UNIT-16, `IncompatibleLayer`) and
   modifies nothing.
 - From 1.0, a minor release may add a layer version, raised only by the write that needs it
@@ -163,7 +169,7 @@ the decision itself, which runs on Linux too.
 
 | You want | Do |
 |---|---|
-| Move from 1.0.0-alpha.1 to alpha.2 | Export with alpha.1, import with alpha.2, then `set_fulltext` for the types you search (section 0) |
+| Move from an earlier alpha (1.0.0-alpha.1 to alpha.4, layer 11 or below) | Export with the build that wrote it, import with this one, then `set_fulltext` for the types you search (section 0) |
 | Move to a later 1.x | Close the database, run the new build on the same directory. Nothing to migrate |
 | Check before and after | `kerno <dir> verify`, and `kerno <dir> export <file>` first if you want a copy that does not depend on the format |
 | Move to the next major version | Export with the old build, import into a new directory with the new one. The new major reads export v1 or ships a converter |

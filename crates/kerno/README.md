@@ -3,8 +3,8 @@
 Kerno is an embedded database of **units** (typed, versioned records), the **relations**
 between them, and queries over both. This crate is the one entry point: `kerno::Db`.
 
-> **Alpha (1.0.0-alpha.3).** It does not open databases written by 1.0.0-alpha.1: see
-> [Upgrading from 1.0.0-alpha.1](#upgrading-from-100-alpha1). The on-disk format v1 is frozen
+> **Alpha (1.0.0-alpha.3).** It does not open databases written by 1.0.0-alpha.4 or any earlier
+> alpha: see [Upgrading from an earlier alpha](#upgrading-from-an-earlier-alpha). The on-disk format v1 is frozen
 > ([ADR-0013](https://github.com/Rixmerz/kernodb/blob/main/docs/adr/0013-format-v1-and-engine-protocol.md));
 > the test vectors fail if one of its bytes changes. Narrative search is an experiment and is not part of
 > this crate. Benchmarks and long fuzzing runs are not yet certified. There is no 1.0 stability promise for the API yet.
@@ -189,14 +189,14 @@ New tables are LZ4-compressed when that makes them smaller (on by default:
 1 MiB, and a commit holds at most 10,000 operations unless the database is opened with
 `Db::open_with_limits`.
 
-## Upgrading from 1.0.0-alpha.1
+## Upgrading from an earlier alpha
 
-1.0.0-alpha.2 refuses a database written by alpha.1 (`Error::LayerTooOld`) and changes nothing in
-it. To carry one over:
+This build refuses a database of units layer 11 or below (`Error::LayerTooOld`), which is every
+database written by 1.0.0-alpha.1 to 1.0.0-alpha.4, and changes nothing in it. To carry one over:
 
 ```sh
-kerno old-db export old.kexp        # with the 1.0.0-alpha.1 CLI
-kerno import old.kexp new-db        # with the 1.0.0-alpha.2 CLI
+kerno old-db export old.kexp        # with the CLI of the build that wrote old-db
+kerno import old.kexp new-db        # with this build's CLI
 ```
 
 Then call `db.set_fulltext(type, true)` for every type you search by text, and redefine schemas

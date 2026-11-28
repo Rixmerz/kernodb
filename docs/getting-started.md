@@ -2,7 +2,7 @@
 
 Kerno is an embedded database of **units** (records with a type and content), the **relations** between them, and queries over both. This guide covers how to install the `kerno` crate, open a database, store and retrieve memory in five minutes, and where the three complete examples are.
 
-Status: 1.0.0-alpha.3. There is no version 1.0 and no promise of API stability (see the [README](../README.md#status)). A database written by 1.0.0-alpha.1 is not opened by alpha.2: see [Upgrading from 1.0.0-alpha.1](#upgrading-from-100-alpha1).
+Status: 1.0.0-alpha.3. There is no version 1.0 and no promise of API stability (see the [README](../README.md#status)). A database written by 1.0.0-alpha.4 or any earlier alpha is not opened: see [Upgrading from an earlier alpha](#upgrading-from-an-earlier-alpha).
 
 ## Requirements
 
@@ -148,13 +148,13 @@ hits: 1, first is the note: true
 - `search_text(query, limit, types)` returns `TextHit`s (`unit`, `score`), best first. `types` is `None` for every indexed type, or `Some(&["note", "memo"])` to search only those unit types; the score of a unit is the same either way. `hybrid_search` fuses the same keyword leg with vectors and relations, and takes the same restriction in `HybridQuery::text_types`.
 - A search that could never match raises: `NotIndexed` when no type (or a requested type) is indexed, `UnknownType` for a type nothing ever used, `InvalidArgument` for `limit` 0, a query with no word or an empty `types`. A search that can match and finds nothing returns an empty list.
 
-### Upgrading from 1.0.0-alpha.1
+### Upgrading from an earlier alpha
 
-alpha.2 refuses a database written by alpha.1 (`Error::LayerTooOld`) and leaves it untouched. Export it with the alpha.1 command-line tool and import it with the alpha.2 one, then turn on the keyword index of the types you search and redefine schemas and indexes (an export holds neither):
+This build refuses a database of units layer 11 or below (`Error::LayerTooOld`), which is every database written by 1.0.0-alpha.1 to 1.0.0-alpha.4, and leaves it untouched. Export it with the command-line tool of the build that wrote it and import it with this one, then turn on the keyword index of the types you search and redefine schemas and indexes (an export holds neither):
 
 ```sh
-kerno old-db export old.kexp      # alpha.1
-kerno import old.kexp new-db      # alpha.2
+kerno old-db export old.kexp      # with the build that wrote old-db
+kerno import old.kexp new-db      # with this build
 ```
 
 ## Three complete examples
