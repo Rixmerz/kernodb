@@ -2,14 +2,26 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 from conftest import start_server, stop_server
 from kerno_client import ApiError, KernoClient, Unit
 
 
+def package_version() -> str:
+    """The client's version from its pyproject, in the server's spelling: `1.0.0a5` is `1.0.0-alpha.5`."""
+    pyproject = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    found = re.search(r'^version = "([^"]+)"', pyproject, re.MULTILINE)
+    assert found, "pyproject.toml has no version"
+    pre = {"a": "alpha", "b": "beta", "rc": "rc"}
+    return re.sub(r"(a|b|rc)(\d+)$", lambda m: f"-{pre[m.group(1)]}.{m.group(2)}", found.group(1))
+
+
 def test_health(kerno: KernoClient) -> None:
     health = kerno.health()
-    assert (health.status, health.version) == ("ok", "1.0.0-alpha.1")
+    assert (health.status, health.version) == ("ok", package_version())
 
 
 def test_a_text_unit_round_trips(kerno: KernoClient) -> None:
