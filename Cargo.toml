@@ -23,7 +23,7 @@ members = [
 exclude = ["bindings/python"]
 
 [workspace.package]
-version = "1.0.0-alpha.4"
+version = "1.0.0-alpha.5"
 edition = "2024"
 rust-version = "1.89"
 publish = false
@@ -36,11 +36,11 @@ homepage = "https://github.com/Rixmerz/kernodb"
 # `unsafe`) one: `safe-encode` is not enabled. The decoder, which reads bytes from disk, is the safe one
 # (`safe-decode`).
 lz4_flex = { version = "0.11", default-features = false, features = ["safe-decode", "std"] }
-kerno-core = { package = "kernodb-core", path = "crates/kerno-core", version = "1.0.0-alpha.4" }
+kerno-core = { package = "kernodb-core", path = "crates/kerno-core", version = "1.0.0-alpha.5" }
 kerno-testkit = { path = "crates/kerno-testkit" }
-kerno-storage = { package = "kernodb-storage", path = "crates/kerno-storage", version = "1.0.0-alpha.4" }
-kerno-units = { package = "kernodb-units", path = "crates/kerno-units", version = "1.0.0-alpha.4" }
-kerno = { package = "kernodb", path = "crates/kerno", version = "1.0.0-alpha.4" }
+kerno-storage = { package = "kernodb-storage", path = "crates/kerno-storage", version = "1.0.0-alpha.5" }
+kerno-units = { package = "kernodb-units", path = "crates/kerno-units", version = "1.0.0-alpha.5" }
+kerno = { package = "kernodb", path = "crates/kerno", version = "1.0.0-alpha.5" }
 kerno-backup = { path = "crates/kerno-backup" }
 spike-core = { path = "spikes/storage/spike-core" }
 spike-btree = { path = "spikes/storage/spike-btree" }

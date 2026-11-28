@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kerno-client"
-version = "1.0.0a4"
+version = "1.0.0a5"
 description = "A pure-Python HTTP client for kerno-server, the Kerno database server"
 readme = "README.md"
 requires-python = ">=3.9"

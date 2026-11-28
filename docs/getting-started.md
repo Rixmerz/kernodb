@@ -2,7 +2,7 @@
 
 Kerno is an embedded database of **units** (records with a type and content), the **relations** between them, and queries over both. This guide covers how to install the `kerno` crate, open a database, store and retrieve memory in five minutes, and where the three complete examples are.
 
-Status: 1.0.0-alpha.3. There is no version 1.0 and no promise of API stability (see the [README](../README.md#status)). A database written by 1.0.0-alpha.4 or any earlier alpha is not opened: see [Upgrading from an earlier alpha](#upgrading-from-an-earlier-alpha).
+Status: 1.0.0-alpha.5. There is no version 1.0 and no promise of API stability (see the [README](../README.md#status)). A database written by 1.0.0-alpha.4 or any earlier alpha is not opened: see [Upgrading from an earlier alpha](#upgrading-from-an-earlier-alpha).
 
 ## Requirements
 
@@ -12,7 +12,7 @@ Status: 1.0.0-alpha.3. There is no version 1.0 and no promise of API stability (
 ## Install
 
 ```sh
-cargo add kernodb@1.0.0-alpha.3
+cargo add kernodb@1.0.0-alpha.5
 ```
 
 The package is `kernodb`; the library you `use` is `kerno`. From a checkout of the repository you

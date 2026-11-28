@@ -6,7 +6,7 @@
 
 **Where Kerno is going:** see the [product roadmap](ROADMAP.md): the 1.0 declaration, a query language and a cloud server mode.
 
-> **Alpha: 1.0.0-alpha.3.** This is a public alpha, not a 1.0 release.
+> **Alpha: 1.0.0-alpha.5.** This is a public alpha, not a 1.0 release.
 >
 > - **It does not open a database written by 1.0.0-alpha.4 or any earlier alpha.** The units layer was cut again after alpha.4 (layer 9 to 12; this build writes 12, or 13 once a field is `covering`), and a database of layer 11 or below is refused at open with `LayerTooOld`: export it with the build that wrote it (`kerno <dir> export`) and import it with this one (`kerno import`). See the [changelog](CHANGELOG.md) and [compatibility](docs/compatibility.md#0-before-10-the-format-cuts).
 > - **Keyword search is opt-in per unit type**: `set_fulltext(type, true)` in Rust, Python and Node, or `kerno-server --fulltext <types>`. `search_text` can be restricted to some types, and it raises (`NotIndexed`, `UnknownType`) instead of answering `[]` when it could never match.
@@ -15,31 +15,30 @@
 > - Benchmarks and long fuzzing runs are not yet certified.
 > - There is no stability promise yet for the API. Whether and when to declare 1.0 is reserved to the project owner.
 
-## What is new in 1.0.0-alpha.3
+## What is new in 1.0.0-alpha.5
 
 | | |
 |---|---|
-| **Upsert by a unique field** | `upsert(type, field, document)` in Rust, Python and Node revises the unit that holds the key or creates one; also a batch op |
-| **`refresh`** | a read-only open in another process sees a writer's new commits after `refresh()`, from every public surface |
-| **Retention** | `run_retention` / `runRetention` prune old revisions per unit type (`keep_last`, `keep_for`, `keep_since`); pruned reads answer `PRUNED` |
-| **Windows** | `kerno`, `kerno-mcp` and `kerno-server` start there (with a warning that durability is not verified; `KERNO_REQUIRE_VERIFIED_DURABILITY=1` refuses instead), and `file://C:\dir` backup URLs work |
-| **Node** | numeric options that are fractions, negative or NaN are refused with `INVALID_ARGUMENT` instead of truncated |
+| **Format cut** | the units layer is now 12 (13 with a `covering` field): a database written by alpha.4 or any earlier alpha is refused at open with `LayerTooOld`; export it with the build that wrote it and import it with this one |
+| **Faster reads and writes** | payloads are stored once, keyword postings are smaller (-81% raw), reads no longer re-hash every payload, cold read-only opens take about a millisecond, bulk writes execute far fewer instructions |
+| **Python** | `Unit.document()`, `neighbors()`, `find_documents()`, `neighbor_documents()`, `kerno.open(durability="buffered", bulk_without_wal=True)` |
+| **Search** | `search_substring` scans a type without the trigram index instead of refusing it; the trigram and keyword indexes stay opt-in |
+| **Errors and limits** | a commit may hold up to 1 GiB; a batch over its limits is `BatchTooLarge` in the engine and `ChangeSetTooLarge` in the unit layer, and only a batch limit maps to it; large commits wait for room instead of piling up memtables |
 
-The on-disk format does not change: alpha.3 opens alpha.2 databases. The full list is in the
-[changelog](CHANGELOG.md), and the measurements against SQLite are in
+The full list is in the [changelog](CHANGELOG.md), and the measurements against SQLite are in
 [docs/testing/python-vs-sqlite.md](docs/testing/python-vs-sqlite.md).
 
 ## Install
 
-The alpha is published with the pre-release version `1.0.0-alpha.3`. Each registry needs its own syntax to get it:
+The alpha is published with the pre-release version `1.0.0-alpha.5`. Each registry needs its own syntax to get it:
 
 | Package | Registry | Install |
 |---|---|---|
-| `kernodb` (with `kernodb-core`, `kernodb-storage`, `kernodb-units`) | crates.io | `cargo add kernodb@1.0.0-alpha.3` (imported as `kerno`) |
+| `kernodb` (with `kernodb-core`, `kernodb-storage`, `kernodb-units`) | crates.io | `cargo add kernodb@1.0.0-alpha.5` (imported as `kerno`) |
 | `@rixmerz/kernodb` (Node.js bindings) | npm | `npm install @rixmerz/kernodb@alpha` |
 | `kernodb` (Python bindings, imported as `kerno`) | PyPI | `pip install --pre kernodb` |
 
-The HTTP clients (`kerno-client`) and the LangChain, LlamaIndex and Vercel AI SDK integrations live in this repository but are not published in this alpha; install them from source. The release gate is in [RELEASING.md](RELEASING.md), and the latest validation record is [the 1.0.0-alpha.4 validation](docs/release/alpha.4-validation.md). The quick start is in [the `kerno` crate README](crates/kerno/README.md).
+The HTTP clients (`kerno-client`) and the LangChain, LlamaIndex and Vercel AI SDK integrations live in this repository but are not published in this alpha; install them from source. The release gate is in [RELEASING.md](RELEASING.md), and the latest validation record is [the 1.0.0-alpha.5 validation](docs/release/alpha.5-validation.md). The quick start is in [the `kerno` crate README](crates/kerno/README.md).
 
 ## Status
 

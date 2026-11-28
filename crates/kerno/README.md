@@ -3,7 +3,7 @@
 Kerno is an embedded database of **units** (typed, versioned records), the **relations**
 between them, and queries over both. This crate is the one entry point: `kerno::Db`.
 
-> **Alpha (1.0.0-alpha.3).** It does not open databases written by 1.0.0-alpha.4 or any earlier
+> **Alpha (1.0.0-alpha.5).** It does not open databases written by 1.0.0-alpha.4 or any earlier
 > alpha: see [Upgrading from an earlier alpha](#upgrading-from-an-earlier-alpha). The on-disk format v1 is frozen
 > ([ADR-0013](https://github.com/Rixmerz/kernodb/blob/main/docs/adr/0013-format-v1-and-engine-protocol.md));
 > the test vectors fail if one of its bytes changes. Narrative search is an experiment and is not part of
@@ -12,7 +12,7 @@ between them, and queries over both. This crate is the one entry point: `kerno::
 ## Install
 
 ```sh
-cargo add kernodb@1.0.0-alpha.3
+cargo add kernodb@1.0.0-alpha.5
 ```
 
 ## Quick start

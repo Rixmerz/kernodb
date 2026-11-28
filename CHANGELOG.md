@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.0-alpha.5] - 2026-11-28
+
+### Breaking
+
+- **A database written by 1.0.0-alpha.4 or any earlier alpha is refused at open** (`LayerTooOld`; Python `KernoError`): its units layer is 11 or below and this build needs 12 (13 once a field is `covering`). Nothing in the directory changes. Export it with the build that wrote it (`kerno <dir> export <file>`) and import it with this one (`kerno import <file> <new-dir>`), then `set_fulltext` for the types you search. See [compatibility](docs/compatibility.md#0-before-10-the-format-cuts).
+- **New engine error `kerno_core::Error::BatchTooLarge`.** A plain commit (not only a batch) over the batch limits (operations, payload bytes, encoded size) now returns it; it was `InvalidArgument`. The unit layer maps it to `ChangeSetTooLarge`, and a key or value over its own limit stays `InvalidArgument`. Code that matches the engine's errors exhaustively must add the variant.
+
 ### Added
 
 - **Python: `Unit.document()` and `Database.neighbors()`**. `unit.document()` decodes the payload the unit already holds, so a `find`, `query` or `execute` result needs no `read_document` call per unit. `db.neighbors(id, direction="out", relation_type=None)` returns `[(Relation, Unit), ...]`: the relations of `related` with the unit at the other end, in one call.
@@ -47,6 +54,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **Node: `runRetention` ignored a `byType` or `default` that is not a plain object.** It is now refused with `INVALID_ARGUMENT`.
+- **`open` refuses a path with a NUL byte** as an invalid argument in Python and Node.
+- **Python: the extension's allocator keeps its arena off transparent huge pages.** On a host with THP set to `always`, the mimalloc arena was backed by huge pages and the `requests` ingest paid for it: on btrfs, median 45.2 ms to 27.1 ms (SQLite: 34.7 ms).
 - **Large WAL commits wait for room among the immutable memtables too.** A commit kept as a frozen memtable that still writes its WAL frame (32,768 writes or 4 MiB, without `bulk_without_wal` or under `Sync` durability) switches the memtable before and after itself, and neither switch waited: the active memtable is empty after each one, so `make_room` never stalled, and a run of such commits piled up immutable memtables and L0 tables without bound while the flush fell behind. Both switches now wait first, before the frame is written, for `max_immutable_memtables` and the L0 stop limit.
 - **Log-less bulk commits wait for room among the immutable memtables.** With `Config::bulk_without_wal`, a log-less commit never fills the active memtable, so it skipped the stalls on `max_immutable_memtables` and on the L0 stop limit, and a run of bulk commits (512 writes or more each) piled up immutable memtables and L0 files without bound. Each one now waits for room before its memtable is pushed, as a commit that fills the active memtable does.
 - **Covering lookups verify when reads verify.** `find_payloads_by_field` (`Db::find_payloads`, Python `find_documents`) answered a covering hit from its index entry even with `verify_payload_on_read` or checked reads (`set_checked_reads(true)`) on. With either flag it now reads and checks the units as `find_by_field` does (units-v13 §4).
