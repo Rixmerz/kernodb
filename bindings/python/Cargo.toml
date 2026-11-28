@@ -27,6 +27,14 @@ libmimalloc-sys = { version = "0.1.49", default-features = false, features = ["e
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
 
+# musl refuses to dlopen a shared object that uses initial-exec TLS ("initial-exec TLS resolves to
+# dynamic definition"), and mimalloc v3 compiles its C with -ftls-model=initial-exec. The wheel is
+# loaded by dlopen, so on musl targets mimalloc uses local-dynamic TLS instead. glibc, macOS and
+# Windows keep the faster initial-exec model.
+[target.'cfg(target_env = "musl")'.dependencies]
+mimalloc = { version = "0.1", default-features = false, features = ["no_thp", "local_dynamic_tls"] }
+libmimalloc-sys = { version = "0.1.49", default-features = false, features = ["extended", "arena", "no_thp", "local_dynamic_tls"] }
+
 # The wheel is the product: whole-program inlining across the storage, units and binding crates
 # is worth the longer build.
 [profile.release]

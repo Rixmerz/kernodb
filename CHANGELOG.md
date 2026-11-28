@@ -54,6 +54,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **Python: the musllinux wheels failed to import** (`initial-exec TLS resolves to dynamic definition`): mimalloc v3 compiles with initial-exec TLS, which musl refuses in a dlopen'ed shared object. On musl targets mimalloc now uses local-dynamic TLS (`local_dynamic_tls`); glibc, macOS and Windows keep initial-exec.
 - **Node: `runRetention` ignored a `byType` or `default` that is not a plain object.** It is now refused with `INVALID_ARGUMENT`.
 - **`open` refuses a path with a NUL byte** as an invalid argument in Python and Node.
 - **Python: the extension's allocator keeps its arena off transparent huge pages.** On a host with THP set to `always`, the mimalloc arena was backed by huge pages and the `requests` ingest paid for it: on btrfs, median 45.2 ms to 27.1 ms (SQLite: 34.7 ms).

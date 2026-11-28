@@ -38,6 +38,10 @@ About 2,600 hostile calls across both bindings: negative numbers, 0, 2**63, 2**6
 
 About 190 documented examples were run and about 150 claims were checked against HEAD. Eight documentation mismatches were fixed (5fa4a6d, 2bf5fef).
 
+## Tag workflow finding
+
+The tag workflow found both musl Python wheels (x86_64 and aarch64) broken before anything was published: they failed to import on Alpine with `initial-exec TLS resolves to dynamic definition` (mimalloc v3 uses initial-exec TLS, which musl refuses in a dlopen'ed shared object). Fixed by enabling mimalloc's `local_dynamic_tls` on musl targets only; the rebuilt x86_64 musl wheel passes the full suite (237) in Alpine.
+
 ## Performance note
 
 The Python binding keeps its mimalloc arena off transparent huge pages (870e7c2). On a host with THP set to `always`, the `requests` ingest on btrfs takes 27.1 ms against SQLite's 34.7 ms (median, 16 of 16 runs); it was 45.2 ms before.
